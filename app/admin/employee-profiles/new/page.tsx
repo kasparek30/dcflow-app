@@ -8,7 +8,10 @@ import AppShell from "../../../../components/AppShell";
 import ProtectedPage from "../../../../components/ProtectedPage";
 import { useAuthContext } from "../../../../src/context/auth-context";
 import { db } from "../../../../src/lib/firebase";
-import type { EmployeeProfile, EmploymentStatus, LaborRole } from "../../../../src/types/employee-profile";
+import type {
+  EmploymentStatus,
+  LaborRole,
+} from "../../../../src/types/employee-profile";
 
 type DcflowUser = {
   uid: string;
@@ -40,13 +43,17 @@ export default function NewEmployeeProfilePage() {
   const [saving, setSaving] = useState(false);
 
   const [selectedUid, setSelectedUid] = useState("");
-  const selectedUser = useMemo(() => users.find((u) => u.uid === selectedUid), [users, selectedUid]);
+  const selectedUser = useMemo(
+    () => users.find((u) => u.uid === selectedUid),
+    [users, selectedUid]
+  );
 
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
 
-  const [employmentStatus, setEmploymentStatus] = useState<EmploymentStatus>("current");
+  const [employmentStatus, setEmploymentStatus] =
+    useState<EmploymentStatus>("current");
   const [laborRole, setLaborRole] = useState<LaborRole>("technician");
 
   const [defaultPairedTechUid, setDefaultPairedTechUid] = useState("");
@@ -84,7 +91,7 @@ export default function NewEmployeeProfilePage() {
   }, []);
 
   useEffect(() => {
-    // Auto-fill name/email when selecting a user
+    // Auto-fill name/email when selecting a user (only if blank)
     if (!selectedUser) return;
 
     if (!displayName) setDisplayName(selectedUser.displayName || "");
@@ -92,9 +99,12 @@ export default function NewEmployeeProfilePage() {
   }, [selectedUser, displayName, email]);
 
   const techUsers = useMemo(() => {
-    // helpers/apprentices pair to technicians: we’ll allow pairing to any user for now,
-    // but most likely you’ll pair to technician-role users.
-    return users.filter((u) => (u.role || "").toLowerCase() === "technician" || (u.role || "").toLowerCase() === "admin");
+    // For pairing helpers/apprentices with a technician.
+    return users.filter(
+      (u) =>
+        (u.role || "").toLowerCase() === "technician" ||
+        (u.role || "").toLowerCase() === "admin"
+    );
   }, [users]);
 
   async function handleCreate(e: React.FormEvent<HTMLFormElement>) {
@@ -105,31 +115,47 @@ export default function NewEmployeeProfilePage() {
     try {
       const nowIso = new Date().toISOString();
 
-      const payload: Omit<EmployeeProfile, "id"> = {
-        userUid: selectedUid || undefined,
-        displayName: displayName.trim(),
-        email: email.trim() || undefined,
-        phone: phone.trim() || undefined,
-        employmentStatus,
-        laborRole,
-        defaultPairedTechUid: defaultPairedTechUid.trim() || undefined,
-        qboEmployeeId: undefined,
-        notes: notes.trim() || undefined,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
+      const displayNameClean = displayName.trim();
+      const emailClean = email.trim();
+      const phoneClean = phone.trim();
+      const notesClean = notes.trim();
+      const selectedUidClean = selectedUid.trim();
+      const pairedTechClean = defaultPairedTechUid.trim();
 
-      if (!payload.displayName) {
+      if (!displayNameClean) {
         setError("Display name is required.");
         setSaving(false);
         return;
       }
 
+      // IMPORTANT: never send undefined to Firestore — use null or omit the field.
+      const payload = {
+        userUid: selectedUidClean ? selectedUidClean : null,
+        displayName: displayNameClean,
+        email: emailClean ? emailClean : null,
+        phone: phoneClean ? phoneClean : null,
+
+        employmentStatus,
+        laborRole,
+
+        defaultPairedTechUid: pairedTechClean ? pairedTechClean : null,
+
+        // Future QuickBooks link fields
+        qboEmployeeId: null,
+
+        notes: notesClean ? notesClean : null,
+
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
       const ref = await addDoc(collection(db, "employeeProfiles"), payload);
 
       window.location.href = `/admin/employee-profiles/${ref.id}`;
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create employee profile.");
+      setError(
+        err instanceof Error ? err.message : "Failed to create employee profile."
+      );
     } finally {
       setSaving(false);
     }
@@ -138,7 +164,14 @@ export default function NewEmployeeProfilePage() {
   return (
     <ProtectedPage fallbackTitle="New Employee Profile" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+          }}
+        >
           <h1 style={{ fontSize: "24px", fontWeight: 900, marginTop: 0 }}>
             New Employee Profile
           </h1>
@@ -163,20 +196,41 @@ export default function NewEmployeeProfilePage() {
         {error ? <p style={{ color: "red" }}>{error}</p> : null}
 
         {!loadingUsers ? (
-          <form onSubmit={handleCreate} style={{ maxWidth: "860px", display: "grid", gap: "12px" }}>
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
+          <form
+            onSubmit={handleCreate}
+            style={{ maxWidth: "860px", display: "grid", gap: "12px" }}
+          >
+            <div
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: "12px",
+                padding: "16px",
+                background: "white",
+              }}
+            >
               <h2 style={{ marginTop: 0 }}>Link to DCFlow User (optional)</h2>
               <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
                 Since you already created employee users in Admin → Users, you can link this profile to a login user.
               </p>
 
-              <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontWeight: 800,
+                  marginBottom: "6px",
+                }}
+              >
                 Select User
               </label>
               <select
                 value={selectedUid}
                 onChange={(e) => setSelectedUid(e.target.value)}
-                style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  borderRadius: "10px",
+                  border: "1px solid #ccc",
+                }}
               >
                 <option value="">— No user linked —</option>
                 {users.map((u) => (
@@ -187,44 +241,102 @@ export default function NewEmployeeProfilePage() {
               </select>
             </div>
 
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
+            <div
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: "12px",
+                padding: "16px",
+                background: "white",
+              }}
+            >
               <h2 style={{ marginTop: 0 }}>Profile</h2>
 
-              <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontWeight: 800,
+                  marginBottom: "6px",
+                }}
+              >
                 Display Name *
               </label>
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  borderRadius: "10px",
+                  border: "1px solid #ccc",
+                }}
                 placeholder="Employee name"
                 required
               />
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "12px" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "10px",
+                  marginTop: "12px",
+                }}
+              >
                 <div>
-                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Email</label>
+                  <label
+                    style={{
+                      display: "block",
+                      fontWeight: 800,
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Email
+                  </label>
                   <input
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
+                    style={{
+                      width: "100%",
+                      padding: "10px",
+                      borderRadius: "10px",
+                      border: "1px solid #ccc",
+                    }}
                     placeholder="optional"
                   />
                 </div>
 
                 <div>
-                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Phone</label>
+                  <label
+                    style={{
+                      display: "block",
+                      fontWeight: 800,
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Phone
+                  </label>
                   <input
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
+                    style={{
+                      width: "100%",
+                      padding: "10px",
+                      borderRadius: "10px",
+                      border: "1px solid #ccc",
+                    }}
                     placeholder="optional"
                   />
                 </div>
               </div>
             </div>
 
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
+            <div
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: "12px",
+                padding: "16px",
+                background: "white",
+              }}
+            >
               <h2 style={{ marginTop: 0 }}>Employment</h2>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -280,7 +392,7 @@ export default function NewEmployeeProfilePage() {
                   ))}
                 </select>
                 <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-                  You can leave this blank for technicians/admins.
+                  Leave blank for technicians/admins.
                 </p>
               </div>
 
