@@ -31,6 +31,9 @@ type ScheduleItem =
       status: string;
       href: string;
       timeText: string;
+
+      // ✅ NEW: show multi-tech team
+      teamText?: string;
     }
   | {
       kind: "project_stage";
@@ -44,6 +47,8 @@ type ScheduleItem =
       status: string;
       href: string;
       timeText: string;
+
+      teamText?: string;
     };
 
 function formatDateToIsoLocal(date: Date) {
@@ -178,8 +183,16 @@ export default function WeeklySchedulePage() {
             scheduledDate: data.scheduledDate ?? undefined,
             scheduledStartTime: data.scheduledStartTime ?? undefined,
             scheduledEndTime: data.scheduledEndTime ?? undefined,
+
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+
+            // ✅ NEW multi-tech fields (optional, safe)
+            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+            assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
+              ? data.assignedTechnicianIds.filter(Boolean)
+              : undefined,
+
             internalNotes: data.internalNotes ?? undefined,
             active: data.active ?? true,
             createdAt: data.createdAt ?? undefined,
@@ -253,7 +266,10 @@ export default function WeeklySchedulePage() {
     return shifted;
   }, [weekOffset]);
 
-  const allWeekDays = useMemo(() => buildWeekDays(currentWeekBaseDate), [currentWeekBaseDate]);
+  const allWeekDays = useMemo(
+    () => buildWeekDays(currentWeekBaseDate),
+    [currentWeekBaseDate]
+  );
 
   const visibleWeekDays = useMemo(() => {
     if (showWeekends) return allWeekDays;
@@ -270,24 +286,46 @@ export default function WeeklySchedulePage() {
       result[day.isoDate] = [];
     }
 
+    // ✅ Service Tickets (multi-tech aware)
     for (const ticket of tickets) {
       if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
 
-      result[ticket.scheduledDate].push({
-        kind: "service_ticket",
-        id: ticket.id,
-        date: ticket.scheduledDate,
-        sortTime: ticket.scheduledStartTime || "99:99",
-        title: ticket.issueSummary,
-        subtitle: ticket.customerDisplayName,
-        location: ticket.serviceAddressLine1,
-        tech: ticket.assignedTechnicianName || "Unassigned",
-        status: formatStatusLabel(ticket.status),
-        href: `/service-tickets/${ticket.id}`,
-        timeText: `${ticket.scheduledStartTime || "—"} - ${ticket.scheduledEndTime || "—"}`,
-      });
+      // Determine team member ids: prefer new array, fallback to legacy single tech
+      const teamIds =
+        Array.isArray(ticket.assignedTechnicianIds) && ticket.assignedTechnicianIds.length > 0
+          ? ticket.assignedTechnicianIds
+          : ticket.assignedTechnicianId
+            ? [ticket.assignedTechnicianId]
+            : [];
+
+      // Determine display labels
+      const primaryName = ticket.assignedTechnicianName || "Unassigned";
+      const teamText =
+        teamIds.length > 1 ? `Team: ${teamIds.length} techs` : undefined;
+
+      // Add ONE item per team member so it shows up on both schedules (tech + helper).
+      // We suffix the id so React keys stay unique.
+      const occurrences = teamIds.length > 0 ? teamIds : ["unassigned"];
+
+      for (const memberId of occurrences) {
+        result[ticket.scheduledDate].push({
+          kind: "service_ticket",
+          id: `${ticket.id}-${memberId}`,
+          date: ticket.scheduledDate,
+          sortTime: ticket.scheduledStartTime || "99:99",
+          title: ticket.issueSummary,
+          subtitle: ticket.customerDisplayName,
+          location: ticket.serviceAddressLine1,
+          tech: primaryName,
+          status: formatStatusLabel(ticket.status),
+          href: `/service-tickets/${ticket.id}`,
+          timeText: `${ticket.scheduledStartTime || "—"} - ${ticket.scheduledEndTime || "—"}`,
+          teamText,
+        });
+      }
     }
 
+    // Projects (unchanged for now)
     for (const project of projects) {
       const stageEntries = [
         {
@@ -343,19 +381,31 @@ export default function WeeklySchedulePage() {
   const unscheduledItems = useMemo(() => {
     const ticketItems: ScheduleItem[] = tickets
       .filter((ticket) => !ticket.scheduledDate)
-      .map((ticket) => ({
-        kind: "service_ticket",
-        id: ticket.id,
-        date: "",
-        sortTime: "99:99",
-        title: ticket.issueSummary,
-        subtitle: ticket.customerDisplayName,
-        location: ticket.serviceAddressLine1,
-        tech: ticket.assignedTechnicianName || "Unassigned",
-        status: formatStatusLabel(ticket.status),
-        href: `/service-tickets/${ticket.id}`,
-        timeText: "Unscheduled",
-      }));
+      .map((ticket) => {
+        const teamIds =
+          Array.isArray(ticket.assignedTechnicianIds) && ticket.assignedTechnicianIds.length > 0
+            ? ticket.assignedTechnicianIds
+            : ticket.assignedTechnicianId
+              ? [ticket.assignedTechnicianId]
+              : [];
+
+        const teamText = teamIds.length > 1 ? `Team: ${teamIds.length} techs` : undefined;
+
+        return {
+          kind: "service_ticket",
+          id: ticket.id,
+          date: "",
+          sortTime: "99:99",
+          title: ticket.issueSummary,
+          subtitle: ticket.customerDisplayName,
+          location: ticket.serviceAddressLine1,
+          tech: ticket.assignedTechnicianName || "Unassigned",
+          status: formatStatusLabel(ticket.status),
+          href: `/service-tickets/${ticket.id}`,
+          timeText: "Unscheduled",
+          teamText,
+        };
+      });
 
     const projectItems: ScheduleItem[] = [];
 
@@ -587,6 +637,12 @@ export default function WeeklySchedulePage() {
                               Tech: {item.tech}
                             </div>
 
+                            {item.teamText ? (
+                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                                {item.teamText}
+                              </div>
+                            ) : null}
+
                             <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
                               Status: {item.status}
                             </div>
@@ -646,6 +702,12 @@ export default function WeeklySchedulePage() {
                       <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
                         Tech: {item.tech}
                       </div>
+
+                      {item.teamText ? (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                          {item.teamText}
+                        </div>
+                      ) : null}
 
                       <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
                         Status: {item.status}
