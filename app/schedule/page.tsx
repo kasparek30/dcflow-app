@@ -127,6 +127,42 @@ function formatProjectStageStatus(status: Project["roughIn"]["status"]) {
   }
 }
 
+function isoInRange(targetIso: string, startIso: string, endIso: string) {
+  // ISO "YYYY-MM-DD" compares lexicographically correctly
+  return targetIso >= startIso && targetIso <= endIso;
+}
+
+function buildCrewTextFromStaffing(staffing: any, fallbackProject: any) {
+  const primaryName =
+    staffing?.primaryTechnicianName ||
+    fallbackProject?.primaryTechnicianName ||
+    fallbackProject?.assignedTechnicianName ||
+    "Unassigned";
+
+  const secondaryName =
+    staffing?.secondaryTechnicianName ||
+    fallbackProject?.secondaryTechnicianName ||
+    "";
+
+  const helperNamesRaw =
+    (Array.isArray(staffing?.helperNames) && staffing.helperNames) ||
+    (Array.isArray(fallbackProject?.helperNames) && fallbackProject.helperNames) ||
+    [];
+
+  const helperNames = helperNamesRaw.filter(Boolean);
+
+  const helperText =
+    helperNames.length > 0
+      ? helperNames.length === 1
+        ? `Helper: ${helperNames[0]}`
+        : `Helpers: ${helperNames.join(", ")}`
+      : undefined;
+
+  const secondaryTechText = secondaryName ? `2nd Tech: ${secondaryName}` : undefined;
+
+  return { primaryName, helperText, secondaryTechText };
+}
+
 export default function WeeklySchedulePage() {
   const { appUser } = useAuthContext();
 
@@ -194,22 +230,6 @@ export default function WeeklySchedulePage() {
         const projectItems: Project[] = projectSnap.docs.map((docSnap) => {
           const data = docSnap.data();
 
-          // NOTE: We read optional staffing fields if present.
-          // If your Project type doesn't include these yet, it's fine — we treat them as any.
-          const secondaryTechnicianName = data.secondaryTechnicianName ?? "";
-          const helperNames = Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : [];
-
-          const helperText =
-            helperNames.length > 0
-              ? helperNames.length === 1
-                ? `Helper: ${helperNames[0]}`
-                : `Helpers: ${helperNames.join(", ")}`
-              : undefined;
-
-          const secondaryTechText = secondaryTechnicianName
-            ? `2nd Tech: ${secondaryTechnicianName}`
-            : undefined;
-
           return {
             id: docSnap.id,
             customerId: data.customerId ?? "",
@@ -230,12 +250,17 @@ export default function WeeklySchedulePage() {
             topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
             trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
 
+            // project-level default crew (optional)
+            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+            primaryTechnicianName: data.primaryTechnicianName ?? undefined,
+            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
+            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
+
+            // legacy
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-
-            // attach optional display-only fields (safe)
-            helperText,
-            secondaryTechText,
 
             internalNotes: data.internalNotes ?? undefined,
             active: data.active ?? true,
@@ -277,6 +302,9 @@ export default function WeeklySchedulePage() {
     const result: Record<string, ScheduleItem[]> = {};
     for (const day of allWeekDays) result[day.isoDate] = [];
 
+    // ----------------------
+    // Service tickets (single-day scheduledDate)
+    // ----------------------
     for (const ticket of tickets) {
       if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
 
@@ -310,6 +338,11 @@ export default function WeeklySchedulePage() {
       });
     }
 
+    // ----------------------
+    // Projects (stage date range)
+    // Start = scheduledDate, End = scheduledEndDate || scheduledDate
+    // Stage staffing overrides project crew when present
+    // ----------------------
     for (const project of projects) {
       const stageEntries = [
         { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
@@ -318,26 +351,40 @@ export default function WeeklySchedulePage() {
       ] as const;
 
       for (const entry of stageEntries) {
-        const date = entry.stage.scheduledDate;
-        if (!date || !result[date]) continue;
+        const start = (entry.stage as any).scheduledDate as string | undefined;
+        if (!start) continue;
 
-        result[date].push({
-          kind: "project_stage",
-          id: `${project.id}-${entry.stageKey}`,
-          date,
-          sortTime: "12:00",
-          title: `${project.projectName} • ${entry.label}`,
-          subtitle: project.customerDisplayName,
-          location: project.serviceAddressLine1,
-          tech: project.assignedTechnicianName || "Unassigned",
-          helperText: (project as any).helperText,
-          secondaryTechText: (project as any).secondaryTechText,
-          status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
-            project.bidStatus
-          )}`,
-          href: `/projects/${project.id}`,
-          timeText: "Project Stage",
-        });
+        const end = ((entry.stage as any).scheduledEndDate as string | undefined) || start;
+
+        // For each day in the current week, add if within range
+        for (const day of allWeekDays) {
+          if (!result[day.isoDate]) continue;
+          if (!isoInRange(day.isoDate, start, end)) continue;
+
+          const staffing = (entry.stage as any).staffing || null;
+          const crew = buildCrewTextFromStaffing(staffing, project as any);
+
+          const timeText =
+            end && end !== start ? `Project Stage (${start} → ${end})` : "Project Stage";
+
+          result[day.isoDate].push({
+            kind: "project_stage",
+            id: `${project.id}-${entry.stageKey}-${day.isoDate}`,
+            date: day.isoDate,
+            sortTime: "12:00",
+            title: `${project.projectName} • ${entry.label}`,
+            subtitle: project.customerDisplayName,
+            location: project.serviceAddressLine1,
+            tech: crew.primaryName,
+            helperText: crew.helperText,
+            secondaryTechText: crew.secondaryTechText,
+            status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
+              project.bidStatus
+            )}`,
+            href: `/projects/${project.id}`,
+            timeText,
+          });
+        }
       }
     }
 
@@ -396,8 +443,12 @@ export default function WeeklySchedulePage() {
       ] as const;
 
       for (const entry of stageEntries) {
-        if (entry.stage.scheduledDate) continue;
+        const start = (entry.stage as any).scheduledDate as string | undefined;
+        if (start) continue;
         if (entry.stage.status === "complete") continue;
+
+        const staffing = (entry.stage as any).staffing || null;
+        const crew = buildCrewTextFromStaffing(staffing, project as any);
 
         projectItems.push({
           kind: "project_stage",
@@ -407,9 +458,9 @@ export default function WeeklySchedulePage() {
           title: `${project.projectName} • ${entry.label}`,
           subtitle: project.customerDisplayName,
           location: project.serviceAddressLine1,
-          tech: project.assignedTechnicianName || "Unassigned",
-          helperText: (project as any).helperText,
-          secondaryTechText: (project as any).secondaryTechText,
+          tech: crew.primaryName,
+          helperText: crew.helperText,
+          secondaryTechText: crew.secondaryTechText,
           status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
             project.bidStatus
           )}`,
