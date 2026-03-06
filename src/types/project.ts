@@ -1,8 +1,4 @@
-export type ProjectBidStatus =
-  | "draft"
-  | "submitted"
-  | "won"
-  | "lost";
+export type ProjectBidStatus = "draft" | "submitted" | "won" | "lost";
 
 export type ProjectStageStatus =
   | "not_started"
@@ -10,12 +6,28 @@ export type ProjectStageStatus =
   | "in_progress"
   | "complete";
 
+// ✅ Optional staffing fields (safe + additive)
+export type StageStaffing = {
+  primaryTechnicianId?: string;
+  primaryTechnicianName?: string;
+
+  secondaryTechnicianId?: string;
+  secondaryTechnicianName?: string;
+
+  helperIds?: string[];
+  helperNames?: string[];
+};
+
 export type ProjectStage = {
   status: ProjectStageStatus;
   scheduledDate?: string;
   completedDate?: string;
+
   billed: boolean;
   billedAmount: number;
+
+  // ✅ NEW: stage-level staffing (optional)
+  staffing?: StageStaffing;
 };
 
 export type Project = {
@@ -43,6 +55,17 @@ export type Project = {
   topOutVent: ProjectStage;
   trimFinish: ProjectStage;
 
+  // ✅ Project-level default crew (optional fallback)
+  primaryTechnicianId?: string;
+  primaryTechnicianName?: string;
+
+  secondaryTechnicianId?: string;
+  secondaryTechnicianName?: string;
+
+  helperIds?: string[];
+  helperNames?: string[];
+
+  // Legacy single-tech fields (keep for backwards compatibility)
   assignedTechnicianId?: string;
   assignedTechnicianName?: string;
 
