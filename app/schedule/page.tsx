@@ -128,8 +128,16 @@ function formatProjectStageStatus(status: Project["roughIn"]["status"]) {
 }
 
 function isoInRange(targetIso: string, startIso: string, endIso: string) {
-  // ISO "YYYY-MM-DD" compares lexicographically correctly
-  return targetIso >= startIso && targetIso <= endIso;
+  const start = (startIso || "").trim();
+  const end = (endIso || "").trim();
+
+  if (!start) return false;
+  if (!end) return targetIso === start;
+
+  const min = start < end ? start : end;
+  const max = start < end ? end : start;
+
+  return targetIso >= min && targetIso <= max;
 }
 
 function buildCrewTextFromStaffing(staffing: any, fallbackProject: any) {
