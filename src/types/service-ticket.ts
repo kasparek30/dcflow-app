@@ -41,6 +41,12 @@ export type ServiceTicket = {
   primaryTechnicianId?: string;      // usually same as assignedTechnicianId for now
   assignedTechnicianIds?: string[];  // includes primary + helper(s)
 
+  secondaryTechnicianId?: string;
+  secondaryTechnicianName?: string;
+
+  helperIds?: string[];
+  helperNames?: string[];
+
   internalNotes?: string;
 
   active: boolean;

@@ -23,9 +23,20 @@ type TechnicianOption = {
   role: AppUser["role"];
 };
 
-export default function ServiceTicketDetailPage({
-  params,
-}: ServiceTicketDetailPageProps) {
+type EmployeeProfileOption = {
+  id: string;
+  userUid?: string | null;
+  displayName?: string;
+  employmentStatus?: string; // current/inactive/seasonal
+  laborRole?: string; // technician/helper/apprentice/etc
+  defaultPairedTechUid?: string | null;
+};
+
+function normalizeRole(role?: string) {
+  return (role || "").trim().toLowerCase();
+}
+
+export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailPageProps) {
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -36,6 +47,10 @@ export default function ServiceTicketDetailPage({
   const [techniciansLoading, setTechniciansLoading] = useState(true);
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
   const [techniciansError, setTechniciansError] = useState("");
+
+  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
+  const [profilesError, setProfilesError] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -48,9 +63,19 @@ export default function ServiceTicketDetailPage({
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledStartTime, setScheduledStartTime] = useState("");
   const [scheduledEndTime, setScheduledEndTime] = useState("");
-  const [selectedTechnicianUid, setSelectedTechnicianUid] = useState("");
   const [internalNotes, setInternalNotes] = useState("");
 
+  // ✅ Assignment (real-world)
+  const [primaryTechnicianUid, setPrimaryTechnicianUid] = useState("");
+  const [secondaryTechnicianUid, setSecondaryTechnicianUid] = useState("");
+
+  // Helper/Apprentice selection: auto from pairing by default, but editable
+  const [helperUids, setHelperUids] = useState<string[]>([]);
+  const [useDefaultHelper, setUseDefaultHelper] = useState(true);
+
+  // -----------------------------
+  // Load Ticket
+  // -----------------------------
   useEffect(() => {
     async function loadTicket() {
       try {
@@ -87,23 +112,58 @@ export default function ServiceTicketDetailPage({
           scheduledDate: data.scheduledDate ?? undefined,
           scheduledStartTime: data.scheduledStartTime ?? undefined,
           scheduledEndTime: data.scheduledEndTime ?? undefined,
+
+          // legacy single-tech (keep)
           assignedTechnicianId: data.assignedTechnicianId ?? undefined,
           assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+
+          // multi-tech (optional)
+          primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+          assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
+            ? data.assignedTechnicianIds.filter(Boolean)
+            : undefined,
+
+          // secondary tech (optional)
+          secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+          secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+
+          // helpers (optional)
+          helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
+          helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
+
           internalNotes: data.internalNotes ?? undefined,
           active: data.active ?? true,
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
-        };
+        } as any;
 
         setTicket(item);
 
+        // Seed form values
         setStatus(item.status);
         setEstimatedDurationMinutes(String(item.estimatedDurationMinutes || 60));
         setScheduledDate(item.scheduledDate ?? "");
         setScheduledStartTime(item.scheduledStartTime ?? "");
         setScheduledEndTime(item.scheduledEndTime ?? "");
-        setSelectedTechnicianUid(item.assignedTechnicianId ?? "");
         setInternalNotes(item.internalNotes ?? "");
+
+        // Prefer new primary field, fallback to legacy
+        const seededPrimary =
+          (item as any).primaryTechnicianId ||
+          item.assignedTechnicianId ||
+          "";
+
+        setPrimaryTechnicianUid(seededPrimary);
+
+        // Secondary tech
+        setSecondaryTechnicianUid(((item as any).secondaryTechnicianId as string) || "");
+
+        // Helpers (if already stored)
+        const seededHelpers = Array.isArray((item as any).helperIds)
+          ? ((item as any).helperIds as string[])
+          : [];
+
+        setHelperUids(seededHelpers);
       } catch (err: unknown) {
         if (err instanceof Error) {
           setError(err.message);
@@ -118,6 +178,9 @@ export default function ServiceTicketDetailPage({
     loadTicket();
   }, [params]);
 
+  // -----------------------------
+  // Load Technicians (users)
+  // -----------------------------
   useEffect(() => {
     async function loadTechnicians() {
       try {
@@ -137,7 +200,6 @@ export default function ServiceTicketDetailPage({
           .filter((user) => user.role === "technician" && user.active);
 
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
-
         setTechnicians(items);
       } catch (err: unknown) {
         if (err instanceof Error) {
@@ -153,13 +215,147 @@ export default function ServiceTicketDetailPage({
     loadTechnicians();
   }, []);
 
-  const selectedTechnician = useMemo(() => {
-    return technicians.find((tech) => tech.uid === selectedTechnicianUid) ?? null;
-  }, [technicians, selectedTechnicianUid]);
+  // -----------------------------
+  // Load Employee Profiles (for helper pairing)
+  // -----------------------------
+  useEffect(() => {
+    async function loadProfiles() {
+      setProfilesLoading(true);
+      setProfilesError("");
+
+      try {
+        const snap = await getDocs(collection(db, "employeeProfiles"));
+        const items: EmployeeProfileOption[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            userUid: d.userUid ?? null,
+            displayName: d.displayName ?? undefined,
+            employmentStatus: d.employmentStatus ?? "current",
+            laborRole: d.laborRole ?? "other",
+            defaultPairedTechUid: d.defaultPairedTechUid ?? null,
+          };
+        });
+
+        setEmployeeProfiles(items);
+      } catch (err: unknown) {
+        setProfilesError(err instanceof Error ? err.message : "Failed to load employee profiles.");
+      } finally {
+        setProfilesLoading(false);
+      }
+    }
+
+    loadProfiles();
+  }, []);
+
+  const primaryTechnician = useMemo(() => {
+    return technicians.find((tech) => tech.uid === primaryTechnicianUid) ?? null;
+  }, [technicians, primaryTechnicianUid]);
+
+  const secondaryTechnician = useMemo(() => {
+    return technicians.find((tech) => tech.uid === secondaryTechnicianUid) ?? null;
+  }, [technicians, secondaryTechnicianUid]);
+
+  // Build helper/apprentice candidates
+  const helperCandidates = useMemo(() => {
+    const currentHelperUids = new Set<string>();
+
+    for (const p of employeeProfiles) {
+      const status = (p.employmentStatus || "current").toLowerCase();
+      if (status !== "current") continue;
+
+      const labor = normalizeRole(p.laborRole);
+      if (labor !== "helper" && labor !== "apprentice") continue;
+
+      const uid = String(p.userUid || "").trim();
+      if (uid) currentHelperUids.add(uid);
+    }
+
+    // Helpers are also "users" docs (we created them), but may not have role=technician.
+    // We'll pull their display names from employeeProfiles first, fallback to users collection not available here.
+    const candidates: { uid: string; name: string; laborRole: string }[] = [];
+
+    for (const p of employeeProfiles) {
+      const labor = normalizeRole(p.laborRole);
+      if (labor !== "helper" && labor !== "apprentice") continue;
+      const uid = String(p.userUid || "").trim();
+      if (!uid) continue;
+      if ((p.employmentStatus || "current").toLowerCase() !== "current") continue;
+
+      candidates.push({
+        uid,
+        name: p.displayName || "Unnamed",
+        laborRole: labor,
+      });
+    }
+
+    candidates.sort((a, b) => a.name.localeCompare(b.name));
+    return candidates;
+  }, [employeeProfiles]);
+
+  // Default helpers for primary tech
+  const defaultHelpersForPrimary = useMemo(() => {
+    const techUid = primaryTechnicianUid.trim();
+    if (!techUid) return [];
+
+    return employeeProfiles
+      .filter((p) => (p.employmentStatus || "current").toLowerCase() === "current")
+      .filter((p) => ["helper", "apprentice"].includes(normalizeRole(p.laborRole)))
+      .filter((p) => String(p.defaultPairedTechUid || "").trim() === techUid)
+      .map((p) => String(p.userUid || "").trim())
+      .filter(Boolean);
+  }, [employeeProfiles, primaryTechnicianUid]);
+
+  // When primary tech changes AND toggle enabled, auto-apply default helpers
+  useEffect(() => {
+    if (!useDefaultHelper) return;
+
+    const techUid = primaryTechnicianUid.trim();
+    if (!techUid) {
+      setHelperUids([]);
+      return;
+    }
+
+    const unique = Array.from(new Set(defaultHelpersForPrimary));
+    setHelperUids(unique);
+  }, [primaryTechnicianUid, defaultHelpersForPrimary, useDefaultHelper]);
+
+  const helperDisplayNames = useMemo(() => {
+    const profileMap = new Map<string, string>();
+    for (const p of employeeProfiles) {
+      const uid = String(p.userUid || "").trim();
+      if (!uid) continue;
+      if (p.displayName) profileMap.set(uid, p.displayName);
+    }
+    return helperUids.map((uid) => profileMap.get(uid) || uid);
+  }, [helperUids, employeeProfiles]);
+
+  const assignmentSummary = useMemo(() => {
+    const primary = primaryTechnician ? primaryTechnician.displayName : "Unassigned";
+    const secondary = secondaryTechnician ? secondaryTechnician.displayName : "";
+    const helpers = helperDisplayNames;
+
+    return {
+      primary,
+      secondary,
+      helpers,
+      hasSecondary: Boolean(secondaryTechnicianUid),
+      helperCount: helpers.length,
+    };
+  }, [primaryTechnician, secondaryTechnician, helperDisplayNames, secondaryTechnicianUid]);
+
+  function toggleHelper(uid: string) {
+    setUseDefaultHelper(false); // once manually edited, stop auto-overwriting
+    setHelperUids((prev) => {
+      if (prev.includes(uid)) {
+        return prev.filter((x) => x !== uid);
+      }
+      return [...prev, uid];
+    });
+  }
 
   async function handleSaveUpdates(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-
     if (!ticket) return;
 
     setSaveError("");
@@ -169,16 +365,41 @@ export default function ServiceTicketDetailPage({
     try {
       const nowIso = new Date().toISOString();
 
+      const primaryUid = primaryTechnicianUid.trim() || null;
+      const secondaryUid = secondaryTechnicianUid.trim() || null;
+
+      // Assigned team ids (for backwards compatibility with schedule duplication logic)
+      const teamIds: string[] = [];
+      if (primaryUid) teamIds.push(primaryUid);
+      if (secondaryUid && secondaryUid !== primaryUid) teamIds.push(secondaryUid);
+      for (const h of helperUids) {
+        if (h && !teamIds.includes(h)) teamIds.push(h);
+      }
+
+      const helperNames = helperDisplayNames;
+
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         status,
         estimatedDurationMinutes: Number(estimatedDurationMinutes),
         scheduledDate: scheduledDate || null,
         scheduledStartTime: scheduledStartTime || null,
         scheduledEndTime: scheduledEndTime || null,
-        assignedTechnicianId: selectedTechnician ? selectedTechnician.uid : null,
-        assignedTechnicianName: selectedTechnician
-          ? selectedTechnician.displayName
-          : null,
+
+        // Legacy single-tech fields remain the "primary technician"
+        assignedTechnicianId: primaryUid,
+        assignedTechnicianName: primaryUid ? primaryTechnician?.displayName || null : null,
+
+        // New fields (real)
+        primaryTechnicianId: primaryUid,
+        secondaryTechnicianId: secondaryUid,
+        secondaryTechnicianName: secondaryUid ? secondaryTechnician?.displayName || null : null,
+
+        helperIds: helperUids.length ? helperUids : null,
+        helperNames: helperUids.length ? helperNames : null,
+
+        // Interim team array for schedule dual-visibility (will be used by weekly schedule + future tech view)
+        assignedTechnicianIds: teamIds.length ? teamIds : null,
+
         internalNotes: internalNotes.trim() || null,
         updatedAt: nowIso,
       });
@@ -190,11 +411,22 @@ export default function ServiceTicketDetailPage({
         scheduledDate: scheduledDate || undefined,
         scheduledStartTime: scheduledStartTime || undefined,
         scheduledEndTime: scheduledEndTime || undefined,
-        assignedTechnicianId: selectedTechnician?.uid || undefined,
-        assignedTechnicianName: selectedTechnician?.displayName || undefined,
+
+        assignedTechnicianId: primaryUid || undefined,
+        assignedTechnicianName: primaryUid ? primaryTechnician?.displayName || undefined : undefined,
+
+        primaryTechnicianId: primaryUid || undefined,
+        secondaryTechnicianId: secondaryUid || undefined,
+        secondaryTechnicianName: secondaryUid ? secondaryTechnician?.displayName || undefined : undefined,
+
+        helperIds: helperUids.length ? helperUids : undefined,
+        helperNames: helperUids.length ? helperNames : undefined,
+
+        assignedTechnicianIds: teamIds.length ? teamIds : undefined,
+
         internalNotes: internalNotes.trim() || undefined,
         updatedAt: nowIso,
-      });
+      } as any);
 
       setSaveSuccess("Ticket updates saved successfully.");
     } catch (err: unknown) {
@@ -241,11 +473,12 @@ export default function ServiceTicketDetailPage({
     return `${datePart} • ${startPart} - ${endPart}`;
   }
 
+  const canEdit = appUser?.role === "admin" || appUser?.role === "dispatcher";
+
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
       <AppShell appUser={appUser}>
         {loading ? <p>Loading service ticket...</p> : null}
-
         {error ? <p style={{ color: "red" }}>{error}</p> : null}
 
         {!loading && !error && ticket ? (
@@ -259,12 +492,8 @@ export default function ServiceTicketDetailPage({
               }}
             >
               <div>
-                <h1 style={{ fontSize: "24px", fontWeight: 700 }}>
-                  {ticket.issueSummary}
-                </h1>
-                <p style={{ marginTop: "6px", color: "#666" }}>
-                  Ticket ID: {ticketId}
-                </p>
+                <h1 style={{ fontSize: "24px", fontWeight: 700 }}>{ticket.issueSummary}</h1>
+                <p style={{ marginTop: "6px", color: "#666" }}>Ticket ID: {ticketId}</p>
               </div>
 
               <Link
@@ -282,13 +511,7 @@ export default function ServiceTicketDetailPage({
               </Link>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
               <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
                 Customer
               </h2>
@@ -300,13 +523,7 @@ export default function ServiceTicketDetailPage({
               </p>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
               <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
                 Service Address
               </h2>
@@ -320,13 +537,7 @@ export default function ServiceTicketDetailPage({
               </p>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
               <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
                 Ticket Overview
               </h2>
@@ -345,13 +556,35 @@ export default function ServiceTicketDetailPage({
               <p>{ticket.issueDetails || "No additional issue details."}</p>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
+            {/* ✅ NEW: Assignment Snapshot (clear wording) */}
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
+              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
+                Assignment Snapshot
+              </h2>
+
+              <p>
+                <strong>Primary Technician:</strong> {assignmentSummary.primary}
+              </p>
+
+              <p>
+                <strong>Secondary Technician:</strong>{" "}
+                {assignmentSummary.hasSecondary ? assignmentSummary.secondary : "—"}
+              </p>
+
+              <p>
+                <strong>Helper/Apprentice:</strong>{" "}
+                {assignmentSummary.helperCount > 0
+                  ? assignmentSummary.helpers.join(", ")
+                  : "—"}
+              </p>
+
+              <p style={{ marginTop: "10px", fontSize: "12px", color: "#666" }}>
+                Note: Helper/apprentice is not a “second tech.” Secondary tech is optional and used only when two true technicians are assigned.
+              </p>
+            </div>
+
+            {/* ✅ Update Ticket (now includes primary/secondary + helpers) */}
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
               <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "12px" }}>
                 Update Ticket
               </h2>
@@ -359,6 +592,11 @@ export default function ServiceTicketDetailPage({
               {techniciansLoading ? <p>Loading technicians...</p> : null}
               {techniciansError ? (
                 <p style={{ color: "red", marginBottom: "12px" }}>{techniciansError}</p>
+              ) : null}
+
+              {profilesLoading ? <p>Loading employee profiles...</p> : null}
+              {profilesError ? (
+                <p style={{ color: "red", marginBottom: "12px" }}>{profilesError}</p>
               ) : null}
 
               <form
@@ -380,6 +618,7 @@ export default function ServiceTicketDetailPage({
                           | "cancelled"
                       )
                     }
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -404,6 +643,7 @@ export default function ServiceTicketDetailPage({
                     value={estimatedDurationMinutes}
                     onChange={(e) => setEstimatedDurationMinutes(e.target.value)}
                     required
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -419,6 +659,7 @@ export default function ServiceTicketDetailPage({
                     type="date"
                     value={scheduledDate}
                     onChange={(e) => setScheduledDate(e.target.value)}
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -434,6 +675,7 @@ export default function ServiceTicketDetailPage({
                     type="time"
                     value={scheduledStartTime}
                     onChange={(e) => setScheduledStartTime(e.target.value)}
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -449,6 +691,7 @@ export default function ServiceTicketDetailPage({
                     type="time"
                     value={scheduledEndTime}
                     onChange={(e) => setScheduledEndTime(e.target.value)}
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -458,11 +701,17 @@ export default function ServiceTicketDetailPage({
                   />
                 </div>
 
+                {/* ✅ Primary Tech */}
                 <div>
-                  <label>Assigned Technician</label>
+                  <label>Primary Technician</label>
                   <select
-                    value={selectedTechnicianUid}
-                    onChange={(e) => setSelectedTechnicianUid(e.target.value)}
+                    value={primaryTechnicianUid}
+                    onChange={(e) => {
+                      setPrimaryTechnicianUid(e.target.value);
+                      setSaveError("");
+                      setSaveSuccess("");
+                    }}
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -477,6 +726,95 @@ export default function ServiceTicketDetailPage({
                       </option>
                     ))}
                   </select>
+
+                  <p style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+                    Most tickets start as <strong>New</strong> with no assignment. Dispatch assigns later.
+                  </p>
+                </div>
+
+                {/* ✅ Secondary Tech (true 2nd tech, rare) */}
+                <div>
+                  <label>Secondary Technician (Optional)</label>
+                  <select
+                    value={secondaryTechnicianUid}
+                    onChange={(e) => setSecondaryTechnicianUid(e.target.value)}
+                    disabled={!canEdit || !primaryTechnicianUid}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "8px",
+                      marginTop: "4px",
+                    }}
+                  >
+                    <option value="">— None —</option>
+                    {technicians
+                      .filter((t) => t.uid !== primaryTechnicianUid)
+                      .map((tech) => (
+                        <option key={tech.uid} value={tech.uid}>
+                          {tech.displayName}
+                        </option>
+                      ))}
+                  </select>
+
+                  <p style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+                    Only use this if two actual technicians are assigned. Helpers/apprentices go below.
+                  </p>
+                </div>
+
+                {/* ✅ Helpers */}
+                <div style={{ borderTop: "1px solid #eee", paddingTop: "12px" }}>
+                  <label style={{ display: "block", fontWeight: 700 }}>Helper / Apprentice</label>
+
+                  <label style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
+                    <input
+                      type="checkbox"
+                      checked={useDefaultHelper}
+                      onChange={(e) => setUseDefaultHelper(e.target.checked)}
+                      disabled={!canEdit}
+                    />
+                    Use default helper pairing (recommended)
+                  </label>
+
+                  <div style={{ marginTop: "10px", display: "grid", gap: "8px" }}>
+                    {helperCandidates.length === 0 ? (
+                      <p style={{ fontSize: "12px", color: "#666" }}>
+                        No helper/apprentice profiles found. Set laborRole + pairing in Employee Profiles.
+                      </p>
+                    ) : (
+                      helperCandidates.map((h) => {
+                        const checked = helperUids.includes(h.uid);
+                        return (
+                          <label
+                            key={h.uid}
+                            style={{
+                              display: "flex",
+                              gap: "10px",
+                              alignItems: "center",
+                              border: "1px solid #eee",
+                              borderRadius: "10px",
+                              padding: "8px",
+                              background: "white",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleHelper(h.uid)}
+                              disabled={!canEdit}
+                            />
+                            <div style={{ fontSize: "13px" }}>
+                              <strong>{h.name}</strong>{" "}
+                              <span style={{ color: "#777" }}>({h.laborRole})</span>
+                            </div>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <p style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
+                    If you manually change helpers, we automatically turn off “use default pairing” so it won’t overwrite your selection.
+                  </p>
                 </div>
 
                 <div>
@@ -485,6 +823,7 @@ export default function ServiceTicketDetailPage({
                     value={internalNotes}
                     onChange={(e) => setInternalNotes(e.target.value)}
                     rows={4}
+                    disabled={!canEdit}
                     style={{
                       display: "block",
                       width: "100%",
@@ -499,7 +838,7 @@ export default function ServiceTicketDetailPage({
 
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || !canEdit}
                   style={{
                     padding: "10px 16px",
                     border: "1px solid #ccc",
@@ -510,37 +849,12 @@ export default function ServiceTicketDetailPage({
                     width: "fit-content",
                   }}
                 >
-                  {saving ? "Saving..." : "Save Ticket Updates"}
+                  {saving ? "Saving..." : canEdit ? "Save Ticket Updates" : "Read Only"}
                 </button>
               </form>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
-                Assignment Snapshot
-              </h2>
-              <p>
-                <strong>Assigned Technician:</strong>{" "}
-                {ticket.assignedTechnicianName || "Not assigned yet"}
-              </p>
-              <p>
-                <strong>Assigned Technician ID:</strong> {ticket.assignedTechnicianId || "—"}
-              </p>
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
               <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
                 System
               </h2>
