@@ -44,6 +44,7 @@ export default function AppShell({
     role === "admin" || role === "dispatcher" || role === "manager";
   const showWorkload =
     role === "admin" || role === "dispatcher" || role === "manager";
+
   const showTimeEntries =
     role === "admin" ||
     role === "manager" ||
@@ -51,6 +52,7 @@ export default function AppShell({
     role === "technician" ||
     role === "helper" ||
     role === "apprentice";
+
   const showWeeklyTimesheet =
     role === "admin" ||
     role === "manager" ||
@@ -58,8 +60,10 @@ export default function AppShell({
     role === "technician" ||
     role === "helper" ||
     role === "apprentice";
+
   const showTimesheetReview =
     role === "admin" || role === "manager" || role === "dispatcher";
+
   const showPTORequests =
     role === "admin" ||
     role === "manager" ||
@@ -67,6 +71,10 @@ export default function AppShell({
     role === "technician" ||
     role === "helper" ||
     role === "apprentice";
+
+  // ✅ New: My Day for field users (and admin for testing)
+  const showMyDay =
+    role === "technician" || role === "helper" || role === "apprentice" || role === "admin";
 
   return (
     <div style={{ minHeight: "100vh", display: "flex" }}>
@@ -100,6 +108,8 @@ export default function AppShell({
           }}
         >
           {showDashboard ? <Link href="/dashboard">Dashboard</Link> : null}
+          {showMyDay ? <Link href="/technician/my-day">My Day</Link> : null}
+
           {showDispatch ? <Link href="/dispatch">Dispatcher Board</Link> : null}
           {showSchedule ? <Link href="/schedule">Weekly Schedule</Link> : null}
           {showMonthlySchedule ? (
@@ -108,12 +118,15 @@ export default function AppShell({
           {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
           {showProjects ? <Link href="/projects">Projects</Link> : null}
           {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
+
           {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
           {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
           {showPTORequests ? <Link href="/pto-requests">PTO Requests</Link> : null}
           {showTimesheetReview ? <Link href="/timesheet-review">Timesheet Review</Link> : null}
+
           {showAdmin ? <Link href="/admin">Admin</Link> : null}
           {showTechnician ? <Link href="/technician">Technician</Link> : null}
+
           <Link href="/customers">Customers</Link>
           <Link href="/service-tickets">Service Tickets</Link>
         </nav>
