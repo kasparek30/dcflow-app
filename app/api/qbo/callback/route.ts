@@ -1,6 +1,21 @@
 // app/api/qbo/callback/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
+function getPublicBaseUrl(request: NextRequest): string {
+  // Preferred: explicit env var (best for hosted environments)
+  const envBase = process.env.APP_BASE_URL;
+  if (envBase && envBase.startsWith("http")) return envBase;
+
+  // Fallback: try forwarded headers (proxy-friendly)
+  const proto = request.headers.get("x-forwarded-proto") || "https";
+  const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+
+  if (host) return `${proto}://${host}`;
+
+  // Last resort
+  return "https://dcflow.app";
+}
+
 export async function GET(request: NextRequest) {
   try {
     const clientId = process.env.QBO_CLIENT_ID;
@@ -20,17 +35,21 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const baseUrl = getPublicBaseUrl(request);
+
     const searchParams = request.nextUrl.searchParams;
     const code = searchParams.get("code");
     const state = searchParams.get("state");
     const realmId = searchParams.get("realmId");
-    const error = searchParams.get("error");
+    const oauthError = searchParams.get("error");
 
-    if (error) {
+    if (oauthError) {
       return NextResponse.redirect(
         new URL(
-          `/settings/integrations/quickbooks?error=${encodeURIComponent(error)}`,
-          request.url
+          `/settings/integrations/quickbooks?error=${encodeURIComponent(
+            oauthError
+          )}`,
+          baseUrl
         )
       );
     }
@@ -39,7 +58,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(
         new URL(
           "/settings/integrations/quickbooks?error=Missing%20code%20or%20state",
-          request.url
+          baseUrl
         )
       );
     }
@@ -50,7 +69,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(
         new URL(
           "/settings/integrations/quickbooks?error=OAuth%20state%20mismatch",
-          request.url
+          baseUrl
         )
       );
     }
@@ -98,7 +117,7 @@ export async function GET(request: NextRequest) {
           `/settings/integrations/quickbooks?error=${encodeURIComponent(
             "Token exchange failed"
           )}`,
-          request.url
+          baseUrl
         )
       );
     }
@@ -125,45 +144,42 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(
         new URL(
           "/settings/integrations/quickbooks?error=Missing%20tokens%20from%20Intuit",
-          request.url
+          baseUrl
         )
       );
     }
 
     const connectedAt = new Date().toISOString();
+
     const redirectResponse = NextResponse.redirect(
-      new URL("/settings/integrations/quickbooks?success=1", request.url)
+      new URL("/settings/integrations/quickbooks?success=1", baseUrl)
     );
 
-    redirectResponse.cookies.set("dcflow_qbo_access_token", accessToken, {
+    // In production https, secure cookies should be true
+    const cookieBase = {
       httpOnly: true,
       secure: true,
-      sameSite: "lax",
+      sameSite: "lax" as const,
       path: "/",
+    };
+
+    redirectResponse.cookies.set("dcflow_qbo_access_token", accessToken, {
+      ...cookieBase,
       maxAge: expiresIn || 60 * 60,
     });
 
     redirectResponse.cookies.set("dcflow_qbo_refresh_token", refreshToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
+      ...cookieBase,
       maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
     });
 
     redirectResponse.cookies.set("dcflow_qbo_realm_id", realmId || "", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
+      ...cookieBase,
       maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
     });
 
     redirectResponse.cookies.set("dcflow_qbo_connected_at", connectedAt, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
+      ...cookieBase,
       maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
     });
 
@@ -171,31 +187,31 @@ export async function GET(request: NextRequest) {
       "dcflow_qbo_scopes",
       process.env.QBO_SCOPES || "com.intuit.quickbooks.accounting",
       {
-        httpOnly: true,
-        secure: true,
-        sameSite: "lax",
-        path: "/",
+        ...cookieBase,
         maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
       }
     );
 
+    // Clear one-time state cookie
     redirectResponse.cookies.set("dcflow_qbo_oauth_state", "", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
+      ...cookieBase,
       maxAge: 0,
     });
 
     return redirectResponse;
   } catch (err: unknown) {
+    const baseUrl =
+      process.env.APP_BASE_URL?.startsWith("http")
+        ? process.env.APP_BASE_URL
+        : "https://dcflow.app";
+
     const message =
       err instanceof Error ? err.message : "QuickBooks callback failed.";
 
     return NextResponse.redirect(
       new URL(
         `/settings/integrations/quickbooks?error=${encodeURIComponent(message)}`,
-        request.url
+        baseUrl
       )
     );
   }
