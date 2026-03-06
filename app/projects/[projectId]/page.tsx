@@ -131,18 +131,21 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     "not_started" | "scheduled" | "in_progress" | "complete"
   >("not_started");
   const [roughInScheduledDate, setRoughInScheduledDate] = useState("");
+  const [roughInScheduledEndDate, setRoughInScheduledEndDate] = useState("");
   const [roughInCompletedDate, setRoughInCompletedDate] = useState("");
 
   const [topOutVentStatus, setTopOutVentStatus] = useState<
     "not_started" | "scheduled" | "in_progress" | "complete"
   >("not_started");
   const [topOutVentScheduledDate, setTopOutVentScheduledDate] = useState("");
+  const [topOutVentScheduledEndDate, setTopOutVentScheduledEndDate] = useState("");
   const [topOutVentCompletedDate, setTopOutVentCompletedDate] = useState("");
 
   const [trimFinishStatus, setTrimFinishStatus] = useState<
     "not_started" | "scheduled" | "in_progress" | "complete"
   >("not_started");
   const [trimFinishScheduledDate, setTrimFinishScheduledDate] = useState("");
+  const [trimFinishScheduledEndDate, setTrimFinishScheduledEndDate] = useState("");
   const [trimFinishCompletedDate, setTrimFinishCompletedDate] = useState("");
 
   const [internalNotes, setInternalNotes] = useState("");
@@ -319,14 +322,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         // stage status/dates
         setRoughInStatus(item.roughIn.status);
         setRoughInScheduledDate(item.roughIn.scheduledDate ?? "");
+        setRoughInScheduledEndDate((item.roughIn as any).scheduledEndDate ?? "");
         setRoughInCompletedDate(item.roughIn.completedDate ?? "");
 
         setTopOutVentStatus(item.topOutVent.status);
         setTopOutVentScheduledDate(item.topOutVent.scheduledDate ?? "");
+        setTopOutVentScheduledEndDate((item.topOutVent as any).scheduledEndDate ?? "");
         setTopOutVentCompletedDate(item.topOutVent.completedDate ?? "");
 
         setTrimFinishStatus(item.trimFinish.status);
         setTrimFinishScheduledDate(item.trimFinish.scheduledDate ?? "");
+        setTrimFinishScheduledEndDate((item.trimFinish as any).scheduledEndDate ?? "");
         setTrimFinishCompletedDate(item.trimFinish.completedDate ?? "");
 
         setInternalNotes(item.internalNotes ?? "");
@@ -437,7 +443,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       helperUids: Array.from(new Set(computeDefaultHelpersForTech(techUid))),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roughInAssign.primaryUid, roughInAssign.overrideEnabled, roughInAssign.useDefaultHelper, employeeProfiles]);
+  }, [
+    roughInAssign.primaryUid,
+    roughInAssign.overrideEnabled,
+    roughInAssign.useDefaultHelper,
+    employeeProfiles,
+  ]);
 
   useEffect(() => {
     if (!topOutAssign.overrideEnabled || !topOutAssign.useDefaultHelper) return;
@@ -451,7 +462,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       helperUids: Array.from(new Set(computeDefaultHelpersForTech(techUid))),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topOutAssign.primaryUid, topOutAssign.overrideEnabled, topOutAssign.useDefaultHelper, employeeProfiles]);
+  }, [
+    topOutAssign.primaryUid,
+    topOutAssign.overrideEnabled,
+    topOutAssign.useDefaultHelper,
+    employeeProfiles,
+  ]);
 
   useEffect(() => {
     if (!trimAssign.overrideEnabled || !trimAssign.useDefaultHelper) return;
@@ -465,40 +481,57 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       helperUids: Array.from(new Set(computeDefaultHelpersForTech(techUid))),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trimAssign.primaryUid, trimAssign.overrideEnabled, trimAssign.useDefaultHelper, employeeProfiles]);
+  }, [
+    trimAssign.primaryUid,
+    trimAssign.overrideEnabled,
+    trimAssign.useDefaultHelper,
+    employeeProfiles,
+  ]);
 
   // -----------------------------
   // UI helpers
   // -----------------------------
   function toggleHelperForProject(uid: string) {
     setProjectUseDefaultHelper(false);
-    setProjectHelperUids((prev) => (prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]));
+    setProjectHelperUids((prev) =>
+      prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]
+    );
   }
 
   function toggleHelperForStage(stage: StageKey, uid: string) {
     if (stage === "roughIn") {
       setRoughInAssign((p) => {
-        const next = p.helperUids.includes(uid) ? p.helperUids.filter((x) => x !== uid) : [...p.helperUids, uid];
+        const next = p.helperUids.includes(uid)
+          ? p.helperUids.filter((x) => x !== uid)
+          : [...p.helperUids, uid];
         return { ...p, helperUids: next, useDefaultHelper: false };
       });
       return;
     }
     if (stage === "topOutVent") {
       setTopOutAssign((p) => {
-        const next = p.helperUids.includes(uid) ? p.helperUids.filter((x) => x !== uid) : [...p.helperUids, uid];
+        const next = p.helperUids.includes(uid)
+          ? p.helperUids.filter((x) => x !== uid)
+          : [...p.helperUids, uid];
         return { ...p, helperUids: next, useDefaultHelper: false };
       });
       return;
     }
     setTrimAssign((p) => {
-      const next = p.helperUids.includes(uid) ? p.helperUids.filter((x) => x !== uid) : [...p.helperUids, uid];
+      const next = p.helperUids.includes(uid)
+        ? p.helperUids.filter((x) => x !== uid)
+        : [...p.helperUids, uid];
       return { ...p, helperUids: next, useDefaultHelper: false };
     });
   }
 
   function getEffectiveCrewForStage(stageKey: StageKey): { primary: string; secondary: string; helpers: string[] } {
     const stageState =
-      stageKey === "roughIn" ? roughInAssign : stageKey === "topOutVent" ? topOutAssign : trimAssign;
+      stageKey === "roughIn"
+        ? roughInAssign
+        : stageKey === "topOutVent"
+          ? topOutAssign
+          : trimAssign;
 
     if (stageState.overrideEnabled) {
       return {
@@ -557,7 +590,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           helperNames: helpers.length ? names : undefined,
         };
 
-        // Normalize to avoid writing undefined into Firestore (we’ll convert below)
         return staffing;
       }
 
@@ -565,7 +597,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       const topStaff = buildStageStaffingPayload(topOutAssign);
       const trimStaff = buildStageStaffingPayload(trimAssign);
 
-      // Write to Firestore with nulls (no undefined)
       function staffingToFirestore(staff: StageStaffing | null) {
         if (!staff) return null;
         return {
@@ -582,6 +613,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         ...project.roughIn,
         status: roughInStatus,
         scheduledDate: roughInScheduledDate || null,
+        scheduledEndDate: roughInScheduledEndDate || null,
         completedDate: roughInCompletedDate || null,
         staffing: staffingToFirestore(roughStaff),
       };
@@ -590,6 +622,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         ...project.topOutVent,
         status: topOutVentStatus,
         scheduledDate: topOutVentScheduledDate || null,
+        scheduledEndDate: topOutVentScheduledEndDate || null,
         completedDate: topOutVentCompletedDate || null,
         staffing: staffingToFirestore(topStaff),
       };
@@ -598,6 +631,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         ...project.trimFinish,
         status: trimFinishStatus,
         scheduledDate: trimFinishScheduledDate || null,
+        scheduledEndDate: trimFinishScheduledEndDate || null,
         completedDate: trimFinishCompletedDate || null,
         staffing: staffingToFirestore(trimStaff),
       };
@@ -624,7 +658,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         updatedAt: nowIso,
       });
 
-      // Update local state (keep as TS-friendly)
       const nextProject: Project = {
         ...project,
         bidStatus,
@@ -643,6 +676,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           ...project.roughIn,
           status: roughInStatus,
           scheduledDate: roughInScheduledDate || undefined,
+          scheduledEndDate: roughInScheduledEndDate || undefined,
           completedDate: roughInCompletedDate || undefined,
           staffing: roughStaff || undefined,
         } as any,
@@ -651,6 +685,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           ...project.topOutVent,
           status: topOutVentStatus,
           scheduledDate: topOutVentScheduledDate || undefined,
+          scheduledEndDate: topOutVentScheduledEndDate || undefined,
           completedDate: topOutVentCompletedDate || undefined,
           staffing: topStaff || undefined,
         } as any,
@@ -659,6 +694,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           ...project.trimFinish,
           status: trimFinishStatus,
           scheduledDate: trimFinishScheduledDate || undefined,
+          scheduledEndDate: trimFinishScheduledEndDate || undefined,
           completedDate: trimFinishCompletedDate || undefined,
           staffing: trimStaff || undefined,
         } as any,
@@ -677,7 +713,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   }
 
   // Snapshot display
-  const projectHelperNames = useMemo(() => helperNamesFromUids(projectHelperUids), [projectHelperUids, employeeProfiles]);
+  const projectHelperNames = useMemo(
+    () => helperNamesFromUids(projectHelperUids),
+    [projectHelperUids, employeeProfiles]
+  );
   const projectPrimaryName = projectPrimaryUid ? findTechName(projectPrimaryUid) : "";
   const projectSecondaryName = projectSecondaryUid ? findTechName(projectSecondaryUid) : "";
 
@@ -703,7 +742,16 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       trimFinish: stageLine("trimFinish"),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectPrimaryUid, projectSecondaryUid, projectHelperUids, roughInAssign, topOutAssign, trimAssign, technicians, employeeProfiles]);
+  }, [
+    projectPrimaryUid,
+    projectSecondaryUid,
+    projectHelperUids,
+    roughInAssign,
+    topOutAssign,
+    trimAssign,
+    technicians,
+    employeeProfiles,
+  ]);
 
   return (
     <ProtectedPage fallbackTitle="Project Detail">
@@ -723,7 +771,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               }}
             >
               <div>
-                <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>{project.projectName}</h1>
+                <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>
+                  {project.projectName}
+                </h1>
                 <p style={{ marginTop: "6px", color: "#666" }}>Project ID: {projectId}</p>
               </div>
 
@@ -742,7 +792,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             </div>
 
             <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>Customer</h2>
+              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
+                Customer
+              </h2>
               <p>
                 <strong>Customer Name:</strong> {project.customerDisplayName}
               </p>
@@ -779,7 +831,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 <strong>Total Bid:</strong> ${project.totalBidAmount.toFixed(2)}
               </p>
 
-              <p style={{ marginTop: "10px", marginBottom: "6px", fontWeight: 700 }}>Default Crew</p>
+              <p style={{ marginTop: "10px", marginBottom: "6px", fontWeight: 700 }}>
+                Default Crew
+              </p>
               <p>
                 <strong>Primary Tech:</strong> {projectPrimaryName || "Unassigned"}
               </p>
@@ -813,6 +867,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 ] as const
               ).map(([key, label, stage]) => {
                 const sum = stageSummary[key];
+                const start = stage.scheduledDate || "";
+                const end = (stage as any).scheduledEndDate || "";
+                const scheduleText = start
+                  ? end && end !== start
+                    ? `${start} → ${end}`
+                    : start
+                  : "—";
+
                 return (
                   <div
                     key={key}
@@ -827,7 +889,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       <strong>Status:</strong> {formatStageStatus(stage.status)}
                     </p>
                     <p>
-                      <strong>Scheduled:</strong> {stage.scheduledDate || "—"}
+                      <strong>Scheduled:</strong> {scheduleText}
                     </p>
                     <p>
                       <strong>Completed:</strong> {stage.completedDate || "—"}
@@ -839,7 +901,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       <strong>Billed:</strong> {String(stage.billed)}
                     </p>
 
-                    <div style={{ marginTop: "10px", borderTop: "1px solid #eee", paddingTop: "10px" }}>
+                    <div
+                      style={{
+                        marginTop: "10px",
+                        borderTop: "1px solid #eee",
+                        paddingTop: "10px",
+                      }}
+                    >
                       <p style={{ margin: 0, fontWeight: 700, fontSize: "13px" }}>
                         {sum.overridden ? "Stage Crew (override)" : "Stage Crew (using default)"}
                       </p>
@@ -878,7 +946,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       setBidStatus(e.target.value as "draft" | "submitted" | "won" | "lost")
                     }
                     disabled={!canEdit}
-                    style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "8px",
+                      marginTop: "4px",
+                    }}
                   >
                     <option value="draft">Draft</option>
                     <option value="submitted">Submitted</option>
@@ -888,8 +961,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 </div>
 
                 {/* Project default crew */}
-                <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "#fafafa" }}>
-                  <h3 style={{ marginTop: 0, marginBottom: "12px" }}>Default Crew (Project-level)</h3>
+                <div
+                  style={{
+                    border: "1px solid #eee",
+                    borderRadius: "10px",
+                    padding: "12px",
+                    background: "#fafafa",
+                  }}
+                >
+                  <h3 style={{ marginTop: 0, marginBottom: "12px" }}>
+                    Default Crew (Project-level)
+                  </h3>
 
                   <div>
                     <label>Primary Technician</label>
@@ -897,7 +979,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       value={projectPrimaryUid}
                       onChange={(e) => setProjectPrimaryUid(e.target.value)}
                       disabled={!canEdit}
-                      style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        padding: "8px",
+                        marginTop: "4px",
+                      }}
                     >
                       <option value="">Unassigned</option>
                       {technicians.map((tech) => (
@@ -914,7 +1001,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       value={projectSecondaryUid}
                       onChange={(e) => setProjectSecondaryUid(e.target.value)}
                       disabled={!canEdit || !projectPrimaryUid}
-                      style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        padding: "8px",
+                        marginTop: "4px",
+                      }}
                     >
                       <option value="">— None —</option>
                       {technicians
@@ -927,10 +1019,25 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     </select>
                   </div>
 
-                  <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
-                    <label style={{ display: "block", fontWeight: 700 }}>Helper / Apprentice</label>
+                  <div
+                    style={{
+                      marginTop: "12px",
+                      borderTop: "1px solid #eee",
+                      paddingTop: "12px",
+                    }}
+                  >
+                    <label style={{ display: "block", fontWeight: 700 }}>
+                      Helper / Apprentice
+                    </label>
 
-                    <label style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
+                    <label
+                      style={{
+                        display: "flex",
+                        gap: "8px",
+                        alignItems: "center",
+                        marginTop: "8px",
+                      }}
+                    >
                       <input
                         type="checkbox"
                         checked={projectUseDefaultHelper}
@@ -943,7 +1050,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     <div style={{ marginTop: "10px", display: "grid", gap: "8px" }}>
                       {helperCandidates.length === 0 ? (
                         <p style={{ fontSize: "12px", color: "#666" }}>
-                          No helper/apprentice profiles found. Set laborRole + pairing in Employee Profiles.
+                          No helper/apprentice profiles found. Set laborRole + pairing in Employee
+                          Profiles.
                         </p>
                       ) : (
                         helperCandidates.map((h) => {
@@ -982,177 +1090,302 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 {/* Stage controls */}
                 {(
                   [
-                    ["roughIn", "Rough-In", roughInAssign, setRoughInAssign, roughInStatus, setRoughInStatus, roughInScheduledDate, setRoughInScheduledDate, roughInCompletedDate, setRoughInCompletedDate],
-                    ["topOutVent", "Top-Out / Vent", topOutAssign, setTopOutAssign, topOutVentStatus, setTopOutVentStatus, topOutVentScheduledDate, setTopOutVentScheduledDate, topOutVentCompletedDate, setTopOutVentCompletedDate],
-                    ["trimFinish", "Trim / Finish", trimAssign, setTrimAssign, trimFinishStatus, setTrimFinishStatus, trimFinishScheduledDate, setTrimFinishScheduledDate, trimFinishCompletedDate, setTrimFinishCompletedDate],
+                    [
+                      "roughIn",
+                      "Rough-In",
+                      roughInAssign,
+                      setRoughInAssign,
+                      roughInStatus,
+                      setRoughInStatus,
+                      roughInScheduledDate,
+                      setRoughInScheduledDate,
+                      roughInScheduledEndDate,
+                      setRoughInScheduledEndDate,
+                      roughInCompletedDate,
+                      setRoughInCompletedDate,
+                    ],
+                    [
+                      "topOutVent",
+                      "Top-Out / Vent",
+                      topOutAssign,
+                      setTopOutAssign,
+                      topOutVentStatus,
+                      setTopOutVentStatus,
+                      topOutVentScheduledDate,
+                      setTopOutVentScheduledDate,
+                      topOutVentScheduledEndDate,
+                      setTopOutVentScheduledEndDate,
+                      topOutVentCompletedDate,
+                      setTopOutVentCompletedDate,
+                    ],
+                    [
+                      "trimFinish",
+                      "Trim / Finish",
+                      trimAssign,
+                      setTrimAssign,
+                      trimFinishStatus,
+                      setTrimFinishStatus,
+                      trimFinishScheduledDate,
+                      setTrimFinishScheduledDate,
+                      trimFinishScheduledEndDate,
+                      setTrimFinishScheduledEndDate,
+                      trimFinishCompletedDate,
+                      setTrimFinishCompletedDate,
+                    ],
                   ] as const
-                ).map(([stageKey, label, stageState, setStageState, stageStatus, setStageStatus, sched, setSched, comp, setComp]) => (
-                  <div key={stageKey} style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px" }}>
-                    <h3 style={{ marginTop: 0, marginBottom: "12px" }}>{label}</h3>
+                ).map(
+                  ([
+                    stageKey,
+                    label,
+                    stageState,
+                    setStageState,
+                    stageStatus,
+                    setStageStatus,
+                    sched,
+                    setSched,
+                    schedEnd,
+                    setSchedEnd,
+                    comp,
+                    setComp,
+                  ]) => (
+                    <div
+                      key={stageKey}
+                      style={{
+                        border: "1px solid #eee",
+                        borderRadius: "10px",
+                        padding: "12px",
+                      }}
+                    >
+                      <h3 style={{ marginTop: 0, marginBottom: "12px" }}>{label}</h3>
 
-                    <label style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px" }}>
-                      <input
-                        type="checkbox"
-                        checked={stageState.overrideEnabled}
-                        onChange={(e) =>
-                          setStageState((p) => ({
-                            ...p,
-                            overrideEnabled: e.target.checked,
-                          }))
-                        }
-                        disabled={!canEdit}
-                      />
-                      Override staffing for this stage (otherwise uses project default crew)
-                    </label>
+                      <label
+                        style={{
+                          display: "flex",
+                          gap: "8px",
+                          alignItems: "center",
+                          marginBottom: "10px",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={stageState.overrideEnabled}
+                          onChange={(e) =>
+                            setStageState((p) => ({
+                              ...p,
+                              overrideEnabled: e.target.checked,
+                            }))
+                          }
+                          disabled={!canEdit}
+                        />
+                        Override staffing for this stage (otherwise uses project default crew)
+                      </label>
 
-                    {stageState.overrideEnabled ? (
-                      <div style={{ display: "grid", gap: "10px", marginBottom: "12px" }}>
-                        <div>
-                          <label>Stage Primary Technician</label>
-                          <select
-                            value={stageState.primaryUid}
-                            onChange={(e) =>
-                              setStageState((p) => ({
-                                ...p,
-                                primaryUid: e.target.value,
-                              }))
-                            }
-                            disabled={!canEdit}
-                            style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                          >
-                            <option value="">Unassigned</option>
-                            {technicians.map((tech) => (
-                              <option key={tech.uid} value={tech.uid}>
-                                {tech.displayName}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label>Stage Secondary Technician (Optional)</label>
-                          <select
-                            value={stageState.secondaryUid}
-                            onChange={(e) =>
-                              setStageState((p) => ({
-                                ...p,
-                                secondaryUid: e.target.value,
-                              }))
-                            }
-                            disabled={!canEdit || !stageState.primaryUid}
-                            style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                          >
-                            <option value="">— None —</option>
-                            {technicians
-                              .filter((t) => t.uid !== stageState.primaryUid)
-                              .map((tech) => (
+                      {stageState.overrideEnabled ? (
+                        <div style={{ display: "grid", gap: "10px", marginBottom: "12px" }}>
+                          <div>
+                            <label>Stage Primary Technician</label>
+                            <select
+                              value={stageState.primaryUid}
+                              onChange={(e) =>
+                                setStageState((p) => ({
+                                  ...p,
+                                  primaryUid: e.target.value,
+                                }))
+                              }
+                              disabled={!canEdit}
+                              style={{
+                                display: "block",
+                                width: "100%",
+                                padding: "8px",
+                                marginTop: "4px",
+                              }}
+                            >
+                              <option value="">Unassigned</option>
+                              {technicians.map((tech) => (
                                 <option key={tech.uid} value={tech.uid}>
                                   {tech.displayName}
                                 </option>
                               ))}
-                          </select>
-                        </div>
+                            </select>
+                          </div>
 
-                        <div style={{ borderTop: "1px solid #eee", paddingTop: "10px" }}>
-                          <label style={{ display: "block", fontWeight: 700 }}>Stage Helpers</label>
-
-                          <label style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
-                            <input
-                              type="checkbox"
-                              checked={stageState.useDefaultHelper}
+                          <div>
+                            <label>Stage Secondary Technician (Optional)</label>
+                            <select
+                              value={stageState.secondaryUid}
                               onChange={(e) =>
                                 setStageState((p) => ({
                                   ...p,
-                                  useDefaultHelper: e.target.checked,
+                                  secondaryUid: e.target.value,
                                 }))
                               }
-                              disabled={!canEdit}
-                            />
-                            Use default helper pairing (recommended)
-                          </label>
+                              disabled={!canEdit || !stageState.primaryUid}
+                              style={{
+                                display: "block",
+                                width: "100%",
+                                padding: "8px",
+                                marginTop: "4px",
+                              }}
+                            >
+                              <option value="">— None —</option>
+                              {technicians
+                                .filter((t) => t.uid !== stageState.primaryUid)
+                                .map((tech) => (
+                                  <option key={tech.uid} value={tech.uid}>
+                                    {tech.displayName}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
 
-                          <div style={{ marginTop: "10px", display: "grid", gap: "8px" }}>
-                            {helperCandidates.length === 0 ? (
-                              <p style={{ fontSize: "12px", color: "#666" }}>
-                                No helper/apprentice profiles found.
-                              </p>
-                            ) : (
-                              helperCandidates.map((h) => {
-                                const checked = stageState.helperUids.includes(h.uid);
-                                return (
-                                  <label
-                                    key={h.uid}
-                                    style={{
-                                      display: "flex",
-                                      gap: "10px",
-                                      alignItems: "center",
-                                      border: "1px solid #eee",
-                                      borderRadius: "10px",
-                                      padding: "8px",
-                                      background: "white",
-                                    }}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={() => toggleHelperForStage(stageKey, h.uid)}
-                                      disabled={!canEdit}
-                                    />
-                                    <div style={{ fontSize: "13px" }}>
-                                      <strong>{h.name}</strong>{" "}
-                                      <span style={{ color: "#777" }}>({h.laborRole})</span>
-                                    </div>
-                                  </label>
-                                );
-                              })
-                            )}
+                          <div style={{ borderTop: "1px solid #eee", paddingTop: "10px" }}>
+                            <label style={{ display: "block", fontWeight: 700 }}>
+                              Stage Helpers
+                            </label>
+
+                            <label
+                              style={{
+                                display: "flex",
+                                gap: "8px",
+                                alignItems: "center",
+                                marginTop: "8px",
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={stageState.useDefaultHelper}
+                                onChange={(e) =>
+                                  setStageState((p) => ({
+                                    ...p,
+                                    useDefaultHelper: e.target.checked,
+                                  }))
+                                }
+                                disabled={!canEdit}
+                              />
+                              Use default helper pairing (recommended)
+                            </label>
+
+                            <div style={{ marginTop: "10px", display: "grid", gap: "8px" }}>
+                              {helperCandidates.length === 0 ? (
+                                <p style={{ fontSize: "12px", color: "#666" }}>
+                                  No helper/apprentice profiles found.
+                                </p>
+                              ) : (
+                                helperCandidates.map((h) => {
+                                  const checked = stageState.helperUids.includes(h.uid);
+                                  return (
+                                    <label
+                                      key={h.uid}
+                                      style={{
+                                        display: "flex",
+                                        gap: "10px",
+                                        alignItems: "center",
+                                        border: "1px solid #eee",
+                                        borderRadius: "10px",
+                                        padding: "8px",
+                                        background: "white",
+                                      }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => toggleHelperForStage(stageKey as StageKey, h.uid)}
+                                        disabled={!canEdit}
+                                      />
+                                      <div style={{ fontSize: "13px" }}>
+                                        <strong>{h.name}</strong>{" "}
+                                        <span style={{ color: "#777" }}>({h.laborRole})</span>
+                                      </div>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
                           </div>
                         </div>
+                      ) : null}
+
+                      <div>
+                        <label>Status</label>
+                        <select
+                          value={stageStatus}
+                          onChange={(e) =>
+                            setStageStatus(
+                              e.target.value as
+                                | "not_started"
+                                | "scheduled"
+                                | "in_progress"
+                                | "complete"
+                            )
+                          }
+                          disabled={!canEdit}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: "8px",
+                            marginTop: "4px",
+                          }}
+                        >
+                          <option value="not_started">Not Started</option>
+                          <option value="scheduled">Scheduled</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="complete">Complete</option>
+                        </select>
                       </div>
-                    ) : null}
 
-                    <div>
-                      <label>Status</label>
-                      <select
-                        value={stageStatus}
-                        onChange={(e) =>
-                          setStageStatus(
-                            e.target.value as "not_started" | "scheduled" | "in_progress" | "complete"
-                          )
-                        }
-                        disabled={!canEdit}
-                        style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                      >
-                        <option value="not_started">Not Started</option>
-                        <option value="scheduled">Scheduled</option>
-                        <option value="in_progress">In Progress</option>
-                        <option value="complete">Complete</option>
-                      </select>
-                    </div>
+                      <div style={{ marginTop: "10px" }}>
+                        <label>Scheduled Start Date</label>
+                        <input
+                          type="date"
+                          value={sched}
+                          onChange={(e) => setSched(e.target.value)}
+                          disabled={!canEdit}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: "8px",
+                            marginTop: "4px",
+                          }}
+                        />
+                      </div>
 
-                    <div style={{ marginTop: "10px" }}>
-                      <label>Scheduled Date</label>
-                      <input
-                        type="date"
-                        value={sched}
-                        onChange={(e) => setSched(e.target.value)}
-                        disabled={!canEdit}
-                        style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                      />
-                    </div>
+                      <div style={{ marginTop: "10px" }}>
+                        <label>Scheduled End Date (optional)</label>
+                        <input
+                          type="date"
+                          value={schedEnd}
+                          onChange={(e) => setSchedEnd(e.target.value)}
+                          disabled={!canEdit}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: "8px",
+                            marginTop: "4px",
+                          }}
+                        />
+                        <p style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+                          Leave blank for a single-day stage. If set, this stage blocks the crew across the full date range.
+                        </p>
+                      </div>
 
-                    <div style={{ marginTop: "10px" }}>
-                      <label>Completed Date</label>
-                      <input
-                        type="date"
-                        value={comp}
-                        onChange={(e) => setComp(e.target.value)}
-                        disabled={!canEdit}
-                        style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                      />
+                      <div style={{ marginTop: "10px" }}>
+                        <label>Completed Date</label>
+                        <input
+                          type="date"
+                          value={comp}
+                          onChange={(e) => setComp(e.target.value)}
+                          disabled={!canEdit}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: "8px",
+                            marginTop: "4px",
+                          }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                )}
 
                 <div>
                   <label>Internal Notes</label>
@@ -1161,7 +1394,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     onChange={(e) => setInternalNotes(e.target.value)}
                     rows={4}
                     disabled={!canEdit}
-                    style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "8px",
+                      marginTop: "4px",
+                    }}
                   />
                 </div>
 
@@ -1187,7 +1425,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             </div>
 
             <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>System</h2>
+              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
+                System
+              </h2>
               <p>
                 <strong>Active:</strong> {String(project.active)}
               </p>
