@@ -23,6 +23,23 @@ type CustomerOption = {
   serviceAddresses: ServiceAddress[];
 };
 
+type DcflowUserOption = {
+  uid: string;
+  displayName: string;
+  email?: string;
+  role?: string;
+  active?: boolean;
+};
+
+type EmployeeProfileOption = {
+  id: string;
+  userUid?: string | null;
+  displayName?: string;
+  employmentStatus?: string;
+  laborRole?: string;
+  defaultPairedTechUid?: string | null;
+};
+
 function getCustomerSearchText(customer: CustomerOption) {
   return [
     customer.displayName,
@@ -48,6 +65,10 @@ function getCustomerSearchText(customer: CustomerOption) {
     .toLowerCase();
 }
 
+function normalizeRole(role?: string) {
+  return (role || "").trim().toLowerCase();
+}
+
 export default function NewServiceTicketPage() {
   const router = useRouter();
   const { appUser } = useAuthContext();
@@ -71,9 +92,18 @@ export default function NewServiceTicketPage() {
   const [scheduledEndTime, setScheduledEndTime] = useState("");
   const [internalNotes, setInternalNotes] = useState("");
 
+  // ✅ Multi-tech foundation inputs
+  const [staffLoading, setStaffLoading] = useState(true);
+  const [users, setUsers] = useState<DcflowUserOption[]>([]);
+  const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
+  const [primaryTechnicianId, setPrimaryTechnicianId] = useState(""); // uid
+  const [assignedTechnicianIds, setAssignedTechnicianIds] = useState<string[]>([]); // uid array
+  const [assignmentError, setAssignmentError] = useState("");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // Load Customers
   useEffect(() => {
     async function loadCustomers() {
       try {
@@ -128,6 +158,55 @@ export default function NewServiceTicketPage() {
     loadCustomers();
   }, []);
 
+  // Load Users + Employee Profiles (for default helper pairing)
+  useEffect(() => {
+    async function loadStaff() {
+      setStaffLoading(true);
+      setAssignmentError("");
+
+      try {
+        const usersSnap = await getDocs(collection(db, "users"));
+        const usersItems: DcflowUserOption[] = usersSnap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            uid: docSnap.id,
+            displayName: d.displayName ?? "",
+            email: d.email ?? undefined,
+            role: d.role ?? undefined,
+            active: d.active ?? true,
+          };
+        });
+
+        usersItems.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        setUsers(usersItems);
+
+        const profilesSnap = await getDocs(collection(db, "employeeProfiles"));
+        const profileItems: EmployeeProfileOption[] = profilesSnap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            userUid: d.userUid ?? null,
+            displayName: d.displayName ?? undefined,
+            employmentStatus: d.employmentStatus ?? "current",
+            laborRole: d.laborRole ?? "other",
+            defaultPairedTechUid: d.defaultPairedTechUid ?? null,
+          };
+        });
+
+        profileItems.sort((a, b) =>
+          String(a.displayName || "").localeCompare(String(b.displayName || ""))
+        );
+        setEmployeeProfiles(profileItems);
+      } catch (err: unknown) {
+        setAssignmentError(err instanceof Error ? err.message : "Failed to load staff roster.");
+      } finally {
+        setStaffLoading(false);
+      }
+    }
+
+    loadStaff();
+  }, []);
+
   const filteredCustomers = useMemo(() => {
     const search = customerSearch.trim().toLowerCase();
 
@@ -147,9 +226,7 @@ export default function NewServiceTicketPage() {
   const availableServiceAddresses = useMemo(() => {
     if (!selectedCustomer) return [];
 
-    const activeAddresses = selectedCustomer.serviceAddresses.filter(
-      (addr) => addr.active
-    );
+    const activeAddresses = selectedCustomer.serviceAddresses.filter((addr) => addr.active);
 
     if (activeAddresses.length === 0) {
       return [
@@ -194,6 +271,61 @@ export default function NewServiceTicketPage() {
     setSelectedServiceAddressId("");
   }
 
+  // ✅ Current technicians list: require a current employee profile + user.role === technician
+  const currentTechnicians = useMemo(() => {
+    const currentUids = new Set<string>();
+
+    for (const p of employeeProfiles) {
+      if ((p.employmentStatus || "current") !== "current") continue;
+      const uid = String(p.userUid || "").trim();
+      if (uid) currentUids.add(uid);
+    }
+
+    return users
+      .filter((u) => u.active !== false)
+      .filter((u) => currentUids.has(u.uid))
+      .filter((u) => normalizeRole(u.role) === "technician")
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [users, employeeProfiles]);
+
+  // ✅ Default helpers/apprentices for selected tech:
+  // helper profiles have defaultPairedTechUid == selected tech uid
+  const defaultHelperUids = useMemo(() => {
+    const techUid = primaryTechnicianId.trim();
+    if (!techUid) return [];
+
+    return employeeProfiles
+      .filter((p) => (p.employmentStatus || "current") === "current")
+      .filter((p) => ["helper", "apprentice"].includes(normalizeRole(p.laborRole)))
+      .filter((p) => String(p.defaultPairedTechUid || "").trim() === techUid)
+      .map((p) => String(p.userUid || "").trim())
+      .filter(Boolean);
+  }, [employeeProfiles, primaryTechnicianId]);
+
+  // Auto-set assigned team whenever primary tech changes
+  useEffect(() => {
+    const techUid = primaryTechnicianId.trim();
+    if (!techUid) {
+      setAssignedTechnicianIds([]);
+      return;
+    }
+
+    const combined = [techUid, ...defaultHelperUids];
+    const unique = Array.from(new Set(combined));
+    setAssignedTechnicianIds(unique);
+  }, [primaryTechnicianId, defaultHelperUids]);
+
+  const assignedTeamNames = useMemo(() => {
+    const map = new Map(users.map((u) => [u.uid, u.displayName]));
+    return assignedTechnicianIds.map((uid) => map.get(uid) || uid);
+  }, [assignedTechnicianIds, users]);
+
+  const primaryTechnician = useMemo(() => {
+    const uid = primaryTechnicianId.trim();
+    if (!uid) return null;
+    return users.find((u) => u.uid === uid) || null;
+  }, [primaryTechnicianId, users]);
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
@@ -211,18 +343,38 @@ export default function NewServiceTicketPage() {
       return;
     }
 
+    if (!issueSummary.trim()) {
+      setError("Please enter an issue summary.");
+      return;
+    }
+
+    // ✅ Require primary tech if status indicates it's scheduled/in progress
+    // For pilot purposes, you can also require always — but this keeps current flexibility.
+    // If you want ALWAYS required, tell me and we’ll lock it.
+    if ((status === "scheduled" || status === "in_progress") && !primaryTechnicianId.trim()) {
+      setError("Please select a primary technician for scheduled/in-progress tickets.");
+      return;
+    }
+
     setError("");
     setSaving(true);
 
     try {
       const nowIso = new Date().toISOString();
 
+      const primaryUid = primaryTechnicianId.trim() || null;
+      const teamUids =
+        primaryUid && assignedTechnicianIds.length
+          ? assignedTechnicianIds
+          : primaryUid
+            ? [primaryUid]
+            : [];
+
       const docRef = await addDoc(collection(db, "serviceTickets"), {
         customerId: selectedCustomer.id,
         customerDisplayName: selectedCustomer.displayName,
 
-        serviceAddressId:
-          chosenAddress.id === "billing-fallback" ? null : chosenAddress.id,
+        serviceAddressId: chosenAddress.id === "billing-fallback" ? null : chosenAddress.id,
         serviceAddressLabel: chosenAddress.label ?? null,
         serviceAddressLine1: chosenAddress.addressLine1,
         serviceAddressLine2: chosenAddress.addressLine2 ?? null,
@@ -240,8 +392,13 @@ export default function NewServiceTicketPage() {
         scheduledStartTime: scheduledStartTime || null,
         scheduledEndTime: scheduledEndTime || null,
 
-        assignedTechnicianId: null,
-        assignedTechnicianName: null,
+        // ✅ Keep legacy fields for existing UI compatibility
+        assignedTechnicianId: primaryUid,
+        assignedTechnicianName: primaryTechnician ? primaryTechnician.displayName : null,
+
+        // ✅ New multi-tech fields (additive)
+        primaryTechnicianId: primaryUid,
+        assignedTechnicianIds: teamUids.length ? teamUids : null,
 
         internalNotes: internalNotes.trim() || null,
 
@@ -331,32 +488,16 @@ export default function NewServiceTicketPage() {
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 700 }}>{selectedCustomer.displayName}</div>
-                      <div
-                        style={{
-                          marginTop: "4px",
-                          fontSize: "13px",
-                          color: "#555",
-                        }}
-                      >
+                      <div style={{ fontWeight: 700 }}>
+                        {selectedCustomer.displayName}
+                      </div>
+                      <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
                         {selectedCustomer.phonePrimary || "No phone"}
                       </div>
-                      <div
-                        style={{
-                          marginTop: "4px",
-                          fontSize: "13px",
-                          color: "#555",
-                        }}
-                      >
+                      <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
                         {selectedCustomer.billingAddressLine1}
                       </div>
-                      <div
-                        style={{
-                          marginTop: "4px",
-                          fontSize: "13px",
-                          color: "#555",
-                        }}
-                      >
+                      <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
                         {selectedCustomer.billingCity}, {selectedCustomer.billingState}{" "}
                         {selectedCustomer.billingPostalCode}
                       </div>
@@ -378,13 +519,7 @@ export default function NewServiceTicketPage() {
                   </div>
                 </div>
               ) : (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    display: "grid",
-                    gap: "8px",
-                  }}
-                >
+                <div style={{ marginTop: "12px", display: "grid", gap: "8px" }}>
                   {filteredCustomers.length === 0 ? (
                     <div
                       style={{
@@ -416,31 +551,13 @@ export default function NewServiceTicketPage() {
                         }}
                       >
                         <div style={{ fontWeight: 700 }}>{customer.displayName}</div>
-                        <div
-                          style={{
-                            marginTop: "4px",
-                            fontSize: "13px",
-                            color: "#555",
-                          }}
-                        >
+                        <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
                           {customer.phonePrimary || "No phone"}
                         </div>
-                        <div
-                          style={{
-                            marginTop: "4px",
-                            fontSize: "13px",
-                            color: "#555",
-                          }}
-                        >
+                        <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
                           {customer.billingAddressLine1}
                         </div>
-                        <div
-                          style={{
-                            marginTop: "4px",
-                            fontSize: "13px",
-                            color: "#555",
-                          }}
-                        >
+                        <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
                           {customer.billingCity}, {customer.billingState}{" "}
                           {customer.billingPostalCode}
                         </div>
@@ -466,9 +583,7 @@ export default function NewServiceTicketPage() {
                 }}
               >
                 <option value="">
-                  {selectedCustomer
-                    ? "Select a service address"
-                    : "Select a customer first"}
+                  {selectedCustomer ? "Select a service address" : "Select a customer first"}
                 </option>
                 {availableServiceAddresses.map((addr) => (
                   <option key={addr.id} value={addr.id}>
@@ -478,6 +593,57 @@ export default function NewServiceTicketPage() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            {/* ✅ NEW: Assignment section (multi-tech foundation) */}
+            <div
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: "12px",
+                padding: "16px",
+                background: "#fafafa",
+              }}
+            >
+              <h2 style={{ fontSize: "18px", fontWeight: 700, marginTop: 0 }}>
+                Assignment (Pilot: Tech + Helper)
+              </h2>
+
+              {staffLoading ? <p>Loading employee roster...</p> : null}
+              {assignmentError ? <p style={{ color: "red" }}>{assignmentError}</p> : null}
+
+              <div style={{ marginTop: "10px" }}>
+                <label>Primary Technician</label>
+                <select
+                  value={primaryTechnicianId}
+                  onChange={(e) => {
+                    setPrimaryTechnicianId(e.target.value);
+                    setError("");
+                  }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    padding: "8px",
+                    marginTop: "4px",
+                  }}
+                >
+                  <option value="">— Not assigned yet —</option>
+                  {currentTechnicians.map((t) => (
+                    <option key={t.uid} value={t.uid}>
+                      {t.displayName} {t.email ? `— ${t.email}` : ""}
+                    </option>
+                  ))}
+                </select>
+
+                <div style={{ marginTop: "8px", fontSize: "13px", color: "#555" }}>
+                  <strong>Assigned Team:</strong>{" "}
+                  {assignedTeamNames.length ? assignedTeamNames.join(", ") : "—"}
+                </div>
+
+                <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+                  Helpers/apprentices are auto-added based on Employee Profiles pairing
+                  (helper.defaultPairedTechUid = technician UID).
+                </div>
+              </div>
             </div>
 
             <div>
