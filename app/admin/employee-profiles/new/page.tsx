@@ -1,4 +1,3 @@
-// app/admin/employee-profiles/new/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -8,10 +7,7 @@ import AppShell from "../../../../components/AppShell";
 import ProtectedPage from "../../../../components/ProtectedPage";
 import { useAuthContext } from "../../../../src/context/auth-context";
 import { db } from "../../../../src/lib/firebase";
-import type {
-  EmploymentStatus,
-  LaborRole,
-} from "../../../../src/types/employee-profile";
+import type { EmploymentStatus, LaborRole } from "../../../../src/types/employee-profile";
 
 type DcflowUser = {
   uid: string;
@@ -33,6 +29,24 @@ const laborRoles: LaborRole[] = [
 ];
 
 const employmentStatuses: EmploymentStatus[] = ["current", "inactive", "seasonal"];
+
+// Removes any undefined values (Firestore rejects undefined)
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(stripUndefinedDeep) as unknown as T;
+  }
+
+  if (value && typeof value === "object") {
+    const out: any = {};
+    for (const [k, v] of Object.entries(value as any)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefinedDeep(v);
+    }
+    return out;
+  }
+
+  return value;
+}
 
 export default function NewEmployeeProfilePage() {
   const { appUser } = useAuthContext();
@@ -91,15 +105,13 @@ export default function NewEmployeeProfilePage() {
   }, []);
 
   useEffect(() => {
-    // Auto-fill name/email when selecting a user (only if blank)
+    // Auto-fill from selected user (only if blank)
     if (!selectedUser) return;
-
     if (!displayName) setDisplayName(selectedUser.displayName || "");
     if (!email) setEmail(selectedUser.email || "");
   }, [selectedUser, displayName, email]);
 
   const techUsers = useMemo(() => {
-    // For pairing helpers/apprentices with a technician.
     return users.filter(
       (u) =>
         (u.role || "").toLowerCase() === "technician" ||
@@ -116,46 +128,37 @@ export default function NewEmployeeProfilePage() {
       const nowIso = new Date().toISOString();
 
       const displayNameClean = displayName.trim();
-      const emailClean = email.trim();
-      const phoneClean = phone.trim();
-      const notesClean = notes.trim();
-      const selectedUidClean = selectedUid.trim();
-      const pairedTechClean = defaultPairedTechUid.trim();
-
       if (!displayNameClean) {
         setError("Display name is required.");
         setSaving(false);
         return;
       }
 
-      // IMPORTANT: never send undefined to Firestore — use null or omit the field.
-      const payload = {
+      const selectedUidClean = selectedUid.trim();
+      const emailClean = email.trim();
+      const phoneClean = phone.trim();
+      const pairedTechClean = defaultPairedTechUid.trim();
+      const notesClean = notes.trim();
+
+      // IMPORTANT: Use null (not undefined) for optional Firestore fields
+      const payload = stripUndefinedDeep({
         userUid: selectedUidClean ? selectedUidClean : null,
         displayName: displayNameClean,
         email: emailClean ? emailClean : null,
         phone: phoneClean ? phoneClean : null,
-
         employmentStatus,
         laborRole,
-
         defaultPairedTechUid: pairedTechClean ? pairedTechClean : null,
-
-        // Future QuickBooks link fields
         qboEmployeeId: null,
-
         notes: notesClean ? notesClean : null,
-
         createdAt: nowIso,
         updatedAt: nowIso,
-      };
+      });
 
       const ref = await addDoc(collection(db, "employeeProfiles"), payload);
-
       window.location.href = `/admin/employee-profiles/${ref.id}`;
     } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Failed to create employee profile."
-      );
+      setError(err instanceof Error ? err.message : "Failed to create employee profile.");
     } finally {
       setSaving(false);
     }
@@ -200,37 +203,16 @@ export default function NewEmployeeProfilePage() {
             onSubmit={handleCreate}
             style={{ maxWidth: "860px", display: "grid", gap: "12px" }}
           >
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "white",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
               <h2 style={{ marginTop: 0 }}>Link to DCFlow User (optional)</h2>
-              <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-                Since you already created employee users in Admin → Users, you can link this profile to a login user.
-              </p>
 
-              <label
-                style={{
-                  display: "block",
-                  fontWeight: 800,
-                  marginBottom: "6px",
-                }}
-              >
+              <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
                 Select User
               </label>
               <select
                 value={selectedUid}
                 onChange={(e) => setSelectedUid(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  borderRadius: "10px",
-                  border: "1px solid #ccc",
-                }}
+                style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
               >
                 <option value="">— No user linked —</option>
                 {users.map((u) => (
@@ -241,135 +223,66 @@ export default function NewEmployeeProfilePage() {
               </select>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "white",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
               <h2 style={{ marginTop: 0 }}>Profile</h2>
 
-              <label
-                style={{
-                  display: "block",
-                  fontWeight: 800,
-                  marginBottom: "6px",
-                }}
-              >
+              <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
                 Display Name *
               </label>
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  borderRadius: "10px",
-                  border: "1px solid #ccc",
-                }}
-                placeholder="Employee name"
+                style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
                 required
               />
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "10px",
-                  marginTop: "12px",
-                }}
-              >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "12px" }}>
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontWeight: 800,
-                      marginBottom: "6px",
-                    }}
-                  >
-                    Email
-                  </label>
+                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Email</label>
                   <input
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                    }}
-                    placeholder="optional"
+                    style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
                   />
                 </div>
 
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontWeight: 800,
-                      marginBottom: "6px",
-                    }}
-                  >
-                    Phone
-                  </label>
+                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Phone</label>
                   <input
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                    }}
-                    placeholder="optional"
+                    style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
                   />
                 </div>
               </div>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "white",
-              }}
-            >
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
               <h2 style={{ marginTop: 0 }}>Employment</h2>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
-                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                    Employment Status
-                  </label>
+                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Employment Status</label>
                   <select
                     value={employmentStatus}
                     onChange={(e) => setEmploymentStatus(e.target.value as EmploymentStatus)}
                     style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
                   >
                     {employmentStatuses.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
+                      <option key={s} value={s}>{s}</option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                    Labor Role
-                  </label>
+                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Labor Role</label>
                   <select
                     value={laborRole}
                     onChange={(e) => setLaborRole(e.target.value as LaborRole)}
                     style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
                   >
                     {laborRoles.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
+                      <option key={r} value={r}>{r}</option>
                     ))}
                   </select>
                 </div>
@@ -391,21 +304,15 @@ export default function NewEmployeeProfilePage() {
                     </option>
                   ))}
                 </select>
-                <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-                  Leave blank for technicians/admins.
-                </p>
               </div>
 
               <div style={{ marginTop: "12px" }}>
-                <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                  Notes
-                </label>
+                <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Notes</label>
                 <textarea
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   rows={3}
                   style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                  placeholder="optional"
                 />
               </div>
             </div>
