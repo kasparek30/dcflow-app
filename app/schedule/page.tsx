@@ -18,38 +18,26 @@ type DayBucket = {
   dayIndex: number;
 };
 
-type ScheduleItem =
-  | {
-      kind: "service_ticket";
-      id: string;
-      date: string;
-      sortTime: string;
-      title: string;
-      subtitle: string;
-      location: string;
-      tech: string;
-      status: string;
-      href: string;
-      timeText: string;
+type ScheduleItem = {
+  kind: "service_ticket" | "project_stage";
+  id: string;
+  date: string;
+  sortTime: string;
+  title: string;
+  subtitle: string;
+  location: string;
 
-      // ✅ NEW: show multi-tech team
-      teamText?: string;
-    }
-  | {
-      kind: "project_stage";
-      id: string;
-      date: string;
-      sortTime: string;
-      title: string;
-      subtitle: string;
-      location: string;
-      tech: string;
-      status: string;
-      href: string;
-      timeText: string;
+  // Display strings
+  tech: string;
 
-      teamText?: string;
-    };
+  // ✅ Optional extras (safe for both kinds)
+  helperText?: string;
+  secondaryTechText?: string;
+
+  status: string;
+  href: string;
+  timeText: string;
+};
 
 function formatDateToIsoLocal(date: Date) {
   const year = date.getFullYear();
@@ -187,11 +175,16 @@ export default function WeeklySchedulePage() {
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
 
-            // ✅ NEW multi-tech fields (optional, safe)
             primaryTechnicianId: data.primaryTechnicianId ?? undefined,
             assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
               ? data.assignedTechnicianIds.filter(Boolean)
               : undefined,
+
+            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+
+            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
+            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
 
             internalNotes: data.internalNotes ?? undefined,
             active: data.active ?? true,
@@ -246,11 +239,7 @@ export default function WeeklySchedulePage() {
         setTickets(ticketItems);
         setProjects(projectItems);
       } catch (err: unknown) {
-        if (err instanceof Error) {
-          setError(err.message);
-        } else {
-          setError("Failed to load weekly schedule.");
-        }
+        setError(err instanceof Error ? err.message : "Failed to load weekly schedule.");
       } finally {
         setLoading(false);
       }
@@ -266,10 +255,7 @@ export default function WeeklySchedulePage() {
     return shifted;
   }, [weekOffset]);
 
-  const allWeekDays = useMemo(
-    () => buildWeekDays(currentWeekBaseDate),
-    [currentWeekBaseDate]
-  );
+  const allWeekDays = useMemo(() => buildWeekDays(currentWeekBaseDate), [currentWeekBaseDate]);
 
   const visibleWeekDays = useMemo(() => {
     if (showWeekends) return allWeekDays;
@@ -281,68 +267,48 @@ export default function WeeklySchedulePage() {
 
   const scheduledItemsByDay = useMemo(() => {
     const result: Record<string, ScheduleItem[]> = {};
+    for (const day of allWeekDays) result[day.isoDate] = [];
 
-    for (const day of allWeekDays) {
-      result[day.isoDate] = [];
-    }
-
-    // ✅ Service Tickets (multi-tech aware)
+    // ✅ Tickets: show ONCE per day, but with proper staffing text
     for (const ticket of tickets) {
       if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
 
-      // Determine team member ids: prefer new array, fallback to legacy single tech
-      const teamIds =
-        Array.isArray(ticket.assignedTechnicianIds) && ticket.assignedTechnicianIds.length > 0
-          ? ticket.assignedTechnicianIds
-          : ticket.assignedTechnicianId
-            ? [ticket.assignedTechnicianId]
-            : [];
-
-      // Determine display labels
       const primaryName = ticket.assignedTechnicianName || "Unassigned";
-      const teamText =
-        teamIds.length > 1 ? `Team: ${teamIds.length} techs` : undefined;
+      const helperNames = Array.isArray(ticket.helperNames) ? ticket.helperNames : [];
+      const secondaryName = ticket.secondaryTechnicianName || "";
 
-      // Add ONE item per team member so it shows up on both schedules (tech + helper).
-      // We suffix the id so React keys stay unique.
-      const occurrences = teamIds.length > 0 ? teamIds : ["unassigned"];
+      const helperText =
+        helperNames.length > 0
+          ? helperNames.length === 1
+            ? `Helper: ${helperNames[0]}`
+            : `Helpers: ${helperNames.join(", ")}`
+          : undefined;
 
-      for (const memberId of occurrences) {
-        result[ticket.scheduledDate].push({
-          kind: "service_ticket",
-          id: `${ticket.id}-${memberId}`,
-          date: ticket.scheduledDate,
-          sortTime: ticket.scheduledStartTime || "99:99",
-          title: ticket.issueSummary,
-          subtitle: ticket.customerDisplayName,
-          location: ticket.serviceAddressLine1,
-          tech: primaryName,
-          status: formatStatusLabel(ticket.status),
-          href: `/service-tickets/${ticket.id}`,
-          timeText: `${ticket.scheduledStartTime || "—"} - ${ticket.scheduledEndTime || "—"}`,
-          teamText,
-        });
-      }
+      const secondaryTechText = secondaryName ? `2nd Tech: ${secondaryName}` : undefined;
+
+      result[ticket.scheduledDate].push({
+        kind: "service_ticket",
+        id: ticket.id,
+        date: ticket.scheduledDate,
+        sortTime: ticket.scheduledStartTime || "99:99",
+        title: ticket.issueSummary,
+        subtitle: ticket.customerDisplayName,
+        location: ticket.serviceAddressLine1,
+        tech: primaryName,
+        helperText,
+        secondaryTechText,
+        status: formatStatusLabel(ticket.status),
+        href: `/service-tickets/${ticket.id}`,
+        timeText: `${ticket.scheduledStartTime || "—"} - ${ticket.scheduledEndTime || "—"}`,
+      });
     }
 
-    // Projects (unchanged for now)
+    // Projects unchanged
     for (const project of projects) {
       const stageEntries = [
-        {
-          stageKey: "roughIn",
-          label: "Rough-In",
-          stage: project.roughIn,
-        },
-        {
-          stageKey: "topOutVent",
-          label: "Top-Out / Vent",
-          stage: project.topOutVent,
-        },
-        {
-          stageKey: "trimFinish",
-          label: "Trim / Finish",
-          stage: project.trimFinish,
-        },
+        { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
+        { stageKey: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
+        { stageKey: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
       ] as const;
 
       for (const entry of stageEntries) {
@@ -382,14 +348,18 @@ export default function WeeklySchedulePage() {
     const ticketItems: ScheduleItem[] = tickets
       .filter((ticket) => !ticket.scheduledDate)
       .map((ticket) => {
-        const teamIds =
-          Array.isArray(ticket.assignedTechnicianIds) && ticket.assignedTechnicianIds.length > 0
-            ? ticket.assignedTechnicianIds
-            : ticket.assignedTechnicianId
-              ? [ticket.assignedTechnicianId]
-              : [];
+        const primaryName = ticket.assignedTechnicianName || "Unassigned";
+        const helperNames = Array.isArray(ticket.helperNames) ? ticket.helperNames : [];
+        const secondaryName = ticket.secondaryTechnicianName || "";
 
-        const teamText = teamIds.length > 1 ? `Team: ${teamIds.length} techs` : undefined;
+        const helperText =
+          helperNames.length > 0
+            ? helperNames.length === 1
+              ? `Helper: ${helperNames[0]}`
+              : `Helpers: ${helperNames.join(", ")}`
+            : undefined;
+
+        const secondaryTechText = secondaryName ? `2nd Tech: ${secondaryName}` : undefined;
 
         return {
           kind: "service_ticket",
@@ -399,11 +369,12 @@ export default function WeeklySchedulePage() {
           title: ticket.issueSummary,
           subtitle: ticket.customerDisplayName,
           location: ticket.serviceAddressLine1,
-          tech: ticket.assignedTechnicianName || "Unassigned",
+          tech: primaryName,
+          helperText,
+          secondaryTechText,
           status: formatStatusLabel(ticket.status),
           href: `/service-tickets/${ticket.id}`,
           timeText: "Unscheduled",
-          teamText,
         };
       });
 
@@ -411,21 +382,9 @@ export default function WeeklySchedulePage() {
 
     for (const project of projects) {
       const stageEntries = [
-        {
-          stageKey: "roughIn",
-          label: "Rough-In",
-          stage: project.roughIn,
-        },
-        {
-          stageKey: "topOutVent",
-          label: "Top-Out / Vent",
-          stage: project.topOutVent,
-        },
-        {
-          stageKey: "trimFinish",
-          label: "Trim / Finish",
-          stage: project.trimFinish,
-        },
+        { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
+        { stageKey: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
+        { stageKey: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
       ] as const;
 
       for (const entry of stageEntries) {
@@ -637,9 +596,15 @@ export default function WeeklySchedulePage() {
                               Tech: {item.tech}
                             </div>
 
-                            {item.teamText ? (
+                            {item.helperText ? (
                               <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                {item.teamText}
+                                {item.helperText}
+                              </div>
+                            ) : null}
+
+                            {item.secondaryTechText ? (
+                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                                {item.secondaryTechText}
                               </div>
                             ) : null}
 
@@ -703,9 +668,15 @@ export default function WeeklySchedulePage() {
                         Tech: {item.tech}
                       </div>
 
-                      {item.teamText ? (
+                      {item.helperText ? (
                         <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                          {item.teamText}
+                          {item.helperText}
+                        </div>
+                      ) : null}
+
+                      {item.secondaryTechText ? (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                          {item.secondaryTechText}
                         </div>
                       ) : null}
 
