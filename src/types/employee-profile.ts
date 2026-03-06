@@ -28,8 +28,11 @@ export type EmployeeProfile = {
   // Default pairing (for helpers/apprentices)
   defaultPairedTechUid?: string;
 
-  // Future QuickBooks link
+  // ✅ QuickBooks link (v1)
   qboEmployeeId?: string;
+  qboEmployeeDisplayName?: string;
+  qboEmployeeHiredDate?: string; // YYYY-MM-DD
+  ptoEligibilityDate?: string;   // YYYY-MM-DD (HiredDate + 365 by default)
 
   notes?: string;
 
