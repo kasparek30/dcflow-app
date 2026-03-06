@@ -27,10 +27,8 @@ type ScheduleItem = {
   subtitle: string;
   location: string;
 
-  // Display strings
   tech: string;
 
-  // ✅ Optional extras (safe for both kinds)
   helperText?: string;
   secondaryTechText?: string;
 
@@ -196,6 +194,22 @@ export default function WeeklySchedulePage() {
         const projectItems: Project[] = projectSnap.docs.map((docSnap) => {
           const data = docSnap.data();
 
+          // NOTE: We read optional staffing fields if present.
+          // If your Project type doesn't include these yet, it's fine — we treat them as any.
+          const secondaryTechnicianName = data.secondaryTechnicianName ?? "";
+          const helperNames = Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : [];
+
+          const helperText =
+            helperNames.length > 0
+              ? helperNames.length === 1
+                ? `Helper: ${helperNames[0]}`
+                : `Helpers: ${helperNames.join(", ")}`
+              : undefined;
+
+          const secondaryTechText = secondaryTechnicianName
+            ? `2nd Tech: ${secondaryTechnicianName}`
+            : undefined;
+
           return {
             id: docSnap.id,
             customerId: data.customerId ?? "",
@@ -212,28 +226,22 @@ export default function WeeklySchedulePage() {
             description: data.description ?? undefined,
             bidStatus: data.bidStatus ?? "draft",
             totalBidAmount: data.totalBidAmount ?? 0,
-            roughIn: data.roughIn ?? {
-              status: "not_started",
-              billed: false,
-              billedAmount: 0,
-            },
-            topOutVent: data.topOutVent ?? {
-              status: "not_started",
-              billed: false,
-              billedAmount: 0,
-            },
-            trimFinish: data.trimFinish ?? {
-              status: "not_started",
-              billed: false,
-              billedAmount: 0,
-            },
+            roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
+            topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
+            trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
+
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+
+            // attach optional display-only fields (safe)
+            helperText,
+            secondaryTechText,
+
             internalNotes: data.internalNotes ?? undefined,
             active: data.active ?? true,
             createdAt: data.createdAt ?? undefined,
             updatedAt: data.updatedAt ?? undefined,
-          };
+          } as any;
         });
 
         setTickets(ticketItems);
@@ -269,7 +277,6 @@ export default function WeeklySchedulePage() {
     const result: Record<string, ScheduleItem[]> = {};
     for (const day of allWeekDays) result[day.isoDate] = [];
 
-    // ✅ Tickets: show ONCE per day, but with proper staffing text
     for (const ticket of tickets) {
       if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
 
@@ -303,7 +310,6 @@ export default function WeeklySchedulePage() {
       });
     }
 
-    // Projects unchanged
     for (const project of projects) {
       const stageEntries = [
         { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
@@ -324,6 +330,8 @@ export default function WeeklySchedulePage() {
           subtitle: project.customerDisplayName,
           location: project.serviceAddressLine1,
           tech: project.assignedTechnicianName || "Unassigned",
+          helperText: (project as any).helperText,
+          secondaryTechText: (project as any).secondaryTechText,
           status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
             project.bidStatus
           )}`,
@@ -400,6 +408,8 @@ export default function WeeklySchedulePage() {
           subtitle: project.customerDisplayName,
           location: project.serviceAddressLine1,
           tech: project.assignedTechnicianName || "Unassigned",
+          helperText: (project as any).helperText,
+          secondaryTechText: (project as any).secondaryTechText,
           status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
             project.bidStatus
           )}`,
