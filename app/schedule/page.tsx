@@ -9,6 +9,8 @@ import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
 import type { ServiceTicket } from "../../src/types/service-ticket";
 import type { Project } from "../../src/types/project";
+import type { EmployeeUnavailability, UnavailabilityType } from "../../src/types/unavailability";
+import type { AppUser } from "../../src/types/app-user";
 
 type DayBucket = {
   key: string;
@@ -19,7 +21,7 @@ type DayBucket = {
 };
 
 type ScheduleItem = {
-  kind: "service_ticket" | "project_stage";
+  kind: "service_ticket" | "project_stage" | "unavailable";
   id: string;
   date: string;
   sortTime: string;
@@ -127,6 +129,23 @@ function formatProjectStageStatus(status: Project["roughIn"]["status"]) {
   }
 }
 
+function formatUnavailabilityType(t: UnavailabilityType) {
+  switch (t) {
+    case "sick":
+      return "Sick";
+    case "pto":
+      return "PTO";
+    case "holiday":
+      return "Holiday";
+    case "unpaid":
+      return "Unpaid";
+    case "other":
+      return "Out";
+    default:
+      return t;
+  }
+}
+
 function isoInRange(targetIso: string, startIso: string, endIso: string) {
   const start = (startIso || "").trim();
   const end = (endIso || "").trim();
@@ -177,6 +196,8 @@ export default function WeeklySchedulePage() {
   const [loading, setLoading] = useState(true);
   const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [unavailability, setUnavailability] = useState<EmployeeUnavailability[]>([]);
+  const [userMap, setUserMap] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   const [weekOffset, setWeekOffset] = useState(0);
@@ -187,9 +208,11 @@ export default function WeeklySchedulePage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [ticketSnap, projectSnap] = await Promise.all([
+        const [ticketSnap, projectSnap, unavailSnap, usersSnap] = await Promise.all([
           getDocs(collection(db, "serviceTickets")),
           getDocs(collection(db, "projects")),
+          getDocs(collection(db, "employeeUnavailability")),
+          getDocs(collection(db, "users")),
         ]);
 
         const ticketItems: ServiceTicket[] = ticketSnap.docs.map((docSnap) => {
@@ -277,8 +300,33 @@ export default function WeeklySchedulePage() {
           } as any;
         });
 
+        const unavailItems: EmployeeUnavailability[] = unavailSnap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            userUid: d.userUid ?? "",
+            date: d.date ?? "",
+            type: (d.type ?? "other") as UnavailabilityType,
+            reason: d.reason ?? undefined,
+            active: d.active ?? true,
+            createdAt: d.createdAt ?? undefined,
+            createdByUid: d.createdByUid ?? undefined,
+            updatedAt: d.updatedAt ?? undefined,
+            updatedByUid: d.updatedByUid ?? undefined,
+          };
+        });
+
+        const um: Record<string, string> = {};
+        usersSnap.docs.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<AppUser> & { displayName?: string; uid?: string };
+          const uid = (d.uid ?? docSnap.id) as string;
+          um[uid] = (d.displayName ?? "Unnamed") as string;
+        });
+
         setTickets(ticketItems);
         setProjects(projectItems);
+        setUnavailability(unavailItems);
+        setUserMap(um);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to load weekly schedule.");
       } finally {
@@ -310,9 +358,31 @@ export default function WeeklySchedulePage() {
     const result: Record<string, ScheduleItem[]> = {};
     for (const day of allWeekDays) result[day.isoDate] = [];
 
-    // ----------------------
-    // Service tickets (single-day scheduledDate)
-    // ----------------------
+    // ✅ Unavailability blocks (single day)
+    for (const u of unavailability) {
+      if (!u.active) continue;
+      if (!u.date || !result[u.date]) continue;
+
+      const name = userMap[u.userUid] || u.userUid;
+      const t = formatUnavailabilityType(u.type);
+      const reason = u.reason ? ` • ${u.reason}` : "";
+
+      result[u.date].push({
+        kind: "unavailable",
+        id: `unavail-${u.id}`,
+        date: u.date,
+        sortTime: "00:00",
+        title: `🚫 OUT: ${name}`,
+        subtitle: t + reason,
+        location: "",
+        tech: name,
+        status: "Unavailable",
+        href: "/admin/unavailability",
+        timeText: "Employee Unavailable",
+      });
+    }
+
+    // Service tickets
     for (const ticket of tickets) {
       if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
 
@@ -346,11 +416,7 @@ export default function WeeklySchedulePage() {
       });
     }
 
-    // ----------------------
     // Projects (stage date range)
-    // Start = scheduledDate, End = scheduledEndDate || scheduledDate
-    // Stage staffing overrides project crew when present
-    // ----------------------
     for (const project of projects) {
       const stageEntries = [
         { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
@@ -364,7 +430,6 @@ export default function WeeklySchedulePage() {
 
         const end = ((entry.stage as any).scheduledEndDate as string | undefined) || start;
 
-        // For each day in the current week, add if within range
         for (const day of allWeekDays) {
           if (!result[day.isoDate]) continue;
           if (!isoInRange(day.isoDate, start, end)) continue;
@@ -405,7 +470,7 @@ export default function WeeklySchedulePage() {
     }
 
     return result;
-  }, [tickets, projects, allWeekDays]);
+  }, [tickets, projects, allWeekDays, unavailability, userMap]);
 
   const unscheduledItems = useMemo(() => {
     const ticketItems: ScheduleItem[] = tickets
@@ -576,6 +641,22 @@ export default function WeeklySchedulePage() {
             >
               New Service Ticket
             </Link>
+
+            {isAdmin ? (
+              <Link
+                href="/admin/unavailability"
+                style={{
+                  padding: "8px 12px",
+                  border: "1px solid #ccc",
+                  borderRadius: "10px",
+                  textDecoration: "none",
+                  color: "inherit",
+                  background: "white",
+                }}
+              >
+                Employee Out
+              </Link>
+            ) : null}
           </div>
         </div>
 
@@ -639,13 +720,17 @@ export default function WeeklySchedulePage() {
                               border: "1px solid #ddd",
                               borderRadius: "10px",
                               padding: "10px",
-                              background: "white",
+                              background: item.kind === "unavailable" ? "#fff5f5" : "white",
                               textDecoration: "none",
                               color: "inherit",
                             }}
                           >
                             <div style={{ fontWeight: 700, fontSize: "14px" }}>
-                              {item.kind === "project_stage" ? "📐 " : "🔧 "}
+                              {item.kind === "project_stage"
+                                ? "📐 "
+                                : item.kind === "unavailable"
+                                  ? "🚫 "
+                                  : "🔧 "}
                               {item.title}
                             </div>
 
@@ -657,9 +742,11 @@ export default function WeeklySchedulePage() {
                               {item.subtitle}
                             </div>
 
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                              {item.location}
-                            </div>
+                            {item.location ? (
+                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
+                                {item.location}
+                              </div>
+                            ) : null}
 
                             <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
                               Tech: {item.tech}
