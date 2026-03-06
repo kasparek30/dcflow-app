@@ -90,6 +90,20 @@ function includesUid(list: any, uid: string) {
   return arr.includes(uid);
 }
 
+// ISO date strings (YYYY-MM-DD) can be compared lexicographically safely.
+function isIsoInRange(todayIso: string, startIso?: string, endIso?: string) {
+  const start = (startIso || "").trim();
+  if (!start) return false;
+
+  const end = (endIso || "").trim();
+  if (!end) return todayIso === start;
+
+  const min = start < end ? start : end;
+  const max = start < end ? end : start;
+
+  return todayIso >= min && todayIso <= max;
+}
+
 function stageCrewFallback(project: any, stage: any): StageStaffing | null {
   // stage staffing wins
   const staff = stage?.staffing;
@@ -97,8 +111,10 @@ function stageCrewFallback(project: any, stage: any): StageStaffing | null {
 
   // fallback to project-level default crew
   const fallback: StageStaffing = {
-    primaryTechnicianId: project?.primaryTechnicianId ?? project?.assignedTechnicianId ?? undefined,
-    primaryTechnicianName: project?.primaryTechnicianName ?? project?.assignedTechnicianName ?? undefined,
+    primaryTechnicianId:
+      project?.primaryTechnicianId ?? project?.assignedTechnicianId ?? undefined,
+    primaryTechnicianName:
+      project?.primaryTechnicianName ?? project?.assignedTechnicianName ?? undefined,
     secondaryTechnicianId: project?.secondaryTechnicianId ?? undefined,
     secondaryTechnicianName: project?.secondaryTechnicianName ?? undefined,
     helperIds: Array.isArray(project?.helperIds) ? project.helperIds : undefined,
@@ -278,10 +294,16 @@ export default function TechnicianMyDayPage() {
 
     const items: MyDayItem[] = [];
 
-    function considerStage(project: any, stageKey: "roughIn" | "topOutVent" | "trimFinish", label: string) {
+    function considerStage(
+      project: any,
+      stageKey: "roughIn" | "topOutVent" | "trimFinish",
+      label: string
+    ) {
       const stage = project?.[stageKey] as any;
-      const scheduledDate = stage?.scheduledDate || "";
-      if (scheduledDate !== todayIso) return;
+
+      const startIso = (stage?.scheduledDate || "").trim();
+      const endIso = (stage?.scheduledEndDate || "").trim(); // ✅ NEW
+      if (!isIsoInRange(todayIso, startIso, endIso)) return;
 
       const staff = stageCrewFallback(project, stage);
       if (!staff) return;
@@ -306,13 +328,18 @@ export default function TechnicianMyDayPage() {
 
       const techName = staff.primaryTechnicianName || project?.assignedTechnicianName || "Unassigned";
 
+      const timeText =
+        startIso && endIso && endIso !== startIso
+          ? `Project Stage (${startIso} → ${endIso})`
+          : "Project Stage";
+
       items.push({
         kind: "project_stage",
         id: `${project.id}-${stageKey}`,
         title: `${project.projectName} • ${label}`,
         subtitle: project.customerDisplayName,
         location: project.serviceAddressLine1,
-        timeText: "Project Stage",
+        timeText,
         statusText: `Stage: ${formatStageStatus(stage?.status || "not_started")}`,
         techText: `Tech: ${techName}`,
         helperText,
@@ -349,7 +376,15 @@ export default function TechnicianMyDayPage() {
   return (
     <ProtectedPage fallbackTitle="My Day">
       <AppShell appUser={appUser}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "12px", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-end",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
           <div>
             <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>My Day</h1>
             <p style={{ marginTop: "6px", color: "#666" }}>
