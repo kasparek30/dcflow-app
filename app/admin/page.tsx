@@ -11,11 +11,22 @@ export default function AdminHomePage() {
   return (
     <ProtectedPage fallbackTitle="Admin">
       <AppShell appUser={appUser}>
-        <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "16px" }}>Admin</h1>
+        <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "16px" }}>
+          Admin
+        </h1>
 
         <div style={{ display: "grid", gap: "12px", maxWidth: "720px" }}>
-          <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "#fafafa" }}>
-            <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700 }}>Tools</h2>
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: "12px",
+              padding: "16px",
+              background: "#fafafa",
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700 }}>
+              Tools
+            </h2>
             <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
               Admin & operations tools for DCFlow.
             </p>
@@ -54,6 +65,24 @@ export default function AdminHomePage() {
             <div style={{ fontWeight: 700 }}>Employee Profiles</div>
             <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
               Labor roles, pairing defaults, payroll metadata.
+            </div>
+          </Link>
+
+          <Link
+            href="/admin/daily-crew-overrides"
+            style={{
+              display: "block",
+              border: "1px solid #ddd",
+              borderRadius: "12px",
+              padding: "12px",
+              textDecoration: "none",
+              color: "inherit",
+              background: "white",
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>Daily Crew Overrides</div>
+            <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
+              Reassign a helper/apprentice to a different technician for a specific day.
             </div>
           </Link>
 
