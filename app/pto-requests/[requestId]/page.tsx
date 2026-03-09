@@ -37,6 +37,16 @@ type TimeEntryLite = {
   notes?: string;
 };
 
+type UnavailabilityLite = {
+  id: string;
+  uid: string;
+  date: string;
+  type: string;
+  source: string;
+  ptoRequestId?: string;
+  active: boolean;
+};
+
 function formatStatus(status: PTORequest["status"]) {
   switch (status) {
     case "pending":
@@ -121,7 +131,9 @@ export default function PTORequestDetailPage({ params }: Props) {
           endDate: data.endDate ?? "",
           hoursPerDay: typeof data.hoursPerDay === "number" ? data.hoursPerDay : 8,
           totalRequestedHours:
-            typeof data.totalRequestedHours === "number" ? data.totalRequestedHours : 0,
+            typeof data.totalRequestedHours === "number"
+              ? data.totalRequestedHours
+              : 0,
           status: data.status ?? "pending",
           notes: data.notes ?? undefined,
           managerNote: data.managerNote ?? undefined,
@@ -168,9 +180,11 @@ export default function PTORequestDetailPage({ params }: Props) {
     try {
       const nowIso = new Date().toISOString();
 
-      const [holidaySnap, timeEntriesSnap] = await Promise.all([
+      // Pull holidays, existing timeEntries (for dedupe), and existing unavailability (for dedupe)
+      const [holidaySnap, timeEntriesSnap, unavailSnap] = await Promise.all([
         getDocs(query(collection(db, "companyHolidays"))),
         getDocs(query(collection(db, "timeEntries"))),
+        getDocs(query(collection(db, "employeeUnavailability"))),
       ]);
 
       const holidays: HolidayLite[] = holidaySnap.docs.map((docSnap) => {
@@ -197,16 +211,32 @@ export default function PTORequestDetailPage({ params }: Props) {
         };
       });
 
-      let createdCount = 0;
+      const allUnavailability: UnavailabilityLite[] = unavailSnap.docs.map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          id: docSnap.id,
+          uid: data.uid ?? "",
+          date: data.date ?? "",
+          type: data.type ?? "",
+          source: data.source ?? "",
+          ptoRequestId: data.ptoRequestId ?? undefined,
+          active: data.active ?? true,
+        };
+      });
+
+      let createdTimeEntryCount = 0;
+      let createdUnavailabilityCount = 0;
 
       for (const entryDate of weekdayDates) {
-        if (activeHolidayDates.has(entryDate)) {
-          continue;
-        }
+        // Skip company holidays (so we don't double-pay PTO + Holiday)
+        if (activeHolidayDates.has(entryDate)) continue;
 
+        // ----------------------------
+        // 1) DEDUPE + CREATE PTO timeEntry
+        // ----------------------------
         const notesPrefix = `AUTO_PTO:${requestItem.id}:${entryDate}`;
 
-        const alreadyExists = allTimeEntries.find((entry) => {
+        const alreadyHasTimeEntry = allTimeEntries.find((entry) => {
           if (entry.employeeId !== requestItem.employeeId) return false;
           if (entry.entryDate !== entryDate) return false;
           if (entry.category !== "pto") return false;
@@ -214,56 +244,114 @@ export default function PTORequestDetailPage({ params }: Props) {
           return (entry.notes ?? "").startsWith(notesPrefix);
         });
 
-        if (alreadyExists) {
-          continue;
+        if (!alreadyHasTimeEntry) {
+          const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
+
+          const newDoc = await addDoc(collection(db, "timeEntries"), {
+            employeeId: requestItem.employeeId,
+            employeeName: requestItem.employeeName,
+            employeeRole: requestItem.employeeRole,
+            laborRoleType: null,
+
+            entryDate,
+            weekStartDate,
+            weekEndDate,
+
+            category: "pto",
+            hours: requestItem.hoursPerDay,
+            payType: "pto",
+            billable: false,
+            source: "system_generated_pto",
+
+            serviceTicketId: null,
+            projectId: null,
+            projectStageKey: null,
+
+            linkedTechnicianId: null,
+            linkedTechnicianName: null,
+
+            notes: `${notesPrefix} • Approved PTO request`,
+            timesheetId: null,
+
+            entryStatus: "draft",
+
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          });
+
+          allTimeEntries.push({
+            id: newDoc.id,
+            employeeId: requestItem.employeeId,
+            entryDate,
+            category: "pto",
+            source: "system_generated_pto",
+            notes: `${notesPrefix} • Approved PTO request`,
+          });
+
+          createdTimeEntryCount += 1;
         }
 
-        const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
+        // ----------------------------
+        // 2) DEDUPE + CREATE employeeUnavailability block
+        // ----------------------------
+        const alreadyHasUnavailability = allUnavailability.find((u) => {
+          if (u.uid !== requestItem.employeeId) return false;
+          if (u.date !== entryDate) return false;
+          if (u.active === false) return false;
 
-        const newDoc = await addDoc(collection(db, "timeEntries"), {
-          employeeId: requestItem.employeeId,
-          employeeName: requestItem.employeeName,
-          employeeRole: requestItem.employeeRole,
-          laborRoleType: null,
+          // If it was created from this request already, definitely skip
+          if ((u.ptoRequestId || "") === requestItem.id) return true;
 
-          entryDate,
-          weekStartDate,
-          weekEndDate,
+          // Otherwise: skip if it's already a PTO-type block created by system/admin override.
+          // (prevents duplicate blocking)
+          if (u.type === "pto" && (u.source === "pto_request_approved" || u.source === "admin_override")) {
+            return true;
+          }
 
-          category: "pto",
-          hours: requestItem.hoursPerDay,
-          payType: "pto",
-          billable: false,
-          source: "system_generated_pto",
-
-          serviceTicketId: null,
-          projectId: null,
-          projectStageKey: null,
-
-          linkedTechnicianId: null,
-          linkedTechnicianName: null,
-
-          notes: `${notesPrefix} • Approved PTO request`,
-          timesheetId: null,
-
-          entryStatus: "draft",
-
-          createdAt: nowIso,
-          updatedAt: nowIso,
+          return false;
         });
 
-        allTimeEntries.push({
-          id: newDoc.id,
-          employeeId: requestItem.employeeId,
-          entryDate,
-          category: "pto",
-          source: "system_generated_pto",
-          notes: `${notesPrefix} • Approved PTO request`,
-        });
+        if (!alreadyHasUnavailability) {
+          const employeeName = requestItem.employeeName || "Unknown";
+          const approverName = appUser.displayName || "Unknown Approver";
 
-        createdCount += 1;
+          const unavailDoc = await addDoc(collection(db, "employeeUnavailability"), {
+            uid: requestItem.employeeId,
+            displayName: employeeName,
+
+            date: entryDate,
+            type: "pto",
+            reason: (managerNote.trim() || requestItem.notes || "").trim() || null,
+
+            // This tells us it came from approving a PTO request (not admin override)
+            source: "pto_request_approved",
+            ptoRequestId: requestItem.id,
+
+            active: true,
+            createdAt: nowIso,
+            createdByUid: appUser.uid,
+            createdByName: approverName,
+
+            updatedAt: nowIso,
+            updatedByUid: appUser.uid,
+            updatedByName: approverName,
+          });
+
+          allUnavailability.push({
+            id: unavailDoc.id,
+            uid: requestItem.employeeId,
+            date: entryDate,
+            type: "pto",
+            source: "pto_request_approved",
+            ptoRequestId: requestItem.id,
+            active: true,
+          });
+
+          createdUnavailabilityCount += 1;
+        }
       }
 
+      // Finally: mark the PTO request approved
       await updateDoc(doc(db, "ptoRequests", requestItem.id), {
         status: "approved",
         approvedAt: nowIso,
@@ -285,7 +373,13 @@ export default function PTORequestDetailPage({ params }: Props) {
         updatedAt: nowIso,
       });
 
-      setSaveMsg(`PTO request approved. Created ${createdCount} PTO time entr${createdCount === 1 ? "y" : "ies"}.`);
+      setSaveMsg(
+        `✅ PTO request approved. Created ${createdTimeEntryCount} PTO time entr${
+          createdTimeEntryCount === 1 ? "y" : "ies"
+        } and ${createdUnavailabilityCount} unavailability block${
+          createdUnavailabilityCount === 1 ? "" : "s"
+        }.`
+      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to approve PTO request.");
     } finally {
@@ -444,7 +538,8 @@ export default function PTORequestDetailPage({ params }: Props) {
               )}
 
               <div style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
-                Weekends are skipped. Active company holidays are also skipped to avoid double-counting PTO + holiday pay on the same day.
+                Weekends are skipped. Active company holidays are also skipped to avoid
+                double-counting PTO + holiday pay on the same day.
               </div>
             </div>
 
