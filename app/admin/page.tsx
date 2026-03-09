@@ -33,6 +33,24 @@ export default function AdminHomePage() {
           </div>
 
           <Link
+  href="/admin/my-day"
+  style={{
+    display: "block",
+    border: "1px solid #ddd",
+    borderRadius: "12px",
+    padding: "12px",
+    textDecoration: "none",
+    color: "inherit",
+    background: "white",
+  }}
+>
+  <div style={{ fontWeight: 700 }}>Admin: View My Day</div>
+  <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
+    View any employee’s My Day (pick user + date).
+  </div>
+</Link>
+
+          <Link
   href="/admin/pto-override"
   style={{
     display: "block",
