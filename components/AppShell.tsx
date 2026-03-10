@@ -22,28 +22,42 @@ export default function AppShell({
     role === "office_display";
 
   const showAdmin = role === "admin";
+
+  // ✅ "My Day" should be visible to anyone doing field work + admins
+  const showMyDay =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice";
+
+  // Keep this if you still want a separate "Technician" section/page
   const showTechnician = role === "technician" || role === "admin";
-  const showDispatch =
-    role === "admin" || role === "dispatcher" || role === "manager";
+
+  const showDispatch = role === "admin" || role === "dispatcher" || role === "manager";
+
   const showSchedule =
     role === "admin" ||
     role === "dispatcher" ||
     role === "manager" ||
     role === "office_display";
+
   const showOfficeDisplay =
     role === "admin" ||
     role === "dispatcher" ||
     role === "manager" ||
     role === "office_display";
+
   const showMonthlySchedule =
     role === "admin" ||
     role === "dispatcher" ||
     role === "manager" ||
     role === "office_display";
-  const showProjects =
-    role === "admin" || role === "dispatcher" || role === "manager";
-  const showWorkload =
-    role === "admin" || role === "dispatcher" || role === "manager";
+
+  const showProjects = role === "admin" || role === "dispatcher" || role === "manager";
+
+  const showWorkload = role === "admin" || role === "dispatcher" || role === "manager";
 
   const showTimeEntries =
     role === "admin" ||
@@ -61,22 +75,12 @@ export default function AppShell({
     role === "helper" ||
     role === "apprentice";
 
-  const showTimesheetReview =
-    role === "admin" || role === "manager" || role === "dispatcher";
+  const showTimesheetReview = role === "admin" || role === "manager" || role === "dispatcher";
 
   const showPTORequests =
     role === "admin" ||
     role === "manager" ||
     role === "dispatcher" ||
-    role === "technician" ||
-    role === "helper" ||
-    role === "apprentice";
-
-  // ✅ Trips: scheduling + payroll core visibility
-  const showTrips =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager" ||
     role === "technician" ||
     role === "helper" ||
     role === "apprentice";
@@ -96,12 +100,8 @@ export default function AppShell({
         </h1>
 
         <div style={{ marginBottom: "20px", fontSize: "14px" }}>
-          <div style={{ fontWeight: 600 }}>
-            {appUser?.displayName || "Unknown User"}
-          </div>
-          <div style={{ color: "#666", marginTop: "4px" }}>
-            {appUser?.role || "No Role"}
-          </div>
+          <div style={{ fontWeight: 600 }}>{appUser?.displayName || "Unknown User"}</div>
+          <div style={{ color: "#666", marginTop: "4px" }}>{appUser?.role || "No Role"}</div>
         </div>
 
         <nav
@@ -114,12 +114,13 @@ export default function AppShell({
         >
           {showDashboard ? <Link href="/dashboard">Dashboard</Link> : null}
           {showDispatch ? <Link href="/dispatch">Dispatcher Board</Link> : null}
+
+          {/* ✅ Add back My Day */}
+          {showMyDay ? <Link href="/technician/my-day">My Day</Link> : null}
+
           {showSchedule ? <Link href="/schedule">Weekly Schedule</Link> : null}
-          {showMonthlySchedule ? (
-            <Link href="/monthly-schedule">Monthly Schedule</Link>
-          ) : null}
+          {showMonthlySchedule ? <Link href="/monthly-schedule">Monthly Schedule</Link> : null}
           {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
-          {showTrips ? <Link href="/trips">Trips</Link> : null}
           {showProjects ? <Link href="/projects">Projects</Link> : null}
           {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
           {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
@@ -127,7 +128,10 @@ export default function AppShell({
           {showPTORequests ? <Link href="/pto-requests">PTO Requests</Link> : null}
           {showTimesheetReview ? <Link href="/timesheet-review">Timesheet Review</Link> : null}
           {showAdmin ? <Link href="/admin">Admin</Link> : null}
+
+          {/* Keep if you still want it */}
           {showTechnician ? <Link href="/technician">Technician</Link> : null}
+
           <Link href="/customers">Customers</Link>
           <Link href="/service-tickets">Service Tickets</Link>
         </nav>
