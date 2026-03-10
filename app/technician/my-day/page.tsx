@@ -2,48 +2,73 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import {
-  collection,
-  getDocs,
-  query,
-  where,
-  limit,
-} from "firebase/firestore";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
-import type { ServiceTicket } from "../../../src/types/service-ticket";
-import type { Project, ProjectStage, StageStaffing } from "../../../src/types/project";
-import type { AppUser } from "../../../src/types/app-user";
 
-type MyDayItem =
-  | {
-      kind: "service_ticket";
-      id: string;
-      title: string;
-      subtitle: string;
-      location: string;
-      timeText: string;
-      statusText: string;
-      techText: string;
-      helperText?: string;
-      secondaryTechText?: string;
-      href: string;
-    }
-  | {
-      kind: "project_stage";
-      id: string;
-      title: string;
-      subtitle: string;
-      location: string;
-      timeText: string;
-      statusText: string;
-      techText: string;
-      helperText?: string;
-      secondaryTechText?: string;
-      href: string;
-    };
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+
+  helperUid?: string | null;
+  helperName?: string | null;
+
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
+
+type TripLink = {
+  projectId?: string | null;
+  projectStageKey?: string | null;
+  serviceTicketId?: string | null;
+};
+
+type Trip = {
+  id: string;
+  active: boolean;
+
+  type?: "project" | "service" | string;
+  status?: string;
+
+  date?: string;
+  timeWindow?: "am" | "pm" | "all_day" | string;
+  startTime?: string;
+  endTime?: string;
+
+  crew?: TripCrew;
+  link?: TripLink;
+
+  cancelReason?: string | null;
+};
+
+type DailyCrewOverride = {
+  id: string;
+  active: boolean;
+  date: string; // YYYY-MM-DD
+  helperUid: string;
+  assignedTechUid: string;
+  note?: string | null;
+};
+
+type MyDayItem = {
+  id: string;
+  title: string;
+  subtitle: string;
+  timeText: string;
+  statusText: string;
+
+  techText: string;
+  helperText?: string;
+  secondaryTechText?: string;
+  secondaryHelperText?: string;
+
+  href: string;
+};
 
 function isoTodayLocal() {
   const d = new Date();
@@ -53,500 +78,250 @@ function isoTodayLocal() {
   return `${y}-${m}-${day}`;
 }
 
-function isoInRange(targetIso: string, startIso: string, endIso: string) {
-  return targetIso >= startIso && targetIso <= endIso;
+function formatWindow(window?: string) {
+  const w = (window || "").toLowerCase();
+  if (w === "am") return "AM (8–12)";
+  if (w === "pm") return "PM (1–5)";
+  if (w === "all_day") return "All Day (8–5)";
+  return window || "—";
 }
 
-function formatTicketStatus(status: ServiceTicket["status"]) {
-  switch (status) {
-    case "new":
-      return "New";
-    case "scheduled":
-      return "Scheduled";
-    case "in_progress":
-      return "In Progress";
-    case "follow_up":
-      return "Follow Up";
-    case "completed":
-      return "Completed";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return status;
+function formatType(type?: string) {
+  const t = (type || "").toLowerCase();
+  if (t === "project") return "📐 Project";
+  if (t === "service") return "🔧 Service";
+  return type ? `🧩 ${type}` : "🧩 Trip";
+}
+
+function stageLabel(stageKey?: string | null) {
+  const s = stageKey || "";
+  if (s === "roughIn") return "Rough-In";
+  if (s === "topOutVent") return "Top-Out / Vent";
+  if (s === "trimFinish") return "Trim / Finish";
+  return s;
+}
+
+function buildHref(link?: TripLink) {
+  if (!link) return "/trips";
+  if (link.serviceTicketId) return `/service-tickets/${link.serviceTicketId}`;
+  if (link.projectId) return `/projects/${link.projectId}`;
+  return "/trips";
+}
+
+function titleForTrip(t: Trip) {
+  if (t.type === "project") {
+    const stage = stageLabel(t.link?.projectStageKey || null);
+    return stage ? `${formatType(t.type)} • ${stage}` : `${formatType(t.type)}`;
   }
+  if (t.type === "service") return `${formatType(t.type)} • Service Ticket`;
+  return `${formatType(t.type)}`;
 }
 
-function formatStageStatus(status: ProjectStage["status"]) {
-  switch (status) {
-    case "not_started":
-      return "Not Started";
-    case "scheduled":
-      return "Scheduled";
-    case "in_progress":
-      return "In Progress";
-    case "complete":
-      return "Complete";
-    default:
-      return status;
+function subtitleForTrip(t: Trip) {
+  if (t.link?.serviceTicketId) return `Ticket: ${t.link.serviceTicketId}`;
+  if (t.link?.projectId) {
+    const stage = t.link.projectStageKey ? ` • ${t.link.projectStageKey}` : "";
+    return `Project: ${t.link.projectId}${stage}`;
   }
+  return "—";
 }
 
-function asArray<T>(x: any): T[] {
-  if (!x) return [];
-  return Array.isArray(x) ? x : [x];
+function crewDisplay(crew?: TripCrew) {
+  const primary = crew?.primaryTechName || crew?.primaryTechUid || "Unassigned";
+
+  const helper =
+    crew?.helperName || crew?.helperUid
+      ? `Helper: ${crew?.helperName || crew?.helperUid}`
+      : undefined;
+
+  const secondaryTech =
+    crew?.secondaryTechName || crew?.secondaryTechUid
+      ? `2nd Tech: ${crew?.secondaryTechName || crew?.secondaryTechUid}`
+      : undefined;
+
+  const secondaryHelper =
+    crew?.secondaryHelperName || crew?.secondaryHelperUid
+      ? `2nd Helper: ${crew?.secondaryHelperName || crew?.secondaryHelperUid}`
+      : undefined;
+
+  return { primary, helper, secondaryTech, secondaryHelper };
 }
 
-function includesUid(list: any, uid: string) {
-  const arr = asArray<string>(list).filter(Boolean);
-  return arr.includes(uid);
+function isUidInCrew(uid: string, crew?: TripCrew) {
+  if (!uid) return false;
+  return (
+    crew?.primaryTechUid === uid ||
+    crew?.helperUid === uid ||
+    crew?.secondaryTechUid === uid ||
+    crew?.secondaryHelperUid === uid
+  );
 }
-
-function stageCrewFallback(project: any, stage: any): StageStaffing | null {
-  const staff = stage?.staffing;
-  if (staff && typeof staff === "object") return staff as StageStaffing;
-
-  const fallback: StageStaffing = {
-    primaryTechnicianId:
-      project?.primaryTechnicianId ?? project?.assignedTechnicianId ?? undefined,
-    primaryTechnicianName:
-      project?.primaryTechnicianName ?? project?.assignedTechnicianName ?? undefined,
-    secondaryTechnicianId: project?.secondaryTechnicianId ?? undefined,
-    secondaryTechnicianName: project?.secondaryTechnicianName ?? undefined,
-    helperIds: Array.isArray(project?.helperIds) ? project.helperIds : undefined,
-    helperNames: Array.isArray(project?.helperNames) ? project.helperNames : undefined,
-  };
-
-  const hasAnything =
-    Boolean(fallback.primaryTechnicianId) ||
-    Boolean(fallback.secondaryTechnicianId) ||
-    (Array.isArray(fallback.helperIds) && fallback.helperIds.length > 0);
-
-  return hasAnything ? fallback : null;
-}
-
-type UserLite = {
-  uid: string;
-  displayName: string;
-  role: AppUser["role"];
-  active: boolean;
-};
-
-type EmployeeProfileLite = {
-  userUid: string;
-  laborRole?: string;
-  employmentStatus?: string;
-  defaultPairedTechUid?: string | null;
-};
 
 export default function TechnicianMyDayPage() {
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
-  const [tickets, setTickets] = useState<ServiceTicket[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [users, setUsers] = useState<UserLite[]>([]);
-  const [profiles, setProfiles] = useState<EmployeeProfileLite[]>([]);
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [override, setOverride] = useState<DailyCrewOverride | null>(null);
   const [error, setError] = useState("");
-
-  const [pairingBanner, setPairingBanner] = useState<{
-    kind: "override" | "default" | "none";
-    techUid?: string;
-    techName?: string;
-    note?: string;
-  } | null>(null);
 
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
+  const myRole = appUser?.role || "";
 
-  function findUserName(uid: string) {
-    const u = users.find((x) => x.uid === uid);
-    return u?.displayName || uid;
-  }
-
-  function normalizeRole(s?: string) {
-    return (s || "").trim().toLowerCase();
-  }
-
-  const isHelperLike =
-    appUser?.role === "helper" || appUser?.role === "apprentice";
+  const isHelperRole = myRole === "helper" || myRole === "apprentice";
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       setError("");
-      setPairingBanner(null);
 
       try {
-        const [ticketSnap, projectSnap, usersSnap, profileSnap] = await Promise.all([
-          getDocs(collection(db, "serviceTickets")),
-          getDocs(collection(db, "projects")),
-          getDocs(collection(db, "users")),
-          getDocs(collection(db, "employeeProfiles")),
-        ]);
+        // Pull trips for today only (fast and clean)
+        const tripsSnap = await getDocs(
+          query(collection(db, "trips"), where("date", "==", todayIso))
+        );
 
-        const userItems: UserLite[] = usersSnap.docs.map((d) => {
-          const data = d.data();
+        const tripItems: Trip[] = tripsSnap.docs.map((docSnap) => {
+          const d = docSnap.data() as any;
           return {
-            uid: data.uid ?? d.id,
-            displayName: data.displayName ?? "Unnamed",
-            role: data.role ?? "technician",
-            active: data.active ?? true,
+            id: docSnap.id,
+            active: typeof d.active === "boolean" ? d.active : true,
+            type: d.type ?? undefined,
+            status: d.status ?? undefined,
+            date: d.date ?? undefined,
+            timeWindow: d.timeWindow ?? undefined,
+            startTime: d.startTime ?? undefined,
+            endTime: d.endTime ?? undefined,
+            crew: d.crew ?? undefined,
+            link: d.link ?? undefined,
+            cancelReason: d.cancelReason ?? null,
           };
         });
-        setUsers(userItems);
 
-        const profileItems: EmployeeProfileLite[] = profileSnap.docs
-          .map((d) => {
-            const data = d.data();
-            const userUid = String(data.userUid ?? "").trim();
-            if (!userUid) return null;
-            return {
-              userUid,
-              laborRole: data.laborRole ?? undefined,
-              employmentStatus: data.employmentStatus ?? undefined,
-              defaultPairedTechUid: data.defaultPairedTechUid ?? null,
+        // Load daily crew override for THIS helper (if helper/apprentice)
+        let foundOverride: DailyCrewOverride | null = null;
+
+        if (isHelperRole && myUid) {
+          const overrideSnap = await getDocs(
+            query(
+              collection(db, "dailyCrewOverrides"),
+              where("date", "==", todayIso),
+              where("helperUid", "==", myUid),
+              where("active", "==", true)
+            )
+          );
+
+          if (!overrideSnap.empty) {
+            const docSnap = overrideSnap.docs[0];
+            const d = docSnap.data() as any;
+            foundOverride = {
+              id: docSnap.id,
+              active: typeof d.active === "boolean" ? d.active : true,
+              date: d.date ?? todayIso,
+              helperUid: d.helperUid ?? "",
+              assignedTechUid: d.assignedTechUid ?? "",
+              note: d.note ?? null,
             };
-          })
-          .filter(Boolean) as EmployeeProfileLite[];
-        setProfiles(profileItems);
+          }
+        }
 
-        const ticketItems: ServiceTicket[] = ticketSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-          return {
-            id: docSnap.id,
-            customerId: data.customerId ?? "",
-            customerDisplayName: data.customerDisplayName ?? "",
-            serviceAddressId: data.serviceAddressId ?? undefined,
-            serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-            serviceAddressLine1: data.serviceAddressLine1 ?? "",
-            serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-            serviceCity: data.serviceCity ?? "",
-            serviceState: data.serviceState ?? "",
-            servicePostalCode: data.servicePostalCode ?? "",
-            issueSummary: data.issueSummary ?? "",
-            issueDetails: data.issueDetails ?? undefined,
-            status: data.status ?? "new",
-            estimatedDurationMinutes: data.estimatedDurationMinutes ?? 0,
-            scheduledDate: data.scheduledDate ?? undefined,
-            scheduledStartTime: data.scheduledStartTime ?? undefined,
-            scheduledEndTime: data.scheduledEndTime ?? undefined,
-
-            assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-            assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-
-            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-
-            internalNotes: data.internalNotes ?? undefined,
-            active: data.active ?? true,
-            createdAt: data.createdAt ?? undefined,
-            updatedAt: data.updatedAt ?? undefined,
-          };
-        });
-        setTickets(ticketItems);
-
-        const projectItems: Project[] = projectSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-          return {
-            id: docSnap.id,
-            customerId: data.customerId ?? "",
-            customerDisplayName: data.customerDisplayName ?? "",
-            serviceAddressId: data.serviceAddressId ?? undefined,
-            serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-            serviceAddressLine1: data.serviceAddressLine1 ?? "",
-            serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-            serviceCity: data.serviceCity ?? "",
-            serviceState: data.serviceState ?? "",
-            servicePostalCode: data.servicePostalCode ?? "",
-            projectName: data.projectName ?? "",
-            projectType: data.projectType ?? "other",
-            description: data.description ?? undefined,
-            bidStatus: data.bidStatus ?? "draft",
-            totalBidAmount: data.totalBidAmount ?? 0,
-            roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
-            topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
-            trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
-
-            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-            primaryTechnicianName: data.primaryTechnicianName ?? undefined,
-            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-
-            assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-            assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-
-            internalNotes: data.internalNotes ?? undefined,
-            active: data.active ?? true,
-            createdAt: data.createdAt ?? undefined,
-            updatedAt: data.updatedAt ?? undefined,
-          } as any;
-        });
-        setProjects(projectItems);
+        setTrips(tripItems);
+        setOverride(foundOverride);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load My Day data.");
+        setError(err instanceof Error ? err.message : "Failed to load My Day (trips).");
       } finally {
         setLoading(false);
       }
     }
 
     load();
-  }, []);
+  }, [todayIso, myUid, isHelperRole]);
 
-  // ✅ Determine helper pairing for today (override > default > none)
-  const effectivePairedTechUid = useMemo(() => {
-    if (!myUid) return "";
-
-    if (!isHelperLike) return ""; // only used for helper/apprentice
-
-    // 1) daily override (if any)
-    // We'll fetch via a separate effect and store banner; this memo returns from banner if set.
-    if (pairingBanner?.techUid) return pairingBanner.techUid;
-
-    // 2) default from employee profile
-    const myProfile = profiles.find((p) => p.userUid === myUid);
-    const defaultTechUid = String(myProfile?.defaultPairedTechUid ?? "").trim();
-    return defaultTechUid;
-  }, [myUid, isHelperLike, pairingBanner, profiles]);
-
-  // ✅ Fetch today’s override for this helper
-  useEffect(() => {
-    async function loadOverride() {
-      if (!myUid) return;
-      if (!isHelperLike) return;
-
-      try {
-        const qRef = query(
-          collection(db, "dailyCrewOverrides"),
-          where("helperUid", "==", myUid),
-          where("date", "==", todayIso),
-          where("active", "==", true),
-          limit(1)
-        );
-
-        const snap = await getDocs(qRef);
-
-        if (snap.empty) {
-          // no override; banner will be set later from default pairing
-          const myProfile = profiles.find((p) => p.userUid === myUid);
-          const defaultTechUid = String(myProfile?.defaultPairedTechUid ?? "").trim();
-          if (defaultTechUid) {
-            setPairingBanner({
-              kind: "default",
-              techUid: defaultTechUid,
-              techName: "", // filled later when users loaded
-            });
-          } else {
-            setPairingBanner({ kind: "none" });
-          }
-          return;
-        }
-
-        const data = snap.docs[0].data();
-        const assignedTechUid = String(data.assignedTechUid ?? "").trim();
-        const note = String(data.note ?? "").trim();
-
-        if (!assignedTechUid) {
-          setPairingBanner({ kind: "none" });
-          return;
-        }
-
-        setPairingBanner({
-          kind: "override",
-          techUid: assignedTechUid,
-          techName: "",
-          note: note || undefined,
-        });
-      } catch (err: unknown) {
-        // If rules block this collection, you’ll see it here
-        setError(err instanceof Error ? err.message : "Failed to load crew override.");
-      }
-    }
-
-    loadOverride();
-  }, [myUid, isHelperLike, todayIso, profiles]);
-
-  // ✅ Improve banner with names once users are loaded
-  const banner = useMemo(() => {
-    if (!isHelperLike) return null;
-    if (!pairingBanner) return null;
-
-    if (pairingBanner.kind === "none") {
-      return {
-        title: "⚠️ Pairing Notice",
-        message:
-          "No paired technician found for today. Ask an admin to set your default pairing in Employee Profiles, or create a Daily Crew Override for today.",
-      };
-    }
-
-    const techUid = pairingBanner.techUid || "";
-    const techName = techUid ? findUserName(techUid) : "Unknown";
-
-    if (pairingBanner.kind === "override") {
-      return {
-        title: "✅ Override Active",
-        message: `Today you are paired with: ${techName}${pairingBanner.note ? ` • Note: ${pairingBanner.note}` : ""}`,
-      };
-    }
-
-    return {
-      title: "✅ Pairing Active",
-      message: `Today you are paired with your default technician: ${techName}`,
-    };
-  }, [isHelperLike, pairingBanner, users]);
-
-  // ✅ Tickets for today:
-  // - If technician: show items assigned to YOU (primary/secondary/helper/legacy)
-  // - If helper: show items assigned to YOU OR assigned to your paired tech today
-  const todaysTicketItems = useMemo(() => {
+  const visibleTrips = useMemo(() => {
     if (!myUid) return [];
 
-    const pairedTechUid = isHelperLike ? effectivePairedTechUid : "";
-
-    return tickets
+    // Default: show trips where you are explicitly on the crew
+    const explicitCrewTrips = trips
       .filter((t) => t.active !== false)
-      .filter((t) => t.scheduledDate === todayIso)
-      .filter((t) => {
-        const primaryUid = (t.primaryTechnicianId || t.assignedTechnicianId || "") as string;
-        const secondaryUid = (t.secondaryTechnicianId || "") as string;
+      .filter((t) => isUidInCrew(myUid, t.crew));
 
-        const isMine =
-          primaryUid === myUid ||
-          secondaryUid === myUid ||
-          includesUid(t.helperIds, myUid) ||
-          (t.assignedTechnicianId || "") === myUid;
+    // If you are a helper/apprentice AND an override exists:
+    // - also show trips where primary tech == override.assignedTechUid
+    // - BUT hide “default tech” trips unless you’re explicitly on crew
+    if (isHelperRole && override?.assignedTechUid) {
+      const overrideTechTrips = trips
+        .filter((t) => t.active !== false)
+        .filter((t) => (t.crew?.primaryTechUid || "") === override.assignedTechUid);
 
-        const isPairedTech =
-          pairedTechUid
-            ? primaryUid === pairedTechUid || secondaryUid === pairedTechUid
-            : false;
+      const merged = [...explicitCrewTrips, ...overrideTechTrips];
 
-        return isMine || isPairedTech;
-      })
-      .map<MyDayItem>((t) => {
-        const helperNames = Array.isArray(t.helperNames) ? t.helperNames : [];
-        const helperText =
-          helperNames.length > 0
-            ? helperNames.length === 1
-              ? `Helper: ${helperNames[0]}`
-              : `Helpers: ${helperNames.join(", ")}`
-            : undefined;
+      // de-dupe by trip id
+      const byId = new Map<string, Trip>();
+      for (const t of merged) byId.set(t.id, t);
 
-        const secondaryTechText = t.secondaryTechnicianName
-          ? `2nd Tech: ${t.secondaryTechnicianName}`
-          : undefined;
+      return Array.from(byId.values());
+    }
 
-        const timeText = `${t.scheduledStartTime || "—"} - ${t.scheduledEndTime || "—"}`;
+    return explicitCrewTrips;
+  }, [trips, myUid, isHelperRole, override]);
 
-        return {
-          kind: "service_ticket",
-          id: t.id,
-          title: t.issueSummary,
-          subtitle: t.customerDisplayName,
-          location: t.serviceAddressLine1,
-          timeText,
-          statusText: formatTicketStatus(t.status),
-          techText: `Tech: ${t.assignedTechnicianName || "Unassigned"}`,
-          helperText,
-          secondaryTechText,
-          href: `/service-tickets/${t.id}`,
-        };
-      });
-  }, [tickets, myUid, todayIso, isHelperLike, effectivePairedTechUid]);
+  const items = useMemo(() => {
+    const mapped: MyDayItem[] = visibleTrips.map((t) => {
+      const crew = crewDisplay(t.crew);
+      const href = buildHref(t.link);
 
-  // ✅ Project stages for today (range aware), same pairing logic as tickets
-  const todaysProjectStageItems = useMemo(() => {
-    if (!myUid) return [];
-    const pairedTechUid = isHelperLike ? effectivePairedTechUid : "";
+      const timeText =
+        t.startTime || t.endTime
+          ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
+          : formatWindow(t.timeWindow);
 
-    const items: MyDayItem[] = [];
+      const statusText =
+        t.status
+          ? `${t.status}${t.cancelReason ? ` • Cancel: ${t.cancelReason}` : ""}`
+          : "—";
 
-    function considerStage(
-      project: any,
-      stageKey: "roughIn" | "topOutVent" | "trimFinish",
-      label: string
-    ) {
-      const stage = project?.[stageKey] as any;
-
-      const start = (stage?.scheduledDate || "") as string;
-      if (!start) return;
-
-      const end = (stage?.scheduledEndDate || start) as string;
-      if (!isoInRange(todayIso, start, end)) return;
-
-      const staff = stageCrewFallback(project, stage);
-      if (!staff) return;
-
-      const primaryUid = String(staff.primaryTechnicianId || "");
-      const secondaryUid = String(staff.secondaryTechnicianId || "");
-
-      const isMine =
-        primaryUid === myUid ||
-        secondaryUid === myUid ||
-        includesUid(staff.helperIds, myUid);
-
-      const isPairedTech =
-        pairedTechUid ? primaryUid === pairedTechUid || secondaryUid === pairedTechUid : false;
-
-      if (!isMine && !isPairedTech) return;
-
-      const helperNames = Array.isArray(staff.helperNames) ? staff.helperNames : [];
-      const helperText =
-        helperNames.length > 0
-          ? helperNames.length === 1
-            ? `Helper: ${helperNames[0]}`
-            : `Helpers: ${helperNames.join(", ")}`
-          : undefined;
-
-      const secondaryTechText = staff.secondaryTechnicianName
-        ? `2nd Tech: ${staff.secondaryTechnicianName}`
-        : undefined;
-
-      const techName =
-        staff.primaryTechnicianName || project?.assignedTechnicianName || "Unassigned";
-
-      const timeText = end !== start ? `Project Stage (${start} → ${end})` : "Project Stage";
-
-      items.push({
-        kind: "project_stage",
-        id: `${project.id}-${stageKey}-${todayIso}`,
-        title: `${project.projectName} • ${label}`,
-        subtitle: project.customerDisplayName,
-        location: project.serviceAddressLine1,
+      return {
+        id: t.id,
+        title: titleForTrip(t),
+        subtitle: subtitleForTrip(t),
         timeText,
-        statusText: `Stage: ${formatStageStatus(stage?.status || "not_started")}`,
-        techText: `Tech: ${techName}`,
-        helperText,
-        secondaryTechText,
-        href: `/projects/${project.id}`,
-      });
-    }
-
-    for (const p of projects) {
-      if ((p as any).active === false) continue;
-      considerStage(p as any, "roughIn", "Rough-In");
-      considerStage(p as any, "topOutVent", "Top-Out / Vent");
-      considerStage(p as any, "trimFinish", "Trim / Finish");
-    }
-
-    return items;
-  }, [projects, myUid, todayIso, isHelperLike, effectivePairedTechUid]);
-
-  const allItems = useMemo(() => {
-    const merged = [...todaysTicketItems, ...todaysProjectStageItems];
-    merged.sort((a, b) => {
-      const aKey = a.kind === "service_ticket" ? a.timeText : "99:99";
-      const bKey = b.kind === "service_ticket" ? b.timeText : "99:99";
-      const byTime = aKey.localeCompare(bKey);
-      if (byTime !== 0) return byTime;
-      return a.title.localeCompare(b.title);
+        statusText,
+        techText: `Tech: ${crew.primary}`,
+        helperText: crew.helper,
+        secondaryTechText: crew.secondaryTech,
+        secondaryHelperText: crew.secondaryHelper,
+        href,
+      };
     });
-    return merged;
-  }, [todaysTicketItems, todaysProjectStageItems]);
+
+    mapped.sort((a, b) => a.timeText.localeCompare(b.timeText));
+    return mapped;
+  }, [visibleTrips]);
+
+  const banner = useMemo(() => {
+    if (!myUid) return null;
+
+    if (isHelperRole) {
+      if (override?.assignedTechUid) {
+        return {
+          kind: "override" as const,
+          title: "✅ Override Active",
+          text: `Today you are reassigned to a different technician for today.`,
+          sub: `Assigned Tech UID: ${override.assignedTechUid}${override.note ? ` • Note: ${override.note}` : ""}`,
+        };
+      }
+
+      return {
+        kind: "default" as const,
+        title: "✅ Pairing Active",
+        text: "Today you are using your normal crew pairing. (Overrides apply if set by admin.)",
+        sub: "",
+      };
+    }
+
+    return null;
+  }, [myUid, isHelperRole, override]);
 
   return (
     <ProtectedPage fallbackTitle="My Day">
@@ -564,6 +339,9 @@ export default function TechnicianMyDayPage() {
             <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>My Day</h1>
             <p style={{ marginTop: "6px", color: "#666" }}>
               Today: <strong>{todayIso}</strong>
+            </p>
+            <p style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
+              Trips-driven view (this is what will power timesheets + payroll accuracy)
             </p>
           </div>
 
@@ -605,12 +383,14 @@ export default function TechnicianMyDayPage() {
               borderRadius: "12px",
               padding: "12px",
               background: "#fafafa",
+              maxWidth: "980px",
             }}
           >
-            <div style={{ fontWeight: 800 }}>{banner.title}</div>
-            <div style={{ marginTop: "6px", color: "#555", fontSize: "13px" }}>
-              {banner.message}
-            </div>
+            <div style={{ fontWeight: 900 }}>{banner.title}</div>
+            <div style={{ marginTop: "6px", color: "#555", fontSize: "13px" }}>{banner.text}</div>
+            {banner.sub ? (
+              <div style={{ marginTop: "6px", color: "#777", fontSize: "12px" }}>{banner.sub}</div>
+            ) : null}
           </div>
         ) : null}
 
@@ -618,8 +398,8 @@ export default function TechnicianMyDayPage() {
         {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
 
         {!loading && !error ? (
-          <div style={{ marginTop: "16px" }}>
-            {allItems.length === 0 ? (
+          <div style={{ marginTop: "16px", maxWidth: "980px" }}>
+            {items.length === 0 ? (
               <div
                 style={{
                   border: "1px dashed #ccc",
@@ -629,11 +409,11 @@ export default function TechnicianMyDayPage() {
                   color: "#666",
                 }}
               >
-                No work scheduled for you today.
+                No trips scheduled for you today.
               </div>
             ) : (
               <div style={{ display: "grid", gap: "12px" }}>
-                {allItems.map((item) => (
+                {items.map((item) => (
                   <Link
                     key={item.id}
                     href={item.href}
@@ -647,10 +427,7 @@ export default function TechnicianMyDayPage() {
                       color: "inherit",
                     }}
                   >
-                    <div style={{ fontWeight: 700, fontSize: "15px" }}>
-                      {item.kind === "service_ticket" ? "🔧 " : "📐 "}
-                      {item.title}
-                    </div>
+                    <div style={{ fontWeight: 900, fontSize: "15px" }}>{item.title}</div>
 
                     <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
                       {item.timeText} • {item.statusText}
@@ -658,10 +435,6 @@ export default function TechnicianMyDayPage() {
 
                     <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
                       {item.subtitle}
-                    </div>
-
-                    <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
-                      {item.location}
                     </div>
 
                     <div style={{ marginTop: "8px", fontSize: "12px", color: "#777" }}>
@@ -677,6 +450,12 @@ export default function TechnicianMyDayPage() {
                     {item.secondaryTechText ? (
                       <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
                         {item.secondaryTechText}
+                      </div>
+                    ) : null}
+
+                    {item.secondaryHelperText ? (
+                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                        {item.secondaryHelperText}
                       </div>
                     ) : null}
                   </Link>

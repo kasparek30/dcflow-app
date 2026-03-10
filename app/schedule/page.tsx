@@ -7,10 +7,6 @@ import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
-import type { ServiceTicket } from "../../src/types/service-ticket";
-import type { Project } from "../../src/types/project";
-import type { EmployeeUnavailability, UnavailabilityType } from "../../src/types/unavailability";
-import type { AppUser } from "../../src/types/app-user";
 
 type DayBucket = {
   key: string;
@@ -20,23 +16,68 @@ type DayBucket = {
   dayIndex: number;
 };
 
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+
+  helperUid?: string | null;
+  helperName?: string | null;
+
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
+
+type TripLink = {
+  projectId?: string | null;
+  projectStageKey?: string | null;
+  serviceTicketId?: string | null;
+};
+
+type Trip = {
+  id: string;
+  active: boolean;
+
+  type?: "project" | "service" | string;
+  status?: string;
+
+  date?: string; // YYYY-MM-DD
+  timeWindow?: "am" | "pm" | "all_day" | string;
+  startTime?: string; // "08:00"
+  endTime?: string; // "17:00"
+
+  crew?: TripCrew;
+  link?: TripLink;
+
+  notes?: string | null;
+  cancelReason?: string | null;
+
+  sourceKey?: string;
+
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 type ScheduleItem = {
-  kind: "service_ticket" | "project_stage" | "unavailable";
+  kind: "trip";
   id: string;
   date: string;
   sortTime: string;
+
   title: string;
   subtitle: string;
-  location: string;
 
-  tech: string;
-
+  techText: string;
   helperText?: string;
   secondaryTechText?: string;
+  secondaryHelperText?: string;
 
-  status: string;
-  href: string;
+  statusText: string;
   timeText: string;
+
+  href: string;
 };
 
 function formatDateToIsoLocal(date: Date) {
@@ -80,124 +121,88 @@ function buildWeekDays(baseDate: Date): DayBucket[] {
   });
 }
 
-function formatStatusLabel(status: ServiceTicket["status"]) {
-  switch (status) {
-    case "new":
-      return "New";
-    case "scheduled":
-      return "Scheduled";
-    case "in_progress":
-      return "In Progress";
-    case "follow_up":
-      return "Follow Up";
-    case "completed":
-      return "Completed";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return status;
+function formatWindow(window?: string) {
+  const w = (window || "").toLowerCase();
+  if (w === "am") return "AM (8–12)";
+  if (w === "pm") return "PM (1–5)";
+  if (w === "all_day") return "All Day (8–5)";
+  return window || "—";
+}
+
+function formatTripType(type?: string) {
+  const t = (type || "").toLowerCase();
+  if (t === "project") return "📐 Project";
+  if (t === "service") return "🔧 Service";
+  return type ? `🧩 ${type}` : "🧩 Trip";
+}
+
+function buildHrefFromLink(link?: TripLink) {
+  if (!link) return "/trips";
+  if (link.serviceTicketId) return `/service-tickets/${link.serviceTicketId}`;
+  if (link.projectId) return `/projects/${link.projectId}`;
+  return "/trips";
+}
+
+function buildTitleFromTrip(trip: Trip) {
+  const typeLabel = formatTripType(trip.type);
+
+  const stageKey = trip.link?.projectStageKey || "";
+  const stageLabel =
+    stageKey === "roughIn"
+      ? "Rough-In"
+      : stageKey === "topOutVent"
+        ? "Top-Out / Vent"
+        : stageKey === "trimFinish"
+          ? "Trim / Finish"
+          : stageKey;
+
+  if (trip.type === "project") {
+    return stageLabel ? `${typeLabel} • ${stageLabel}` : `${typeLabel}`;
   }
-}
 
-function formatProjectBidStatus(status: Project["bidStatus"]) {
-  switch (status) {
-    case "draft":
-      return "Draft";
-    case "submitted":
-      return "Submitted";
-    case "won":
-      return "Won";
-    case "lost":
-      return "Lost";
-    default:
-      return status;
+  if (trip.type === "service") {
+    return `${typeLabel} • Service Ticket`;
   }
+
+  return `${typeLabel}`;
 }
 
-function formatProjectStageStatus(status: Project["roughIn"]["status"]) {
-  switch (status) {
-    case "not_started":
-      return "Not Started";
-    case "scheduled":
-      return "Scheduled";
-    case "in_progress":
-      return "In Progress";
-    case "complete":
-      return "Complete";
-    default:
-      return status;
+function buildSubtitleFromTrip(trip: Trip) {
+  const link = trip.link;
+  if (link?.serviceTicketId) return `Ticket: ${link.serviceTicketId}`;
+  if (link?.projectId) {
+    const stage = link.projectStageKey ? ` • ${link.projectStageKey}` : "";
+    return `Project: ${link.projectId}${stage}`;
   }
+  return trip.sourceKey ? `Source: ${trip.sourceKey}` : "—";
 }
 
-function formatUnavailabilityType(t: UnavailabilityType) {
-  switch (t) {
-    case "sick":
-      return "Sick";
-    case "pto":
-      return "PTO";
-    case "holiday":
-      return "Holiday";
-    case "unpaid":
-      return "Unpaid";
-    case "other":
-      return "Out";
-    default:
-      return t;
-  }
-}
+function crewText(crew?: TripCrew) {
+  const primary = crew?.primaryTechName || crew?.primaryTechUid || "Unassigned";
 
-function isoInRange(targetIso: string, startIso: string, endIso: string) {
-  const start = (startIso || "").trim();
-  const end = (endIso || "").trim();
-
-  if (!start) return false;
-  if (!end) return targetIso === start;
-
-  const min = start < end ? start : end;
-  const max = start < end ? end : start;
-
-  return targetIso >= min && targetIso <= max;
-}
-
-function buildCrewTextFromStaffing(staffing: any, fallbackProject: any) {
-  const primaryName =
-    staffing?.primaryTechnicianName ||
-    fallbackProject?.primaryTechnicianName ||
-    fallbackProject?.assignedTechnicianName ||
-    "Unassigned";
-
-  const secondaryName =
-    staffing?.secondaryTechnicianName ||
-    fallbackProject?.secondaryTechnicianName ||
-    "";
-
-  const helperNamesRaw =
-    (Array.isArray(staffing?.helperNames) && staffing.helperNames) ||
-    (Array.isArray(fallbackProject?.helperNames) && fallbackProject.helperNames) ||
-    [];
-
-  const helperNames = helperNamesRaw.filter(Boolean);
-
-  const helperText =
-    helperNames.length > 0
-      ? helperNames.length === 1
-        ? `Helper: ${helperNames[0]}`
-        : `Helpers: ${helperNames.join(", ")}`
+  const helper =
+    crew?.helperName || crew?.helperUid
+      ? `Helper: ${crew?.helperName || crew?.helperUid}`
       : undefined;
 
-  const secondaryTechText = secondaryName ? `2nd Tech: ${secondaryName}` : undefined;
+  const secondaryTech =
+    crew?.secondaryTechName || crew?.secondaryTechUid
+      ? `2nd Tech: ${crew?.secondaryTechName || crew?.secondaryTechUid}`
+      : undefined;
 
-  return { primaryName, helperText, secondaryTechText };
+  const secondaryHelper =
+    crew?.secondaryHelperName || crew?.secondaryHelperUid
+      ? `2nd Helper: ${crew?.secondaryHelperName || crew?.secondaryHelperUid}`
+      : undefined;
+
+  return { primary, helper, secondaryTech, secondaryHelper };
 }
 
 export default function WeeklySchedulePage() {
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
-  const [tickets, setTickets] = useState<ServiceTicket[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [unavailability, setUnavailability] = useState<EmployeeUnavailability[]>([]);
-  const [userMap, setUserMap] = useState<Record<string, string>>({});
+  const [trips, setTrips] = useState<Trip[]>([]);
   const [error, setError] = useState("");
 
   const [weekOffset, setWeekOffset] = useState(0);
@@ -207,128 +212,43 @@ export default function WeeklySchedulePage() {
 
   useEffect(() => {
     async function loadData() {
+      setLoading(true);
+      setError("");
+
       try {
-        const [ticketSnap, projectSnap, unavailSnap, usersSnap] = await Promise.all([
-          getDocs(collection(db, "serviceTickets")),
-          getDocs(collection(db, "projects")),
-          getDocs(collection(db, "employeeUnavailability")),
-          getDocs(collection(db, "users")),
-        ]);
+        const snap = await getDocs(collection(db, "trips"));
 
-        const ticketItems: ServiceTicket[] = ticketSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
+        const items: Trip[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data() as any;
 
           return {
             id: docSnap.id,
-            customerId: data.customerId ?? "",
-            customerDisplayName: data.customerDisplayName ?? "",
-            serviceAddressId: data.serviceAddressId ?? undefined,
-            serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-            serviceAddressLine1: data.serviceAddressLine1 ?? "",
-            serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-            serviceCity: data.serviceCity ?? "",
-            serviceState: data.serviceState ?? "",
-            servicePostalCode: data.servicePostalCode ?? "",
-            issueSummary: data.issueSummary ?? "",
-            issueDetails: data.issueDetails ?? undefined,
-            status: data.status ?? "new",
-            estimatedDurationMinutes: data.estimatedDurationMinutes ?? 0,
-            scheduledDate: data.scheduledDate ?? undefined,
-            scheduledStartTime: data.scheduledStartTime ?? undefined,
-            scheduledEndTime: data.scheduledEndTime ?? undefined,
+            active: typeof d.active === "boolean" ? d.active : true,
 
-            assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-            assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+            type: d.type ?? undefined,
+            status: d.status ?? undefined,
 
-            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-            assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
-              ? data.assignedTechnicianIds.filter(Boolean)
-              : undefined,
+            date: d.date ?? undefined,
+            timeWindow: d.timeWindow ?? undefined,
+            startTime: d.startTime ?? undefined,
+            endTime: d.endTime ?? undefined,
 
-            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+            crew: d.crew ?? undefined,
+            link: d.link ?? undefined,
 
-            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
+            notes: d.notes ?? null,
+            cancelReason: d.cancelReason ?? null,
 
-            internalNotes: data.internalNotes ?? undefined,
-            active: data.active ?? true,
-            createdAt: data.createdAt ?? undefined,
-            updatedAt: data.updatedAt ?? undefined,
-          };
-        });
+            sourceKey: d.sourceKey ?? undefined,
 
-        const projectItems: Project[] = projectSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-
-          return {
-            id: docSnap.id,
-            customerId: data.customerId ?? "",
-            customerDisplayName: data.customerDisplayName ?? "",
-            serviceAddressId: data.serviceAddressId ?? undefined,
-            serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-            serviceAddressLine1: data.serviceAddressLine1 ?? "",
-            serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-            serviceCity: data.serviceCity ?? "",
-            serviceState: data.serviceState ?? "",
-            servicePostalCode: data.servicePostalCode ?? "",
-            projectName: data.projectName ?? "",
-            projectType: data.projectType ?? "other",
-            description: data.description ?? undefined,
-            bidStatus: data.bidStatus ?? "draft",
-            totalBidAmount: data.totalBidAmount ?? 0,
-            roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
-            topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
-            trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
-
-            // project-level default crew (optional)
-            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-            primaryTechnicianName: data.primaryTechnicianName ?? undefined,
-            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-
-            // legacy
-            assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-            assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-
-            internalNotes: data.internalNotes ?? undefined,
-            active: data.active ?? true,
-            createdAt: data.createdAt ?? undefined,
-            updatedAt: data.updatedAt ?? undefined,
-          } as any;
-        });
-
-        const unavailItems: EmployeeUnavailability[] = unavailSnap.docs.map((docSnap) => {
-          const d = docSnap.data();
-          return {
-            id: docSnap.id,
-            userUid: d.userUid ?? "",
-            date: d.date ?? "",
-            type: (d.type ?? "other") as UnavailabilityType,
-            reason: d.reason ?? undefined,
-            active: d.active ?? true,
             createdAt: d.createdAt ?? undefined,
-            createdByUid: d.createdByUid ?? undefined,
             updatedAt: d.updatedAt ?? undefined,
-            updatedByUid: d.updatedByUid ?? undefined,
           };
         });
 
-        const um: Record<string, string> = {};
-        usersSnap.docs.forEach((docSnap) => {
-          const d = docSnap.data() as Partial<AppUser> & { displayName?: string; uid?: string };
-          const uid = (d.uid ?? docSnap.id) as string;
-          um[uid] = (d.displayName ?? "Unnamed") as string;
-        });
-
-        setTickets(ticketItems);
-        setProjects(projectItems);
-        setUnavailability(unavailItems);
-        setUserMap(um);
+        setTrips(items);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load weekly schedule.");
+        setError(err instanceof Error ? err.message : "Failed to load weekly schedule (trips).");
       } finally {
         setLoading(false);
       }
@@ -358,107 +278,42 @@ export default function WeeklySchedulePage() {
     const result: Record<string, ScheduleItem[]> = {};
     for (const day of allWeekDays) result[day.isoDate] = [];
 
-    // ✅ Unavailability blocks (single day)
-    for (const u of unavailability) {
-      if (!u.active) continue;
-      if (!u.date || !result[u.date]) continue;
+    for (const trip of trips) {
+      if (trip.active === false) continue;
+      if (!trip.date) continue;
+      if (!result[trip.date]) continue;
 
-      const name = userMap[u.userUid] || u.userUid;
-      const t = formatUnavailabilityType(u.type);
-      const reason = u.reason ? ` • ${u.reason}` : "";
+      const crew = crewText(trip.crew);
 
-      result[u.date].push({
-        kind: "unavailable",
-        id: `unavail-${u.id}`,
-        date: u.date,
-        sortTime: "00:00",
-        title: `🚫 OUT: ${name}`,
-        subtitle: t + reason,
-        location: "",
-        tech: name,
-        status: "Unavailable",
-        href: "/admin/unavailability",
-        timeText: "Employee Unavailable",
+      const href = buildHrefFromLink(trip.link);
+
+      const timeText =
+        trip.startTime || trip.endTime
+          ? `${trip.startTime || "—"} - ${trip.endTime || "—"} • ${formatWindow(trip.timeWindow)}`
+          : formatWindow(trip.timeWindow);
+
+      const statusText =
+        trip.status
+          ? `${trip.status}${trip.cancelReason ? ` • Cancel: ${trip.cancelReason}` : ""}`
+          : "—";
+
+      result[trip.date].push({
+        kind: "trip",
+        id: trip.id,
+        date: trip.date,
+        sortTime: trip.startTime || (trip.timeWindow === "am" ? "08:00" : trip.timeWindow === "pm" ? "13:00" : "12:00"),
+        title: buildTitleFromTrip(trip),
+        subtitle: buildSubtitleFromTrip(trip),
+
+        techText: `Tech: ${crew.primary}`,
+        helperText: crew.helper,
+        secondaryTechText: crew.secondaryTech,
+        secondaryHelperText: crew.secondaryHelper,
+
+        statusText,
+        href,
+        timeText,
       });
-    }
-
-    // Service tickets
-    for (const ticket of tickets) {
-      if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
-
-      const primaryName = ticket.assignedTechnicianName || "Unassigned";
-      const helperNames = Array.isArray(ticket.helperNames) ? ticket.helperNames : [];
-      const secondaryName = ticket.secondaryTechnicianName || "";
-
-      const helperText =
-        helperNames.length > 0
-          ? helperNames.length === 1
-            ? `Helper: ${helperNames[0]}`
-            : `Helpers: ${helperNames.join(", ")}`
-          : undefined;
-
-      const secondaryTechText = secondaryName ? `2nd Tech: ${secondaryName}` : undefined;
-
-      result[ticket.scheduledDate].push({
-        kind: "service_ticket",
-        id: ticket.id,
-        date: ticket.scheduledDate,
-        sortTime: ticket.scheduledStartTime || "99:99",
-        title: ticket.issueSummary,
-        subtitle: ticket.customerDisplayName,
-        location: ticket.serviceAddressLine1,
-        tech: primaryName,
-        helperText,
-        secondaryTechText,
-        status: formatStatusLabel(ticket.status),
-        href: `/service-tickets/${ticket.id}`,
-        timeText: `${ticket.scheduledStartTime || "—"} - ${ticket.scheduledEndTime || "—"}`,
-      });
-    }
-
-    // Projects (stage date range)
-    for (const project of projects) {
-      const stageEntries = [
-        { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
-        { stageKey: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
-        { stageKey: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
-      ] as const;
-
-      for (const entry of stageEntries) {
-        const start = (entry.stage as any).scheduledDate as string | undefined;
-        if (!start) continue;
-
-        const end = ((entry.stage as any).scheduledEndDate as string | undefined) || start;
-
-        for (const day of allWeekDays) {
-          if (!result[day.isoDate]) continue;
-          if (!isoInRange(day.isoDate, start, end)) continue;
-
-          const staffing = (entry.stage as any).staffing || null;
-          const crew = buildCrewTextFromStaffing(staffing, project as any);
-
-          const timeText =
-            end && end !== start ? `Project Stage (${start} → ${end})` : "Project Stage";
-
-          result[day.isoDate].push({
-            kind: "project_stage",
-            id: `${project.id}-${entry.stageKey}-${day.isoDate}`,
-            date: day.isoDate,
-            sortTime: "12:00",
-            title: `${project.projectName} • ${entry.label}`,
-            subtitle: project.customerDisplayName,
-            location: project.serviceAddressLine1,
-            tech: crew.primaryName,
-            helperText: crew.helperText,
-            secondaryTechText: crew.secondaryTechText,
-            status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
-              project.bidStatus
-            )}`,
-            href: `/projects/${project.id}`,
-            timeText,
-          });
-        }
-      }
     }
 
     for (const day of allWeekDays) {
@@ -470,81 +325,14 @@ export default function WeeklySchedulePage() {
     }
 
     return result;
-  }, [tickets, projects, allWeekDays, unavailability, userMap]);
+  }, [trips, allWeekDays]);
 
-  const unscheduledItems = useMemo(() => {
-    const ticketItems: ScheduleItem[] = tickets
-      .filter((ticket) => !ticket.scheduledDate)
-      .map((ticket) => {
-        const primaryName = ticket.assignedTechnicianName || "Unassigned";
-        const helperNames = Array.isArray(ticket.helperNames) ? ticket.helperNames : [];
-        const secondaryName = ticket.secondaryTechnicianName || "";
-
-        const helperText =
-          helperNames.length > 0
-            ? helperNames.length === 1
-              ? `Helper: ${helperNames[0]}`
-              : `Helpers: ${helperNames.join(", ")}`
-            : undefined;
-
-        const secondaryTechText = secondaryName ? `2nd Tech: ${secondaryName}` : undefined;
-
-        return {
-          kind: "service_ticket",
-          id: ticket.id,
-          date: "",
-          sortTime: "99:99",
-          title: ticket.issueSummary,
-          subtitle: ticket.customerDisplayName,
-          location: ticket.serviceAddressLine1,
-          tech: primaryName,
-          helperText,
-          secondaryTechText,
-          status: formatStatusLabel(ticket.status),
-          href: `/service-tickets/${ticket.id}`,
-          timeText: "Unscheduled",
-        };
-      });
-
-    const projectItems: ScheduleItem[] = [];
-
-    for (const project of projects) {
-      const stageEntries = [
-        { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
-        { stageKey: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
-        { stageKey: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
-      ] as const;
-
-      for (const entry of stageEntries) {
-        const start = (entry.stage as any).scheduledDate as string | undefined;
-        if (start) continue;
-        if (entry.stage.status === "complete") continue;
-
-        const staffing = (entry.stage as any).staffing || null;
-        const crew = buildCrewTextFromStaffing(staffing, project as any);
-
-        projectItems.push({
-          kind: "project_stage",
-          id: `${project.id}-${entry.stageKey}-unscheduled`,
-          date: "",
-          sortTime: "99:99",
-          title: `${project.projectName} • ${entry.label}`,
-          subtitle: project.customerDisplayName,
-          location: project.serviceAddressLine1,
-          tech: crew.primaryName,
-          helperText: crew.helperText,
-          secondaryTechText: crew.secondaryTechText,
-          status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
-            project.bidStatus
-          )}`,
-          href: `/projects/${project.id}`,
-          timeText: "Project Stage Unscheduled",
-        });
-      }
-    }
-
-    return [...ticketItems, ...projectItems];
-  }, [tickets, projects]);
+  const unscheduledTrips = useMemo(() => {
+    return trips
+      .filter((t) => t.active !== false)
+      .filter((t) => !t.date)
+      .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+  }, [trips]);
 
   return (
     <ProtectedPage fallbackTitle="Weekly Schedule">
@@ -566,6 +354,9 @@ export default function WeeklySchedulePage() {
             </p>
             <p style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
               Currently showing: {showWeekends ? "Monday–Sunday" : "Monday–Friday"}
+            </p>
+            <p style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+              Trips-driven schedule (projects + service share the same blocking + payroll structure)
             </p>
           </div>
 
@@ -629,7 +420,7 @@ export default function WeeklySchedulePage() {
             ) : null}
 
             <Link
-              href="/service-tickets/new"
+              href="/trips"
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
@@ -639,24 +430,8 @@ export default function WeeklySchedulePage() {
                 background: "white",
               }}
             >
-              New Service Ticket
+              Trips List
             </Link>
-
-            {isAdmin ? (
-              <Link
-                href="/admin/unavailability"
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #ccc",
-                  borderRadius: "10px",
-                  textDecoration: "none",
-                  color: "inherit",
-                  background: "white",
-                }}
-              >
-                Employee Out
-              </Link>
-            ) : null}
           </div>
         </div>
 
@@ -708,7 +483,7 @@ export default function WeeklySchedulePage() {
                             background: "white",
                           }}
                         >
-                          No scheduled items
+                          No trips scheduled
                         </div>
                       ) : (
                         dayItems.map((item) => (
@@ -720,19 +495,12 @@ export default function WeeklySchedulePage() {
                               border: "1px solid #ddd",
                               borderRadius: "10px",
                               padding: "10px",
-                              background: item.kind === "unavailable" ? "#fff5f5" : "white",
+                              background: "white",
                               textDecoration: "none",
                               color: "inherit",
                             }}
                           >
-                            <div style={{ fontWeight: 700, fontSize: "14px" }}>
-                              {item.kind === "project_stage"
-                                ? "📐 "
-                                : item.kind === "unavailable"
-                                  ? "🚫 "
-                                  : "🔧 "}
-                              {item.title}
-                            </div>
+                            <div style={{ fontWeight: 700, fontSize: "14px" }}>{item.title}</div>
 
                             <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
                               {item.timeText}
@@ -742,14 +510,8 @@ export default function WeeklySchedulePage() {
                               {item.subtitle}
                             </div>
 
-                            {item.location ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                                {item.location}
-                              </div>
-                            ) : null}
-
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                              Tech: {item.tech}
+                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
+                              {item.techText}
                             </div>
 
                             {item.helperText ? (
@@ -764,8 +526,14 @@ export default function WeeklySchedulePage() {
                               </div>
                             ) : null}
 
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                              Status: {item.status}
+                            {item.secondaryHelperText ? (
+                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                                {item.secondaryHelperText}
+                              </div>
+                            ) : null}
+
+                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
+                              Status: {item.statusText}
                             </div>
                           </Link>
                         ))
@@ -783,64 +551,43 @@ export default function WeeklySchedulePage() {
                 borderRadius: "12px",
                 padding: "16px",
                 background: "#fafafa",
+                maxWidth: "1100px",
               }}
             >
               <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
-                Unscheduled Work
+                Unscheduled Trips
               </h2>
 
-              {unscheduledItems.length === 0 ? (
-                <p style={{ color: "#666" }}>No unscheduled work.</p>
+              {unscheduledTrips.length === 0 ? (
+                <p style={{ color: "#666" }}>No unscheduled trips.</p>
               ) : (
                 <div style={{ display: "grid", gap: "10px" }}>
-                  {unscheduledItems.map((item) => (
-                    <Link
-                      key={item.id}
-                      href={item.href}
-                      style={{
-                        display: "block",
-                        border: "1px solid #ddd",
-                        borderRadius: "10px",
-                        padding: "10px",
-                        background: "white",
-                        textDecoration: "none",
-                        color: "inherit",
-                      }}
-                    >
-                      <div style={{ fontWeight: 700, fontSize: "14px" }}>
-                        {item.kind === "project_stage" ? "📐 " : "🔧 "}
-                        {item.title}
-                      </div>
-
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                        {item.subtitle}
-                      </div>
-
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                        {item.location}
-                      </div>
-
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                        Tech: {item.tech}
-                      </div>
-
-                      {item.helperText ? (
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                          {item.helperText}
+                  {unscheduledTrips.map((trip) => {
+                    const crew = crewText(trip.crew);
+                    return (
+                      <Link
+                        key={trip.id}
+                        href="/trips"
+                        style={{
+                          display: "block",
+                          border: "1px solid #ddd",
+                          borderRadius: "10px",
+                          padding: "10px",
+                          background: "white",
+                          textDecoration: "none",
+                          color: "inherit",
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: "14px" }}>{buildTitleFromTrip(trip)}</div>
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
+                          {buildSubtitleFromTrip(trip)}
                         </div>
-                      ) : null}
-
-                      {item.secondaryTechText ? (
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                          {item.secondaryTechText}
+                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
+                          Tech: {crew.primary}
                         </div>
-                      ) : null}
-
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                        Status: {item.status}
-                      </div>
-                    </Link>
-                  ))}
+                      </Link>
+                    );
+                  })}
                 </div>
               )}
             </div>
