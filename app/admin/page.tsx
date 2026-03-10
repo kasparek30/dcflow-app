@@ -33,40 +33,40 @@ export default function AdminHomePage() {
           </div>
 
           <Link
-  href="/admin/my-day"
-  style={{
-    display: "block",
-    border: "1px solid #ddd",
-    borderRadius: "12px",
-    padding: "12px",
-    textDecoration: "none",
-    color: "inherit",
-    background: "white",
-  }}
->
-  <div style={{ fontWeight: 700 }}>Admin: View My Day</div>
-  <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
-    View any employee’s My Day (pick user + date).
-  </div>
-</Link>
+            href="/admin/trips-sync"
+            style={{
+              display: "block",
+              border: "1px solid #ddd",
+              borderRadius: "12px",
+              padding: "12px",
+              textDecoration: "none",
+              color: "inherit",
+              background: "white",
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>Trips Sync</div>
+            <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
+              Build/refresh Trips from scheduled service tickets + project stages.
+            </div>
+          </Link>
 
           <Link
-  href="/admin/pto-override"
-  style={{
-    display: "block",
-    border: "1px solid #ddd",
-    borderRadius: "12px",
-    padding: "12px",
-    textDecoration: "none",
-    color: "inherit",
-    background: "white",
-  }}
->
-  <div style={{ fontWeight: 700 }}>Admin PTO Override</div>
-  <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
-    Create PTO/Sick time for an employee without them submitting first.
-  </div>
-</Link>
+            href="/admin/pto-override"
+            style={{
+              display: "block",
+              border: "1px solid #ddd",
+              borderRadius: "12px",
+              padding: "12px",
+              textDecoration: "none",
+              color: "inherit",
+              background: "white",
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>Admin PTO Override</div>
+            <div style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
+              Create PTO/Sick time for an employee without them submitting first.
+            </div>
+          </Link>
 
           <Link
             href="/admin/users"
