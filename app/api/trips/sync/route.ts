@@ -1,401 +1,283 @@
-// app/api/trips/sync/route.ts
-
-import { NextRequest, NextResponse } from "next/server";
+// app/api/trips/complete/route.ts
+import { NextResponse } from "next/server";
 import { adminDb } from "../../../../src/lib/firebase-admin";
+import { getPayrollWeekBounds } from "../../../../src/lib/payroll";
 
-type SyncBody = {
-  daysBack?: number;     // default 30
-  daysForward?: number;  // default 120
-  actorUid?: string;     // optional, for auditing
+type CompleteTripBody = {
+  tripId: string;
+  mode: "resolved" | "follow_up"; // for now we generate timeEntries on resolved
+  resolutionNotes?: string | null;
+  followUpNotes?: string | null;
 };
 
-type AnyDoc = Record<string, any>;
-
-function isoLocalFromDate(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function toNumber(x: any, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function addDays(iso: string, days: number) {
-  const d = new Date(`${iso}T12:00:00`);
-  d.setDate(d.getDate() + days);
-  return isoLocalFromDate(d);
+function roundToQuarterHours(hours: number) {
+  // 0.25 hour increments
+  return Math.round(hours / 0.25) * 0.25;
 }
 
-function eachIsoDayInclusive(startIso: string, endIso: string) {
-  const out: string[] = [];
-  const start = new Date(`${startIso}T12:00:00`);
-  const end = new Date(`${endIso}T12:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return out;
-  if (end < start) return out;
-
-  const cur = new Date(start);
-  while (cur <= end) {
-    out.push(isoLocalFromDate(cur));
-    cur.setDate(cur.getDate() + 1);
-  }
-  return out;
+function diffMs(startIso?: string | null, endIso?: string | null) {
+  if (!startIso || !endIso) return 0;
+  const a = new Date(startIso).getTime();
+  const b = new Date(endIso).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.max(0, b - a);
 }
 
-function safeString(x: any) {
-  return typeof x === "string" ? x : "";
+function uniqStrings(arr: Array<string | null | undefined>) {
+  return Array.from(new Set(arr.map((x) => (x || "").trim()).filter(Boolean)));
 }
 
-function safeBool(x: any, fallback = true) {
-  return typeof x === "boolean" ? x : fallback;
+function laborRoleTypeForCrewSlot(slot: "primary" | "helper" | "secondaryTech" | "secondaryHelper") {
+  // You can rename these later; keep consistent now.
+  if (slot === "primary") return "lead_field";
+  if (slot === "helper") return "helper_field";
+  if (slot === "secondaryTech") return "secondary_field";
+  return "secondary_helper_field";
 }
 
-function asArray<T>(x: any): T[] {
-  if (!x) return [];
-  return Array.isArray(x) ? x : [x];
-}
-
-function inIsoRange(iso: string, startIso: string, endIso: string) {
-  // YYYY-MM-DD lexicographic compare works
-  return iso >= startIso && iso <= endIso;
-}
-
-function inferTimeWindow(startTime?: string, endTime?: string) {
-  const s = (startTime || "").trim();
-  const e = (endTime || "").trim();
-
-  if (s === "08:00" && e === "12:00") return { timeWindow: "am" as const, start: "08:00", end: "12:00" };
-  if (s === "13:00" && e === "17:00") return { timeWindow: "pm" as const, start: "13:00", end: "17:00" };
-  if (s === "08:00" && e === "17:00") return { timeWindow: "all_day" as const, start: "08:00", end: "17:00" };
-
-  // If only date exists but times aren’t standard, treat as custom
-  if (s || e) return { timeWindow: "custom" as const, start: s || undefined, end: e || undefined };
-
-  // default for date-only scheduled items
-  return { timeWindow: "all_day" as const, start: "08:00", end: "17:00" };
-}
-
-function buildServiceTripDoc(ticketId: string, t: AnyDoc, actorUid: string | null) {
-  const date = safeString(t.scheduledDate);
-  const { timeWindow, start, end } = inferTimeWindow(t.scheduledStartTime, t.scheduledEndTime);
-
-  const primaryTechUid =
-    safeString(t.primaryTechnicianId) ||
-    safeString(t.assignedTechnicianId);
-
-  const primaryTechName =
-    safeString(t.primaryTechnicianName) ||
-    safeString(t.assignedTechnicianName);
-
-  const helperIds = asArray<string>(t.helperIds).filter(Boolean);
-  const helperNames = asArray<string>(t.helperNames).filter(Boolean);
-
-  const secondaryTechUid = safeString(t.secondaryTechnicianId);
-  const secondaryTechName = safeString(t.secondaryTechnicianName);
-
-  const crew = {
-    primaryTechUid: primaryTechUid || "",
-    primaryTechName: primaryTechName || undefined,
-
-    helperUid: helperIds[0] || undefined,
-    helperName: helperNames[0] || undefined,
-
-    secondaryTechUid: secondaryTechUid || undefined,
-    secondaryTechName: secondaryTechName || undefined,
-
-    // v1: secondary helper optional future
-    secondaryHelperUid: helperIds[1] || undefined,
-    secondaryHelperName: helperNames[1] || undefined,
-  };
-
-  const sourceKey = `serviceTicket:${ticketId}:${date}:${timeWindow}`;
-
-  return {
-    type: "service",
-    status: "planned",
-
-    date,
-    timeWindow,
-
-    startTime: start ?? null,
-    endTime: end ?? null,
-
-    crew: {
-      primaryTechUid: crew.primaryTechUid,
-      primaryTechName: crew.primaryTechName ?? null,
-
-      helperUid: crew.helperUid ?? null,
-      helperName: crew.helperName ?? null,
-
-      secondaryTechUid: crew.secondaryTechUid ?? null,
-      secondaryTechName: crew.secondaryTechName ?? null,
-
-      secondaryHelperUid: crew.secondaryHelperUid ?? null,
-      secondaryHelperName: crew.secondaryHelperName ?? null,
-    },
-
-    link: {
-      serviceTicketId: ticketId,
-      projectId: null,
-      projectStageKey: null,
-    },
-
-    sourceKey,
-
-    notes: null,
-    cancelReason: null,
-
-    active: true,
-
-    updatedAt: new Date().toISOString(),
-    updatedByUid: actorUid ?? null,
-  };
-}
-
-function buildProjectTripDoc(
-  projectId: string,
-  stageKey: string,
-  date: string,
-  stage: AnyDoc,
-  project: AnyDoc,
-  actorUid: string | null
-) {
-  // stage staffing override wins, otherwise project-level fields
-  const staffing = (stage && typeof stage.staffing === "object" && stage.staffing) ? stage.staffing : null;
-
-  const primaryTechUid =
-    safeString(staffing?.primaryTechnicianId) ||
-    safeString(project.primaryTechnicianId) ||
-    safeString(project.assignedTechnicianId);
-
-  const primaryTechName =
-    safeString(staffing?.primaryTechnicianName) ||
-    safeString(project.primaryTechnicianName) ||
-    safeString(project.assignedTechnicianName);
-
-  const secondaryTechUid =
-    safeString(staffing?.secondaryTechnicianId) ||
-    safeString(project.secondaryTechnicianId);
-
-  const secondaryTechName =
-    safeString(staffing?.secondaryTechnicianName) ||
-    safeString(project.secondaryTechnicianName);
-
-  const helperIds =
-    asArray<string>(staffing?.helperIds).filter(Boolean).length > 0
-      ? asArray<string>(staffing?.helperIds).filter(Boolean)
-      : asArray<string>(project.helperIds).filter(Boolean);
-
-  const helperNames =
-    asArray<string>(staffing?.helperNames).filter(Boolean).length > 0
-      ? asArray<string>(staffing?.helperNames).filter(Boolean)
-      : asArray<string>(project.helperNames).filter(Boolean);
-
-  const crew = {
-    primaryTechUid: primaryTechUid || "",
-    primaryTechName: primaryTechName || undefined,
-
-    helperUid: helperIds[0] || undefined,
-    helperName: helperNames[0] || undefined,
-
-    secondaryTechUid: secondaryTechUid || undefined,
-    secondaryTechName: secondaryTechName || undefined,
-
-    secondaryHelperUid: helperIds[1] || undefined,
-    secondaryHelperName: helperNames[1] || undefined,
-  };
-
-  const sourceKey = `project:${projectId}:${stageKey}:${date}`;
-
-  return {
-    type: "project",
-    status: "planned",
-
-    date,
-    timeWindow: "all_day",
-
-    startTime: "08:00",
-    endTime: "17:00",
-
-    crew: {
-      primaryTechUid: crew.primaryTechUid,
-      primaryTechName: crew.primaryTechName ?? null,
-
-      helperUid: crew.helperUid ?? null,
-      helperName: crew.helperName ?? null,
-
-      secondaryTechUid: crew.secondaryTechUid ?? null,
-      secondaryTechName: crew.secondaryTechName ?? null,
-
-      secondaryHelperUid: crew.secondaryHelperUid ?? null,
-      secondaryHelperName: crew.secondaryHelperName ?? null,
-    },
-
-    link: {
-      serviceTicketId: null,
-      projectId,
-      projectStageKey: stageKey,
-    },
-
-    sourceKey,
-
-    notes: null,
-    cancelReason: null,
-
-    active: true,
-
-    updatedAt: new Date().toISOString(),
-    updatedByUid: actorUid ?? null,
-  };
-}
-
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const body = (await req.json().catch(() => ({}))) as SyncBody;
+    const body = (await req.json()) as CompleteTripBody;
 
-    const daysBack = Number.isFinite(body.daysBack as number) ? Number(body.daysBack) : 30;
-    const daysForward = Number.isFinite(body.daysForward as number) ? Number(body.daysForward) : 120;
+    const tripId = String(body.tripId || "").trim();
+    if (!tripId) {
+      return NextResponse.json({ ok: false, error: "Missing tripId." }, { status: 400 });
+    }
 
-    const actorUid = (body.actorUid && String(body.actorUid).trim()) ? String(body.actorUid).trim() : null;
-
-    const todayIso = isoLocalFromDate(new Date());
-    const rangeStart = addDays(todayIso, -Math.max(0, daysBack));
-    const rangeEnd = addDays(todayIso, Math.max(0, daysForward));
+    const mode = body.mode;
+    if (mode !== "resolved" && mode !== "follow_up") {
+      return NextResponse.json({ ok: false, error: "Invalid mode." }, { status: 400 });
+    }
 
     const db = adminDb();
 
-    // For v1, we read full collections and filter in memory (simple + reliable).
-    // If you want to optimize later, we can add indexed queries.
-    const [ticketsSnap, projectsSnap] = await Promise.all([
-      db.collection("serviceTickets").get(),
-      db.collection("projects").get(),
-    ]);
+    // Load trip
+    const tripRef = db.collection("trips").doc(tripId);
+    const tripSnap = await tripRef.get();
+    if (!tripSnap.exists) {
+      return NextResponse.json({ ok: false, error: "Trip not found." }, { status: 404 });
+    }
+
+    const trip = tripSnap.data() as any;
+
+    // Only service trips generate time entries right now
+    const tripType = String(trip?.type || "");
+    if (tripType !== "service") {
+      return NextResponse.json(
+        { ok: false, error: "Only service trips generate time entries in v1." },
+        { status: 400 }
+      );
+    }
+
+    const active = trip?.active !== false;
+    if (!active) {
+      return NextResponse.json({ ok: false, error: "Trip is inactive/cancelled." }, { status: 400 });
+    }
+
+    const tripDate = String(trip?.date || "").trim();
+    if (!tripDate) {
+      return NextResponse.json({ ok: false, error: "Trip is missing date." }, { status: 400 });
+    }
+
+    // Validate required fields for resolved
+    const resolutionNotes = String(body.resolutionNotes || "").trim();
+    if (mode === "resolved") {
+      if (!resolutionNotes) {
+        return NextResponse.json(
+          { ok: false, error: "Resolution notes are required to resolve a trip." },
+          { status: 400 }
+        );
+      }
+
+      const materials = Array.isArray(trip?.materials) ? trip.materials : [];
+      if (materials.length < 1) {
+        return NextResponse.json(
+          { ok: false, error: "At least 1 material line item is required to resolve a trip." },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Compute duration from timer fields on trip
+    // Expected fields (based on what you implemented):
+    // startedAt, endedAt, pausedMs (or totalPausedMs)
+    const startedAt = trip?.startedAt || null;
+    const endedAt = trip?.endedAt || null;
+
+    const rawMs = diffMs(startedAt, endedAt);
+    const pausedMs = toNumber(trip?.pausedMs ?? trip?.totalPausedMs ?? 0, 0);
+
+    const billableMs = Math.max(0, rawMs - pausedMs);
+    const hours = roundToQuarterHours(billableMs / (1000 * 60 * 60));
+
+    if (mode === "resolved") {
+      if (!startedAt || !endedAt) {
+        return NextResponse.json(
+          { ok: false, error: "Trip must be started and ended to resolve." },
+          { status: 400 }
+        );
+      }
+      if (hours <= 0) {
+        return NextResponse.json(
+          { ok: false, error: "Trip duration must be > 0 to resolve." },
+          { status: 400 }
+        );
+      }
+    }
+
+    const link = trip?.link || {};
+    const serviceTicketId = link?.serviceTicketId ? String(link.serviceTicketId) : null;
+
+    // Determine crew members
+    const crew = trip?.crew || {};
+    const primaryTechUid = crew?.primaryTechUid ? String(crew.primaryTechUid) : "";
+    const helperUid = crew?.helperUid ? String(crew.helperUid) : "";
+    const secondaryTechUid = crew?.secondaryTechUid ? String(crew.secondaryTechUid) : "";
+    const secondaryHelperUid = crew?.secondaryHelperUid ? String(crew.secondaryHelperUid) : "";
+
+    const crewUids = uniqStrings([primaryTechUid, helperUid, secondaryTechUid, secondaryHelperUid]);
+
+    if (mode === "resolved" && crewUids.length === 0) {
+      return NextResponse.json(
+        { ok: false, error: "Trip has no crew assigned; cannot generate time entries." },
+        { status: 400 }
+      );
+    }
+
+    // Idempotency:
+    // We will create one timeEntry per crew member, keyed by (tripId + employeeId)
+    // Query existing entries for this trip first.
+    const existingSnap = await db
+      .collection("timeEntries")
+      .where("source", "==", "trip_completion")
+      .where("tripId", "==", tripId)
+      .get();
+
+    const existingEmployeeIds = new Set<string>();
+    existingSnap.docs.forEach((d) => {
+      const data = d.data() as any;
+      const empId = String(data?.employeeId || "").trim();
+      if (empId) existingEmployeeIds.add(empId);
+    });
 
     const nowIso = new Date().toISOString();
+    const { weekStartDate, weekEndDate } = getPayrollWeekBounds(tripDate);
 
-    // Build up trip writes (batch)
-    let batch = db.batch();
-    let batchCount = 0;
-    let createdOrUpdated = 0;
+    // Load user display info (names/roles) for crew
+    // (This avoids blank names in time entries)
+    const userDocs = await Promise.all(
+      crewUids.map((uid) => db.collection("users").doc(uid).get())
+    );
 
-    const samples: any[] = [];
+    const userMap = new Map<string, { displayName: string; role: string }>();
+    for (const snap of userDocs) {
+      if (!snap.exists) continue;
+      const u = snap.data() as any;
+      const uid = String(u?.uid || snap.id).trim();
+      if (!uid) continue;
+      userMap.set(uid, {
+        displayName: String(u?.displayName || "Unknown User"),
+        role: String(u?.role || "employee"),
+      });
+    }
 
-    // --------------------------
-    // SERVICE TICKETS -> TRIPS
-    // --------------------------
-    for (const doc of ticketsSnap.docs) {
-      const t = doc.data() as AnyDoc;
+    // Create missing timeEntries (resolved only)
+    let createdCount = 0;
 
-      // Must have scheduledDate to become a trip
-      const scheduledDate = safeString(t.scheduledDate);
-      if (!scheduledDate) continue;
+    if (mode === "resolved") {
+      for (const uid of crewUids) {
+        if (existingEmployeeIds.has(uid)) continue;
 
-      // Only within sync window
-      if (!inIsoRange(scheduledDate, rangeStart, rangeEnd)) continue;
+        const user = userMap.get(uid);
+        const employeeName = user?.displayName || uid;
+        const employeeRole = user?.role || "employee";
 
-      // Optional: only create trips for tickets that are not cancelled
-      const status = safeString(t.status);
-      if (status === "cancelled") continue;
+        // determine laborRoleType based on which slot they occupy on the trip
+        let laborRoleType = "crew";
+        if (uid === primaryTechUid) laborRoleType = laborRoleTypeForCrewSlot("primary");
+        else if (uid === helperUid) laborRoleType = laborRoleTypeForCrewSlot("helper");
+        else if (uid === secondaryTechUid) laborRoleType = laborRoleTypeForCrewSlot("secondaryTech");
+        else if (uid === secondaryHelperUid) laborRoleType = laborRoleTypeForCrewSlot("secondaryHelper");
 
-      const { timeWindow } = inferTimeWindow(t.scheduledStartTime, t.scheduledEndTime);
+        await db.collection("timeEntries").add({
+          employeeId: uid,
+          employeeName,
+          employeeRole,
+          laborRoleType,
 
-      const tripId = `svc_${doc.id}_${scheduledDate}_${timeWindow}`; // deterministic doc id
-      const ref = db.collection("trips").doc(tripId);
+          entryDate: tripDate,
+          weekStartDate,
+          weekEndDate,
 
-      const payload = buildServiceTripDoc(doc.id, t, actorUid);
+          category: "service_ticket",
+          hours,
+          payType: "regular",
+          billable: true,
 
-      // only set createdAt/createdByUid if doc is new (merge won’t overwrite if it exists unless set)
-      batch.set(
-        ref,
-        {
-          ...payload,
+          source: "trip_completion",
+          tripId,
+          tripSourceKey: trip?.sourceKey || null,
+
+          serviceTicketId: serviceTicketId,
+          projectId: null,
+          projectStageKey: null,
+
+          linkedTechnicianId: primaryTechUid || null,
+          linkedTechnicianName: crew?.primaryTechName || null,
+
+          notes: `AUTO_TRIP:${tripId} • Resolved trip time`,
+          timesheetId: null,
+
+          entryStatus: "draft",
+
           createdAt: nowIso,
-          createdByUid: actorUid ?? null,
-        },
-        { merge: true }
-      );
+          updatedAt: nowIso,
+        });
 
-      createdOrUpdated += 1;
-      batchCount += 1;
-
-      if (samples.length < 8) {
-        samples.push({ tripId, sourceKey: payload.sourceKey, date: scheduledDate, type: "service" });
-      }
-
-      if (batchCount >= 450) {
-        await batch.commit();
-        batch = db.batch();
-        batchCount = 0;
+        createdCount += 1;
       }
     }
 
-    // --------------------------
-    // PROJECT STAGES -> TRIPS
-    // --------------------------
-    for (const doc of projectsSnap.docs) {
-      const p = doc.data() as AnyDoc;
+    // Update trip status + write notes into trip itself
+    const nextTripStatus =
+      mode === "resolved" ? "resolved_ready_to_bill" : "follow_up_needed";
 
-      const stages: Array<{ key: string; stage: AnyDoc }> = [
-        { key: "roughIn", stage: p.roughIn || {} },
-        { key: "topOutVent", stage: p.topOutVent || {} },
-        { key: "trimFinish", stage: p.trimFinish || {} },
-      ];
+    const updatePayload: any = {
+      status: nextTripStatus,
+      updatedAt: nowIso,
+      // keep any existing notes but store resolution/followup separately (v1)
+      resolutionNotes: mode === "resolved" ? resolutionNotes : null,
+      followUpNotes: mode === "follow_up" ? String(body.followUpNotes || "").trim() || null : null,
+    };
 
-      for (const entry of stages) {
-        const startIso = safeString(entry.stage?.scheduledDate);
-        if (!startIso) continue;
+    await tripRef.update(updatePayload);
 
-        const endIso = safeString(entry.stage?.scheduledEndDate) || startIso;
-
-        // Skip if entire stage range is outside our sync window
-        if (endIso < rangeStart || startIso > rangeEnd) continue;
-
-        // Generate trips for overlap days in window
-        const days = eachIsoDayInclusive(startIso, endIso).filter((d) => inIsoRange(d, rangeStart, rangeEnd));
-
-        for (const dayIso of days) {
-          const tripId = `proj_${doc.id}_${entry.key}_${dayIso}`;
-          const ref = db.collection("trips").doc(tripId);
-
-          const payload = buildProjectTripDoc(doc.id, entry.key, dayIso, entry.stage, p, actorUid);
-
-          batch.set(
-            ref,
-            {
-              ...payload,
-              createdAt: nowIso,
-              createdByUid: actorUid ?? null,
-            },
-            { merge: true }
-          );
-
-          createdOrUpdated += 1;
-          batchCount += 1;
-
-          if (samples.length < 8) {
-            samples.push({ tripId, sourceKey: payload.sourceKey, date: dayIso, type: "project", stageKey: entry.key });
-          }
-
-          if (batchCount >= 450) {
-            await batch.commit();
-            batch = db.batch();
-            batchCount = 0;
-          }
-        }
+    // Optional: update parent ticket status
+    if (serviceTicketId) {
+      const ticketRef = db.collection("serviceTickets").doc(serviceTicketId);
+      if (mode === "resolved") {
+        await ticketRef.update({ status: "billing_review", updatedAt: nowIso });
+      } else {
+        await ticketRef.update({ status: "follow_up", updatedAt: nowIso });
       }
-    }
-
-    if (batchCount > 0) {
-      await batch.commit();
     }
 
     return NextResponse.json({
       ok: true,
-      message: "Trips sync complete.",
-      range: { start: rangeStart, end: rangeEnd },
-      createdOrUpdated,
-      samples,
+      tripId,
+      mode,
+      tripStatus: nextTripStatus,
+      createdTimeEntries: createdCount,
+      hoursGenerated: mode === "resolved" ? hours : 0,
     });
   } catch (err: unknown) {
     return NextResponse.json(
-      { ok: false, error: err instanceof Error ? err.message : "Trips sync failed." },
+      { ok: false, error: err instanceof Error ? err.message : "Trip completion failed." },
       { status: 500 }
     );
   }
