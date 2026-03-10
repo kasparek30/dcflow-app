@@ -7,6 +7,7 @@ import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import type { AppUser } from "../../../src/types/app-user";
 
 type TripCrew = {
   primaryTechUid?: string | null;
@@ -70,6 +71,13 @@ type MyDayItem = {
   href: string;
 };
 
+type UserOption = {
+  uid: string;
+  displayName: string;
+  role: AppUser["role"];
+  active: boolean;
+};
+
 function isoTodayLocal() {
   const d = new Date();
   const y = d.getFullYear();
@@ -102,10 +110,10 @@ function stageLabel(stageKey?: string | null) {
 }
 
 function buildHref(link?: TripLink) {
-  if (!link) return "/trips";
+  if (!link) return "/schedule";
   if (link.serviceTicketId) return `/service-tickets/${link.serviceTicketId}`;
   if (link.projectId) return `/projects/${link.projectId}`;
-  return "/trips";
+  return "/schedule";
 }
 
 function titleForTrip(t: Trip) {
@@ -160,24 +168,109 @@ function isUidInCrew(uid: string, crew?: TripCrew) {
 export default function TechnicianMyDayPage() {
   const { appUser } = useAuthContext();
 
+  const todayIso = useMemo(() => isoTodayLocal(), []);
+
+  const myUid = appUser?.uid || "";
+  const myRole = appUser?.role || "";
+
+  // ✅ Admin-like roles can view other employees
+  const canViewOthers =
+    myRole === "admin" || myRole === "dispatcher" || myRole === "manager";
+
+  // Users list for dropdown (admin only)
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersError, setUsersError] = useState("");
+  const [users, setUsers] = useState<UserOption[]>([]);
+
+  // “Viewing” uid:
+  // - non-admins: always self
+  // - admins: default to self, can switch
+  const [viewUid, setViewUid] = useState("");
+
+  // Trips + override
   const [loading, setLoading] = useState(true);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [override, setOverride] = useState<DailyCrewOverride | null>(null);
   const [error, setError] = useState("");
 
-  const todayIso = useMemo(() => isoTodayLocal(), []);
-  const myUid = appUser?.uid || "";
-  const myRole = appUser?.role || "";
+  // Keep viewUid in sync
+  useEffect(() => {
+    if (!myUid) return;
+    if (!canViewOthers) {
+      setViewUid(myUid);
+      return;
+    }
+    // admin default: self (unless already selected)
+    setViewUid((prev) => prev || myUid);
+  }, [myUid, canViewOthers]);
 
-  const isHelperRole = myRole === "helper" || myRole === "apprentice";
+  // Load users for admin dropdown
+  useEffect(() => {
+    async function loadUsers() {
+      if (!canViewOthers) return;
 
+      setUsersLoading(true);
+      setUsersError("");
+
+      try {
+        const snap = await getDocs(collection(db, "users"));
+        const items: UserOption[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data() as any;
+          return {
+            uid: d.uid ?? docSnap.id,
+            displayName: d.displayName ?? "Unnamed",
+            role: d.role ?? "technician",
+            active: typeof d.active === "boolean" ? d.active : false,
+          };
+        });
+
+        const active = items.filter((u) => u.active);
+        active.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        setUsers(active);
+      } catch (err: unknown) {
+        setUsersError(err instanceof Error ? err.message : "Failed to load users.");
+      } finally {
+        setUsersLoading(false);
+      }
+    }
+
+    loadUsers();
+  }, [canViewOthers]);
+
+  const viewingUser = useMemo(() => {
+    if (!viewUid) return null;
+    if (!canViewOthers) {
+      return appUser
+        ? {
+            uid: appUser.uid,
+            displayName: appUser.displayName || "Unknown",
+            role: appUser.role || "technician",
+            active: true,
+          }
+        : null;
+    }
+    return users.find((u) => u.uid === viewUid) ?? null;
+  }, [viewUid, canViewOthers, users, appUser]);
+
+  const viewingRole = viewingUser?.role || "";
+  const viewingIsHelperRole = viewingRole === "helper" || viewingRole === "apprentice";
+
+  const assignedTechNameFromUid = useMemo(() => {
+    if (!override?.assignedTechUid) return "";
+    const u = users.find((x) => x.uid === override.assignedTechUid);
+    return u?.displayName || "";
+  }, [override?.assignedTechUid, users]);
+
+  // Load trips + override (based on viewUid)
   useEffect(() => {
     async function load() {
+      if (!viewUid) return;
+
       setLoading(true);
       setError("");
 
       try {
-        // Pull trips for today only (fast and clean)
+        // Trips for today only
         const tripsSnap = await getDocs(
           query(collection(db, "trips"), where("date", "==", todayIso))
         );
@@ -199,15 +292,16 @@ export default function TechnicianMyDayPage() {
           };
         });
 
-        // Load daily crew override for THIS helper (if helper/apprentice)
+        // Daily crew override:
+        // only matters if viewing a helper/apprentice
         let foundOverride: DailyCrewOverride | null = null;
 
-        if (isHelperRole && myUid) {
+        if (viewingIsHelperRole && viewUid) {
           const overrideSnap = await getDocs(
             query(
               collection(db, "dailyCrewOverrides"),
               where("date", "==", todayIso),
-              where("helperUid", "==", myUid),
+              where("helperUid", "==", viewUid),
               where("active", "==", true)
             )
           );
@@ -236,20 +330,20 @@ export default function TechnicianMyDayPage() {
     }
 
     load();
-  }, [todayIso, myUid, isHelperRole]);
+  }, [todayIso, viewUid, viewingIsHelperRole]);
 
   const visibleTrips = useMemo(() => {
-    if (!myUid) return [];
+    if (!viewUid) return [];
 
-    // Default: show trips where you are explicitly on the crew
+    // Default: show trips where the viewed user is explicitly on the crew
     const explicitCrewTrips = trips
       .filter((t) => t.active !== false)
-      .filter((t) => isUidInCrew(myUid, t.crew));
+      .filter((t) => isUidInCrew(viewUid, t.crew));
 
-    // If you are a helper/apprentice AND an override exists:
+    // If viewing a helper/apprentice AND an override exists:
     // - also show trips where primary tech == override.assignedTechUid
-    // - BUT hide “default tech” trips unless you’re explicitly on crew
-    if (isHelperRole && override?.assignedTechUid) {
+    // - but keep explicit crew trips too
+    if (viewingIsHelperRole && override?.assignedTechUid) {
       const overrideTechTrips = trips
         .filter((t) => t.active !== false)
         .filter((t) => (t.crew?.primaryTechUid || "") === override.assignedTechUid);
@@ -264,7 +358,7 @@ export default function TechnicianMyDayPage() {
     }
 
     return explicitCrewTrips;
-  }, [trips, myUid, isHelperRole, override]);
+  }, [trips, viewUid, viewingIsHelperRole, override]);
 
   const items = useMemo(() => {
     const mapped: MyDayItem[] = visibleTrips.map((t) => {
@@ -300,20 +394,31 @@ export default function TechnicianMyDayPage() {
   }, [visibleTrips]);
 
   const banner = useMemo(() => {
-    if (!myUid) return null;
+    if (!viewUid) return null;
 
-    if (isHelperRole) {
+    // Admin viewing someone else
+    if (canViewOthers && viewUid !== myUid && viewingUser) {
+      return {
+        title: "👀 Admin View",
+        text: `You are viewing My Day for: ${viewingUser.displayName} (${viewingUser.role})`,
+        sub: `UID: ${viewingUser.uid}`,
+      };
+    }
+
+    // Helper override banner (self-view or admin-view)
+    if (viewingIsHelperRole) {
       if (override?.assignedTechUid) {
+        const techName = assignedTechNameFromUid ? ` (${assignedTechNameFromUid})` : "";
         return {
-          kind: "override" as const,
           title: "✅ Override Active",
-          text: `Today you are reassigned to a different technician for today.`,
-          sub: `Assigned Tech UID: ${override.assignedTechUid}${override.note ? ` • Note: ${override.note}` : ""}`,
+          text: "Today you are reassigned to a different technician.",
+          sub: `Assigned Tech UID: ${override.assignedTechUid}${techName}${
+            override.note ? ` • Note: ${override.note}` : ""
+          }`,
         };
       }
 
       return {
-        kind: "default" as const,
         title: "✅ Pairing Active",
         text: "Today you are using your normal crew pairing. (Overrides apply if set by admin.)",
         sub: "",
@@ -321,7 +426,7 @@ export default function TechnicianMyDayPage() {
     }
 
     return null;
-  }, [myUid, isHelperRole, override]);
+  }, [viewUid, canViewOthers, myUid, viewingUser, viewingIsHelperRole, override, assignedTechNameFromUid]);
 
   return (
     <ProtectedPage fallbackTitle="My Day">
@@ -341,7 +446,7 @@ export default function TechnicianMyDayPage() {
               Today: <strong>{todayIso}</strong>
             </p>
             <p style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-              Trips-driven view (this is what will power timesheets + payroll accuracy)
+              Trips-driven view (this powers schedule + payroll accuracy)
             </p>
           </div>
 
@@ -375,6 +480,61 @@ export default function TechnicianMyDayPage() {
           </div>
         </div>
 
+        {/* ✅ Admin selector */}
+        {canViewOthers ? (
+          <div
+            style={{
+              marginTop: "14px",
+              border: "1px solid #ddd",
+              borderRadius: "12px",
+              padding: "12px",
+              background: "#fafafa",
+              maxWidth: "980px",
+              display: "grid",
+              gap: "8px",
+            }}
+          >
+            <div style={{ fontWeight: 900 }}>Admin: View another employee</div>
+
+            {usersLoading ? <div style={{ color: "#666", fontSize: "13px" }}>Loading users...</div> : null}
+            {usersError ? <div style={{ color: "red", fontSize: "13px" }}>{usersError}</div> : null}
+
+            {!usersLoading && !usersError ? (
+              <div>
+                <label style={{ fontSize: "13px", fontWeight: 700 }}>Employee</label>
+                <select
+                  value={viewUid}
+                  onChange={(e) => setViewUid(e.target.value)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    padding: "10px",
+                    marginTop: "6px",
+                    borderRadius: "10px",
+                    border: "1px solid #ccc",
+                    background: "white",
+                  }}
+                >
+                  {/* include self even if missing from list */}
+                  {myUid ? <option value={myUid}>Me (Admin) • {appUser?.displayName || myUid}</option> : null}
+                  {users
+                    .filter((u) => u.uid !== myUid)
+                    .map((u) => (
+                      <option key={u.uid} value={u.uid}>
+                        {u.displayName} ({u.role})
+                      </option>
+                    ))}
+                </select>
+
+                <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+                  This only changes what you are viewing — it does not modify the schedule.
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Banner */}
         {banner ? (
           <div
             style={{
@@ -394,7 +554,7 @@ export default function TechnicianMyDayPage() {
           </div>
         ) : null}
 
-        {loading ? <p style={{ marginTop: "16px" }}>Loading your day...</p> : null}
+        {loading ? <p style={{ marginTop: "16px" }}>Loading...</p> : null}
         {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
 
         {!loading && !error ? (
@@ -409,7 +569,7 @@ export default function TechnicianMyDayPage() {
                   color: "#666",
                 }}
               >
-                No trips scheduled for you today.
+                No trips scheduled for this employee today.
               </div>
             ) : (
               <div style={{ display: "grid", gap: "12px" }}>
