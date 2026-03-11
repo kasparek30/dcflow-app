@@ -11,6 +11,7 @@ import { adminDb } from "../../admin-db";
  * Put what you SEE in QBO UI here (we’ll match it against Name OR FullyQualifiedName).
  */
 const QBO_LABOR_ITEM_LABEL = "Labor N/T";
+const QBO_LABOR_ITEM_ID_OVERRIDE = "7"; // <-- from https://qbo.intuit.com/app/item?itemId=7
 const QBO_MATERIALS_ITEM_LABEL = "Materials:Materials"; // optional, see USE_MATERIALS_ITEM
 const USE_MATERIALS_ITEM = false; // v1 recommended = false (description-only)
 
@@ -65,6 +66,21 @@ async function qboQuery(realmId: string, queryStr: string) {
   const q = encodeURIComponent(queryStr);
   const url = `${base}/v3/company/${realmId}/query?query=${q}`;
   return qboFetchWithAutoRefresh(url);
+}
+
+async function getQboItemById(realmId: string, itemId: string) {
+  const base = getQboApiBaseUrl();
+  const url = `${base}/v3/company/${realmId}/item/${encodeURIComponent(itemId)}`;
+
+  const { res, body } = await qboFetchWithAutoRefresh(url);
+
+  if (!res.ok) return null;
+
+  // QBO usually returns { Item: {...} }
+  const item = (body?.Item ?? body) as any;
+  if (!item?.Id) return null;
+
+  return item as QboItem;
 }
 
 function pickBestItemMatch(items: QboItem[], label: string) {
@@ -172,6 +188,30 @@ function getItemRate(item: QboItem) {
 }
 
 async function getLaborItemAndRate(realmId: string) {
+  // ✅ 0) If override is set, fetch directly by Id (bulletproof)
+  if (QBO_LABOR_ITEM_ID_OVERRIDE) {
+    const byId = await getQboItemById(realmId, QBO_LABOR_ITEM_ID_OVERRIDE);
+    if (!byId?.Id) {
+      throw new Error(
+        `Labor item override Id "${QBO_LABOR_ITEM_ID_OVERRIDE}" not found in QBO for this realm.`
+      );
+    }
+
+    const unitPrice = getItemRate(byId);
+    if (!unitPrice) {
+      throw new Error(
+        `Found QBO labor item by Id (${byId.Id}) but it has no UnitPrice/SalesPrice. Set the sales price in QBO.`
+      );
+    }
+
+    return {
+      laborItemId: String(byId.Id),
+      laborItemName: byId.Name || QBO_LABOR_ITEM_LABEL,
+      laborUnitPrice: unitPrice,
+    };
+  }
+
+  // ✅ 1) Otherwise fall back to name/FQN matching
   const { item, candidates } = await findQboItemFlexible(realmId, QBO_LABOR_ITEM_LABEL);
 
   if (!item?.Id) {
