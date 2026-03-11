@@ -59,6 +59,17 @@ type TripMaterial = {
   notes?: string;
 };
 
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+  helperUid?: string | null;
+  helperName?: string | null;
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
+
 type TripDoc = {
   id: string;
   active: boolean;
@@ -69,16 +80,7 @@ type TripDoc = {
   startTime: string;
   endTime: string;
 
-  crew?: {
-    primaryTechUid?: string | null;
-    primaryTechName?: string | null;
-    helperUid?: string | null;
-    helperName?: string | null;
-    secondaryTechUid?: string | null;
-    secondaryTechName?: string | null;
-    secondaryHelperUid?: string | null;
-    secondaryHelperName?: string | null;
-  };
+  crew?: TripCrew;
 
   link?: {
     serviceTicketId?: string | null;
@@ -90,7 +92,6 @@ type TripDoc = {
   notes?: string | null;
   cancelReason?: string | null;
 
-  // Timer v1 fields
   timerState?: "not_started" | "running" | "paused" | "complete" | string;
   actualStartAt?: string | null;
   actualEndAt?: string | null;
@@ -99,18 +100,13 @@ type TripDoc = {
   pauseBlocks?: PauseBlock[];
   actualMinutes?: number | null;
 
-  // Work capture v1
   workNotes?: string | null;
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
 
-  // Crew snapshot
-  crewConfirmed?: TripDoc["crew"];
+  crewConfirmed?: TripCrew | null;
+  materials?: TripMaterial[] | null;
 
-  // Materials v1
-  materials?: TripMaterial[];
-
-  // extra
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
 
@@ -120,6 +116,37 @@ type TripDoc = {
   updatedByUid?: string | null;
 };
 
+type BillingPacket = {
+  status: "not_ready" | "ready_to_bill" | "invoiced";
+  readyToBillAt: string | null;
+  readyToBillTripId: string | null;
+
+  resolutionNotes: string | null;
+  workNotes: string | null;
+
+  labor: {
+    totalHours: number; // customer billed hours
+    byCrew: Array<{
+      uid: string;
+      name: string;
+      role: "technician";
+      hours: number;
+    }>;
+  };
+
+  materials: TripMaterial[];
+  photos: Array<{ url: string; caption?: string }>;
+
+  updatedAt: string;
+};
+
+type TicketWithBilling = ServiceTicket & {
+  billing?: BillingPacket | null;
+};
+
+// -----------------------------
+// Helpers
+// -----------------------------
 function normalizeRole(role?: string) {
   return (role || "").trim().toLowerCase();
 }
@@ -155,11 +182,11 @@ function roundToQuarter(hours: number) {
   return Math.round(hours * 4) / 4;
 }
 
-function stripUndefined(obj: unknown): unknown {
+function stripUndefined<T>(obj: T): T {
   if (obj === null || obj === undefined) return obj;
 
   if (Array.isArray(obj)) {
-    return obj.map((v) => stripUndefined(v));
+    return obj.map((v) => stripUndefined(v)) as unknown as T;
   }
 
   if (typeof obj === "object") {
@@ -168,52 +195,12 @@ function stripUndefined(obj: unknown): unknown {
       if (v === undefined) continue;
       out[k] = stripUndefined(v);
     }
-    return out;
+    return out as unknown as T;
   }
 
   return obj;
 }
 
-function crewMembersFromTrip(trip: any) {
-  const crew = trip?.crewConfirmed || trip?.crew || {};
-  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> =
-    [];
-
-  if (crew?.primaryTechUid)
-    out.push({
-      uid: crew.primaryTechUid,
-      name: crew.primaryTechName || "Tech",
-      role: "technician",
-    });
-  if (crew?.helperUid)
-    out.push({
-      uid: crew.helperUid,
-      name: crew.helperName || "Helper",
-      role: "helper",
-    });
-
-  if (crew?.secondaryTechUid)
-    out.push({
-      uid: crew.secondaryTechUid,
-      name: crew.secondaryTechName || "2nd Tech",
-      role: "technician",
-    });
-  if (crew?.secondaryHelperUid)
-    out.push({
-      uid: crew.secondaryHelperUid,
-      name: crew.secondaryHelperName || "2nd Helper",
-      role: "helper",
-    });
-
-  // de-dupe by uid
-  const seen = new Set<string>();
-  return out.filter((m) => {
-    if (!m.uid) return false;
-    if (seen.has(m.uid)) return false;
-    seen.add(m.uid);
-    return true;
-  });
-}
 
 function formatTripWindow(w: string) {
   if (w === "am") return "AM";
@@ -254,7 +241,7 @@ function sumPausedMinutes(pauseBlocks?: PauseBlock[]) {
   return total;
 }
 
-function isUidOnTripCrew(uid: string, crew?: TripDoc["crew"]) {
+function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
   if (!uid) return false;
   if (!crew) return false;
   return (
@@ -265,7 +252,49 @@ function isUidOnTripCrew(uid: string, crew?: TripDoc["crew"]) {
   );
 }
 
-// ---- Timesheet + TimeEntry helpers ----
+function crewMembersFromTrip(trip: { crewConfirmed?: TripCrew | null; crew?: TripCrew | null }) {
+  const crew = trip.crewConfirmed || trip.crew || {};
+  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> = [];
+
+  if (crew.primaryTechUid)
+    out.push({
+      uid: crew.primaryTechUid,
+      name: crew.primaryTechName || "Primary Tech",
+      role: "technician",
+    });
+
+  if (crew.helperUid)
+    out.push({
+      uid: crew.helperUid,
+      name: crew.helperName || "Helper",
+      role: "helper",
+    });
+
+  if (crew.secondaryTechUid)
+    out.push({
+      uid: crew.secondaryTechUid,
+      name: crew.secondaryTechName || "Secondary Tech",
+      role: "technician",
+    });
+
+  if (crew.secondaryHelperUid)
+    out.push({
+      uid: crew.secondaryHelperUid,
+      name: crew.secondaryHelperName || "Secondary Helper",
+      role: "helper",
+    });
+
+  // de-dupe
+  const seen = new Set<string>();
+  return out.filter((m) => {
+    if (!m.uid) return false;
+    if (seen.has(m.uid)) return false;
+    seen.add(m.uid);
+    return true;
+  });
+}
+
+// ---- Weekly Timesheets + TimeEntries helpers ----
 function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
@@ -285,8 +314,7 @@ async function upsertWeeklyTimesheetHeader(args: {
   weekEndDate: string;
   createdByUid: string | null;
 }) {
-  const { employeeId, employeeName, employeeRole, weekStartDate, weekEndDate, createdByUid } =
-    args;
+  const { employeeId, employeeName, employeeRole, weekStartDate, weekEndDate, createdByUid } = args;
   const now = nowIso();
 
   const timesheetId = buildWeeklyTimesheetId(employeeId, weekStartDate);
@@ -298,7 +326,6 @@ async function upsertWeeklyTimesheetHeader(args: {
       employeeId,
       employeeName,
       employeeRole,
-
       weekStartDate,
       weekEndDate,
 
@@ -310,7 +337,7 @@ async function upsertWeeklyTimesheetHeader(args: {
       createdByUid: createdByUid || null,
       updatedAt: now,
       updatedByUid: createdByUid || null,
-    }) as any,
+    }),
     { merge: true }
   );
 
@@ -328,31 +355,19 @@ async function upsertTimeEntryFromTrip(args: {
   createdByUid: string | null;
   noteSuffix: string;
 }) {
-  const {
-    trip,
-    member,
-    entryDate,
-    hoursGenerated,
-    weekStartDate,
-    weekEndDate,
-    timesheetId,
-    createdByUid,
-    noteSuffix,
-  } = args;
+  const { trip, member, entryDate, hoursGenerated, weekStartDate, weekEndDate, timesheetId, createdByUid, noteSuffix } =
+    args;
 
   const now = nowIso();
 
   const timeEntryId = `trip_${trip.id}_${member.uid}`;
   const ref = doc(db, "timeEntries", timeEntryId);
 
-  // If entry exists and was manually edited, do NOT overwrite hours
   const existingSnap = await getDoc(ref);
-  const existing = existingSnap.exists()
-    ? (existingSnap.data() as ExistingTimeEntry)
-    : null;
+  const existing = existingSnap.exists() ? (existingSnap.data() as ExistingTimeEntry) : null;
 
   const hoursLocked = Boolean(existing?.hoursLocked);
-  const hoursToWrite = hoursLocked ? (existing?.hours ?? hoursGenerated) : hoursGenerated;
+  const hoursToWrite = hoursLocked ? Number(existing?.hours ?? hoursGenerated) : hoursGenerated;
 
   await setDoc(
     ref,
@@ -371,7 +386,6 @@ async function upsertTimeEntryFromTrip(args: {
       billable: true,
       source: "trip_completion",
 
-      // hours fields
       hours: hoursToWrite,
       hoursSource: hoursGenerated,
       hoursLocked: hoursLocked || false,
@@ -384,17 +398,43 @@ async function upsertTimeEntryFromTrip(args: {
       entryStatus: "draft",
       notes: `AUTO_TIME_FROM_TRIP:${trip.id} • ${noteSuffix}`,
 
-      createdAt: existingSnap.exists() ? (existing?.createdAt ?? now) : now,
-      createdByUid: existingSnap.exists()
-        ? (existing?.createdByUid ?? null)
-        : createdByUid || null,
+      createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
+      createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : createdByUid || null,
       updatedAt: now,
       updatedByUid: createdByUid || null,
-    }) as any,
+    }),
     { merge: true }
   );
 }
 
+function validateMaterialsForResolved(materials: TripMaterial[]):
+  | { ok: false; message: string }
+  | { ok: true; cleaned: TripMaterial[] } {
+  const cleaned = (materials || [])
+    .map((m) => ({
+      name: (m.name || "").trim(),
+      qty: Number(m.qty),
+      unit: (m.unit || "").trim(),
+      notes: (m.notes || "").trim(),
+    }))
+    .filter((m) => m.name);
+
+  if (cleaned.length < 1) {
+    return { ok: false, message: "Resolved requires at least 1 material line item (name + qty)." };
+  }
+
+  for (const m of cleaned) {
+    if (!Number.isFinite(m.qty) || m.qty <= 0) {
+      return { ok: false, message: `Material "${m.name}" must have qty > 0.` };
+    }
+  }
+
+  return { ok: true, cleaned };
+}
+
+// -----------------------------
+// Page
+// -----------------------------
 export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailPageProps) {
   const { appUser } = useAuthContext();
 
@@ -409,9 +449,17 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     appUser?.role === "helper" ||
     appUser?.role === "apprentice";
 
+  const canBill =
+    appUser?.role === "admin" ||
+    appUser?.role === "manager" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "billing";
+
+  const myUid = appUser?.uid || "";
+
   const [loading, setLoading] = useState(true);
   const [ticketId, setTicketId] = useState("");
-  const [ticket, setTicket] = useState<ServiceTicket | null>(null);
+  const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
 
   const [techniciansLoading, setTechniciansLoading] = useState(true);
@@ -422,7 +470,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
   const [profilesError, setProfilesError] = useState("");
 
-  // Legacy ticket update form state
+  // Legacy ticket update form state (kept; schedule fields hidden)
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
@@ -462,7 +510,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [tripSaveError, setTripSaveError] = useState("");
   const [tripSaveSuccess, setTripSaveSuccess] = useState("");
 
-  // Per-trip work state
+  // Per-trip work state (local UI state keyed by tripId)
   const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>({});
   const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>({});
   const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>({});
@@ -471,7 +519,10 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>({});
   const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>({});
 
-  const myUid = appUser?.uid || "";
+  // Billing UI
+  const [billingSaving, setBillingSaving] = useState(false);
+  const [billingErr, setBillingErr] = useState("");
+  const [billingOk, setBillingOk] = useState("");
 
   // -----------------------------
   // Load Ticket
@@ -492,9 +543,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           return;
         }
 
-        const data = snap.data();
+        const data = snap.data() as any;
 
-        const item: ServiceTicket = {
+        const item: TicketWithBilling = {
           id: snap.id,
           customerId: data.customerId ?? "",
           customerDisplayName: data.customerDisplayName ?? "",
@@ -525,14 +576,14 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
 
           helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-          helperNames: Array.isArray(data.helperNames)
-            ? data.helperNames.filter(Boolean)
-            : undefined,
+          helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
 
           internalNotes: data.internalNotes ?? undefined,
           active: data.active ?? true,
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
+
+          billing: data.billing ?? null,
         };
 
         setTicket(item);
@@ -564,7 +615,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         const items: TechnicianOption[] = snap.docs
           .map((docSnap) => {
-            const data = docSnap.data();
+            const data = docSnap.data() as any;
             return {
               uid: data.uid ?? docSnap.id,
               displayName: data.displayName ?? "Unnamed Technician",
@@ -597,7 +648,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       try {
         const snap = await getDocs(collection(db, "employeeProfiles"));
         const items: EmployeeProfileOption[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data();
+          const d = docSnap.data() as any;
           return {
             id: docSnap.id,
             userUid: d.userUid ?? null,
@@ -620,12 +671,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }, []);
 
   const helperCandidates = useMemo(() => {
-    const out: {
-      uid: string;
-      name: string;
-      laborRole: string;
-      defaultPairedTechUid?: string | null;
-    }[] = [];
+    const out: { uid: string; name: string; laborRole: string; defaultPairedTechUid?: string | null }[] = [];
 
     for (const p of employeeProfiles) {
       if ((p.employmentStatus || "current").toLowerCase() !== "current") continue;
@@ -705,8 +751,8 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
             workNotes: d.workNotes ?? null,
             resolutionNotes: d.resolutionNotes ?? null,
             followUpNotes: d.followUpNotes ?? null,
-            crewConfirmed: d.crewConfirmed ?? undefined,
-            materials: Array.isArray(d.materials) ? d.materials : undefined,
+            crewConfirmed: d.crewConfirmed ?? null,
+            materials: Array.isArray(d.materials) ? d.materials : null,
 
             outcome: d.outcome ?? null,
             readyToBillAt: d.readyToBillAt ?? null,
@@ -720,7 +766,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         setTrips(items);
 
-        // Seed UI state
+        // Seed UI state from loaded trips
         const nextWork: Record<string, string> = {};
         const nextRes: Record<string, string> = {};
         const nextFollow: Record<string, string> = {};
@@ -730,8 +776,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           nextWork[t.id] = (t.workNotes || "") as string;
           nextRes[t.id] = (t.resolutionNotes || "") as string;
           nextFollow[t.id] = (t.followUpNotes || "") as string;
-          nextMat[t.id] =
-            Array.isArray(t.materials) && t.materials.length ? t.materials : [];
+          nextMat[t.id] = Array.isArray(t.materials) && t.materials.length ? (t.materials as TripMaterial[]) : [];
         }
 
         setTripWorkNotes(nextWork);
@@ -766,9 +811,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     const techUid = tripPrimaryTechUid.trim();
     if (!techUid) return "";
 
-    const match = helperCandidates.find(
-      (h) => String(h.defaultPairedTechUid || "").trim() === techUid
-    );
+    const match = helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid);
     return match?.uid || "";
   }, [tripPrimaryTechUid, helperCandidates]);
 
@@ -782,7 +825,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }, [tripUseDefaultHelper, tripPrimaryTechUid, defaultHelperForPrimary]);
 
   // -----------------------------
-  // Existing: Save Ticket Updates (legacy)
+  // Legacy: Save Ticket Updates (schedule fields hidden)
   // -----------------------------
   const selectedTechnician = useMemo(() => {
     return technicians.find((tech) => tech.uid === selectedTechnicianUid) ?? null;
@@ -811,17 +854,20 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         updatedAt: now,
       });
 
-      setTicket({
-        ...ticket,
-        status,
-        estimatedDurationMinutes: Number(estimatedDurationMinutes),
-        scheduledDate: scheduledDate || undefined,
-        scheduledStartTime: scheduledStartTime || undefined,
-        scheduledEndTime: scheduledEndTime || undefined,
-        assignedTechnicianId: selectedTechnician?.uid || undefined,
-        assignedTechnicianName: selectedTechnician?.displayName || undefined,
-        internalNotes: internalNotes.trim() || undefined,
-        updatedAt: now,
+      setTicket((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status,
+          estimatedDurationMinutes: Number(estimatedDurationMinutes),
+          scheduledDate: scheduledDate || undefined,
+          scheduledStartTime: scheduledStartTime || undefined,
+          scheduledEndTime: scheduledEndTime || undefined,
+          assignedTechnicianId: selectedTechnician?.uid || undefined,
+          assignedTechnicianName: selectedTechnician?.displayName || undefined,
+          internalNotes: internalNotes.trim() || undefined,
+          updatedAt: now,
+        };
       });
 
       setSaveSuccess("Ticket updates saved successfully.");
@@ -844,7 +890,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }
 
   // -----------------------------
-  // Create Trip (dispatch tool)
+  // Create Trip (Dispatch)
   // -----------------------------
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -888,12 +934,8 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       const primaryName = findTechName(primaryUid) || "Unnamed Technician";
       const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
-      const secondaryTechName = secondaryTechUid
-        ? findTechName(secondaryTechUid) || "Unnamed Technician"
-        : null;
-      const secondaryHelperName = secondaryHelperUid
-        ? findHelperName(secondaryHelperUid) || "Unnamed Helper"
-        : null;
+      const secondaryTechName = secondaryTechUid ? findTechName(secondaryTechUid) || "Unnamed Technician" : null;
+      const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
 
       const sourceKey = `serviceTicket:${ticket.id}:${date}:${tripTimeWindow}`;
 
@@ -956,13 +998,13 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       const createdTripRef = await addDoc(collection(db, "trips"), tripPayload as any);
 
+      // Update ticket staffing pointers (keep for now)
       const helperIds = helperUid ? [helperUid] : [];
       const helperNames = helperName ? [helperName] : [];
 
       const assignedTechnicianIds: string[] = [];
       assignedTechnicianIds.push(primaryUid);
-      if (secondaryTechUid && secondaryTechUid !== primaryUid)
-        assignedTechnicianIds.push(secondaryTechUid);
+      if (secondaryTechUid && secondaryTechUid !== primaryUid) assignedTechnicianIds.push(secondaryTechUid);
       for (const h of helperIds) {
         if (!assignedTechnicianIds.includes(h)) assignedTechnicianIds.push(h);
       }
@@ -970,8 +1012,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         assignedTechnicianIds.push(secondaryHelperUid);
       }
 
-      const nextStatus =
-        tripSetTicketScheduled && ticket.status === "new" ? "scheduled" : ticket.status;
+      const nextStatus = tripSetTicketScheduled && ticket.status === "new" ? "scheduled" : ticket.status;
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         status: nextStatus,
@@ -993,19 +1034,15 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         if (!prev) return prev;
         return {
           ...prev,
-          status: nextStatus as ServiceTicket["status"],
+          status: nextStatus as any,
           assignedTechnicianId: primaryUid,
           assignedTechnicianName: primaryName,
           primaryTechnicianId: primaryUid,
           secondaryTechnicianId: secondaryTechUid || undefined,
-          secondaryTechnicianName: secondaryTechUid
-            ? (secondaryTechName || undefined)
-            : undefined,
+          secondaryTechnicianName: secondaryTechUid ? (secondaryTechName || undefined) : undefined,
           helperIds: helperIds.length ? helperIds : undefined,
           helperNames: helperNames.length ? helperNames : undefined,
-          assignedTechnicianIds: assignedTechnicianIds.length
-            ? assignedTechnicianIds
-            : undefined,
+          assignedTechnicianIds: assignedTechnicianIds.length ? assignedTechnicianIds : undefined,
           updatedAt: now,
         };
       });
@@ -1030,9 +1067,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       setTripFollowUpNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
 
-      setTripSaveSuccess(
-        `✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}). Trip ID: ${createdTripRef.id}`
-      );
+      setTripSaveSuccess(`✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}). Trip ID: ${createdTripRef.id}`);
       setTripNotes("");
     } catch (err: unknown) {
       setTripSaveError(err instanceof Error ? err.message : "Failed to create trip.");
@@ -1042,7 +1077,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }
 
   // -----------------------------
-  // Trip Timer + Complete actions
+  // Trip Actions
   // -----------------------------
   function setTripSavingFlag(tripId: string, value: boolean) {
     setTripActionSaving((prev) => ({ ...prev, [tripId]: value }));
@@ -1094,9 +1129,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
     try {
       const now = nowIso();
-      const tripRef = doc(db, "trips", trip.id);
-
-      await updateDoc(tripRef, {
+      await updateDoc(doc(db, "trips", trip.id), {
         status: "in_progress",
         timerState: "running",
         actualStartAt: trip.actualStartAt || now,
@@ -1163,9 +1196,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       });
 
       setTrips((prev) =>
-        prev.map((t) =>
-          t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks: curBlocks } : t
-        )
+        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks: curBlocks } : t))
       );
 
       setTripOk(trip.id, "⏸ Paused.");
@@ -1211,9 +1242,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       });
 
       setTrips((prev) =>
-        prev.map((t) =>
-          t.id === trip.id ? { ...t, timerState: "running", pauseBlocks: curBlocks } : t
-        )
+        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "running", pauseBlocks: curBlocks } : t))
       );
 
       setTripOk(trip.id, "▶ Resumed.");
@@ -1242,9 +1271,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         updatedByUid: myUid,
       });
 
-      setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, workNotes: notes || null } : t))
-      );
+      setTrips((prev) => prev.map((t) => (t.id === trip.id ? { ...t, workNotes: notes || null } : t)));
 
       setTripOk(trip.id, "💾 Notes saved.");
     } catch (err: unknown) {
@@ -1252,34 +1279,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     } finally {
       setTripSavingFlag(trip.id, false);
     }
-  }
-
-  function validateMaterialsForResolved(
-    materials: TripMaterial[]
-  ): { ok: false; message: string } | { ok: true; cleaned: TripMaterial[] } {
-    const cleaned = materials
-      .map((m) => ({
-        name: (m.name || "").trim(),
-        qty: Number(m.qty),
-        unit: (m.unit || "").trim(),
-        notes: (m.notes || "").trim(),
-      }))
-      .filter((m) => m.name);
-
-    if (cleaned.length < 1) {
-      return {
-        ok: false,
-        message: "Resolved requires at least 1 material line item (name + qty).",
-      };
-    }
-
-    for (const m of cleaned) {
-      if (!Number.isFinite(m.qty) || m.qty <= 0) {
-        return { ok: false, message: `Material "${m.name}" must have qty > 0.` };
-      }
-    }
-
-    return { ok: true, cleaned };
   }
 
   async function handleResolveTrip(trip: TripDoc) {
@@ -1321,7 +1320,34 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       const paused = sumPausedMinutes(pauseBlocks);
       const actualMinutes = Math.max(0, gross - paused);
 
-      // 1) update trip -> complete/resolved
+      if (!trip.date) {
+        throw new Error("Trip is missing date; cannot create time entries.");
+      }
+      if (!actualMinutes || actualMinutes <= 0) {
+        throw new Error("Trip duration is 0 minutes; no time entry created.");
+      }
+
+      // pull latest trip snapshot to ensure crewConfirmed is current
+      const latestSnap = await getDoc(doc(db, "trips", trip.id));
+      const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
+
+      const crewConfirmed: TripCrew | null = (latestTrip?.crewConfirmed ?? trip.crewConfirmed ?? null) as any;
+      const crewFallback: TripCrew | null = (latestTrip?.crew ?? trip.crew ?? null) as any;
+
+      const crewMembers = crewMembersFromTrip({
+        crewConfirmed,
+        crew: crewFallback,
+      });
+
+      if (crewMembers.length === 0) {
+        throw new Error("No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries.");
+      }
+
+      const hoursGenerated = roundToQuarter(actualMinutes / 60);
+      const entryDate = trip.date;
+      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
+
+      // 1) Update trip -> complete
       await updateDoc(
         doc(db, "trips", trip.id),
         stripUndefined({
@@ -1340,38 +1366,14 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
           materials: matCheck.cleaned,
 
-          crewConfirmed: trip.crewConfirmed || trip.crew || null,
+          crewConfirmed: crewConfirmed || crewFallback || null,
 
           updatedAt: now,
           updatedByUid: myUid,
         }) as any
       );
 
-      // 2) create timeEntries + weeklyTimesheets for each crew member
-      const entryDate = trip.date;
-      if (!entryDate) throw new Error("Trip is missing date; cannot create time entries.");
-      if (!actualMinutes || actualMinutes <= 0) {
-        throw new Error("Trip duration is 0 minutes; no time entry created.");
-      }
-
-      const hoursGenerated = roundToQuarter(actualMinutes / 60);
-
-      const latestSnap = await getDoc(doc(db, "trips", trip.id));
-      const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
-
-      const crewMembers = crewMembersFromTrip({
-        crewConfirmed: latestTrip?.crewConfirmed ?? trip.crewConfirmed,
-        crew: latestTrip?.crew ?? trip.crew,
-      });
-
-      if (crewMembers.length === 0) {
-        throw new Error(
-          "No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries."
-        );
-      }
-
-      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
-
+      // 2) Create timeEntries + weeklyTimesheets header for EACH crew member (Option B)
       for (const m of crewMembers) {
         const timesheetId = await upsertWeeklyTimesheetHeader({
           employeeId: m.uid,
@@ -1395,16 +1397,53 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         });
       }
 
-      // 3) update ticket status completed (v1)
-      if (ticket) {
+      // 3) Billing Packet write (Option C: bill ONLY primary tech hours)
+      if (ticket?.id) {
+        const primaryUid = crewConfirmed?.primaryTechUid || crewFallback?.primaryTechUid || "";
+        const primaryName =
+          crewConfirmed?.primaryTechName ||
+          crewFallback?.primaryTechName ||
+          findTechName(primaryUid) ||
+          "Primary Tech";
+
+        const billingPacket: BillingPacket = {
+          status: "ready_to_bill",
+          readyToBillAt: now,
+          readyToBillTripId: trip.id,
+
+          resolutionNotes: resolution,
+          workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
+
+          labor: {
+            totalHours: hoursGenerated,
+            byCrew: primaryUid
+              ? [
+                  {
+                    uid: primaryUid,
+                    name: primaryName,
+                    role: "technician",
+                    hours: hoursGenerated,
+                  },
+                ]
+              : [],
+          },
+
+          materials: matCheck.cleaned,
+          photos: [],
+
+          updatedAt: now,
+        };
+
         await updateDoc(doc(db, "serviceTickets", ticket.id), {
           status: "completed",
           updatedAt: now,
+          billing: billingPacket,
         });
-        setTicket((prev) => (prev ? { ...prev, status: "completed", updatedAt: now } : prev));
+
+        setTicket((prev) => (prev ? { ...prev, status: "completed", updatedAt: now, billing: billingPacket } : prev));
       }
 
-      // local state updates
+      // 4) local state updates
       setTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
@@ -1427,10 +1466,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         )
       );
 
-      setTripOk(
-        trip.id,
-        `✅ Resolved. Billable minutes: ${actualMinutes}. Time entries: ${crewMembers.length}`
-      );
+      setTripOk(trip.id, `✅ Resolved. Billable minutes: ${actualMinutes}. Time entries: ${crewMembers.length}`);
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to resolve trip.");
     } finally {
@@ -1470,55 +1506,45 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       const paused = sumPausedMinutes(pauseBlocks);
       const actualMinutes = Math.max(0, gross - paused);
 
-      // 1) update trip -> complete/follow_up
-      await updateDoc(
-        doc(db, "trips", trip.id),
-        stripUndefined({
-          status: "complete",
-          timerState: "complete",
-          actualEndAt: now,
-          endedByUid: myUid,
-          pauseBlocks,
-          actualMinutes,
-
-          workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-          resolutionNotes: null,
-          followUpNotes: follow,
-          outcome: "follow_up",
-          readyToBillAt: null,
-
-          crewConfirmed: trip.crewConfirmed || trip.crew || null,
-
-          updatedAt: now,
-          updatedByUid: myUid,
-        }) as any
-      );
-
-      // 2) create timeEntries + weeklyTimesheets for each crew member (FOLLOW UP still paid)
-      const entryDate = trip.date;
-      if (!entryDate) throw new Error("Trip is missing date; cannot create time entries.");
-      if (!actualMinutes || actualMinutes <= 0) {
-        throw new Error("Trip duration is 0 minutes; no time entry created.");
-      }
-
-      const hoursGenerated = roundToQuarter(actualMinutes / 60);
+      if (!trip.date) throw new Error("Trip is missing date; cannot create time entries.");
+      if (!actualMinutes || actualMinutes <= 0) throw new Error("Trip duration is 0 minutes; no time entry created.");
 
       const latestSnap = await getDoc(doc(db, "trips", trip.id));
       const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
 
-      const crewMembers = crewMembersFromTrip({
-        crewConfirmed: latestTrip?.crewConfirmed ?? trip.crewConfirmed,
-        crew: latestTrip?.crew ?? trip.crew,
-      });
+      const crewConfirmed: TripCrew | null = (latestTrip?.crewConfirmed ?? trip.crewConfirmed ?? null) as any;
+      const crewFallback: TripCrew | null = (latestTrip?.crew ?? trip.crew ?? null) as any;
 
+      const crewMembers = crewMembersFromTrip({ crewConfirmed, crew: crewFallback });
       if (crewMembers.length === 0) {
-        throw new Error(
-          "No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries."
-        );
+        throw new Error("No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries.");
       }
 
+      const hoursGenerated = roundToQuarter(actualMinutes / 60);
+      const entryDate = trip.date;
       const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
 
+      await updateDoc(doc(db, "trips", trip.id), {
+        status: "complete",
+        timerState: "complete",
+        actualEndAt: now,
+        endedByUid: myUid,
+        pauseBlocks,
+        actualMinutes,
+
+        workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
+        resolutionNotes: null,
+        followUpNotes: follow,
+        outcome: "follow_up",
+        readyToBillAt: null,
+
+        crewConfirmed: crewConfirmed || crewFallback || null,
+
+        updatedAt: now,
+        updatedByUid: myUid,
+      });
+
+      // Follow up also generates payroll time entries (paid work)
       for (const m of crewMembers) {
         const timesheetId = await upsertWeeklyTimesheetHeader({
           employeeId: m.uid,
@@ -1542,16 +1568,16 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         });
       }
 
-      // 3) ticket -> follow_up
-      if (ticket) {
+      // ticket status to follow_up
+      if (ticket?.id) {
         await updateDoc(doc(db, "serviceTickets", ticket.id), {
           status: "follow_up",
           updatedAt: now,
         });
+
         setTicket((prev) => (prev ? { ...prev, status: "follow_up", updatedAt: now } : prev));
       }
 
-      // local state
       setTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
@@ -1567,20 +1593,71 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                 followUpNotes: follow,
                 resolutionNotes: null,
                 outcome: "follow_up",
-                readyToBillAt: null,
               }
             : t
         )
       );
 
-      setTripOk(
-        trip.id,
-        `🟡 Follow Up logged. Minutes: ${actualMinutes}. Time entries: ${crewMembers.length}`
-      );
+      setTripOk(trip.id, `🟡 Follow Up logged. Minutes: ${actualMinutes}. Time entries: ${crewMembers.length}`);
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to complete follow-up.");
     } finally {
       setTripSavingFlag(trip.id, false);
+    }
+  }
+
+  // -----------------------------
+  // Billing Panel Actions
+  // -----------------------------
+  const billing = ticket?.billing ?? null;
+
+  async function markBillingStatus(nextStatus: BillingPacket["status"]) {
+    if (!ticket?.id) return;
+    if (!canBill) return;
+
+    setBillingErr("");
+    setBillingOk("");
+    setBillingSaving(true);
+
+    try {
+      const now = nowIso();
+
+      const base: BillingPacket =
+        billing ||
+        ({
+          status: "not_ready",
+          readyToBillAt: null,
+          readyToBillTripId: null,
+          resolutionNotes: null,
+          workNotes: null,
+          labor: { totalHours: 0, byCrew: [] },
+          materials: [],
+          photos: [],
+          updatedAt: now,
+        } as BillingPacket);
+
+      const next: BillingPacket = {
+        ...base,
+        status: nextStatus,
+        updatedAt: now,
+      };
+
+      if (nextStatus === "not_ready") {
+        next.readyToBillAt = null;
+        next.readyToBillTripId = null;
+      }
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        billing: next,
+        updatedAt: now,
+      });
+
+      setTicket((prev) => (prev ? { ...prev, billing: next, updatedAt: now } : prev));
+      setBillingOk(`✅ Billing status updated: ${nextStatus.replaceAll("_", " ")}`);
+    } catch (err: unknown) {
+      setBillingErr(err instanceof Error ? err.message : "Failed to update billing status.");
+    } finally {
+      setBillingSaving(false);
     }
   }
 
@@ -1590,9 +1667,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   function canCurrentUserActOnTrip(trip: TripDoc) {
     if (!myUid) return false;
     if (appUser?.role === "admin") return true;
-    return isUidOnTripCrew(myUid, trip.crew);
+    return isUidOnTripCrew(myUid, trip.crew || null);
   }
 
+  // -----------------------------
+  // Render
+  // -----------------------------
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
       <AppShell appUser={appUser}>
@@ -1610,7 +1690,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
               }}
             >
               <div>
-                <h1 style={{ fontSize: "24px", fontWeight: 700 }}>{ticket.issueSummary}</h1>
+                <h1 style={{ fontSize: "24px", fontWeight: 800 }}>{ticket.issueSummary}</h1>
                 <p style={{ marginTop: "6px", color: "#666" }}>Ticket ID: {ticketId}</p>
               </div>
 
@@ -1629,34 +1709,162 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
               </Link>
             </div>
 
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>Customer</h2>
-              <p>
-                <strong>Customer Name:</strong> {ticket.customerDisplayName}
-              </p>
-              <p>
-                <strong>Customer ID:</strong> {ticket.customerId}
-              </p>
+            {/* Billing Packet Panel */}
+            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "#fafafa" }}>
+              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>Billing Packet</h2>
+
+              {!billing ? (
+                <div
+                  style={{
+                    border: "1px dashed #ccc",
+                    borderRadius: "10px",
+                    padding: "12px",
+                    background: "white",
+                    color: "#666",
+                    fontSize: "13px",
+                  }}
+                >
+                  No billing packet yet. It will appear after a trip is marked{" "}
+                  <strong>Resolved — Ready to Bill</strong>.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: "10px" }}>
+                  <div style={{ fontSize: "13px", color: "#555" }}>
+                    Status: <strong>{billing.status}</strong>
+                    {billing.readyToBillAt ? (
+                      <span style={{ color: "#777" }}> • Ready To Bill At: {billing.readyToBillAt}</span>
+                    ) : null}
+                  </div>
+
+                  <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "white" }}>
+                    <div style={{ fontWeight: 900, marginBottom: "6px" }}>Labor (Customer Billing)</div>
+                    <div style={{ fontSize: "13px", color: "#555" }}>
+                      Total labor hours billed: <strong>{Number(billing.labor?.totalHours ?? 0).toFixed(2)}</strong>
+                    </div>
+                    <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
+                      Billing rule: labor hours belong to the <strong>Primary Tech only</strong>. Payroll timeEntries still go to all crew members.
+                    </div>
+
+                    {Array.isArray(billing.labor?.byCrew) && billing.labor.byCrew.length ? (
+                      <div style={{ marginTop: "10px", display: "grid", gap: "6px" }}>
+                        {billing.labor.byCrew.map((c) => (
+                          <div key={c.uid} style={{ fontSize: "13px", color: "#555" }}>
+                            {c.name} • {c.hours.toFixed(2)} hr
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: "10px", fontSize: "13px", color: "#777" }}>
+                        No primary tech labor line captured yet.
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "white" }}>
+                    <div style={{ fontWeight: 900, marginBottom: "6px" }}>Materials</div>
+
+                    {!Array.isArray(billing.materials) || billing.materials.length === 0 ? (
+                      <div style={{ fontSize: "13px", color: "#777" }}>No materials captured.</div>
+                    ) : (
+                      <div style={{ display: "grid", gap: "8px" }}>
+                        {billing.materials.map((m, idx) => (
+                          <div
+                            key={`bill-mat-${idx}`}
+                            style={{
+                              border: "1px solid #f0f0f0",
+                              borderRadius: "10px",
+                              padding: "10px",
+                            }}
+                          >
+                            <div style={{ fontWeight: 800, fontSize: "13px" }}>
+                              {m.name} • {Number(m.qty).toFixed(2)} {m.unit || ""}
+                            </div>
+                            {m.notes ? (
+                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#666" }}>{m.notes}</div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "white" }}>
+                    <div style={{ fontWeight: 900, marginBottom: "6px" }}>Resolution Notes</div>
+                    <div style={{ fontSize: "13px", color: "#555", whiteSpace: "pre-wrap" }}>
+                      {billing.resolutionNotes || "—"}
+                    </div>
+
+                    <div style={{ marginTop: "12px", fontWeight: 900, marginBottom: "6px" }}>Work Notes</div>
+                    <div style={{ fontSize: "13px", color: "#555", whiteSpace: "pre-wrap" }}>
+                      {billing.workNotes || "—"}
+                    </div>
+                  </div>
+
+                  {canBill ? (
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        onClick={() => markBillingStatus("invoiced")}
+                        disabled={billingSaving}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: "10px",
+                          border: "1px solid #ccc",
+                          background: "white",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                        }}
+                      >
+                        {billingSaving ? "Working..." : "Mark Invoiced"}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => markBillingStatus("ready_to_bill")}
+                        disabled={billingSaving}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: "10px",
+                          border: "1px solid #ccc",
+                          background: "white",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Set Ready to Bill
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => markBillingStatus("not_ready")}
+                        disabled={billingSaving}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: "10px",
+                          border: "1px solid #ccc",
+                          background: "white",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Set Not Ready
+                      </button>
+
+                      {billingErr ? <span style={{ color: "red", fontSize: "13px" }}>{billingErr}</span> : null}
+                      {billingOk ? <span style={{ color: "green", fontSize: "13px" }}>{billingOk}</span> : null}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "12px", color: "#777" }}>
+                      Billing controls are limited to Admin/Manager/Dispatcher/Billing.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
+            {/* Ticket Overview */}
             <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
-                Service Address
-              </h2>
-              <p>
-                <strong>Label:</strong> {ticket.serviceAddressLabel || "—"}
-              </p>
-              <p>{ticket.serviceAddressLine1 || "—"}</p>
-              <p>{ticket.serviceAddressLine2 || ""}</p>
-              <p>
-                {ticket.serviceCity}, {ticket.serviceState} {ticket.servicePostalCode}
-              </p>
-            </div>
-
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
-                Ticket Overview
-              </h2>
+              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>Ticket Overview</h2>
               <p>
                 <strong>Current Status:</strong> {formatTicketStatus(ticket.status)}
               </p>
@@ -1676,7 +1884,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
             {/* Trips Panel */}
             <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
+              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>
                 Trips (Scheduling + Time)
               </h2>
 
@@ -1704,12 +1912,8 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                         const crew = t.crew || {};
                         const primary = crew.primaryTechName || "Unassigned";
                         const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
-                        const secondary = crew.secondaryTechName
-                          ? `2nd Tech: ${crew.secondaryTechName}`
-                          : "";
-                        const secondaryHelper = crew.secondaryHelperName
-                          ? `2nd Helper: ${crew.secondaryHelperName}`
-                          : "";
+                        const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
+                        const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
 
                         const canAct = canCurrentUserActOnTrip(t);
                         const savingThis = Boolean(tripActionSaving[t.id]);
@@ -1728,11 +1932,10 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                           t.actualStartAt && !t.actualEndAt
                             ? minutesBetweenIso(t.actualStartAt, nowIso())
                             : t.actualStartAt && t.actualEndAt
-                            ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
-                            : 0;
+                              ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
+                              : 0;
 
                         const computedBillable = Math.max(0, liveGrossMins - pausedMins);
-
                         const mats = Array.isArray(tripMaterials[t.id]) ? tripMaterials[t.id] : [];
 
                         return (
@@ -1746,8 +1949,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                             }}
                           >
                             <div style={{ fontWeight: 900 }}>
-                              🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} •{" "}
-                              {t.startTime}-{t.endTime}
+                              🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
                             </div>
 
                             <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
@@ -1762,27 +1964,16 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                               Tech: {primary}
                               {helper ? <div style={{ marginTop: "4px" }}>{helper}</div> : null}
                               {secondary ? <div style={{ marginTop: "4px" }}>{secondary}</div> : null}
-                              {secondaryHelper ? (
-                                <div style={{ marginTop: "4px" }}>{secondaryHelper}</div>
-                              ) : null}
+                              {secondaryHelper ? <div style={{ marginTop: "4px" }}>{secondaryHelper}</div> : null}
                             </div>
 
                             <div style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
                               Billable minutes (computed): <strong>{computedBillable}</strong>{" "}
-                              <span style={{ color: "#999" }}>
-                                (gross {liveGrossMins} - paused {pausedMins})
-                              </span>
+                              <span style={{ color: "#999" }}>(gross {liveGrossMins} - paused {pausedMins})</span>
                             </div>
 
                             {/* Actions */}
-                            <div
-                              style={{
-                                marginTop: "10px",
-                                display: "flex",
-                                gap: "8px",
-                                flexWrap: "wrap",
-                              }}
-                            >
+                            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                               {!isComplete ? (
                                 <>
                                   {!isInProgress ? (
@@ -1876,35 +2067,24 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                   ) : null}
                                 </>
                               ) : (
-                                <div style={{ color: "#777", fontSize: "12px" }}>
-                                  ✅ This trip is complete.
-                                </div>
+                                <div style={{ color: "#777", fontSize: "12px" }}>✅ This trip is complete.</div>
                               )}
                             </div>
 
                             {!canAct ? (
                               <div style={{ marginTop: "8px", fontSize: "12px", color: "#999" }}>
-                                You can only start/finish trips where you are on the assigned crew.
-                                (Admin can act on any trip.)
+                                You can only start/finish trips where you are on the assigned crew. (Admin can act on any
+                                trip.)
                               </div>
                             ) : null}
 
                             {/* Work Notes */}
-                            <div
-                              style={{
-                                marginTop: "12px",
-                                borderTop: "1px solid #eee",
-                                paddingTop: "12px",
-                              }}
-                            >
+                            <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
                               <div style={{ fontWeight: 900, marginBottom: "6px" }}>Work Notes</div>
                               <textarea
                                 value={tripWorkNotes[t.id] ?? ""}
                                 onChange={(e) =>
-                                  setTripWorkNotes((prev) => ({
-                                    ...prev,
-                                    [t.id]: e.target.value,
-                                  }))
+                                  setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
                                 }
                                 rows={3}
                                 disabled={!canAct || savingThis}
@@ -1935,6 +2115,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                               </button>
                             </div>
 
+                            {/* Follow Up Notes */}
                             {!isComplete ? (
                               <div style={{ marginTop: "12px" }}>
                                 <div style={{ fontWeight: 900, marginBottom: "6px" }}>
@@ -1943,10 +2124,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                 <textarea
                                   value={tripFollowUpNotes[t.id] ?? ""}
                                   onChange={(e) =>
-                                    setTripFollowUpNotes((prev) => ({
-                                      ...prev,
-                                      [t.id]: e.target.value,
-                                    }))
+                                    setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
                                   }
                                   rows={3}
                                   disabled={!canAct || savingThis}
@@ -1962,6 +2140,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                               </div>
                             ) : null}
 
+                            {/* Resolution Notes */}
                             {!isComplete ? (
                               <div style={{ marginTop: "12px" }}>
                                 <div style={{ fontWeight: 900, marginBottom: "6px" }}>
@@ -1970,10 +2149,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                 <textarea
                                   value={tripResolutionNotes[t.id] ?? ""}
                                   onChange={(e) =>
-                                    setTripResolutionNotes((prev) => ({
-                                      ...prev,
-                                      [t.id]: e.target.value,
-                                    }))
+                                    setTripResolutionNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
                                   }
                                   rows={3}
                                   disabled={!canAct || savingThis}
@@ -1989,14 +2165,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                               </div>
                             ) : null}
 
+                            {/* Materials */}
                             {!isComplete ? (
-                              <div
-                                style={{
-                                  marginTop: "12px",
-                                  borderTop: "1px solid #eee",
-                                  paddingTop: "12px",
-                                }}
-                              >
+                              <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
                                 <div style={{ fontWeight: 900 }}>Materials (required for Resolved)</div>
                                 <div style={{ fontSize: "12px", color: "#666", marginTop: "6px" }}>
                                   Add at least 1 material with a name and qty.
@@ -2030,20 +2201,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                           gap: "8px",
                                         }}
                                       >
-                                        <div
-                                          style={{
-                                            display: "grid",
-                                            gridTemplateColumns: "2fr 1fr 1fr",
-                                            gap: "8px",
-                                          }}
-                                        >
+                                        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "8px" }}>
                                           <div>
                                             <label style={{ fontSize: "12px", fontWeight: 800 }}>Name</label>
                                             <input
                                               value={m.name}
-                                              onChange={(e) =>
-                                                updateMaterialRow(t.id, idx, { name: e.target.value })
-                                              }
+                                              onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
                                               disabled={!canAct || savingThis}
                                               placeholder='Example: 1/2" PEX, wax ring, PRV...'
                                               style={{
@@ -2063,9 +2226,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                               min="0.01"
                                               step="0.01"
                                               value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                              onChange={(e) =>
-                                                updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })
-                                              }
+                                              onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
                                               disabled={!canAct || savingThis}
                                               style={{
                                                 display: "block",
@@ -2081,9 +2242,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                             <label style={{ fontSize: "12px", fontWeight: 800 }}>Unit (opt)</label>
                                             <input
                                               value={m.unit || ""}
-                                              onChange={(e) =>
-                                                updateMaterialRow(t.id, idx, { unit: e.target.value })
-                                              }
+                                              onChange={(e) => updateMaterialRow(t.id, idx, { unit: e.target.value })}
                                               disabled={!canAct || savingThis}
                                               placeholder="ea, ft, gal"
                                               style={{
@@ -2102,9 +2261,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                           <label style={{ fontSize: "12px", fontWeight: 800 }}>Notes (opt)</label>
                                           <input
                                             value={m.notes || ""}
-                                            onChange={(e) =>
-                                              updateMaterialRow(t.id, idx, { notes: e.target.value })
-                                            }
+                                            onChange={(e) => updateMaterialRow(t.id, idx, { notes: e.target.value })}
                                             disabled={!canAct || savingThis}
                                             placeholder="Any extra details..."
                                             style={{
@@ -2161,9 +2318,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                             {errMsg ? <p style={{ marginTop: "10px", color: "red" }}>{errMsg}</p> : null}
                             {okMsg ? <p style={{ marginTop: "10px", color: "green" }}>{okMsg}</p> : null}
 
-                            <div style={{ marginTop: "10px", fontSize: "11px", color: "#999" }}>
-                              Trip ID: {t.id}
-                            </div>
+                            <div style={{ marginTop: "10px", fontSize: "11px", color: "#999" }}>Trip ID: {t.id}</div>
                           </div>
                         );
                       })}
@@ -2337,9 +2492,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                         </div>
 
                         <div style={{ marginTop: "10px", fontSize: "12px", color: "#666" }}>
-                          Tip: If you want a helper reassigned for the day, use{" "}
-                          <strong>Daily Crew Overrides</strong>. For this trip, selecting a helper here
-                          means they are explicitly part of the scheduled crew.
+                          Tip: If you want a helper reassigned for the day, use <strong>Daily Crew Overrides</strong>.
                         </div>
                       </div>
                     </div>
@@ -2388,11 +2541,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
               </div>
             </div>
 
-            {/* Legacy Update Ticket section */}
+            {/* Legacy Update Ticket */}
             <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "12px" }}>
-                Update Ticket (legacy fields)
-              </h2>
+              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "12px" }}>Update Ticket (legacy fields)</h2>
 
               <div style={{ marginBottom: "10px", fontSize: "12px", color: "#777" }}>
                 This section will be hidden/removed soon. Trips now control scheduling and staffing.
@@ -2437,21 +2588,19 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                   />
                 </div>
 
+                {/* Hidden legacy schedule inputs */}
                 <div style={{ display: "none" }}>
                   <label>Scheduled Date (legacy)</label>
                   <input type="date" value={scheduledDate} onChange={(e) => setScheduledDate(e.target.value)} />
                 </div>
-
                 <div style={{ display: "none" }}>
                   <label>Scheduled Start Time (legacy)</label>
                   <input type="time" value={scheduledStartTime} onChange={(e) => setScheduledStartTime(e.target.value)} />
                 </div>
-
                 <div style={{ display: "none" }}>
                   <label>Scheduled End Time (legacy)</label>
                   <input type="time" value={scheduledEndTime} onChange={(e) => setScheduledEndTime(e.target.value)} />
                 </div>
-
                 <div style={{ display: "none" }}>
                   <label>Assigned Technician (legacy)</label>
                   <select value={selectedTechnicianUid} onChange={(e) => setSelectedTechnicianUid(e.target.value)}>
