@@ -1850,6 +1850,49 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                         Set Not Ready
                       </button>
 
+                      <button
+  type="button"
+  onClick={async () => {
+    try {
+      if (!ticket?.id) return;
+
+      // Optional: show a spinner using your existing saving state
+      const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serviceTicketId: ticket.id }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data?.error || "Failed to create QBO invoice.");
+        return;
+      }
+
+      alert(
+        `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
+          data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
+        }`
+      );
+
+      // Optionally: reload the ticket doc or set local state to show invoice id
+      // location.reload();
+    } catch (e: any) {
+      alert(e?.message || "Failed to create QBO invoice.");
+    }
+  }}
+  style={{
+    padding: "8px 12px",
+    border: "1px solid #ccc",
+    borderRadius: "10px",
+    background: "white",
+    cursor: "pointer",
+    fontWeight: 900,
+  }}
+>
+  Create QBO Invoice Draft
+</button>
+
                       {billingErr ? <span style={{ color: "red", fontSize: "13px" }}>{billingErr}</span> : null}
                       {billingOk ? <span style={{ color: "green", fontSize: "13px" }}>{billingOk}</span> : null}
                     </div>
