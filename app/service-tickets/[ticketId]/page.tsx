@@ -10,6 +10,7 @@ import {
   getDoc,
   getDocs,
   query,
+  setDoc,
   updateDoc,
   where,
   orderBy,
@@ -20,6 +21,7 @@ import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { ServiceTicket } from "../../../src/types/service-ticket";
 import type { AppUser } from "../../../src/types/app-user";
+import { getPayrollWeekBounds } from "../../../src/lib/payroll";
 
 type ServiceTicketDetailPageProps = {
   params: Promise<{
@@ -61,7 +63,7 @@ type TripDoc = {
   id: string;
   active: boolean;
   type: "service" | "project";
-  status: string; // planned | in_progress | complete | cancelled (we’ll use these)
+  status: string; // planned | in_progress | complete | cancelled
   date: string;
   timeWindow: TripTimeWindow | string;
   startTime: string;
@@ -88,7 +90,7 @@ type TripDoc = {
   notes?: string | null;
   cancelReason?: string | null;
 
-  // ✅ Timer v1 fields (optional in Firestore)
+  // Timer v1 fields
   timerState?: "not_started" | "running" | "paused" | "complete" | string;
   actualStartAt?: string | null;
   actualEndAt?: string | null;
@@ -97,16 +99,20 @@ type TripDoc = {
   pauseBlocks?: PauseBlock[];
   actualMinutes?: number | null;
 
-  // ✅ Work capture v1
+  // Work capture v1
   workNotes?: string | null;
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
 
-  // ✅ Crew snapshot (v1 just stores what the trip already has)
+  // Crew snapshot
   crewConfirmed?: TripDoc["crew"];
 
-  // ✅ Materials v1
+  // Materials v1
   materials?: TripMaterial[];
+
+  // extra
+  outcome?: "resolved" | "follow_up" | string | null;
+  readyToBillAt?: string | null;
 
   createdAt?: string;
   createdByUid?: string | null;
@@ -143,6 +149,70 @@ function formatTicketStatus(value: ServiceTicket["status"]) {
     default:
       return value;
   }
+}
+
+function roundToQuarter(hours: number) {
+  return Math.round(hours * 4) / 4;
+}
+
+function stripUndefined(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+
+  if (Array.isArray(obj)) {
+    return obj.map((v) => stripUndefined(v));
+  }
+
+  if (typeof obj === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefined(v);
+    }
+    return out;
+  }
+
+  return obj;
+}
+
+function crewMembersFromTrip(trip: any) {
+  const crew = trip?.crewConfirmed || trip?.crew || {};
+  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> =
+    [];
+
+  if (crew?.primaryTechUid)
+    out.push({
+      uid: crew.primaryTechUid,
+      name: crew.primaryTechName || "Tech",
+      role: "technician",
+    });
+  if (crew?.helperUid)
+    out.push({
+      uid: crew.helperUid,
+      name: crew.helperName || "Helper",
+      role: "helper",
+    });
+
+  if (crew?.secondaryTechUid)
+    out.push({
+      uid: crew.secondaryTechUid,
+      name: crew.secondaryTechName || "2nd Tech",
+      role: "technician",
+    });
+  if (crew?.secondaryHelperUid)
+    out.push({
+      uid: crew.secondaryHelperUid,
+      name: crew.secondaryHelperName || "2nd Helper",
+      role: "helper",
+    });
+
+  // de-dupe by uid
+  const seen = new Set<string>();
+  return out.filter((m) => {
+    if (!m.uid) return false;
+    if (seen.has(m.uid)) return false;
+    seen.add(m.uid);
+    return true;
+  });
 }
 
 function formatTripWindow(w: string) {
@@ -195,6 +265,136 @@ function isUidOnTripCrew(uid: string, crew?: TripDoc["crew"]) {
   );
 }
 
+// ---- Timesheet + TimeEntry helpers ----
+function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
+  return `ws_${employeeId}_${weekStartDate}`;
+}
+
+type ExistingTimeEntry = {
+  hours?: number;
+  hoursLocked?: boolean;
+  createdAt?: string;
+  createdByUid?: string | null;
+};
+
+async function upsertWeeklyTimesheetHeader(args: {
+  employeeId: string;
+  employeeName: string;
+  employeeRole: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  createdByUid: string | null;
+}) {
+  const { employeeId, employeeName, employeeRole, weekStartDate, weekEndDate, createdByUid } =
+    args;
+  const now = nowIso();
+
+  const timesheetId = buildWeeklyTimesheetId(employeeId, weekStartDate);
+  const ref = doc(db, "weeklyTimesheets", timesheetId);
+
+  await setDoc(
+    ref,
+    stripUndefined({
+      employeeId,
+      employeeName,
+      employeeRole,
+
+      weekStartDate,
+      weekEndDate,
+
+      status: "draft",
+      submittedAt: null,
+      submittedByUid: null,
+
+      createdAt: now,
+      createdByUid: createdByUid || null,
+      updatedAt: now,
+      updatedByUid: createdByUid || null,
+    }) as any,
+    { merge: true }
+  );
+
+  return timesheetId;
+}
+
+async function upsertTimeEntryFromTrip(args: {
+  trip: TripDoc;
+  member: { uid: string; name: string; role: "technician" | "helper" };
+  entryDate: string;
+  hoursGenerated: number;
+  weekStartDate: string;
+  weekEndDate: string;
+  timesheetId: string;
+  createdByUid: string | null;
+  noteSuffix: string;
+}) {
+  const {
+    trip,
+    member,
+    entryDate,
+    hoursGenerated,
+    weekStartDate,
+    weekEndDate,
+    timesheetId,
+    createdByUid,
+    noteSuffix,
+  } = args;
+
+  const now = nowIso();
+
+  const timeEntryId = `trip_${trip.id}_${member.uid}`;
+  const ref = doc(db, "timeEntries", timeEntryId);
+
+  // If entry exists and was manually edited, do NOT overwrite hours
+  const existingSnap = await getDoc(ref);
+  const existing = existingSnap.exists()
+    ? (existingSnap.data() as ExistingTimeEntry)
+    : null;
+
+  const hoursLocked = Boolean(existing?.hoursLocked);
+  const hoursToWrite = hoursLocked ? (existing?.hours ?? hoursGenerated) : hoursGenerated;
+
+  await setDoc(
+    ref,
+    stripUndefined({
+      employeeId: member.uid,
+      employeeName: member.name,
+      employeeRole: member.role,
+
+      entryDate,
+      weekStartDate,
+      weekEndDate,
+      timesheetId,
+
+      category: trip.type === "project" ? "project" : "service",
+      payType: "regular",
+      billable: true,
+      source: "trip_completion",
+
+      // hours fields
+      hours: hoursToWrite,
+      hoursSource: hoursGenerated,
+      hoursLocked: hoursLocked || false,
+
+      tripId: trip.id,
+      serviceTicketId: trip.link?.serviceTicketId || null,
+      projectId: trip.link?.projectId || null,
+      projectStageKey: trip.link?.projectStageKey || null,
+
+      entryStatus: "draft",
+      notes: `AUTO_TIME_FROM_TRIP:${trip.id} • ${noteSuffix}`,
+
+      createdAt: existingSnap.exists() ? (existing?.createdAt ?? now) : now,
+      createdByUid: existingSnap.exists()
+        ? (existing?.createdByUid ?? null)
+        : createdByUid || null,
+      updatedAt: now,
+      updatedByUid: createdByUid || null,
+    }) as any,
+    { merge: true }
+  );
+}
+
 export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailPageProps) {
   const { appUser } = useAuthContext();
 
@@ -222,7 +422,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
   const [profilesError, setProfilesError] = useState("");
 
-  // Legacy ticket update form state (we will hide later; keeping for now)
+  // Legacy ticket update form state
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
@@ -262,7 +462,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [tripSaveError, setTripSaveError] = useState("");
   const [tripSaveSuccess, setTripSaveSuccess] = useState("");
 
-  // ✅ Per-trip work state (local UI state keyed by tripId)
+  // Per-trip work state
   const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>({});
   const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>({});
   const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>({});
@@ -325,7 +525,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
 
           helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-          helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
+          helperNames: Array.isArray(data.helperNames)
+            ? data.helperNames.filter(Boolean)
+            : undefined,
 
           internalNotes: data.internalNotes ?? undefined,
           active: data.active ?? true,
@@ -418,7 +620,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }, []);
 
   const helperCandidates = useMemo(() => {
-    const out: { uid: string; name: string; laborRole: string; defaultPairedTechUid?: string | null }[] = [];
+    const out: {
+      uid: string;
+      name: string;
+      laborRole: string;
+      defaultPairedTechUid?: string | null;
+    }[] = [];
 
     for (const p of employeeProfiles) {
       if ((p.employmentStatus || "current").toLowerCase() !== "current") continue;
@@ -501,6 +708,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
             crewConfirmed: d.crewConfirmed ?? undefined,
             materials: Array.isArray(d.materials) ? d.materials : undefined,
 
+            outcome: d.outcome ?? null,
+            readyToBillAt: d.readyToBillAt ?? null,
+
             createdAt: d.createdAt ?? undefined,
             createdByUid: d.createdByUid ?? null,
             updatedAt: d.updatedAt ?? undefined,
@@ -510,7 +720,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         setTrips(items);
 
-        // Seed UI state from loaded trips
+        // Seed UI state
         const nextWork: Record<string, string> = {};
         const nextRes: Record<string, string> = {};
         const nextFollow: Record<string, string> = {};
@@ -520,7 +730,8 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           nextWork[t.id] = (t.workNotes || "") as string;
           nextRes[t.id] = (t.resolutionNotes || "") as string;
           nextFollow[t.id] = (t.followUpNotes || "") as string;
-          nextMat[t.id] = Array.isArray(t.materials) && t.materials.length ? t.materials : [];
+          nextMat[t.id] =
+            Array.isArray(t.materials) && t.materials.length ? t.materials : [];
         }
 
         setTripWorkNotes(nextWork);
@@ -633,7 +844,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }
 
   // -----------------------------
-  // NEW: Create Trip for this Ticket (dispatch tool)
+  // Create Trip (dispatch tool)
   // -----------------------------
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -677,8 +888,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       const primaryName = findTechName(primaryUid) || "Unnamed Technician";
       const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
-      const secondaryTechName = secondaryTechUid ? findTechName(secondaryTechUid) || "Unnamed Technician" : null;
-      const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
+      const secondaryTechName = secondaryTechUid
+        ? findTechName(secondaryTechUid) || "Unnamed Technician"
+        : null;
+      const secondaryHelperName = secondaryHelperUid
+        ? findHelperName(secondaryHelperUid) || "Unnamed Helper"
+        : null;
 
       const sourceKey = `serviceTicket:${ticket.id}:${date}:${tripTimeWindow}`;
 
@@ -722,7 +937,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         status: "planned",
         type: "service",
 
-        // timer defaults
         timerState: "not_started",
         actualStartAt: null,
         actualEndAt: null,
@@ -731,7 +945,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         pauseBlocks: [],
         actualMinutes: null,
 
-        // work capture defaults
         workNotes: null,
         resolutionNotes: null,
         followUpNotes: null,
@@ -743,13 +956,13 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       const createdTripRef = await addDoc(collection(db, "trips"), tripPayload as any);
 
-      // Update ticket staffing pointers (keep for now)
       const helperIds = helperUid ? [helperUid] : [];
       const helperNames = helperName ? [helperName] : [];
 
       const assignedTechnicianIds: string[] = [];
       assignedTechnicianIds.push(primaryUid);
-      if (secondaryTechUid && secondaryTechUid !== primaryUid) assignedTechnicianIds.push(secondaryTechUid);
+      if (secondaryTechUid && secondaryTechUid !== primaryUid)
+        assignedTechnicianIds.push(secondaryTechUid);
       for (const h of helperIds) {
         if (!assignedTechnicianIds.includes(h)) assignedTechnicianIds.push(h);
       }
@@ -785,10 +998,14 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           assignedTechnicianName: primaryName,
           primaryTechnicianId: primaryUid,
           secondaryTechnicianId: secondaryTechUid || undefined,
-          secondaryTechnicianName: secondaryTechUid ? (secondaryTechName || undefined) : undefined,
+          secondaryTechnicianName: secondaryTechUid
+            ? (secondaryTechName || undefined)
+            : undefined,
           helperIds: helperIds.length ? helperIds : undefined,
           helperNames: helperNames.length ? helperNames : undefined,
-          assignedTechnicianIds: assignedTechnicianIds.length ? assignedTechnicianIds : undefined,
+          assignedTechnicianIds: assignedTechnicianIds.length
+            ? assignedTechnicianIds
+            : undefined,
           updatedAt: now,
         };
       });
@@ -813,7 +1030,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       setTripFollowUpNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
 
-      setTripSaveSuccess(`✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}). Trip ID: ${createdTripRef.id}`);
+      setTripSaveSuccess(
+        `✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}). Trip ID: ${createdTripRef.id}`
+      );
       setTripNotes("");
     } catch (err: unknown) {
       setTripSaveError(err instanceof Error ? err.message : "Failed to create trip.");
@@ -886,14 +1105,10 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         updatedAt: now,
         updatedByUid: myUid,
 
-        // snapshot crew at start
         crewConfirmed: trip.crew || null,
-
-        // initialize pause blocks if missing
         pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
       });
 
-      // Update local
       setTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
@@ -948,7 +1163,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks: curBlocks } : t))
+        prev.map((t) =>
+          t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks: curBlocks } : t
+        )
       );
 
       setTripOk(trip.id, "⏸ Paused.");
@@ -971,7 +1188,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       const now = nowIso();
       const curBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
 
-      // close last open pause
       let closed = false;
       for (let i = curBlocks.length - 1; i >= 0; i--) {
         const b = curBlocks[i];
@@ -995,7 +1211,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "running", pauseBlocks: curBlocks } : t))
+        prev.map((t) =>
+          t.id === trip.id ? { ...t, timerState: "running", pauseBlocks: curBlocks } : t
+        )
       );
 
       setTripOk(trip.id, "▶ Resumed.");
@@ -1036,30 +1254,33 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-function validateMaterialsForResolved(materials: TripMaterial[]):
-  | { ok: false; message: string }
-  | { ok: true; cleaned: TripMaterial[] } {
-  const cleaned = materials
-    .map((m) => ({
-      name: (m.name || "").trim(),
-      qty: Number(m.qty),
-      unit: (m.unit || "").trim(),
-      notes: (m.notes || "").trim(),
-    }))
-    .filter((m) => m.name);
+  function validateMaterialsForResolved(
+    materials: TripMaterial[]
+  ): { ok: false; message: string } | { ok: true; cleaned: TripMaterial[] } {
+    const cleaned = materials
+      .map((m) => ({
+        name: (m.name || "").trim(),
+        qty: Number(m.qty),
+        unit: (m.unit || "").trim(),
+        notes: (m.notes || "").trim(),
+      }))
+      .filter((m) => m.name);
 
-  if (cleaned.length < 1) {
-    return { ok: false, message: "Resolved requires at least 1 material line item (name + qty)." };
-  }
-
-  for (const m of cleaned) {
-    if (!Number.isFinite(m.qty) || m.qty <= 0) {
-      return { ok: false, message: `Material "${m.name}" must have qty > 0.` };
+    if (cleaned.length < 1) {
+      return {
+        ok: false,
+        message: "Resolved requires at least 1 material line item (name + qty).",
+      };
     }
-  }
 
-  return { ok: true, cleaned };
-}
+    for (const m of cleaned) {
+      if (!Number.isFinite(m.qty) || m.qty <= 0) {
+        return { ok: false, message: `Material "${m.name}" must have qty > 0.` };
+      }
+    }
+
+    return { ok: true, cleaned };
+  }
 
   async function handleResolveTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
@@ -1081,7 +1302,7 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
       const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
       const matCheck = validateMaterialsForResolved(mats);
       if (!matCheck.ok) {
-        setTripErr(trip.id, matCheck.message);
+        setTripErr(trip.id, matCheck.message || "Materials validation failed.");
         return;
       }
 
@@ -1100,40 +1321,90 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
       const paused = sumPausedMinutes(pauseBlocks);
       const actualMinutes = Math.max(0, gross - paused);
 
-      await updateDoc(doc(db, "trips", trip.id), {
-        status: "complete",
-        timerState: "complete",
-        actualEndAt: now,
-        endedByUid: myUid,
-        pauseBlocks,
-        actualMinutes,
+      // 1) update trip -> complete/resolved
+      await updateDoc(
+        doc(db, "trips", trip.id),
+        stripUndefined({
+          status: "complete",
+          timerState: "complete",
+          actualEndAt: now,
+          endedByUid: myUid,
+          pauseBlocks,
+          actualMinutes,
 
-        workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-        resolutionNotes: resolution,
-        followUpNotes: null,
-        outcome: "resolved",
-        readyToBillAt: now,
+          workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
+          resolutionNotes: resolution,
+          followUpNotes: null,
+          outcome: "resolved",
+          readyToBillAt: now,
 
-        // required by B:
-        materials: matCheck.cleaned,
+          materials: matCheck.cleaned,
 
-        // lock crew snapshot if missing
-        crewConfirmed: trip.crewConfirmed || trip.crew || null,
+          crewConfirmed: trip.crewConfirmed || trip.crew || null,
 
-        updatedAt: now,
-        updatedByUid: myUid,
+          updatedAt: now,
+          updatedByUid: myUid,
+        }) as any
+      );
+
+      // 2) create timeEntries + weeklyTimesheets for each crew member
+      const entryDate = trip.date;
+      if (!entryDate) throw new Error("Trip is missing date; cannot create time entries.");
+      if (!actualMinutes || actualMinutes <= 0) {
+        throw new Error("Trip duration is 0 minutes; no time entry created.");
+      }
+
+      const hoursGenerated = roundToQuarter(actualMinutes / 60);
+
+      const latestSnap = await getDoc(doc(db, "trips", trip.id));
+      const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
+
+      const crewMembers = crewMembersFromTrip({
+        crewConfirmed: latestTrip?.crewConfirmed ?? trip.crewConfirmed,
+        crew: latestTrip?.crew ?? trip.crew,
       });
 
-      // Also update ticket status to completed (v1)
+      if (crewMembers.length === 0) {
+        throw new Error(
+          "No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries."
+        );
+      }
+
+      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
+
+      for (const m of crewMembers) {
+        const timesheetId = await upsertWeeklyTimesheetHeader({
+          employeeId: m.uid,
+          employeeName: m.name,
+          employeeRole: m.role,
+          weekStartDate,
+          weekEndDate,
+          createdByUid: myUid || null,
+        });
+
+        await upsertTimeEntryFromTrip({
+          trip,
+          member: m,
+          entryDate,
+          hoursGenerated,
+          weekStartDate,
+          weekEndDate,
+          timesheetId,
+          createdByUid: myUid || null,
+          noteSuffix: "Resolved",
+        });
+      }
+
+      // 3) update ticket status completed (v1)
       if (ticket) {
         await updateDoc(doc(db, "serviceTickets", ticket.id), {
           status: "completed",
           updatedAt: now,
         });
-
         setTicket((prev) => (prev ? { ...prev, status: "completed", updatedAt: now } : prev));
       }
 
+      // local state updates
       setTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
@@ -1149,12 +1420,17 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                 resolutionNotes: resolution,
                 followUpNotes: null,
                 materials: matCheck.cleaned as any,
+                outcome: "resolved",
+                readyToBillAt: now,
               }
             : t
         )
       );
 
-      setTripOk(trip.id, `✅ Resolved. Billable minutes: ${actualMinutes}`);
+      setTripOk(
+        trip.id,
+        `✅ Resolved. Billable minutes: ${actualMinutes}. Time entries: ${crewMembers.length}`
+      );
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to resolve trip.");
     } finally {
@@ -1194,37 +1470,88 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
       const paused = sumPausedMinutes(pauseBlocks);
       const actualMinutes = Math.max(0, gross - paused);
 
-      await updateDoc(doc(db, "trips", trip.id), {
-        status: "complete",
-        timerState: "complete",
-        actualEndAt: now,
-        endedByUid: myUid,
-        pauseBlocks,
-        actualMinutes,
+      // 1) update trip -> complete/follow_up
+      await updateDoc(
+        doc(db, "trips", trip.id),
+        stripUndefined({
+          status: "complete",
+          timerState: "complete",
+          actualEndAt: now,
+          endedByUid: myUid,
+          pauseBlocks,
+          actualMinutes,
 
-        workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-        resolutionNotes: null,
-        followUpNotes: follow,
-        outcome: "follow_up",
-        readyToBillAt: null,
+          workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
+          resolutionNotes: null,
+          followUpNotes: follow,
+          outcome: "follow_up",
+          readyToBillAt: null,
 
-        // crew snapshot
-        crewConfirmed: trip.crewConfirmed || trip.crew || null,
+          crewConfirmed: trip.crewConfirmed || trip.crew || null,
 
-        updatedAt: now,
-        updatedByUid: myUid,
+          updatedAt: now,
+          updatedByUid: myUid,
+        }) as any
+      );
+
+      // 2) create timeEntries + weeklyTimesheets for each crew member (FOLLOW UP still paid)
+      const entryDate = trip.date;
+      if (!entryDate) throw new Error("Trip is missing date; cannot create time entries.");
+      if (!actualMinutes || actualMinutes <= 0) {
+        throw new Error("Trip duration is 0 minutes; no time entry created.");
+      }
+
+      const hoursGenerated = roundToQuarter(actualMinutes / 60);
+
+      const latestSnap = await getDoc(doc(db, "trips", trip.id));
+      const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
+
+      const crewMembers = crewMembersFromTrip({
+        crewConfirmed: latestTrip?.crewConfirmed ?? trip.crewConfirmed,
+        crew: latestTrip?.crew ?? trip.crew,
       });
 
-      // Set ticket status to follow_up
+      if (crewMembers.length === 0) {
+        throw new Error(
+          "No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries."
+        );
+      }
+
+      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
+
+      for (const m of crewMembers) {
+        const timesheetId = await upsertWeeklyTimesheetHeader({
+          employeeId: m.uid,
+          employeeName: m.name,
+          employeeRole: m.role,
+          weekStartDate,
+          weekEndDate,
+          createdByUid: myUid || null,
+        });
+
+        await upsertTimeEntryFromTrip({
+          trip,
+          member: m,
+          entryDate,
+          hoursGenerated,
+          weekStartDate,
+          weekEndDate,
+          timesheetId,
+          createdByUid: myUid || null,
+          noteSuffix: "Follow Up",
+        });
+      }
+
+      // 3) ticket -> follow_up
       if (ticket) {
         await updateDoc(doc(db, "serviceTickets", ticket.id), {
           status: "follow_up",
           updatedAt: now,
         });
-
         setTicket((prev) => (prev ? { ...prev, status: "follow_up", updatedAt: now } : prev));
       }
 
+      // local state
       setTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
@@ -1239,12 +1566,17 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                 workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
                 followUpNotes: follow,
                 resolutionNotes: null,
+                outcome: "follow_up",
+                readyToBillAt: null,
               }
             : t
         )
       );
 
-      setTripOk(trip.id, `🟡 Follow Up logged. Minutes: ${actualMinutes}`);
+      setTripOk(
+        trip.id,
+        `🟡 Follow Up logged. Minutes: ${actualMinutes}. Time entries: ${crewMembers.length}`
+      );
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to complete follow-up.");
     } finally {
@@ -1332,7 +1664,6 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                 <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
               </p>
 
-              {/* You said you want to remove/hide legacy schedule now; keeping a small note for now */}
               <p style={{ marginTop: "10px", color: "#777", fontSize: "13px" }}>
                 Legacy schedule fields are being phased out (Trips now power scheduling + time).
               </p>
@@ -1373,15 +1704,20 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                         const crew = t.crew || {};
                         const primary = crew.primaryTechName || "Unassigned";
                         const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
-                        const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
-                        const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
+                        const secondary = crew.secondaryTechName
+                          ? `2nd Tech: ${crew.secondaryTechName}`
+                          : "";
+                        const secondaryHelper = crew.secondaryHelperName
+                          ? `2nd Helper: ${crew.secondaryHelperName}`
+                          : "";
 
                         const canAct = canCurrentUserActOnTrip(t);
                         const savingThis = Boolean(tripActionSaving[t.id]);
                         const errMsg = tripActionError[t.id] || "";
                         const okMsg = tripActionSuccess[t.id] || "";
 
-                        const timerState = (t.timerState || (t.status === "in_progress" ? "running" : "not_started")) as string;
+                        const timerState = (t.timerState ||
+                          (t.status === "in_progress" ? "running" : "not_started")) as string;
                         const isRunning = timerState === "running";
                         const isPaused = timerState === "paused";
                         const isComplete = timerState === "complete" || t.status === "complete";
@@ -1392,8 +1728,8 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                           t.actualStartAt && !t.actualEndAt
                             ? minutesBetweenIso(t.actualStartAt, nowIso())
                             : t.actualStartAt && t.actualEndAt
-                              ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
-                              : 0;
+                            ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
+                            : 0;
 
                         const computedBillable = Math.max(0, liveGrossMins - pausedMins);
 
@@ -1410,7 +1746,8 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                             }}
                           >
                             <div style={{ fontWeight: 900 }}>
-                              🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
+                              🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} •{" "}
+                              {t.startTime}-{t.endTime}
                             </div>
 
                             <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
@@ -1425,16 +1762,27 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                               Tech: {primary}
                               {helper ? <div style={{ marginTop: "4px" }}>{helper}</div> : null}
                               {secondary ? <div style={{ marginTop: "4px" }}>{secondary}</div> : null}
-                              {secondaryHelper ? <div style={{ marginTop: "4px" }}>{secondaryHelper}</div> : null}
+                              {secondaryHelper ? (
+                                <div style={{ marginTop: "4px" }}>{secondaryHelper}</div>
+                              ) : null}
                             </div>
 
                             <div style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
                               Billable minutes (computed): <strong>{computedBillable}</strong>{" "}
-                              <span style={{ color: "#999" }}>(gross {liveGrossMins} - paused {pausedMins})</span>
+                              <span style={{ color: "#999" }}>
+                                (gross {liveGrossMins} - paused {pausedMins})
+                              </span>
                             </div>
 
                             {/* Actions */}
-                            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            <div
+                              style={{
+                                marginTop: "10px",
+                                display: "flex",
+                                gap: "8px",
+                                flexWrap: "wrap",
+                              }}
+                            >
                               {!isComplete ? (
                                 <>
                                   {!isInProgress ? (
@@ -1536,17 +1884,27 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
 
                             {!canAct ? (
                               <div style={{ marginTop: "8px", fontSize: "12px", color: "#999" }}>
-                                You can only start/finish trips where you are on the assigned crew. (Admin can act on any trip.)
+                                You can only start/finish trips where you are on the assigned crew.
+                                (Admin can act on any trip.)
                               </div>
                             ) : null}
 
                             {/* Work Notes */}
-                            <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
+                            <div
+                              style={{
+                                marginTop: "12px",
+                                borderTop: "1px solid #eee",
+                                paddingTop: "12px",
+                              }}
+                            >
                               <div style={{ fontWeight: 900, marginBottom: "6px" }}>Work Notes</div>
                               <textarea
                                 value={tripWorkNotes[t.id] ?? ""}
                                 onChange={(e) =>
-                                  setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                  setTripWorkNotes((prev) => ({
+                                    ...prev,
+                                    [t.id]: e.target.value,
+                                  }))
                                 }
                                 rows={3}
                                 disabled={!canAct || savingThis}
@@ -1577,7 +1935,6 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                               </button>
                             </div>
 
-                            {/* Follow Up Notes (required when clicking Follow Up) */}
                             {!isComplete ? (
                               <div style={{ marginTop: "12px" }}>
                                 <div style={{ fontWeight: 900, marginBottom: "6px" }}>
@@ -1586,7 +1943,10 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                                 <textarea
                                   value={tripFollowUpNotes[t.id] ?? ""}
                                   onChange={(e) =>
-                                    setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                    setTripFollowUpNotes((prev) => ({
+                                      ...prev,
+                                      [t.id]: e.target.value,
+                                    }))
                                   }
                                   rows={3}
                                   disabled={!canAct || savingThis}
@@ -1602,7 +1962,6 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                               </div>
                             ) : null}
 
-                            {/* Resolution Notes (required when clicking Resolved) */}
                             {!isComplete ? (
                               <div style={{ marginTop: "12px" }}>
                                 <div style={{ fontWeight: 900, marginBottom: "6px" }}>
@@ -1611,7 +1970,10 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                                 <textarea
                                   value={tripResolutionNotes[t.id] ?? ""}
                                   onChange={(e) =>
-                                    setTripResolutionNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                    setTripResolutionNotes((prev) => ({
+                                      ...prev,
+                                      [t.id]: e.target.value,
+                                    }))
                                   }
                                   rows={3}
                                   disabled={!canAct || savingThis}
@@ -1627,12 +1989,17 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                               </div>
                             ) : null}
 
-                            {/* Materials (required for Resolved) */}
                             {!isComplete ? (
-                              <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
+                              <div
+                                style={{
+                                  marginTop: "12px",
+                                  borderTop: "1px solid #eee",
+                                  paddingTop: "12px",
+                                }}
+                              >
                                 <div style={{ fontWeight: 900 }}>Materials (required for Resolved)</div>
                                 <div style={{ fontSize: "12px", color: "#666", marginTop: "6px" }}>
-                                  Add at least 1 material with a name and qty. (You can refine pricing later.)
+                                  Add at least 1 material with a name and qty.
                                 </div>
 
                                 {mats.length === 0 ? (
@@ -1663,14 +2030,22 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                                           gap: "8px",
                                         }}
                                       >
-                                        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "8px" }}>
+                                        <div
+                                          style={{
+                                            display: "grid",
+                                            gridTemplateColumns: "2fr 1fr 1fr",
+                                            gap: "8px",
+                                          }}
+                                        >
                                           <div>
                                             <label style={{ fontSize: "12px", fontWeight: 800 }}>Name</label>
                                             <input
                                               value={m.name}
-                                              onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
+                                              onChange={(e) =>
+                                                updateMaterialRow(t.id, idx, { name: e.target.value })
+                                              }
                                               disabled={!canAct || savingThis}
-                                              placeholder="Example: 1/2&quot; PEX, wax ring, PRV..."
+                                              placeholder='Example: 1/2" PEX, wax ring, PRV...'
                                               style={{
                                                 display: "block",
                                                 width: "100%",
@@ -1688,7 +2063,9 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                                               min="0.01"
                                               step="0.01"
                                               value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                              onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
+                                              onChange={(e) =>
+                                                updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })
+                                              }
                                               disabled={!canAct || savingThis}
                                               style={{
                                                 display: "block",
@@ -1704,7 +2081,9 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                                             <label style={{ fontSize: "12px", fontWeight: 800 }}>Unit (opt)</label>
                                             <input
                                               value={m.unit || ""}
-                                              onChange={(e) => updateMaterialRow(t.id, idx, { unit: e.target.value })}
+                                              onChange={(e) =>
+                                                updateMaterialRow(t.id, idx, { unit: e.target.value })
+                                              }
                                               disabled={!canAct || savingThis}
                                               placeholder="ea, ft, gal"
                                               style={{
@@ -1723,7 +2102,9 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                                           <label style={{ fontSize: "12px", fontWeight: 800 }}>Notes (opt)</label>
                                           <input
                                             value={m.notes || ""}
-                                            onChange={(e) => updateMaterialRow(t.id, idx, { notes: e.target.value })}
+                                            onChange={(e) =>
+                                              updateMaterialRow(t.id, idx, { notes: e.target.value })
+                                            }
                                             disabled={!canAct || savingThis}
                                             placeholder="Any extra details..."
                                             style={{
@@ -1956,8 +2337,9 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
                         </div>
 
                         <div style={{ marginTop: "10px", fontSize: "12px", color: "#666" }}>
-                          Tip: If you want a helper reassigned for the day, use <strong>Daily Crew Overrides</strong>.
-                          For this trip, selecting a helper here means they are explicitly part of the scheduled crew.
+                          Tip: If you want a helper reassigned for the day, use{" "}
+                          <strong>Daily Crew Overrides</strong>. For this trip, selecting a helper here
+                          means they are explicitly part of the scheduled crew.
                         </div>
                       </div>
                     </div>
@@ -2006,7 +2388,7 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
               </div>
             </div>
 
-            {/* Legacy Update Ticket section (kept for now, can hide/remove next) */}
+            {/* Legacy Update Ticket section */}
             <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
               <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "12px" }}>
                 Update Ticket (legacy fields)
@@ -2057,29 +2439,17 @@ function validateMaterialsForResolved(materials: TripMaterial[]):
 
                 <div style={{ display: "none" }}>
                   <label>Scheduled Date (legacy)</label>
-                  <input
-                    type="date"
-                    value={scheduledDate}
-                    onChange={(e) => setScheduledDate(e.target.value)}
-                  />
+                  <input type="date" value={scheduledDate} onChange={(e) => setScheduledDate(e.target.value)} />
                 </div>
 
                 <div style={{ display: "none" }}>
                   <label>Scheduled Start Time (legacy)</label>
-                  <input
-                    type="time"
-                    value={scheduledStartTime}
-                    onChange={(e) => setScheduledStartTime(e.target.value)}
-                  />
+                  <input type="time" value={scheduledStartTime} onChange={(e) => setScheduledStartTime(e.target.value)} />
                 </div>
 
                 <div style={{ display: "none" }}>
                   <label>Scheduled End Time (legacy)</label>
-                  <input
-                    type="time"
-                    value={scheduledEndTime}
-                    onChange={(e) => setScheduledEndTime(e.target.value)}
-                  />
+                  <input type="time" value={scheduledEndTime} onChange={(e) => setScheduledEndTime(e.target.value)} />
                 </div>
 
                 <div style={{ display: "none" }}>
