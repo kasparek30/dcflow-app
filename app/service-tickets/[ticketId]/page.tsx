@@ -1850,13 +1850,18 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                         Set Not Ready
                       </button>
 
-                      <button
+<button
   type="button"
   onClick={async () => {
-    try {
-      if (!ticket?.id) return;
+    // ✅ Most reliable: open tab immediately (prevents popup blockers)
+    const newTab = window.open("about:blank", "_blank", "noopener,noreferrer");
 
-      // Optional: show a spinner using your existing saving state
+    try {
+      if (!ticket?.id) {
+        if (newTab) newTab.close();
+        return;
+      }
+
       const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1864,20 +1869,34 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       });
 
       const data = await res.json();
+
       if (!res.ok) {
+        if (newTab) newTab.close();
         alert(data?.error || "Failed to create QBO invoice.");
         return;
       }
 
+      const invoiceId = data?.qboInvoiceId || data?.invoiceId || "";
+      const qboUrl =
+        data?.qboInvoiceUrl ||
+        (invoiceId ? `https://qbo.intuit.com/app/invoice?txnId=${invoiceId}` : "");
+
       alert(
-        `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
-          data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
+        `✅ QBO Invoice Created\nInvoice ID: ${invoiceId}${
+          data?.docNumber ? `\nDoc #: ${data.docNumber}` : ""
         }`
       );
 
-      // Optionally: reload the ticket doc or set local state to show invoice id
-      // location.reload();
+      // ✅ Navigate the new tab to the QBO invoice edit screen
+      if (newTab) {
+        if (qboUrl) {
+          newTab.location.href = qboUrl;
+        } else {
+          newTab.close();
+        }
+      }
     } catch (e: any) {
+      if (newTab) newTab.close();
       alert(e?.message || "Failed to create QBO invoice.");
     }
   }}

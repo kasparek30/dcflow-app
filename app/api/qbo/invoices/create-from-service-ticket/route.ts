@@ -474,26 +474,31 @@ export async function POST(req: Request) {
       { merge: true }
     );
 
-    return NextResponse.json({
-      ok: true,
-      message: "Invoice created in QBO from DCFlow service ticket.",
-      realmId,
-      serviceTicketId,
-      qboCustomerId,
-      qboInvoiceId,
-      docNumber: docNumber || null,
-      labor: {
-        hours,
-        unitPrice: laborUnitPrice,
-        amount: laborAmount,
-        itemId: laborItemId,
-        itemName: laborItemName,
-      },
-      materialsCount: cleanedMaterials.length,
-      materialsMode: USE_MATERIALS_ITEM ? "materials_item_single_line" : "description_only_lines",
-      intuit_tid: intuitTid || "",
-      attempt: attempt || "original",
-    });
+const qboInvoiceUrl = qboInvoiceId
+  ? `https://qbo.intuit.com/app/invoice?txnId=${qboInvoiceId}`
+  : null;
+
+return NextResponse.json({
+  ok: true,
+  message: "Invoice created in QBO from DCFlow service ticket.",
+  realmId,
+  serviceTicketId,
+  qboCustomerId,
+  qboInvoiceId,
+  qboInvoiceUrl, // ✅ add this
+  docNumber: docNumber || null,
+  labor: {
+    hours,
+    unitPrice: laborUnitPrice,
+    amount: laborAmount,
+    itemId: laborItemId,
+    itemName: laborItemName,
+  },
+  materialsCount: cleanedMaterials.length,
+  materialsMode: USE_MATERIALS_ITEM ? "materials_item_single_line" : "description_only_lines",
+  intuit_tid: intuitTid || "",
+  attempt: attempt || "original",
+});
   } catch (err: unknown) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Invoice create failed." },
