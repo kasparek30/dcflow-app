@@ -7,11 +7,12 @@ import {
 import { adminDb } from "../../admin-db";
 
 /**
- * ✅ CONFIG (matches your screenshot)
+ * ✅ CONFIG
+ * Put what you SEE in QBO UI here (we’ll match it against Name OR FullyQualifiedName).
  */
-const QBO_LABOR_ITEM_NAME = "Labor N/T";
-const QBO_MATERIALS_ITEM_NAME = "Materials:Materials"; // optional, see USE_MATERIALS_ITEM
-const USE_MATERIALS_ITEM = false; // keep false = description-only lines (recommended v1)
+const QBO_LABOR_ITEM_LABEL = "Labor N/T";
+const QBO_MATERIALS_ITEM_LABEL = "Materials:Materials"; // optional, see USE_MATERIALS_ITEM
+const USE_MATERIALS_ITEM = false; // v1 recommended = false (description-only)
 
 type TripMaterial = {
   name: string;
@@ -23,6 +24,7 @@ type TripMaterial = {
 type QboItem = {
   Id?: string;
   Name?: string;
+  FullyQualifiedName?: string;
   Active?: boolean;
   UnitPrice?: number;
   SalesPrice?: number;
@@ -42,6 +44,12 @@ function safeNumber(n: unknown, fallback = 0) {
   return Number.isFinite(v) ? v : fallback;
 }
 
+function normalize(s: unknown) {
+  return String(s ?? "")
+    .trim()
+    .toLowerCase();
+}
+
 function buildMaterialsDescription(m: TripMaterial) {
   const qty = safeNumber(m.qty, 1);
   const unit = (m.unit || "").trim();
@@ -59,80 +67,149 @@ async function qboQuery(realmId: string, queryStr: string) {
   return qboFetchWithAutoRefresh(url);
 }
 
-async function findQboItemByName(realmId: string, nameExact: string) {
-  const escaped = nameExact.replace(/"/g, '\\"');
+function pickBestItemMatch(items: QboItem[], label: string) {
+  const want = normalize(label);
 
-  // exact match
+  // Prefer Active first, but if nothing active, we’ll still take an inactive match
+  const actives = items.filter((i) => i?.Active !== false);
+  const pool = actives.length ? actives : items;
+
+  // Score by exact match on Name / FQN, then contains
+  const scored = pool
+    .filter((i) => String(i?.Id || "").trim())
+    .map((i) => {
+      const name = normalize(i.Name);
+      const fqn = normalize(i.FullyQualifiedName);
+      let score = 999;
+
+      if (name === want) score = 0;
+      else if (fqn === want) score = 1;
+      else if (name.includes(want)) score = 2;
+      else if (fqn.includes(want)) score = 3;
+
+      return { i, score };
+    })
+    .filter((x) => x.score < 999)
+    .sort((a, b) => a.score - b.score);
+
+  return scored.length ? scored[0].i : null;
+}
+
+async function findQboItemFlexible(realmId: string, label: string) {
+  const escaped = label.replace(/"/g, '\\"');
+
+  // 1) Exact Name
   {
     const { res, body } = await qboQuery(
       realmId,
-      `select * from Item where Name = "${escaped}" maxresults 10`
+      `select * from Item where Name = "${escaped}" maxresults 50`
     );
     if (res.ok) {
-      const items = asArray<QboItem>(body?.QueryResponse?.Item).filter(
-        (i) => (i?.Active ?? true) && String(i?.Id || "").trim()
-      );
-      if (items.length) return items[0];
+      const items = asArray<QboItem>(body?.QueryResponse?.Item);
+      const best = pickBestItemMatch(items, label);
+      if (best) return { item: best, candidates: items };
     }
   }
 
-  // contains match fallback
+  // 2) Exact FullyQualifiedName
   {
     const { res, body } = await qboQuery(
       realmId,
-      `select * from Item where Name LIKE "%${escaped}%" maxresults 10`
+      `select * from Item where FullyQualifiedName = "${escaped}" maxresults 50`
     );
     if (res.ok) {
-      const items = asArray<QboItem>(body?.QueryResponse?.Item).filter(
-        (i) => (i?.Active ?? true) && String(i?.Id || "").trim()
-      );
-      const lowered = nameExact.toLowerCase();
-      items.sort((a, b) => {
-        const an = String(a.Name || "").toLowerCase();
-        const bn = String(b.Name || "").toLowerCase();
-        const aScore = an === lowered ? 0 : an.includes(lowered) ? 1 : 2;
-        const bScore = bn === lowered ? 0 : bn.includes(lowered) ? 1 : 2;
-        return aScore - bScore;
-      });
-      if (items.length) return items[0];
+      const items = asArray<QboItem>(body?.QueryResponse?.Item);
+      const best = pickBestItemMatch(items, label);
+      if (best) return { item: best, candidates: items };
     }
   }
 
-  return null;
+  // 3) LIKE Name
+  {
+    const { res, body } = await qboQuery(
+      realmId,
+      `select * from Item where Name LIKE "%${escaped}%" maxresults 50`
+    );
+    if (res.ok) {
+      const items = asArray<QboItem>(body?.QueryResponse?.Item);
+      const best = pickBestItemMatch(items, label);
+      if (best) return { item: best, candidates: items };
+    }
+  }
+
+  // 4) LIKE FullyQualifiedName
+  {
+    const { res, body } = await qboQuery(
+      realmId,
+      `select * from Item where FullyQualifiedName LIKE "%${escaped}%" maxresults 50`
+    );
+    if (res.ok) {
+      const items = asArray<QboItem>(body?.QueryResponse?.Item);
+      const best = pickBestItemMatch(items, label);
+      if (best) return { item: best, candidates: items };
+    }
+  }
+
+  // 5) Final fallback: search for "Labor" so we can SHOW you what QBO returns
+  {
+    const { res, body } = await qboQuery(
+      realmId,
+      `select * from Item where Name LIKE "%Labor%" maxresults 50`
+    );
+    const items = res.ok ? asArray<QboItem>(body?.QueryResponse?.Item) : [];
+    return { item: null, candidates: items };
+  }
+}
+
+function getItemRate(item: QboItem) {
+  const unitPrice =
+    typeof item.UnitPrice === "number"
+      ? item.UnitPrice
+      : typeof item.SalesPrice === "number"
+        ? item.SalesPrice
+        : null;
+  return unitPrice && unitPrice > 0 ? unitPrice : null;
 }
 
 async function getLaborItemAndRate(realmId: string) {
-  const laborItem = await findQboItemByName(realmId, QBO_LABOR_ITEM_NAME);
-  if (!laborItem?.Id) {
+  const { item, candidates } = await findQboItemFlexible(realmId, QBO_LABOR_ITEM_LABEL);
+
+  if (!item?.Id) {
+    const list = (candidates || [])
+      .slice(0, 25)
+      .map((i) => ({
+        Id: i.Id || "",
+        Name: i.Name || "",
+        FullyQualifiedName: i.FullyQualifiedName || "",
+        Active: i.Active !== false,
+        UnitPrice: i.UnitPrice ?? i.SalesPrice ?? null,
+      }));
+
     throw new Error(
-      `Could not find QBO Item named "${QBO_LABOR_ITEM_NAME}". Check Products/Services in QBO.`
+      `Could not find QBO Item matching "${QBO_LABOR_ITEM_LABEL}". ` +
+        `I searched Name + FullyQualifiedName. ` +
+        `Sample Labor-related items returned by QBO: ${JSON.stringify(list)}`
     );
   }
 
-  const unitPrice =
-    typeof laborItem.UnitPrice === "number"
-      ? laborItem.UnitPrice
-      : typeof laborItem.SalesPrice === "number"
-        ? laborItem.SalesPrice
-        : null;
-
-  if (!unitPrice || unitPrice <= 0) {
+  const unitPrice = getItemRate(item);
+  if (!unitPrice) {
     throw new Error(
-      `QBO "${QBO_LABOR_ITEM_NAME}" item found (Id: ${laborItem.Id}) but no usable UnitPrice/SalesPrice. Please set its sales price in QBO.`
+      `Found QBO labor item (Id: ${item.Id}, Name: ${item.Name}, FQN: ${item.FullyQualifiedName}) but it has no UnitPrice/SalesPrice. Set the sales price in QBO.`
     );
   }
 
   return {
-    laborItemId: String(laborItem.Id),
-    laborItemName: laborItem.Name || QBO_LABOR_ITEM_NAME,
+    laborItemId: String(item.Id),
+    laborItemName: item.Name || QBO_LABOR_ITEM_LABEL,
     laborUnitPrice: unitPrice,
   };
 }
 
 async function getMaterialsItem(realmId: string) {
-  const matItem = await findQboItemByName(realmId, QBO_MATERIALS_ITEM_NAME);
-  if (!matItem?.Id) return null;
-  return { id: String(matItem.Id), name: matItem.Name || QBO_MATERIALS_ITEM_NAME };
+  const { item } = await findQboItemFlexible(realmId, QBO_MATERIALS_ITEM_LABEL);
+  if (!item?.Id) return null;
+  return { id: String(item.Id), name: item.Name || QBO_MATERIALS_ITEM_LABEL };
 }
 
 export async function POST(req: Request) {
@@ -194,10 +271,7 @@ export async function POST(req: Request) {
 
     const customerId = String(ticket.customerId || "").trim();
     if (!customerId) {
-      return NextResponse.json(
-        { error: "Ticket is missing customerId." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Ticket is missing customerId." }, { status: 400 });
     }
 
     // 2) Load customer + qboCustomerId
@@ -239,7 +313,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 4) Pull labor item + current rate from QBO (Labor N/T)
+    // 4) Pull labor item + current rate from QBO (flex match Name/FQN)
     const { laborItemId, laborItemName, laborUnitPrice } = await getLaborItemAndRate(realmId);
 
     // 5) Build invoice lines
@@ -269,20 +343,18 @@ export async function POST(req: Request) {
     let materialLines: any[] = [];
     if (cleanedMaterials.length > 0) {
       if (USE_MATERIALS_ITEM) {
-        // Optional alternative: attach a single "Materials:Materials" line and put the list in description
         const matItem = await getMaterialsItem(realmId);
         if (!matItem) {
           throw new Error(
-            `USE_MATERIALS_ITEM=true but could not find QBO Item "${QBO_MATERIALS_ITEM_NAME}".`
+            `USE_MATERIALS_ITEM=true but could not find QBO Item matching "${QBO_MATERIALS_ITEM_LABEL}".`
           );
         }
-
         const desc = ["Materials Used:", ...cleanedMaterials.map(buildMaterialsDescription)].join("\n");
 
         materialLines = [
           {
             DetailType: "SalesItemLineDetail",
-            Amount: 0, // you said you don't need pricing here (v1)
+            Amount: 0,
             Description: desc,
             SalesItemLineDetail: {
               ItemRef: { value: matItem.id, name: matItem.name },
@@ -292,7 +364,6 @@ export async function POST(req: Request) {
           },
         ];
       } else {
-        // Recommended v1: description-only lines (very clean, no pricing assumptions)
         materialLines = [
           { DetailType: "DescriptionOnly", Description: "Materials Used:" },
           ...cleanedMaterials.map((m) => ({
