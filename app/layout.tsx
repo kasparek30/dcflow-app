@@ -2,7 +2,10 @@ import { AuthProvider } from "../src/context/auth-context";
 
 export const metadata = {
   title: "DCFlow",
-  description: "DCFlow foundation build",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    apple: "/icons/apple-touch-icon.png"
+  },
 };
 
 export default function RootLayout({
