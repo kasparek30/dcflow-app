@@ -1852,53 +1852,63 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
 <button
   type="button"
-  onClick={async () => {
-    // ✅ Most reliable: open tab immediately (prevents popup blockers)
-    const newTab = window.open("about:blank", "_blank", "noopener,noreferrer");
+  onClick={() => {
+    // 1) Open immediately (must be synchronous or browser blocks it)
+    const win = window.open("about:blank", "_blank", "noopener,noreferrer");
 
-    try {
-      if (!ticket?.id) {
-        if (newTab) newTab.close();
-        return;
-      }
-
-      const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serviceTicketId: ticket.id }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        if (newTab) newTab.close();
-        alert(data?.error || "Failed to create QBO invoice.");
-        return;
-      }
-
-      const invoiceId = data?.qboInvoiceId || data?.invoiceId || "";
-      const qboUrl =
-        data?.qboInvoiceUrl ||
-        (invoiceId ? `https://qbo.intuit.com/app/invoice?txnId=${invoiceId}` : "");
-
-      alert(
-        `✅ QBO Invoice Created\nInvoice ID: ${invoiceId}${
-          data?.docNumber ? `\nDoc #: ${data.docNumber}` : ""
-        }`
-      );
-
-      // ✅ Navigate the new tab to the QBO invoice edit screen
-      if (newTab) {
-        if (qboUrl) {
-          newTab.location.href = qboUrl;
-        } else {
-          newTab.close();
+    (async () => {
+      try {
+        if (!ticket?.id) {
+          win?.close();
+          return;
         }
+
+        // Optional: show something in the new tab while loading
+        if (win) {
+          win.document.write("<p style='font-family: sans-serif;'>Creating QBO invoice draft…</p>");
+        }
+
+        const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ serviceTicketId: ticket.id }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          if (win) {
+            win.document.body.innerHTML = `<pre style="font-family: sans-serif; white-space: pre-wrap;">${
+              data?.error || "Failed to create QBO invoice."
+            }</pre>`;
+          }
+          alert(data?.error || "Failed to create QBO invoice.");
+          return;
+        }
+
+        // 2) Navigate the already-opened window to QBO
+        const url =
+          data?.qboInvoiceUrl ||
+          (data?.qboInvoiceId ? `https://qbo.intuit.com/app/invoice?txnId=${data.qboInvoiceId}` : null);
+
+        if (url && win) {
+          win.location.href = url;
+        } else {
+          alert(
+            `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
+              data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
+            }\n\nCould not auto-open QBO invoice URL.`
+          );
+        }
+      } catch (e: any) {
+        if (win) {
+          win.document.body.innerHTML = `<pre style="font-family: sans-serif; white-space: pre-wrap;">${
+            e?.message || "Failed to create QBO invoice."
+          }</pre>`;
+        }
+        alert(e?.message || "Failed to create QBO invoice.");
       }
-    } catch (e: any) {
-      if (newTab) newTab.close();
-      alert(e?.message || "Failed to create QBO invoice.");
-    }
+    })();
   }}
   style={{
     padding: "8px 12px",
