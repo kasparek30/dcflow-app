@@ -1,597 +1,707 @@
+// app/schedule/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  Timestamp,
+} from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
 
-type DayBucket = {
-  key: string;
-  label: string;
-  shortLabel: string;
-  isoDate: string;
-  dayIndex: number;
-};
+type ViewMode = "week" | "month" | "day";
 
 type TripCrew = {
   primaryTechUid?: string | null;
   primaryTechName?: string | null;
-
   helperUid?: string | null;
   helperName?: string | null;
-
   secondaryTechUid?: string | null;
   secondaryTechName?: string | null;
-
   secondaryHelperUid?: string | null;
   secondaryHelperName?: string | null;
 };
 
 type TripLink = {
+  serviceTicketId?: string | null;
   projectId?: string | null;
   projectStageKey?: string | null;
-  serviceTicketId?: string | null;
 };
 
-type Trip = {
+type TripDoc = {
   id: string;
   active: boolean;
-
-  type?: "project" | "service" | string;
+  type?: "service" | "project" | string;
   status?: string;
 
   date?: string; // YYYY-MM-DD
-  timeWindow?: "am" | "pm" | "all_day" | string;
+  timeWindow?: "am" | "pm" | "all_day" | "custom" | string;
   startTime?: string; // "08:00"
-  endTime?: string; // "17:00"
+  endTime?: string; // "12:00"
 
-  crew?: TripCrew;
-  link?: TripLink;
+  crew?: TripCrew | null;
+  link?: TripLink | null;
 
-  notes?: string | null;
-  cancelReason?: string | null;
-
-  sourceKey?: string;
+  // optional fields if present
+  outcome?: string | null;
+  readyToBillAt?: string | null;
 
   createdAt?: string;
   updatedAt?: string;
 };
 
-type ScheduleItem = {
-  kind: "trip";
-  id: string;
-  date: string;
-  sortTime: string;
-
-  title: string;
-  subtitle: string;
-
-  techText: string;
-  helperText?: string;
-  secondaryTechText?: string;
-  secondaryHelperText?: string;
-
-  statusText: string;
-  timeText: string;
-
-  href: string;
+type TechRow = {
+  uid: string;
+  name: string;
 };
 
-function formatDateToIsoLocal(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
 }
 
-function getStartOfWeek(date: Date) {
-  const copy = new Date(date);
-  const day = copy.getDay();
-  copy.setHours(0, 0, 0, 0);
-  copy.setDate(copy.getDate() - day);
-  return copy;
+function toIsoDate(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-function buildWeekDays(baseDate: Date): DayBucket[] {
-  const start = getStartOfWeek(baseDate);
-  const labels = [
-    ["Sunday", "Sun"],
-    ["Monday", "Mon"],
-    ["Tuesday", "Tue"],
-    ["Wednesday", "Wed"],
-    ["Thursday", "Thu"],
-    ["Friday", "Fri"],
-    ["Saturday", "Sat"],
-  ] as const;
-
-  return labels.map(([label, shortLabel], index) => {
-    const current = new Date(start);
-    current.setDate(start.getDate() + index);
-
-    return {
-      key: shortLabel.toLowerCase(),
-      label,
-      shortLabel,
-      isoDate: formatDateToIsoLocal(current),
-      dayIndex: index,
-    };
-  });
+function fromIsoDate(iso: string) {
+  const [y, m, day] = iso.split("-").map((x) => Number(x));
+  return new Date(y, (m || 1) - 1, day || 1);
 }
 
-function formatWindow(window?: string) {
-  const w = (window || "").toLowerCase();
-  if (w === "am") return "AM (8–12)";
-  if (w === "pm") return "PM (1–5)";
-  if (w === "all_day") return "All Day (8–5)";
-  return window || "—";
+function isWeekend(d: Date) {
+  const wd = d.getDay(); // 0 Sun .. 6 Sat
+  return wd === 0 || wd === 6;
 }
 
-function formatTripType(type?: string) {
-  const t = (type || "").toLowerCase();
-  if (t === "project") return "📐 Project";
-  if (t === "service") return "🔧 Service";
-  return type ? `🧩 ${type}` : "🧩 Trip";
+function startOfWorkWeek(d: Date) {
+  // Monday as start
+  const wd = d.getDay(); // 0..6
+  const diffToMon = (wd + 6) % 7; // Mon=0, Tue=1,... Sun=6
+  const out = new Date(d);
+  out.setHours(0, 0, 0, 0);
+  out.setDate(out.getDate() - diffToMon);
+  return out;
 }
 
-function buildHrefFromLink(link?: TripLink) {
-  if (!link) return "/trips";
-  if (link.serviceTicketId) return `/service-tickets/${link.serviceTicketId}`;
-  if (link.projectId) return `/projects/${link.projectId}`;
-  return "/trips";
+function addDays(d: Date, days: number) {
+  const out = new Date(d);
+  out.setDate(out.getDate() + days);
+  return out;
 }
 
-function buildTitleFromTrip(trip: Trip) {
-  const typeLabel = formatTripType(trip.type);
+function addMonths(d: Date, months: number) {
+  const out = new Date(d);
+  out.setMonth(out.getMonth() + months);
+  return out;
+}
 
-  const stageKey = trip.link?.projectStageKey || "";
-  const stageLabel =
-    stageKey === "roughIn"
-      ? "Rough-In"
-      : stageKey === "topOutVent"
-        ? "Top-Out / Vent"
-        : stageKey === "trimFinish"
-          ? "Trim / Finish"
-          : stageKey;
+function workWeekDays(weekStartMonday: Date) {
+  // Mon..Fri
+  return [0, 1, 2, 3, 4].map((i) => addDays(weekStartMonday, i));
+}
 
-  if (trip.type === "project") {
-    return stageLabel ? `${typeLabel} • ${stageLabel}` : `${typeLabel}`;
+function monthWorkdays(anchor: Date) {
+  const y = anchor.getFullYear();
+  const m = anchor.getMonth();
+  const first = new Date(y, m, 1);
+  const last = new Date(y, m + 1, 0);
+
+  const days: Date[] = [];
+  let cur = new Date(first);
+  cur.setHours(0, 0, 0, 0);
+
+  while (cur <= last) {
+    if (!isWeekend(cur)) days.push(new Date(cur));
+    cur = addDays(cur, 1);
   }
+  return days;
+}
 
-  if (trip.type === "service") {
-    return `${typeLabel} • Service Ticket`;
+function formatDow(d: Date) {
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+}
+
+function formatShort(d: Date) {
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function formatWindow(w?: string) {
+  const x = (w || "").toLowerCase();
+  if (x === "am") return "AM";
+  if (x === "pm") return "PM";
+  if (x === "all_day") return "All Day";
+  if (x === "custom") return "Custom";
+  return w || "—";
+}
+
+function tripHref(t: TripDoc) {
+  if (t.link?.serviceTicketId) return `/service-tickets/${t.link.serviceTicketId}`;
+  if (t.link?.projectId) return `/projects/${t.link.projectId}`;
+  return "/schedule";
+}
+
+function tripTitle(t: TripDoc) {
+  const type = (t.type || "").toLowerCase();
+  if (type === "service") return "🔧 Service";
+  if (type === "project") return "📐 Project";
+  return "🧳 Trip";
+}
+
+function crewLine(t: TripDoc) {
+  const c = t.crew || {};
+  const tech = c.primaryTechName || "Unassigned";
+  const helper = c.helperName ? ` • Helper: ${c.helperName}` : "";
+  const secondTech = c.secondaryTechName ? ` • 2nd Tech: ${c.secondaryTechName}` : "";
+  const secondHelper = c.secondaryHelperName ? ` • 2nd Helper: ${c.secondaryHelperName}` : "";
+  return `Tech: ${tech}${helper}${secondTech}${secondHelper}`;
+}
+
+function statusBadgeStyle(status?: string) {
+  const s = (status || "").toLowerCase();
+  // simple, readable defaults (no hard dependency on CSS framework)
+  if (s === "in_progress") {
+    return { background: "#eaffea", border: "1px solid #b8e6b8", color: "#1f6b1f" };
   }
-
-  return `${typeLabel}`;
-}
-
-function buildSubtitleFromTrip(trip: Trip) {
-  const link = trip.link;
-  if (link?.serviceTicketId) return `Ticket: ${link.serviceTicketId}`;
-  if (link?.projectId) {
-    const stage = link.projectStageKey ? ` • ${link.projectStageKey}` : "";
-    return `Project: ${link.projectId}${stage}`;
+  if (s === "planned") {
+    return { background: "#eaf2ff", border: "1px solid #c6dbff", color: "#1b4fbf" };
   }
-  return trip.sourceKey ? `Source: ${trip.sourceKey}` : "—";
+  if (s === "complete" || s === "completed") {
+    return { background: "#f3f3f3", border: "1px solid #e3e3e3", color: "#666" };
+  }
+  return { background: "#fff7e6", border: "1px solid #ffe2a8", color: "#7a4b00" };
 }
 
-function crewText(crew?: TripCrew) {
-  const primary = crew?.primaryTechName || crew?.primaryTechUid || "Unassigned";
-
-  const helper =
-    crew?.helperName || crew?.helperUid
-      ? `Helper: ${crew?.helperName || crew?.helperUid}`
-      : undefined;
-
-  const secondaryTech =
-    crew?.secondaryTechName || crew?.secondaryTechUid
-      ? `2nd Tech: ${crew?.secondaryTechName || crew?.secondaryTechUid}`
-      : undefined;
-
-  const secondaryHelper =
-    crew?.secondaryHelperName || crew?.secondaryHelperUid
-      ? `2nd Helper: ${crew?.secondaryHelperName || crew?.secondaryHelperUid}`
-      : undefined;
-
-  return { primary, helper, secondaryTech, secondaryHelper };
+function compareTripTime(a: TripDoc, b: TripDoc) {
+  const aKey = `${a.startTime || "99:99"}_${a.endTime || "99:99"}_${a.id}`;
+  const bKey = `${b.startTime || "99:99"}_${b.endTime || "99:99"}_${b.id}`;
+  return aKey.localeCompare(bKey);
 }
 
-export default function WeeklySchedulePage() {
+function nextWorkday(d: Date) {
+  let cur = addDays(d, 1);
+  while (isWeekend(cur)) cur = addDays(cur, 1);
+  return cur;
+}
+
+function prevWorkday(d: Date) {
+  let cur = addDays(d, -1);
+  while (isWeekend(cur)) cur = addDays(cur, -1);
+  return cur;
+}
+
+export default function SchedulePage() {
   const { appUser } = useAuthContext();
 
+  const canSeeAll =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager";
+
+  // URL params: ?view=week|month|day&date=YYYY-MM-DD
+  const [view, setView] = useState<ViewMode>("week");
+  const [anchorIso, setAnchorIso] = useState<string>(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    // If today is weekend, default to next Monday-ish experience by snapping to Monday of current week
+    const mon = startOfWorkWeek(d);
+    return toIsoDate(mon);
+  });
+
   const [loading, setLoading] = useState(true);
-  const [trips, setTrips] = useState<Trip[]>([]);
   const [error, setError] = useState("");
 
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [showWeekends, setShowWeekends] = useState(false);
+  const [techsLoading, setTechsLoading] = useState(true);
+  const [techs, setTechs] = useState<TechRow[]>([]);
+  const [techsError, setTechsError] = useState("");
 
-  const isAdmin = appUser?.role === "admin";
+  const [tripsLoading, setTripsLoading] = useState(true);
+  const [tripsError, setTripsError] = useState("");
+  const [trips, setTrips] = useState<TripDoc[]>([]);
 
+  // hydrate from query params once on mount
   useEffect(() => {
-    async function loadData() {
-      setLoading(true);
-      setError("");
+    try {
+      const url = new URL(window.location.href);
+      const v = (url.searchParams.get("view") || "").toLowerCase();
+      const d = (url.searchParams.get("date") || "").trim();
+
+      if (v === "day" || v === "week" || v === "month") setView(v);
+      if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // keep URL in sync (nice for refresh/share)
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", view);
+      url.searchParams.set("date", anchorIso);
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      // ignore
+    }
+  }, [view, anchorIso]);
+
+  // compute days for the active view
+  const anchorDate = useMemo(() => fromIsoDate(anchorIso), [anchorIso]);
+
+  const days = useMemo(() => {
+    if (view === "day") {
+      const d = fromIsoDate(anchorIso);
+      d.setHours(0, 0, 0, 0);
+      // if weekend, still show it? you said minus weekends for month view.
+      // For day view, we’ll auto-skip weekends via navigation buttons (prev/next workday).
+      return [d];
+    }
+
+    if (view === "month") {
+      return monthWorkdays(anchorDate);
+    }
+
+    // week default: show Mon–Fri
+    const weekStart = startOfWorkWeek(anchorDate);
+    return workWeekDays(weekStart);
+  }, [view, anchorIso, anchorDate]);
+
+  // range bounds for trips query (inclusive)
+  const range = useMemo(() => {
+    const first = days[0];
+    const last = days[days.length - 1];
+    const startIso = toIsoDate(first);
+    const endIso = toIsoDate(last);
+    return { startIso, endIso };
+  }, [days]);
+
+  // Load active technicians
+  useEffect(() => {
+    async function loadTechs() {
+      setTechsLoading(true);
+      setTechsError("");
+      try {
+        const snap = await getDocs(collection(db, "users"));
+        const items: TechRow[] = snap.docs
+          .map((ds) => {
+            const d = ds.data() as any;
+            return {
+              uid: String(d.uid ?? ds.id),
+              name: String(d.displayName ?? "Unnamed"),
+              role: String(d.role ?? ""),
+              active: Boolean(d.active),
+            };
+          })
+          .filter((x) => x.active && x.role === "technician")
+          .map((x) => ({ uid: x.uid, name: x.name }));
+
+        items.sort((a, b) => a.name.localeCompare(b.name));
+        setTechs(items);
+      } catch (e: any) {
+        setTechsError(e?.message || "Failed to load technicians.");
+      } finally {
+        setTechsLoading(false);
+      }
+    }
+    loadTechs();
+  }, []);
+
+  // Load trips for the range
+  useEffect(() => {
+    async function loadTrips() {
+      setTripsLoading(true);
+      setTripsError("");
 
       try {
-        const snap = await getDocs(collection(db, "trips"));
+        // Firestore does not support "between" on string dates without index design;
+        // but with YYYY-MM-DD strings, lexicographic ordering works.
+        // Query: date >= startIso && date <= endIso (needs composite index if ordering)
+        const qTrips = query(
+          collection(db, "trips"),
+          where("active", "==", true),
+          where("date", ">=", range.startIso),
+          where("date", "<=", range.endIso),
+          orderBy("date", "asc"),
+          orderBy("startTime", "asc")
+        );
 
-        const items: Trip[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data() as any;
+        const snap = await getDocs(qTrips);
 
+        const items: TripDoc[] = snap.docs.map((ds) => {
+          const d = ds.data() as any;
           return {
-            id: docSnap.id,
+            id: ds.id,
             active: typeof d.active === "boolean" ? d.active : true,
-
             type: d.type ?? undefined,
             status: d.status ?? undefined,
-
             date: d.date ?? undefined,
             timeWindow: d.timeWindow ?? undefined,
             startTime: d.startTime ?? undefined,
             endTime: d.endTime ?? undefined,
-
-            crew: d.crew ?? undefined,
-            link: d.link ?? undefined,
-
-            notes: d.notes ?? null,
-            cancelReason: d.cancelReason ?? null,
-
-            sourceKey: d.sourceKey ?? undefined,
-
+            crew: d.crew ?? null,
+            link: d.link ?? null,
+            outcome: d.outcome ?? null,
+            readyToBillAt: d.readyToBillAt ?? null,
             createdAt: d.createdAt ?? undefined,
             updatedAt: d.updatedAt ?? undefined,
           };
         });
 
         setTrips(items);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load weekly schedule (trips).");
+      } catch (e: any) {
+        setTripsError(e?.message || "Failed to load trips.");
       } finally {
-        setLoading(false);
+        setTripsLoading(false);
       }
     }
 
-    loadData();
-  }, []);
+    loadTrips();
+  }, [range.startIso, range.endIso]);
 
-  const currentWeekBaseDate = useMemo(() => {
-    const today = new Date();
-    const shifted = new Date(today);
-    shifted.setDate(today.getDate() + weekOffset * 7);
-    return shifted;
-  }, [weekOffset]);
+  useEffect(() => {
+    // overall loading gate (simple)
+    setLoading(tripsLoading || techsLoading);
+  }, [tripsLoading, techsLoading]);
 
-  const allWeekDays = useMemo(() => buildWeekDays(currentWeekBaseDate), [currentWeekBaseDate]);
+  // map trips into grid: techUid -> dateIso -> TripDoc[]
+  const grid = useMemo(() => {
+    const out = new Map<string, Map<string, TripDoc[]>>();
 
-  const visibleWeekDays = useMemo(() => {
-    if (showWeekends) return allWeekDays;
-    return allWeekDays.filter((day) => day.dayIndex >= 1 && day.dayIndex <= 5);
-  }, [allWeekDays, showWeekends]);
+    for (const t of trips) {
+      const d = (t.date || "").trim();
+      if (!d) continue;
 
-  const weekStart = allWeekDays[0]?.isoDate ?? "";
-  const weekEnd = allWeekDays[6]?.isoDate ?? "";
+      const primaryUid = String(t.crew?.primaryTechUid || "").trim();
+      if (!primaryUid) continue;
 
-  const scheduledItemsByDay = useMemo(() => {
-    const result: Record<string, ScheduleItem[]> = {};
-    for (const day of allWeekDays) result[day.isoDate] = [];
-
-    for (const trip of trips) {
-      if (trip.active === false) continue;
-      if (!trip.date) continue;
-      if (!result[trip.date]) continue;
-
-      const crew = crewText(trip.crew);
-
-      const href = buildHrefFromLink(trip.link);
-
-      const timeText =
-        trip.startTime || trip.endTime
-          ? `${trip.startTime || "—"} - ${trip.endTime || "—"} • ${formatWindow(trip.timeWindow)}`
-          : formatWindow(trip.timeWindow);
-
-      const statusText =
-        trip.status
-          ? `${trip.status}${trip.cancelReason ? ` • Cancel: ${trip.cancelReason}` : ""}`
-          : "—";
-
-      result[trip.date].push({
-        kind: "trip",
-        id: trip.id,
-        date: trip.date,
-        sortTime: trip.startTime || (trip.timeWindow === "am" ? "08:00" : trip.timeWindow === "pm" ? "13:00" : "12:00"),
-        title: buildTitleFromTrip(trip),
-        subtitle: buildSubtitleFromTrip(trip),
-
-        techText: `Tech: ${crew.primary}`,
-        helperText: crew.helper,
-        secondaryTechText: crew.secondaryTech,
-        secondaryHelperText: crew.secondaryHelper,
-
-        statusText,
-        href,
-        timeText,
-      });
+      if (!out.has(primaryUid)) out.set(primaryUid, new Map());
+      const byDate = out.get(primaryUid)!;
+      if (!byDate.has(d)) byDate.set(d, []);
+      byDate.get(d)!.push(t);
     }
 
-    for (const day of allWeekDays) {
-      result[day.isoDate].sort((a, b) => {
-        const byTime = a.sortTime.localeCompare(b.sortTime);
-        if (byTime !== 0) return byTime;
-        return a.title.localeCompare(b.title);
-      });
+    // sort each cell by time
+    for (const [, byDate] of out) {
+      for (const [d, list] of byDate) {
+        list.sort(compareTripTime);
+        byDate.set(d, list);
+      }
     }
 
-    return result;
-  }, [trips, allWeekDays]);
-
-  const unscheduledTrips = useMemo(() => {
-    return trips
-      .filter((t) => t.active !== false)
-      .filter((t) => !t.date)
-      .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    return out;
   }, [trips]);
 
+  // navigation
+  function goPrev() {
+    if (view === "day") {
+      const prev = prevWorkday(fromIsoDate(anchorIso));
+      setAnchorIso(toIsoDate(prev));
+      return;
+    }
+    if (view === "month") {
+      const prev = addMonths(fromIsoDate(anchorIso), -1);
+      setAnchorIso(toIsoDate(new Date(prev.getFullYear(), prev.getMonth(), 1)));
+      return;
+    }
+    // week
+    const prevWeek = addDays(startOfWorkWeek(fromIsoDate(anchorIso)), -7);
+    setAnchorIso(toIsoDate(prevWeek));
+  }
+
+  function goNext() {
+    if (view === "day") {
+      const next = nextWorkday(fromIsoDate(anchorIso));
+      setAnchorIso(toIsoDate(next));
+      return;
+    }
+    if (view === "month") {
+      const next = addMonths(fromIsoDate(anchorIso), 1);
+      setAnchorIso(toIsoDate(new Date(next.getFullYear(), next.getMonth(), 1)));
+      return;
+    }
+    // week
+    const nextWeek = addDays(startOfWorkWeek(fromIsoDate(anchorIso)), 7);
+    setAnchorIso(toIsoDate(nextWeek));
+  }
+
+  function goToday() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    if (view === "day") {
+      // snap to next workday if weekend
+      let cur = d;
+      while (isWeekend(cur)) cur = addDays(cur, 1);
+      setAnchorIso(toIsoDate(cur));
+      return;
+    }
+    if (view === "month") {
+      setAnchorIso(toIsoDate(new Date(d.getFullYear(), d.getMonth(), 1)));
+      return;
+    }
+    setAnchorIso(toIsoDate(startOfWorkWeek(d)));
+  }
+
+  const titleText = useMemo(() => {
+    if (view === "day") {
+      const d = fromIsoDate(anchorIso);
+      return `Schedule • Day (${formatDow(d)} ${formatShort(d)})`;
+    }
+    if (view === "month") {
+      const d = fromIsoDate(anchorIso);
+      return `Schedule • Month (${d.getMonth() + 1}/${d.getFullYear()})`;
+    }
+    const d0 = days[0];
+    const d1 = days[days.length - 1];
+    return `Schedule • Week (${formatShort(d0)} – ${formatShort(d1)})`;
+  }, [view, anchorIso, days]);
+
   return (
-    <ProtectedPage fallbackTitle="Weekly Schedule">
+    <ProtectedPage fallbackTitle="Schedule">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "12px",
-            marginBottom: "16px",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 700 }}>Weekly Schedule</h1>
-            <p style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
-              Week of {weekStart} through {weekEnd}
-            </p>
-            <p style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
-              Currently showing: {showWeekends ? "Monday–Sunday" : "Monday–Friday"}
-            </p>
-            <p style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-              Trips-driven schedule (projects + service share the same blocking + payroll structure)
-            </p>
+            <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0 }}>{titleText}</h1>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+              Default: Work Week (Mon–Fri). Toggle Day/Week/Month as needed.
+            </div>
           </div>
 
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <button
               type="button"
-              onClick={() => setWeekOffset((prev) => prev - 1)}
+              onClick={goPrev}
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
-                borderRadius: "10px",
+                borderRadius: 10,
                 background: "white",
                 cursor: "pointer",
+                fontWeight: 800,
               }}
             >
-              Previous Week
+              ← Prev
             </button>
 
             <button
               type="button"
-              onClick={() => setWeekOffset(0)}
+              onClick={goToday}
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
-                borderRadius: "10px",
+                borderRadius: 10,
                 background: "white",
                 cursor: "pointer",
+                fontWeight: 800,
               }}
             >
-              This Week
+              Today
             </button>
 
             <button
               type="button"
-              onClick={() => setWeekOffset((prev) => prev + 1)}
+              onClick={goNext}
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
-                borderRadius: "10px",
+                borderRadius: 10,
                 background: "white",
                 cursor: "pointer",
+                fontWeight: 800,
               }}
             >
-              Next Week
+              Next →
             </button>
 
-            {isAdmin ? (
+            <div style={{ width: 10 }} />
+
+            <div style={{ display: "flex", gap: 6, padding: 4, border: "1px solid #ddd", borderRadius: 12, background: "#fafafa" }}>
               <button
                 type="button"
-                onClick={() => setShowWeekends((prev) => !prev)}
+                onClick={() => setView("day")}
                 style={{
-                  padding: "8px 12px",
+                  padding: "8px 10px",
+                  borderRadius: 10,
                   border: "1px solid #ccc",
-                  borderRadius: "10px",
-                  background: "white",
+                  background: view === "day" ? "white" : "#f5f5f5",
                   cursor: "pointer",
+                  fontWeight: 900,
                 }}
               >
-                {showWeekends ? "Hide Weekends" : "Show Weekends"}
+                Day
               </button>
-            ) : null}
-
-            <Link
-              href="/trips"
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: "10px",
-                textDecoration: "none",
-                color: "inherit",
-                background: "white",
-              }}
-            >
-              Trips List
-            </Link>
+              <button
+                type="button"
+                onClick={() => setView("week")}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #ccc",
+                  background: view === "week" ? "white" : "#f5f5f5",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                }}
+              >
+                Week
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("month")}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #ccc",
+                  background: view === "month" ? "white" : "#f5f5f5",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                }}
+              >
+                Month
+              </button>
+            </div>
           </div>
         </div>
 
-        {loading ? <p>Loading weekly schedule...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+        {error ? <p style={{ color: "red", marginTop: 12 }}>{error}</p> : null}
+        {techsError ? <p style={{ color: "red", marginTop: 12 }}>{techsError}</p> : null}
+        {tripsError ? <p style={{ color: "red", marginTop: 12 }}>{tripsError}</p> : null}
 
-        {!loading && !error ? (
-          <>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: `repeat(${visibleWeekDays.length}, minmax(240px, 1fr))`,
-                gap: "12px",
-                alignItems: "start",
-                overflowX: "auto",
-              }}
-            >
-              {visibleWeekDays.map((day) => {
-                const dayItems = scheduledItemsByDay[day.isoDate] ?? [];
+        {loading ? <p style={{ marginTop: 16 }}>Loading schedule...</p> : null}
 
-                return (
-                  <div
-                    key={day.isoDate}
-                    style={{
-                      border: "1px solid #ddd",
-                      borderRadius: "12px",
-                      padding: "12px",
-                      background: "#fafafa",
-                      minHeight: "260px",
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, fontSize: "16px", marginBottom: "4px" }}>
-                      {day.label}
-                    </div>
-
-                    <div style={{ fontSize: "12px", color: "#666", marginBottom: "10px" }}>
-                      {day.isoDate}
-                    </div>
-
-                    <div style={{ display: "grid", gap: "10px" }}>
-                      {dayItems.length === 0 ? (
-                        <div
-                          style={{
-                            border: "1px dashed #ccc",
-                            borderRadius: "10px",
-                            padding: "10px",
-                            fontSize: "13px",
-                            color: "#777",
-                            background: "white",
-                          }}
-                        >
-                          No trips scheduled
-                        </div>
-                      ) : (
-                        dayItems.map((item) => (
-                          <Link
-                            key={item.id}
-                            href={item.href}
-                            style={{
-                              display: "block",
-                              border: "1px solid #ddd",
-                              borderRadius: "10px",
-                              padding: "10px",
-                              background: "white",
-                              textDecoration: "none",
-                              color: "inherit",
-                            }}
-                          >
-                            <div style={{ fontWeight: 700, fontSize: "14px" }}>{item.title}</div>
-
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                              {item.timeText}
-                            </div>
-
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                              {item.subtitle}
-                            </div>
-
-                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-                              {item.techText}
-                            </div>
-
-                            {item.helperText ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                {item.helperText}
-                              </div>
-                            ) : null}
-
-                            {item.secondaryTechText ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                {item.secondaryTechText}
-                              </div>
-                            ) : null}
-
-                            {item.secondaryHelperText ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                {item.secondaryHelperText}
-                              </div>
-                            ) : null}
-
-                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-                              Status: {item.statusText}
-                            </div>
-                          </Link>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div
-              style={{
-                marginTop: "20px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "1100px",
-              }}
-            >
-              <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "10px" }}>
-                Unscheduled Trips
-              </h2>
-
-              {unscheduledTrips.length === 0 ? (
-                <p style={{ color: "#666" }}>No unscheduled trips.</p>
-              ) : (
-                <div style={{ display: "grid", gap: "10px" }}>
-                  {unscheduledTrips.map((trip) => {
-                    const crew = crewText(trip.crew);
+        {!loading ? (
+          <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + days.length * 190) }}>
+              <thead>
+                <tr style={{ background: "#fafafa" }}>
+                  <th style={{ position: "sticky", left: 0, zIndex: 2, textAlign: "left", padding: 10, borderBottom: "1px solid #eee", width: 220 }}>
+                    Technician
+                  </th>
+                  {days.map((d) => {
+                    const iso = toIsoDate(d);
                     return (
-                      <Link
-                        key={trip.id}
-                        href="/trips"
-                        style={{
-                          display: "block",
-                          border: "1px solid #ddd",
-                          borderRadius: "10px",
-                          padding: "10px",
-                          background: "white",
-                          textDecoration: "none",
-                          color: "inherit",
-                        }}
-                      >
-                        <div style={{ fontWeight: 700, fontSize: "14px" }}>{buildTitleFromTrip(trip)}</div>
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                          {buildSubtitleFromTrip(trip)}
-                        </div>
-                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-                          Tech: {crew.primary}
-                        </div>
-                      </Link>
+                      <th key={iso} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #eee", minWidth: 190 }}>
+                        <div style={{ fontWeight: 900 }}>{formatDow(d)}</div>
+                        <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
+                      </th>
                     );
                   })}
-                </div>
-              )}
-            </div>
-          </>
+                </tr>
+              </thead>
+
+              <tbody>
+                {techs.length === 0 ? (
+                  <tr>
+                    <td colSpan={1 + days.length} style={{ padding: 14, color: "#666" }}>
+                      No active technicians found.
+                    </td>
+                  </tr>
+                ) : (
+                  techs.map((tech) => {
+                    return (
+                      <tr key={tech.uid}>
+                        <td
+                          style={{
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 1,
+                            background: "white",
+                            borderBottom: "1px solid #f0f0f0",
+                            padding: 10,
+                            fontWeight: 900,
+                            width: 220,
+                          }}
+                        >
+                          {tech.name}
+                        </td>
+
+                        {days.map((d) => {
+                          const iso = toIsoDate(d);
+                          const cellTrips = grid.get(tech.uid)?.get(iso) || [];
+
+                          return (
+                            <td key={`${tech.uid}_${iso}`} style={{ verticalAlign: "top", borderBottom: "1px solid #f0f0f0", padding: 10 }}>
+                              {cellTrips.length === 0 ? (
+                                <div style={{ color: "#bbb", fontSize: 12 }}>—</div>
+                              ) : (
+                                <div style={{ display: "grid", gap: 8 }}>
+                                  {cellTrips.map((t) => {
+                                    const badgeStyle = statusBadgeStyle(t.status);
+                                    const timeText =
+                                      (t.startTime || t.endTime)
+                                        ? `${t.startTime || "—"} – ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
+                                        : `${formatWindow(t.timeWindow)}`;
+
+                                    return (
+                                      <Link
+                                        key={t.id}
+                                        href={tripHref(t)}
+                                        style={{
+                                          display: "block",
+                                          textDecoration: "none",
+                                          color: "inherit",
+                                          border: "1px solid #eee",
+                                          borderRadius: 12,
+                                          padding: 10,
+                                          background: "white",
+                                        }}
+                                      >
+                                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                                          <div style={{ fontWeight: 900 }}>
+                                            {tripTitle(t)}
+                                          </div>
+                                          <div
+                                            style={{
+                                              fontSize: 11,
+                                              padding: "2px 8px",
+                                              borderRadius: 999,
+                                              ...badgeStyle,
+                                              fontWeight: 900,
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {(t.status || "—").replaceAll("_", " ")}
+                                          </div>
+                                        </div>
+
+                                        <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
+                                          {timeText}
+                                        </div>
+
+                                        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                                          {crewLine(t)}
+                                        </div>
+
+                                        {t.link?.serviceTicketId ? (
+                                          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                                            Ticket: <strong>{t.link.serviceTicketId}</strong>
+                                          </div>
+                                        ) : null}
+                                      </Link>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        {!canSeeAll ? (
+          <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>
+            Note: You’re seeing the global Schedule grid, but we can restrict this later if you want role-based visibility.
+          </div>
         ) : null}
       </AppShell>
     </ProtectedPage>

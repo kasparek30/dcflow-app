@@ -118,8 +118,7 @@ export default function AppShell({
           {/* ✅ Add back My Day */}
           {showMyDay ? <Link href="/technician/my-day">My Day</Link> : null}
 
-          {showSchedule ? <Link href="/schedule">Weekly Schedule</Link> : null}
-          {showMonthlySchedule ? <Link href="/monthly-schedule">Monthly Schedule</Link> : null}
+          {showSchedule ? <Link href="/schedule">Schedule</Link> : null}
           {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
           {showProjects ? <Link href="/projects">Projects</Link> : null}
           {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
