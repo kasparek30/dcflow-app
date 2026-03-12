@@ -9,7 +9,8 @@ import {
   query,
   where,
   orderBy,
-  Timestamp,
+  doc,
+  getDoc,
 } from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -49,7 +50,6 @@ type TripDoc = {
   crew?: TripCrew | null;
   link?: TripLink | null;
 
-  // optional fields if present
   outcome?: string | null;
   readyToBillAt?: string | null;
 
@@ -61,6 +61,19 @@ type TechRow = {
   uid: string;
   name: string;
 };
+
+type TicketSummary = {
+  id: string;
+  issueSummary: string;
+  customerDisplayName: string;
+  serviceAddressLine1: string;
+  serviceAddressLine2?: string | null;
+  serviceCity: string;
+  serviceState: string;
+  servicePostalCode: string;
+};
+
+type TechFilterValue = "ALL" | "UNASSIGNED" | string; // string = tech uid
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -107,23 +120,6 @@ function workWeekDays(weekStartMonday: Date) {
   return [0, 1, 2, 3, 4].map((i) => addDays(weekStartMonday, i));
 }
 
-function monthWorkdays(anchor: Date) {
-  const y = anchor.getFullYear();
-  const m = anchor.getMonth();
-  const first = new Date(y, m, 1);
-  const last = new Date(y, m + 1, 0);
-
-  const days: Date[] = [];
-  let cur = new Date(first);
-  cur.setHours(0, 0, 0, 0);
-
-  while (cur <= last) {
-    if (!isWeekend(cur)) days.push(new Date(cur));
-    cur = addDays(cur, 1);
-  }
-  return days;
-}
-
 function formatDow(d: Date) {
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
 }
@@ -147,25 +143,8 @@ function tripHref(t: TripDoc) {
   return "/schedule";
 }
 
-function tripTitle(t: TripDoc) {
-  const type = (t.type || "").toLowerCase();
-  if (type === "service") return "🔧 Service";
-  if (type === "project") return "📐 Project";
-  return "🧳 Trip";
-}
-
-function crewLine(t: TripDoc) {
-  const c = t.crew || {};
-  const tech = c.primaryTechName || "Unassigned";
-  const helper = c.helperName ? ` • Helper: ${c.helperName}` : "";
-  const secondTech = c.secondaryTechName ? ` • 2nd Tech: ${c.secondaryTechName}` : "";
-  const secondHelper = c.secondaryHelperName ? ` • 2nd Helper: ${c.secondaryHelperName}` : "";
-  return `Tech: ${tech}${helper}${secondTech}${secondHelper}`;
-}
-
 function statusBadgeStyle(status?: string) {
   const s = (status || "").toLowerCase();
-  // simple, readable defaults (no hard dependency on CSS framework)
   if (s === "in_progress") {
     return { background: "#eaffea", border: "1px solid #b8e6b8", color: "#1f6b1f" };
   }
@@ -196,34 +175,108 @@ function prevWorkday(d: Date) {
   return cur;
 }
 
+function normalizeStatus(s?: string) {
+  return (s || "").trim().toLowerCase();
+}
+
+function isCompletedStatus(status?: string) {
+  const s = normalizeStatus(status);
+  return s === "complete" || s === "completed";
+}
+
+function crewLine(t: TripDoc) {
+  const c = t.crew || {};
+  const tech = c.primaryTechName || "Unassigned";
+  const helper = c.helperName ? ` • Helper: ${c.helperName}` : "";
+  const secondTech = c.secondaryTechName ? ` • 2nd Tech: ${c.secondaryTechName}` : "";
+  const secondHelper = c.secondaryHelperName ? ` • 2nd Helper: ${c.secondaryHelperName}` : "";
+  return `Tech: ${tech}${helper}${secondTech}${secondHelper}`;
+}
+
+function primaryTechUid(t: TripDoc) {
+  return String(t.crew?.primaryTechUid || "").trim();
+}
+
+function monthCalendarWorkWeeks(anchor: Date) {
+  // Build a month calendar grid with Mon–Fri columns, multiple rows.
+  // We compute the first Monday shown (may be in previous month),
+  // and the last Friday shown (may be in next month), but we only render
+  // dates that are within the target month (others are "empty").
+  const y = anchor.getFullYear();
+  const m = anchor.getMonth();
+
+  const firstOfMonth = new Date(y, m, 1);
+  firstOfMonth.setHours(0, 0, 0, 0);
+
+  const lastOfMonth = new Date(y, m + 1, 0);
+  lastOfMonth.setHours(0, 0, 0, 0);
+
+  // find monday on/before the first of month
+  const gridStart = startOfWorkWeek(firstOfMonth);
+
+  // find friday on/after lastOfMonth
+  let gridEnd = new Date(lastOfMonth);
+  // move to friday of that week
+  const wd = gridEnd.getDay(); // 0..6
+  const diffToFri = (5 - wd + 7) % 7;
+  gridEnd = addDays(gridEnd, diffToFri);
+
+  const weeks: Array<Array<Date | null>> = [];
+  let cur = new Date(gridStart);
+
+  while (cur <= gridEnd) {
+    // one work week row (Mon..Fri)
+    const row: Array<Date | null> = [];
+    for (let i = 0; i < 5; i++) {
+      const d = addDays(cur, i);
+      // include only if within month; else null
+      if (d.getMonth() === m) row.push(d);
+      else row.push(null);
+    }
+    weeks.push(row);
+
+    // next week
+    cur = addDays(cur, 7);
+  }
+
+  return weeks;
+}
+
 export default function SchedulePage() {
   const { appUser } = useAuthContext();
 
   const canSeeAll =
     appUser?.role === "admin" ||
     appUser?.role === "dispatcher" ||
-    appUser?.role === "manager";
+    appUser?.role === "manager" ||
+    appUser?.role === "office_display";
 
   // URL params: ?view=week|month|day&date=YYYY-MM-DD
   const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
-    // If today is weekend, default to next Monday-ish experience by snapping to Monday of current week
     const mon = startOfWorkWeek(d);
     return toIsoDate(mon);
   });
 
+  // Filters
+  const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
+  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [hideCompleted, setHideCompleted] = useState<boolean>(true);
+
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
 
   const [techsLoading, setTechsLoading] = useState(true);
-  const [techs, setTechs] = useState<TechRow[]>([]);
   const [techsError, setTechsError] = useState("");
+  const [techs, setTechs] = useState<TechRow[]>([]);
 
   const [tripsLoading, setTripsLoading] = useState(true);
   const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
+
+  // Service ticket summaries (for cards)
+  const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
 
   // hydrate from query params once on mount
   useEffect(() => {
@@ -234,6 +287,15 @@ export default function SchedulePage() {
 
       if (v === "day" || v === "week" || v === "month") setView(v);
       if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
+
+      const hide = url.searchParams.get("hideCompleted");
+      if (hide === "0") setHideCompleted(false);
+
+      const tf = url.searchParams.get("tech");
+      if (tf) setTechFilter(tf);
+
+      const sf = url.searchParams.get("status");
+      if (sf) setStatusFilter(sf);
     } catch {
       // ignore
     }
@@ -245,41 +307,41 @@ export default function SchedulePage() {
       const url = new URL(window.location.href);
       url.searchParams.set("view", view);
       url.searchParams.set("date", anchorIso);
+      url.searchParams.set("hideCompleted", hideCompleted ? "1" : "0");
+      url.searchParams.set("tech", techFilter);
+      url.searchParams.set("status", statusFilter);
       window.history.replaceState({}, "", url.toString());
     } catch {
       // ignore
     }
-  }, [view, anchorIso]);
+  }, [view, anchorIso, hideCompleted, techFilter, statusFilter]);
 
-  // compute days for the active view
   const anchorDate = useMemo(() => fromIsoDate(anchorIso), [anchorIso]);
 
-  const days = useMemo(() => {
+  // For querying trips, we still compute a date range:
+  const range = useMemo(() => {
     if (view === "day") {
       const d = fromIsoDate(anchorIso);
       d.setHours(0, 0, 0, 0);
-      // if weekend, still show it? you said minus weekends for month view.
-      // For day view, we’ll auto-skip weekends via navigation buttons (prev/next workday).
-      return [d];
+      const iso = toIsoDate(d);
+      return { startIso: iso, endIso: iso };
     }
 
     if (view === "month") {
-      return monthWorkdays(anchorDate);
+      const y = anchorDate.getFullYear();
+      const m = anchorDate.getMonth();
+      const first = new Date(y, m, 1);
+      const last = new Date(y, m + 1, 0);
+      first.setHours(0, 0, 0, 0);
+      last.setHours(0, 0, 0, 0);
+      return { startIso: toIsoDate(first), endIso: toIsoDate(last) };
     }
 
-    // week default: show Mon–Fri
+    // week
     const weekStart = startOfWorkWeek(anchorDate);
-    return workWeekDays(weekStart);
+    const weekDays = workWeekDays(weekStart);
+    return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
-
-  // range bounds for trips query (inclusive)
-  const range = useMemo(() => {
-    const first = days[0];
-    const last = days[days.length - 1];
-    const startIso = toIsoDate(first);
-    const endIso = toIsoDate(last);
-    return { startIso, endIso };
-  }, [days]);
 
   // Load active technicians
   useEffect(() => {
@@ -319,9 +381,6 @@ export default function SchedulePage() {
       setTripsError("");
 
       try {
-        // Firestore does not support "between" on string dates without index design;
-        // but with YYYY-MM-DD strings, lexicographic ordering works.
-        // Query: date >= startIso && date <= endIso (needs composite index if ordering)
         const qTrips = query(
           collection(db, "trips"),
           where("active", "==", true),
@@ -365,28 +424,136 @@ export default function SchedulePage() {
   }, [range.startIso, range.endIso]);
 
   useEffect(() => {
-    // overall loading gate (simple)
     setLoading(tripsLoading || techsLoading);
   }, [tripsLoading, techsLoading]);
 
-  // map trips into grid: techUid -> dateIso -> TripDoc[]
+  // Build list of serviceTicketIds currently in range (for card details)
+  const serviceTicketIdsInRange = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of trips) {
+      const id = String(t.link?.serviceTicketId || "").trim();
+      if (id) set.add(id);
+    }
+    return Array.from(set);
+  }, [trips]);
+
+  // Load ticket summaries (best-effort) for visible range
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTicketSummaries() {
+      if (serviceTicketIdsInRange.length === 0) return;
+
+      // only fetch missing
+      const missing = serviceTicketIdsInRange.filter((id) => !ticketMap[id]);
+      if (missing.length === 0) return;
+
+      const next: Record<string, TicketSummary> = {};
+      try {
+        // We’ll do individual getDoc calls (simple + reliable).
+        // If you ever want to optimize, we can chunk/where-in, but this is fine for schedule ranges.
+        await Promise.all(
+          missing.map(async (id) => {
+            const snap = await getDoc(doc(db, "serviceTickets", id));
+            if (!snap.exists()) return;
+
+            const d = snap.data() as any;
+            next[id] = {
+              id,
+              issueSummary: String(d.issueSummary ?? "Service Ticket"),
+              customerDisplayName: String(d.customerDisplayName ?? ""),
+              serviceAddressLine1: String(d.serviceAddressLine1 ?? ""),
+              serviceAddressLine2: d.serviceAddressLine2 ?? null,
+              serviceCity: String(d.serviceCity ?? ""),
+              serviceState: String(d.serviceState ?? ""),
+              servicePostalCode: String(d.servicePostalCode ?? ""),
+            };
+          })
+        );
+      } catch {
+        // ignore (best effort)
+      }
+
+      if (!cancelled && Object.keys(next).length) {
+        setTicketMap((prev) => ({ ...prev, ...next }));
+      }
+    }
+
+    loadTicketSummaries();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceTicketIdsInRange.join("|")]);
+
+  // Filter trips based on filters
+  const filteredTrips = useMemo(() => {
+    return trips.filter((t) => {
+      const s = normalizeStatus(t.status);
+
+      if (hideCompleted && isCompletedStatus(s)) return false;
+
+      if (statusFilter !== "ALL") {
+        if (normalizeStatus(statusFilter) !== s) return false;
+      }
+
+      const uid = primaryTechUid(t);
+      if (techFilter === "ALL") return true;
+      if (techFilter === "UNASSIGNED") return !uid;
+      return uid === techFilter;
+    });
+  }, [trips, hideCompleted, statusFilter, techFilter]);
+
+  // Build tech rows INCLUDING Unassigned (only show if it has trips OR filter is UNASSIGNED)
+  const rows = useMemo(() => {
+    const out: Array<{ key: string; label: string; uid: string | null }> = [];
+
+    const unassignedHasTrips = filteredTrips.some((t) => !primaryTechUid(t));
+    if (unassignedHasTrips || techFilter === "UNASSIGNED") {
+      out.push({ key: "UNASSIGNED", label: "Unassigned", uid: null });
+    }
+
+    // If a specific tech is selected, just show them (plus unassigned only if filter is unassigned)
+    if (techFilter !== "ALL" && techFilter !== "UNASSIGNED") {
+      const match = techs.find((t) => t.uid === techFilter);
+      if (match) out.push({ key: match.uid, label: match.name, uid: match.uid });
+      return out;
+    }
+
+    // Otherwise show all techs
+    for (const t of techs) out.push({ key: t.uid, label: t.name, uid: t.uid });
+    return out;
+  }, [techs, filteredTrips, techFilter]);
+
+  // Map filtered trips into day buckets for Month view calendar
+  const tripsByDate = useMemo(() => {
+    const map: Record<string, TripDoc[]> = {};
+    for (const t of filteredTrips) {
+      const d = String(t.date || "").trim();
+      if (!d) continue;
+      if (!map[d]) map[d] = [];
+      map[d].push(t);
+    }
+    for (const k of Object.keys(map)) map[k].sort(compareTripTime);
+    return map;
+  }, [filteredTrips]);
+
+  // Map filtered trips into grid for Week/Day (rows per tech + optional unassigned)
   const grid = useMemo(() => {
     const out = new Map<string, Map<string, TripDoc[]>>();
 
-    for (const t of trips) {
+    for (const t of filteredTrips) {
       const d = (t.date || "").trim();
       if (!d) continue;
 
-      const primaryUid = String(t.crew?.primaryTechUid || "").trim();
-      if (!primaryUid) continue;
+      const uid = primaryTechUid(t) || "UNASSIGNED";
 
-      if (!out.has(primaryUid)) out.set(primaryUid, new Map());
-      const byDate = out.get(primaryUid)!;
+      if (!out.has(uid)) out.set(uid, new Map());
+      const byDate = out.get(uid)!;
       if (!byDate.has(d)) byDate.set(d, []);
       byDate.get(d)!.push(t);
     }
 
-    // sort each cell by time
     for (const [, byDate] of out) {
       for (const [d, list] of byDate) {
         list.sort(compareTripTime);
@@ -395,7 +562,7 @@ export default function SchedulePage() {
     }
 
     return out;
-  }, [trips]);
+  }, [filteredTrips]);
 
   // navigation
   function goPrev() {
@@ -409,7 +576,6 @@ export default function SchedulePage() {
       setAnchorIso(toIsoDate(new Date(prev.getFullYear(), prev.getMonth(), 1)));
       return;
     }
-    // week
     const prevWeek = addDays(startOfWorkWeek(fromIsoDate(anchorIso)), -7);
     setAnchorIso(toIsoDate(prevWeek));
   }
@@ -425,7 +591,6 @@ export default function SchedulePage() {
       setAnchorIso(toIsoDate(new Date(next.getFullYear(), next.getMonth(), 1)));
       return;
     }
-    // week
     const nextWeek = addDays(startOfWorkWeek(fromIsoDate(anchorIso)), 7);
     setAnchorIso(toIsoDate(nextWeek));
   }
@@ -433,8 +598,8 @@ export default function SchedulePage() {
   function goToday() {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
+
     if (view === "day") {
-      // snap to next workday if weekend
       let cur = d;
       while (isWeekend(cur)) cur = addDays(cur, 1);
       setAnchorIso(toIsoDate(cur));
@@ -447,6 +612,21 @@ export default function SchedulePage() {
     setAnchorIso(toIsoDate(startOfWorkWeek(d)));
   }
 
+  const daysForWeekOrDay = useMemo(() => {
+    if (view === "day") {
+      const d = fromIsoDate(anchorIso);
+      d.setHours(0, 0, 0, 0);
+      return [d];
+    }
+    const weekStart = startOfWorkWeek(anchorDate);
+    return workWeekDays(weekStart);
+  }, [view, anchorIso, anchorDate]);
+
+  const monthWeeks = useMemo(() => {
+    if (view !== "month") return [];
+    return monthCalendarWorkWeeks(anchorDate);
+  }, [view, anchorDate]);
+
   const titleText = useMemo(() => {
     if (view === "day") {
       const d = fromIsoDate(anchorIso);
@@ -456,19 +636,103 @@ export default function SchedulePage() {
       const d = fromIsoDate(anchorIso);
       return `Schedule • Month (${d.getMonth() + 1}/${d.getFullYear()})`;
     }
-    const d0 = days[0];
-    const d1 = days[days.length - 1];
+    const d0 = daysForWeekOrDay[0];
+    const d1 = daysForWeekOrDay[daysForWeekOrDay.length - 1];
     return `Schedule • Week (${formatShort(d0)} – ${formatShort(d1)})`;
-  }, [view, anchorIso, days]);
+  }, [view, anchorIso, daysForWeekOrDay]);
+
+  function renderTripCard(t: TripDoc, opts?: { showTechName?: boolean }) {
+    const badgeStyle = statusBadgeStyle(t.status);
+
+    const timeText =
+      (t.startTime || t.endTime)
+        ? `${t.startTime || "—"} – ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
+        : `${formatWindow(t.timeWindow)}`;
+
+    const isService = (t.type || "").toLowerCase() === "service";
+    const ticketId = String(t.link?.serviceTicketId || "").trim();
+    const ticket = ticketId ? ticketMap[ticketId] : undefined;
+
+    const header =
+      isService
+        ? `🔧 Service Ticket: ${ticket?.issueSummary || "Service Ticket"}`
+        : (t.type || "").toLowerCase() === "project"
+          ? "📐 Project"
+          : "🧳 Trip";
+
+    const customerLine =
+      isService && ticket
+        ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}${ticket.serviceState ? `, ${ticket.serviceState}` : ""}${ticket.servicePostalCode ? ` ${ticket.servicePostalCode}` : ""}`
+        : "";
+
+    const showTechName = Boolean(opts?.showTechName);
+    const techName = t.crew?.primaryTechName || "";
+
+    return (
+      <Link
+        key={t.id}
+        href={tripHref(t)}
+        style={{
+          display: "block",
+          textDecoration: "none",
+          color: "inherit",
+          border: "1px solid #eee",
+          borderRadius: 12,
+          padding: 10,
+          background: "white",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+          <div style={{ fontWeight: 900, lineHeight: 1.2 }}>
+            {header}
+            {showTechName && techName ? (
+              <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 800 }}>
+                • {techName}
+              </span>
+            ) : null}
+          </div>
+
+          <div
+            style={{
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 999,
+              ...badgeStyle,
+              fontWeight: 900,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {(t.status || "—").replaceAll("_", " ")}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
+          {timeText}
+          {customerLine ? <span style={{ color: "#777" }}> • {customerLine}</span> : null}
+        </div>
+
+        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+          {crewLine(t)}
+        </div>
+
+        {ticketId ? (
+          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+            Ticket: <strong>{ticketId}</strong>
+          </div>
+        ) : null}
+      </Link>
+    );
+  }
 
   return (
     <ProtectedPage fallbackTitle="Schedule">
       <AppShell appUser={appUser}>
+        {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0 }}>{titleText}</h1>
             <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-              Default: Work Week (Mon–Fri). Toggle Day/Week/Month as needed.
+              Week/Day = Technician rows. Month = Calendar grid (Mon–Fri).
             </div>
           </div>
 
@@ -567,24 +831,158 @@ export default function SchedulePage() {
           </div>
         </div>
 
-        {error ? <p style={{ color: "red", marginTop: 12 }}>{error}</p> : null}
+        {/* Filters */}
+        <div
+          style={{
+            marginTop: 14,
+            border: "1px solid #ddd",
+            borderRadius: 12,
+            padding: 12,
+            background: "#fafafa",
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 12, color: "#666", fontWeight: 800 }}>Technician</div>
+            <select
+              value={techFilter}
+              onChange={(e) => setTechFilter(e.target.value)}
+              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: "white" }}
+            >
+              <option value="ALL">All</option>
+              <option value="UNASSIGNED">Unassigned</option>
+              {techs.map((t) => (
+                <option key={t.uid} value={t.uid}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 12, color: "#666", fontWeight: 800 }}>Status</div>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: "white" }}
+            >
+              <option value="ALL">All</option>
+              <option value="planned">planned</option>
+              <option value="in_progress">in_progress</option>
+              <option value="complete">complete</option>
+              <option value="cancelled">cancelled</option>
+            </select>
+          </div>
+
+          <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 18 }}>
+            <input
+              type="checkbox"
+              checked={hideCompleted}
+              onChange={(e) => setHideCompleted(e.target.checked)}
+            />
+            <span style={{ fontSize: 13, fontWeight: 800 }}>Hide completed</span>
+          </label>
+
+          <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
+            Showing <strong>{filteredTrips.length}</strong> trip(s)
+          </div>
+        </div>
+
         {techsError ? <p style={{ color: "red", marginTop: 12 }}>{techsError}</p> : null}
         {tripsError ? <p style={{ color: "red", marginTop: 12 }}>{tripsError}</p> : null}
 
         {loading ? <p style={{ marginTop: 16 }}>Loading schedule...</p> : null}
 
-        {!loading ? (
+        {/* MONTH VIEW (Calendar grid) */}
+        {!loading && view === "month" ? (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden", background: "white" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", background: "#fafafa" }}>
+                {["Mon", "Tue", "Wed", "Thu", "Fri"].map((d) => (
+                  <div key={d} style={{ padding: 10, borderRight: "1px solid #eee", fontWeight: 900 }}>
+                    {d}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gap: 0 }}>
+                {monthWeeks.map((week, idx) => (
+                  <div
+                    key={`week-${idx}`}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(5, 1fr)",
+                      borderTop: "1px solid #eee",
+                      minHeight: 140,
+                    }}
+                  >
+                    {week.map((cellDate, cIdx) => {
+                      if (!cellDate) {
+                        return (
+                          <div key={`empty-${idx}-${cIdx}`} style={{ borderRight: "1px solid #eee", padding: 10, background: "#fbfbfb" }} />
+                        );
+                      }
+
+                      const iso = toIsoDate(cellDate);
+                      const dayTrips = tripsByDate[iso] || [];
+
+                      return (
+                        <div
+                          key={iso}
+                          style={{
+                            borderRight: cIdx < 4 ? "1px solid #eee" : undefined,
+                            padding: 10,
+                            verticalAlign: "top",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                            <div style={{ fontWeight: 900 }}>{cellDate.getDate()}</div>
+                            <div style={{ fontSize: 11, color: "#777" }}>{iso}</div>
+                          </div>
+
+                          {dayTrips.length === 0 ? (
+                            <div style={{ marginTop: 8, fontSize: 12, color: "#bbb" }}>—</div>
+                          ) : (
+                            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                              {dayTrips.slice(0, 6).map((t) => {
+                                // In month view, if ALL techs, show tech name on card header.
+                                const showTechName = techFilter === "ALL";
+                                return renderTripCard(t, { showTechName });
+                              })}
+                              {dayTrips.length > 6 ? (
+                                <div style={{ fontSize: 12, color: "#777" }}>
+                                  +{dayTrips.length - 6} more…
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* WEEK + DAY VIEWS (Tech rows grid) */}
+        {!loading && view !== "month" ? (
           <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + days.length * 190) }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 230) }}>
               <thead>
                 <tr style={{ background: "#fafafa" }}>
                   <th style={{ position: "sticky", left: 0, zIndex: 2, textAlign: "left", padding: 10, borderBottom: "1px solid #eee", width: 220 }}>
                     Technician
                   </th>
-                  {days.map((d) => {
+
+                  {daysForWeekOrDay.map((d) => {
                     const iso = toIsoDate(d);
                     return (
-                      <th key={iso} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #eee", minWidth: 190 }}>
+                      <th key={iso} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #eee", minWidth: 230 }}>
                         <div style={{ fontWeight: 900 }}>{formatDow(d)}</div>
                         <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
                       </th>
@@ -594,16 +992,18 @@ export default function SchedulePage() {
               </thead>
 
               <tbody>
-                {techs.length === 0 ? (
+                {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={1 + days.length} style={{ padding: 14, color: "#666" }}>
-                      No active technicians found.
+                    <td colSpan={1 + daysForWeekOrDay.length} style={{ padding: 14, color: "#666" }}>
+                      No matching technicians/trips.
                     </td>
                   </tr>
                 ) : (
-                  techs.map((tech) => {
+                  rows.map((r) => {
+                    const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+
                     return (
-                      <tr key={tech.uid}>
+                      <tr key={r.key}>
                         <td
                           style={{
                             position: "sticky",
@@ -616,74 +1016,20 @@ export default function SchedulePage() {
                             width: 220,
                           }}
                         >
-                          {tech.name}
+                          {r.label}
                         </td>
 
-                        {days.map((d) => {
+                        {daysForWeekOrDay.map((d) => {
                           const iso = toIsoDate(d);
-                          const cellTrips = grid.get(tech.uid)?.get(iso) || [];
+                          const cellTrips = grid.get(rowKey)?.get(iso) || [];
 
                           return (
-                            <td key={`${tech.uid}_${iso}`} style={{ verticalAlign: "top", borderBottom: "1px solid #f0f0f0", padding: 10 }}>
+                            <td key={`${r.key}_${iso}`} style={{ verticalAlign: "top", borderBottom: "1px solid #f0f0f0", padding: 10 }}>
                               {cellTrips.length === 0 ? (
                                 <div style={{ color: "#bbb", fontSize: 12 }}>—</div>
                               ) : (
                                 <div style={{ display: "grid", gap: 8 }}>
-                                  {cellTrips.map((t) => {
-                                    const badgeStyle = statusBadgeStyle(t.status);
-                                    const timeText =
-                                      (t.startTime || t.endTime)
-                                        ? `${t.startTime || "—"} – ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
-                                        : `${formatWindow(t.timeWindow)}`;
-
-                                    return (
-                                      <Link
-                                        key={t.id}
-                                        href={tripHref(t)}
-                                        style={{
-                                          display: "block",
-                                          textDecoration: "none",
-                                          color: "inherit",
-                                          border: "1px solid #eee",
-                                          borderRadius: 12,
-                                          padding: 10,
-                                          background: "white",
-                                        }}
-                                      >
-                                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                                          <div style={{ fontWeight: 900 }}>
-                                            {tripTitle(t)}
-                                          </div>
-                                          <div
-                                            style={{
-                                              fontSize: 11,
-                                              padding: "2px 8px",
-                                              borderRadius: 999,
-                                              ...badgeStyle,
-                                              fontWeight: 900,
-                                              whiteSpace: "nowrap",
-                                            }}
-                                          >
-                                            {(t.status || "—").replaceAll("_", " ")}
-                                          </div>
-                                        </div>
-
-                                        <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
-                                          {timeText}
-                                        </div>
-
-                                        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                                          {crewLine(t)}
-                                        </div>
-
-                                        {t.link?.serviceTicketId ? (
-                                          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                                            Ticket: <strong>{t.link.serviceTicketId}</strong>
-                                          </div>
-                                        ) : null}
-                                      </Link>
-                                    );
-                                  })}
+                                  {cellTrips.map((t) => renderTripCard(t))}
                                 </div>
                               )}
                             </td>
@@ -700,7 +1046,7 @@ export default function SchedulePage() {
 
         {!canSeeAll ? (
           <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>
-            Note: You’re seeing the global Schedule grid, but we can restrict this later if you want role-based visibility.
+            Note: We can restrict visibility later if you want role-based schedule access.
           </div>
         ) : null}
       </AppShell>
