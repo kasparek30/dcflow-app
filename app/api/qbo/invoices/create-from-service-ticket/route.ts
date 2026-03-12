@@ -474,7 +474,9 @@ export async function POST(req: Request) {
       { merge: true }
     );
 
-const qboInvoiceUrl = `https://qbo.intuit.com/app/invoice?txnId=${qboInvoiceId}`;
+const qboInvoiceUrl = qboInvoiceId
+  ? `https://qbo.intuit.com/app/invoice?txnId=${qboInvoiceId}`
+  : null;
 
 
 return NextResponse.json({

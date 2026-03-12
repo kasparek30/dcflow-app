@@ -1852,63 +1852,56 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
 <button
   type="button"
-  onClick={() => {
-    // 1) Open immediately (must be synchronous or browser blocks it)
-    const win = window.open("about:blank", "_blank", "noopener,noreferrer");
+  onClick={async () => {
+    if (!ticket?.id) return;
 
-    (async () => {
-      try {
-        if (!ticket?.id) {
-          win?.close();
-          return;
-        }
+    // Open tab immediately (popup-safe)
+    const win = window.open("about:blank", "_blank");
 
-        // Optional: show something in the new tab while loading
-        if (win) {
-          win.document.write("<p style='font-family: sans-serif;'>Creating QBO invoice draft…</p>");
-        }
+    try {
+      const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serviceTicketId: ticket.id }),
+      });
 
-        const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ serviceTicketId: ticket.id }),
-        });
+      const data = await res.json();
 
-        const data = await res.json();
-
-        if (!res.ok) {
-          if (win) {
-            win.document.body.innerHTML = `<pre style="font-family: sans-serif; white-space: pre-wrap;">${
-              data?.error || "Failed to create QBO invoice."
-            }</pre>`;
-          }
-          alert(data?.error || "Failed to create QBO invoice.");
-          return;
-        }
-
-        // 2) Navigate the already-opened window to QBO
-        const url =
-          data?.qboInvoiceUrl ||
-          (data?.qboInvoiceId ? `https://qbo.intuit.com/app/invoice?txnId=${data.qboInvoiceId}` : null);
-
-        if (url && win) {
-          win.location.href = url;
-        } else {
-          alert(
-            `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
-              data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
-            }\n\nCould not auto-open QBO invoice URL.`
-          );
-        }
-      } catch (e: any) {
-        if (win) {
-          win.document.body.innerHTML = `<pre style="font-family: sans-serif; white-space: pre-wrap;">${
-            e?.message || "Failed to create QBO invoice."
-          }</pre>`;
-        }
-        alert(e?.message || "Failed to create QBO invoice.");
+      if (!res.ok) {
+        if (win) win.close();
+        alert(data?.error || "Failed to create QBO invoice.");
+        return;
       }
-    })();
+
+      alert(
+        `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
+          data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
+        }`
+      );
+
+      const url: string | null = data?.qboInvoiceUrl || null;
+
+      if (win && url) {
+        win.location.href = url; // <-- this is the key
+        win.focus();
+        return;
+      }
+
+      // If popup was blocked OR url missing, fall back gracefully
+      if (!win) {
+        alert("Popup blocked. Please allow popups for dcflow.app, then try again.");
+      } else {
+        alert("Could not auto-open QBO invoice URL.");
+      }
+
+      if (url) {
+        // last resort: open again
+        window.open(url, "_blank");
+      }
+    } catch (e: any) {
+      if (win) win.close();
+      alert(e?.message || "Failed to create QBO invoice.");
+    }
   }}
   style={{
     padding: "8px 12px",
