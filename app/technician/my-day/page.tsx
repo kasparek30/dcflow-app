@@ -1,13 +1,22 @@
+// app/technician/my-day/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
-import type { AppUser } from "../../../src/types/app-user";
 
 type TripCrew = {
   primaryTechUid?: string | null;
@@ -34,12 +43,12 @@ type Trip = {
   active: boolean;
 
   type?: "project" | "service" | string;
-  status?: string;
+  status?: string; // planned | in_progress | complete | cancelled | etc
 
-  date?: string;
-  timeWindow?: "am" | "pm" | "all_day" | string;
-  startTime?: string;
-  endTime?: string;
+  date?: string; // YYYY-MM-DD
+  timeWindow?: "am" | "pm" | "all_day" | "custom" | string;
+  startTime?: string; // HH:mm
+  endTime?: string; // HH:mm
 
   crew?: TripCrew;
   link?: TripLink;
@@ -58,24 +67,46 @@ type DailyCrewOverride = {
 
 type MyDayItem = {
   id: string;
-  title: string;
-  subtitle: string;
-  timeText: string;
-  statusText: string;
 
+  // Card
+  headerText: string; // “Service Ticket: …”
+  subLine: string; // time + customer + address
   techText: string;
   helperText?: string;
   secondaryTechText?: string;
   secondaryHelperText?: string;
 
+  issueDetailsText?: string;
+  followUpText?: string;
+
+  status: string;
+  sortKey: string;
+
   href: string;
 };
 
-type UserOption = {
+type EmployeeOption = {
   uid: string;
   displayName: string;
-  role: AppUser["role"];
+  role: string;
   active: boolean;
+};
+
+type ServiceTicketLite = {
+  id: string;
+  issueSummary?: string;
+  issueDetails?: string;
+  status?: string;
+
+  customerDisplayName?: string;
+  customerPhone?: string;
+
+  serviceAddressLabel?: string;
+  serviceAddressLine1?: string;
+  serviceAddressLine2?: string;
+  serviceCity?: string;
+  serviceState?: string;
+  servicePostalCode?: string;
 };
 
 function isoTodayLocal() {
@@ -110,28 +141,20 @@ function stageLabel(stageKey?: string | null) {
 }
 
 function buildHref(link?: TripLink) {
-  if (!link) return "/schedule";
+  if (!link) return "/trips";
   if (link.serviceTicketId) return `/service-tickets/${link.serviceTicketId}`;
   if (link.projectId) return `/projects/${link.projectId}`;
-  return "/schedule";
+  return "/trips";
 }
 
-function titleForTrip(t: Trip) {
-  if (t.type === "project") {
-    const stage = stageLabel(t.link?.projectStageKey || null);
-    return stage ? `${formatType(t.type)} • ${stage}` : `${formatType(t.type)}`;
-  }
-  if (t.type === "service") return `${formatType(t.type)} • Service Ticket`;
-  return `${formatType(t.type)}`;
-}
-
-function subtitleForTrip(t: Trip) {
-  if (t.link?.serviceTicketId) return `Ticket: ${t.link.serviceTicketId}`;
-  if (t.link?.projectId) {
-    const stage = t.link.projectStageKey ? ` • ${t.link.projectStageKey}` : "";
-    return `Project: ${t.link.projectId}${stage}`;
-  }
-  return "—";
+function isUidInCrew(uid: string, crew?: TripCrew) {
+  if (!uid) return false;
+  return (
+    crew?.primaryTechUid === uid ||
+    crew?.helperUid === uid ||
+    crew?.secondaryTechUid === uid ||
+    crew?.secondaryHelperUid === uid
+  );
 }
 
 function crewDisplay(crew?: TripCrew) {
@@ -155,122 +178,124 @@ function crewDisplay(crew?: TripCrew) {
   return { primary, helper, secondaryTech, secondaryHelper };
 }
 
-function isUidInCrew(uid: string, crew?: TripCrew) {
-  if (!uid) return false;
-  return (
-    crew?.primaryTechUid === uid ||
-    crew?.helperUid === uid ||
-    crew?.secondaryTechUid === uid ||
-    crew?.secondaryHelperUid === uid
-  );
+function safeStr(x: unknown) {
+  return typeof x === "string" ? x : "";
+}
+
+function buildAddressLine(t: ServiceTicketLite) {
+  const parts: string[] = [];
+  const label = safeStr(t.serviceAddressLabel).trim();
+  const line1 = safeStr(t.serviceAddressLine1).trim();
+  const line2 = safeStr(t.serviceAddressLine2).trim();
+  const city = safeStr(t.serviceCity).trim();
+  const state = safeStr(t.serviceState).trim();
+  const zip = safeStr(t.servicePostalCode).trim();
+
+  if (label) parts.push(label);
+  if (line1) parts.push(line1);
+  if (line2) parts.push(line2);
+
+  const cityStateZip = [city, state, zip].filter(Boolean).join(" ");
+  if (cityStateZip) parts.push(cityStateZip);
+
+  return parts.filter(Boolean).join(" • ");
+}
+
+function normalizeStatus(s?: string) {
+  return (s || "").toLowerCase().trim();
+}
+
+function timeSortKey(startTime?: string, window?: string) {
+  // We want real timed items first, otherwise order by typical windows.
+  const st = safeStr(startTime);
+  if (st) return st;
+
+  const w = (window || "").toLowerCase();
+  if (w === "am") return "08:00";
+  if (w === "pm") return "13:00";
+  if (w === "all_day") return "08:00";
+  return "99:99";
 }
 
 export default function TechnicianMyDayPage() {
   const { appUser } = useAuthContext();
 
-  const todayIso = useMemo(() => isoTodayLocal(), []);
-
-  const myUid = appUser?.uid || "";
-  const myRole = appUser?.role || "";
-
-  // ✅ Admin-like roles can view other employees
-  const canViewOthers =
-    myRole === "admin" || myRole === "dispatcher" || myRole === "manager";
-
-  // Users list for dropdown (admin only)
-  const [usersLoading, setUsersLoading] = useState(false);
-  const [usersError, setUsersError] = useState("");
-  const [users, setUsers] = useState<UserOption[]>([]);
-
-  // “Viewing” uid:
-  // - non-admins: always self
-  // - admins: default to self, can switch
-  const [viewUid, setViewUid] = useState("");
-
-  // Trips + override
   const [loading, setLoading] = useState(true);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [override, setOverride] = useState<DailyCrewOverride | null>(null);
   const [error, setError] = useState("");
 
-  // Keep viewUid in sync
+  const [employeesLoading, setEmployeesLoading] = useState(true);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+  const [selectedEmployeeUid, setSelectedEmployeeUid] = useState<string>("");
+
+  const [ticketById, setTicketById] = useState<Record<string, ServiceTicketLite>>({});
+  const [followUpByTicketId, setFollowUpByTicketId] = useState<Record<string, string>>({});
+
+  const todayIso = useMemo(() => isoTodayLocal(), []);
+  const myUid = appUser?.uid || "";
+  const myRole = appUser?.role || "";
+
+  const isHelperRole = myRole === "helper" || myRole === "apprentice";
+
+  const canViewOtherEmployees =
+    myRole === "admin" || myRole === "dispatcher" || myRole === "manager";
+
+  // Default selected employee:
   useEffect(() => {
-    if (!myUid) return;
-    if (!canViewOthers) {
-      setViewUid(myUid);
-      return;
+    if (!selectedEmployeeUid && myUid) {
+      setSelectedEmployeeUid(myUid);
     }
-    // admin default: self (unless already selected)
-    setViewUid((prev) => prev || myUid);
-  }, [myUid, canViewOthers]);
+  }, [selectedEmployeeUid, myUid]);
 
-  // Load users for admin dropdown
+  // Load employees list (for admin/dispatch/manager picker)
   useEffect(() => {
-    async function loadUsers() {
-      if (!canViewOthers) return;
+    async function loadEmployees() {
+      if (!canViewOtherEmployees) {
+        setEmployeesLoading(false);
+        return;
+      }
 
-      setUsersLoading(true);
-      setUsersError("");
-
+      setEmployeesLoading(true);
       try {
         const snap = await getDocs(collection(db, "users"));
-        const items: UserOption[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data() as any;
-          return {
-            uid: d.uid ?? docSnap.id,
-            displayName: d.displayName ?? "Unnamed",
-            role: d.role ?? "technician",
-            active: typeof d.active === "boolean" ? d.active : false,
-          };
-        });
+        const items: EmployeeOption[] = snap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            return {
+              uid: String(data.uid ?? d.id),
+              displayName: String(data.displayName ?? "Unnamed"),
+              role: String(data.role ?? ""),
+              active: Boolean(data.active ?? false),
+            };
+          })
+          .filter((u) => u.active)
+          .filter((u) => ["technician", "helper", "apprentice"].includes(u.role));
 
-        const active = items.filter((u) => u.active);
-        active.sort((a, b) => a.displayName.localeCompare(b.displayName));
-        setUsers(active);
-      } catch (err: unknown) {
-        setUsersError(err instanceof Error ? err.message : "Failed to load users.");
+        items.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        setEmployees(items);
+      } catch (e) {
+        // Non-fatal
       } finally {
-        setUsersLoading(false);
+        setEmployeesLoading(false);
       }
     }
 
-    loadUsers();
-  }, [canViewOthers]);
+    loadEmployees();
+  }, [canViewOtherEmployees]);
 
-  const viewingUser = useMemo(() => {
-    if (!viewUid) return null;
-    if (!canViewOthers) {
-      return appUser
-        ? {
-            uid: appUser.uid,
-            displayName: appUser.displayName || "Unknown",
-            role: appUser.role || "technician",
-            active: true,
-          }
-        : null;
-    }
-    return users.find((u) => u.uid === viewUid) ?? null;
-  }, [viewUid, canViewOthers, users, appUser]);
-
-  const viewingRole = viewingUser?.role || "";
-  const viewingIsHelperRole = viewingRole === "helper" || viewingRole === "apprentice";
-
-  const assignedTechNameFromUid = useMemo(() => {
-    if (!override?.assignedTechUid) return "";
-    const u = users.find((x) => x.uid === override.assignedTechUid);
-    return u?.displayName || "";
-  }, [override?.assignedTechUid, users]);
-
-  // Load trips + override (based on viewUid)
+  // Load trips for today
   useEffect(() => {
     async function load() {
-      if (!viewUid) return;
-
       setLoading(true);
       setError("");
 
       try {
-        // Trips for today only
+        const whoUid = canViewOtherEmployees
+          ? (selectedEmployeeUid || myUid)
+          : myUid;
+
+        // Pull trips for today only (fast and clean)
         const tripsSnap = await getDocs(
           query(collection(db, "trips"), where("date", "==", todayIso))
         );
@@ -292,16 +317,15 @@ export default function TechnicianMyDayPage() {
           };
         });
 
-        // Daily crew override:
-        // only matters if viewing a helper/apprentice
+        // Load daily crew override for THIS helper (if helper/apprentice)
         let foundOverride: DailyCrewOverride | null = null;
 
-        if (viewingIsHelperRole && viewUid) {
+        if (isHelperRole && whoUid) {
           const overrideSnap = await getDocs(
             query(
               collection(db, "dailyCrewOverrides"),
               where("date", "==", todayIso),
-              where("helperUid", "==", viewUid),
+              where("helperUid", "==", whoUid),
               where("active", "==", true)
             )
           );
@@ -322,6 +346,76 @@ export default function TechnicianMyDayPage() {
 
         setTrips(tripItems);
         setOverride(foundOverride);
+
+        // Enrich: load service ticket docs for visible service trips
+        const ticketIds = Array.from(
+          new Set(
+            tripItems
+              .map((t) => t.link?.serviceTicketId || "")
+              .filter(Boolean)
+          )
+        );
+
+        const ticketMap: Record<string, ServiceTicketLite> = {};
+        await Promise.all(
+          ticketIds.map(async (tid) => {
+            try {
+              const snap = await getDoc(doc(db, "serviceTickets", tid));
+              if (!snap.exists()) return;
+
+              const d = snap.data() as any;
+              ticketMap[tid] = {
+                id: tid,
+                issueSummary: d.issueSummary ?? "",
+                issueDetails: d.issueDetails ?? "",
+                status: d.status ?? "",
+                customerDisplayName: d.customerDisplayName ?? "",
+                customerPhone: d.customerPhone ?? d.phone ?? "",
+                serviceAddressLabel: d.serviceAddressesLabel ?? d.serviceAddressLabel ?? "",
+                serviceAddressLine1: d.serviceAddressLine1 ?? "",
+                serviceAddressLine2: d.serviceAddressLine2 ?? "",
+                serviceCity: d.serviceCity ?? "",
+                serviceState: d.serviceState ?? "",
+                servicePostalCode: d.servicePostalCode ?? "",
+              };
+            } catch {
+              // ignore per ticket
+            }
+          })
+        );
+        setTicketById(ticketMap);
+
+        // Enrich: if ticket is follow_up, try to fetch latest followUpNotes
+        const followUpMap: Record<string, string> = {};
+        await Promise.all(
+          ticketIds.map(async (tid) => {
+            try {
+              const t = ticketMap[tid];
+              if (!t) return;
+              if (normalizeStatus(t.status) !== "follow_up") return;
+
+              // Try to get most recent follow-up trip note for this ticket.
+              // If Firestore asks for an index, this will fail gracefully.
+              const qTrip = query(
+                collection(db, "trips"),
+                where("link.serviceTicketId", "==", tid),
+                where("outcome", "==", "follow_up"),
+                orderBy("updatedAt", "desc"),
+                limit(1)
+              );
+
+              const snap = await getDocs(qTrip);
+              if (snap.empty) return;
+
+              const d = snap.docs[0].data() as any;
+              const note = String(d.followUpNotes ?? "").trim();
+              if (note) followUpMap[tid] = note;
+            } catch {
+              // ignore (index missing, etc.)
+            }
+          })
+        );
+        setFollowUpByTicketId(followUpMap);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to load My Day (trips).");
       } finally {
@@ -330,27 +424,30 @@ export default function TechnicianMyDayPage() {
     }
 
     load();
-  }, [todayIso, viewUid, viewingIsHelperRole]);
+  }, [todayIso, myUid, isHelperRole, canViewOtherEmployees, selectedEmployeeUid]);
 
   const visibleTrips = useMemo(() => {
-    if (!viewUid) return [];
+    const whoUid = canViewOtherEmployees
+      ? (selectedEmployeeUid || myUid)
+      : myUid;
 
-    // Default: show trips where the viewed user is explicitly on the crew
+    if (!whoUid) return [];
+
+    // Default: show trips where you are explicitly on the crew
     const explicitCrewTrips = trips
       .filter((t) => t.active !== false)
-      .filter((t) => isUidInCrew(viewUid, t.crew));
+      .filter((t) => isUidInCrew(whoUid, t.crew));
 
-    // If viewing a helper/apprentice AND an override exists:
+    // If you are a helper/apprentice AND an override exists:
     // - also show trips where primary tech == override.assignedTechUid
-    // - but keep explicit crew trips too
-    if (viewingIsHelperRole && override?.assignedTechUid) {
+    if (!canViewOtherEmployees && isHelperRole && override?.assignedTechUid) {
       const overrideTechTrips = trips
         .filter((t) => t.active !== false)
         .filter((t) => (t.crew?.primaryTechUid || "") === override.assignedTechUid);
 
       const merged = [...explicitCrewTrips, ...overrideTechTrips];
 
-      // de-dupe by trip id
+      // de-dupe
       const byId = new Map<string, Trip>();
       for (const t of merged) byId.set(t.id, t);
 
@@ -358,63 +455,108 @@ export default function TechnicianMyDayPage() {
     }
 
     return explicitCrewTrips;
-  }, [trips, viewUid, viewingIsHelperRole, override]);
+  }, [trips, myUid, isHelperRole, override, canViewOtherEmployees, selectedEmployeeUid]);
 
   const items = useMemo(() => {
-    const mapped: MyDayItem[] = visibleTrips.map((t) => {
-      const crew = crewDisplay(t.crew);
-      const href = buildHref(t.link);
+    const whoUid = canViewOtherEmployees
+      ? (selectedEmployeeUid || myUid)
+      : myUid;
 
-      const timeText =
-        t.startTime || t.endTime
-          ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
-          : formatWindow(t.timeWindow);
+    const mapped: MyDayItem[] = visibleTrips
+      .filter((t) => {
+        // ✅ Hide completed trips from My Day (requested)
+        const s = normalizeStatus(t.status);
+        if (s === "complete" || s === "completed") return false;
+        return true;
+      })
+      .map((t) => {
+        const crew = crewDisplay(t.crew);
+        const href = buildHref(t.link);
 
-      const statusText =
-        t.status
-          ? `${t.status}${t.cancelReason ? ` • Cancel: ${t.cancelReason}` : ""}`
-          : "—";
+        const windowText = formatWindow(t.timeWindow);
+        const timeText =
+          t.startTime || t.endTime
+            ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${windowText}`
+            : windowText;
 
-      return {
-        id: t.id,
-        title: titleForTrip(t),
-        subtitle: subtitleForTrip(t),
-        timeText,
-        statusText,
-        techText: `Tech: ${crew.primary}`,
-        helperText: crew.helper,
-        secondaryTechText: crew.secondaryTech,
-        secondaryHelperText: crew.secondaryHelper,
-        href,
-      };
-    });
+        const status = normalizeStatus(t.status) || "planned";
 
-    mapped.sort((a, b) => a.timeText.localeCompare(b.timeText));
+        // Service ticket enrichment
+        const serviceTicketId = t.link?.serviceTicketId || "";
+        const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
+
+        // Header per your spec
+        let headerText = "";
+        if ((t.type || "").toLowerCase() === "service") {
+          const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
+          headerText = `🔧 Service Ticket: ${summary}`;
+        } else if ((t.type || "").toLowerCase() === "project") {
+          const stage = stageLabel(t.link?.projectStageKey || null);
+          headerText = stage ? `${formatType(t.type)} • ${stage}` : `${formatType(t.type)}`;
+        } else {
+          headerText = `${formatType(t.type)} • ${((t.type || "") as string) || "Trip"}`;
+        }
+
+        // Second line: time block + customer - address
+        let subLine = timeText;
+        if (st) {
+          const cust = safeStr(st.customerDisplayName).trim();
+          const addr = buildAddressLine(st);
+          const right = [cust, addr].filter(Boolean).join(" — ");
+          if (right) subLine = `${timeText} • ${right}`;
+        }
+
+        // Issue details bottom line
+        const issueDetailsText =
+          (t.type || "").toLowerCase() === "service"
+            ? (safeStr(st?.issueDetails).trim() || "")
+            : "";
+
+        const followUpText =
+          (t.type || "").toLowerCase() === "service" && serviceTicketId
+            ? (safeStr(followUpByTicketId[serviceTicketId]).trim() || "")
+            : "";
+
+        // Sorting:
+        // - in_progress to top
+        // - otherwise by actual time
+        const inProgBoost = status === "in_progress" ? "0" : "1";
+        const tKey = timeSortKey(t.startTime, t.timeWindow);
+        const sortKey = `${inProgBoost}_${tKey}_${t.id}`;
+
+        return {
+          id: t.id,
+          headerText,
+          subLine,
+          techText: `Tech: ${crew.primary}`,
+          helperText: crew.helper,
+          secondaryTechText: crew.secondaryTech,
+          secondaryHelperText: crew.secondaryHelper,
+          issueDetailsText,
+          followUpText,
+          status,
+          sortKey,
+          href,
+        };
+      });
+
+    mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     return mapped;
-  }, [visibleTrips]);
+  }, [visibleTrips, ticketById, followUpByTicketId, myUid, canViewOtherEmployees, selectedEmployeeUid]);
 
   const banner = useMemo(() => {
-    if (!viewUid) return null;
+    const whoUid = canViewOtherEmployees
+      ? (selectedEmployeeUid || myUid)
+      : myUid;
 
-    // Admin viewing someone else
-    if (canViewOthers && viewUid !== myUid && viewingUser) {
-      return {
-        title: "👀 Admin View",
-        text: `You are viewing My Day for: ${viewingUser.displayName} (${viewingUser.role})`,
-        sub: `UID: ${viewingUser.uid}`,
-      };
-    }
+    if (!whoUid) return null;
 
-    // Helper override banner (self-view or admin-view)
-    if (viewingIsHelperRole) {
+    if (!canViewOtherEmployees && isHelperRole) {
       if (override?.assignedTechUid) {
-        const techName = assignedTechNameFromUid ? ` (${assignedTechNameFromUid})` : "";
         return {
           title: "✅ Override Active",
-          text: "Today you are reassigned to a different technician.",
-          sub: `Assigned Tech UID: ${override.assignedTechUid}${techName}${
-            override.note ? ` • Note: ${override.note}` : ""
-          }`,
+          text: `Today you are reassigned to a different technician for today.`,
+          sub: `Assigned Tech UID: ${override.assignedTechUid}${override.note ? ` • Note: ${override.note}` : ""}`,
         };
       }
 
@@ -426,7 +568,27 @@ export default function TechnicianMyDayPage() {
     }
 
     return null;
-  }, [viewUid, canViewOthers, myUid, viewingUser, viewingIsHelperRole, override, assignedTechNameFromUid]);
+  }, [myUid, isHelperRole, override, canViewOtherEmployees, selectedEmployeeUid]);
+
+  function statusStyles(status: string) {
+    // requested: in_progress green, planned blue
+    if (status === "in_progress") {
+      return {
+        border: "1px solid #b7e3c2",
+        background: "#f2fff6",
+      };
+    }
+    if (status === "planned") {
+      return {
+        border: "1px solid #b7cff5",
+        background: "#f4f8ff",
+      };
+    }
+    return {
+      border: "1px solid #ddd",
+      background: "white",
+    };
+  }
 
   return (
     <ProtectedPage fallbackTitle="My Day">
@@ -441,16 +603,40 @@ export default function TechnicianMyDayPage() {
           }}
         >
           <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>My Day</h1>
+            <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>My Day</h1>
             <p style={{ marginTop: "6px", color: "#666" }}>
               Today: <strong>{todayIso}</strong>
             </p>
             <p style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-              Trips-driven view (this powers schedule + payroll accuracy)
+              Trips-driven view (scheduling + time capture)
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+            {canViewOtherEmployees ? (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <span style={{ fontSize: "12px", color: "#666", fontWeight: 800 }}>Employee</span>
+                <select
+                  value={selectedEmployeeUid || ""}
+                  onChange={(e) => setSelectedEmployeeUid(e.target.value)}
+                  disabled={employeesLoading}
+                  style={{
+                    padding: "8px 10px",
+                    border: "1px solid #ccc",
+                    borderRadius: "10px",
+                    background: "white",
+                  }}
+                >
+                  <option value={myUid}>Me</option>
+                  {employees.map((u) => (
+                    <option key={u.uid} value={u.uid}>
+                      {u.displayName} ({u.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+
             <Link
               href="/schedule"
               style={{
@@ -464,6 +650,7 @@ export default function TechnicianMyDayPage() {
             >
               Weekly Schedule
             </Link>
+
             <Link
               href="/time-entries"
               style={{
@@ -480,61 +667,6 @@ export default function TechnicianMyDayPage() {
           </div>
         </div>
 
-        {/* ✅ Admin selector */}
-        {canViewOthers ? (
-          <div
-            style={{
-              marginTop: "14px",
-              border: "1px solid #ddd",
-              borderRadius: "12px",
-              padding: "12px",
-              background: "#fafafa",
-              maxWidth: "980px",
-              display: "grid",
-              gap: "8px",
-            }}
-          >
-            <div style={{ fontWeight: 900 }}>Admin: View another employee</div>
-
-            {usersLoading ? <div style={{ color: "#666", fontSize: "13px" }}>Loading users...</div> : null}
-            {usersError ? <div style={{ color: "red", fontSize: "13px" }}>{usersError}</div> : null}
-
-            {!usersLoading && !usersError ? (
-              <div>
-                <label style={{ fontSize: "13px", fontWeight: 700 }}>Employee</label>
-                <select
-                  value={viewUid}
-                  onChange={(e) => setViewUid(e.target.value)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    padding: "10px",
-                    marginTop: "6px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                    background: "white",
-                  }}
-                >
-                  {/* include self even if missing from list */}
-                  {myUid ? <option value={myUid}>Me (Admin) • {appUser?.displayName || myUid}</option> : null}
-                  {users
-                    .filter((u) => u.uid !== myUid)
-                    .map((u) => (
-                      <option key={u.uid} value={u.uid}>
-                        {u.displayName} ({u.role})
-                      </option>
-                    ))}
-                </select>
-
-                <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
-                  This only changes what you are viewing — it does not modify the schedule.
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* Banner */}
         {banner ? (
           <div
             style={{
@@ -554,7 +686,7 @@ export default function TechnicianMyDayPage() {
           </div>
         ) : null}
 
-        {loading ? <p style={{ marginTop: "16px" }}>Loading...</p> : null}
+        {loading ? <p style={{ marginTop: "16px" }}>Loading your day...</p> : null}
         {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
 
         {!loading && !error ? (
@@ -573,53 +705,81 @@ export default function TechnicianMyDayPage() {
               </div>
             ) : (
               <div style={{ display: "grid", gap: "12px" }}>
-                {items.map((item) => (
-                  <Link
-                    key={item.id}
-                    href={item.href}
-                    style={{
-                      display: "block",
-                      border: "1px solid #ddd",
-                      borderRadius: "12px",
-                      padding: "12px",
-                      background: "white",
-                      textDecoration: "none",
-                      color: "inherit",
-                    }}
-                  >
-                    <div style={{ fontWeight: 900, fontSize: "15px" }}>{item.title}</div>
+                {items.map((item) => {
+                  const styles = statusStyles(item.status);
 
-                    <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
-                      {item.timeText} • {item.statusText}
-                    </div>
+                  return (
+                    <Link
+                      key={item.id}
+                      href={item.href}
+                      style={{
+                        display: "block",
+                        borderRadius: "12px",
+                        padding: "12px",
+                        textDecoration: "none",
+                        color: "inherit",
+                        ...(styles as any),
+                      }}
+                    >
+                      {/* Header */}
+                      <div style={{ fontWeight: 950, fontSize: "15px" }}>{item.headerText}</div>
 
-                    <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
-                      {item.subtitle}
-                    </div>
-
-                    <div style={{ marginTop: "8px", fontSize: "12px", color: "#777" }}>
-                      {item.techText}
-                    </div>
-
-                    {item.helperText ? (
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                        {item.helperText}
+                      {/* Line 2: time + customer + address */}
+                      <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
+                        {item.subLine}
                       </div>
-                    ) : null}
 
-                    {item.secondaryTechText ? (
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                        {item.secondaryTechText}
+                      {/* Crew */}
+                      <div style={{ marginTop: "8px", fontSize: "12px", color: "#555" }}>
+                        {item.techText}
                       </div>
-                    ) : null}
+                      {item.helperText ? (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
+                          {item.helperText}
+                        </div>
+                      ) : null}
+                      {item.secondaryTechText ? (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
+                          {item.secondaryTechText}
+                        </div>
+                      ) : null}
+                      {item.secondaryHelperText ? (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
+                          {item.secondaryHelperText}
+                        </div>
+                      ) : null}
 
-                    {item.secondaryHelperText ? (
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                        {item.secondaryHelperText}
-                      </div>
-                    ) : null}
-                  </Link>
-                ))}
+                      {/* Issue details + follow-up notes */}
+                      {item.issueDetailsText ? (
+                        <div
+                          style={{
+                            marginTop: "10px",
+                            paddingTop: "10px",
+                            borderTop: "1px solid rgba(0,0,0,0.06)",
+                            fontSize: "12px",
+                            color: "#444",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          <strong>Issue:</strong> {item.issueDetailsText}
+                        </div>
+                      ) : null}
+
+                      {item.followUpText ? (
+                        <div
+                          style={{
+                            marginTop: "8px",
+                            fontSize: "12px",
+                            color: "#6a4b00",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          <strong>Follow-up notes:</strong> {item.followUpText}
+                        </div>
+                      ) : null}
+                    </Link>
+                  );
+                })}
               </div>
             )}
           </div>

@@ -86,7 +86,7 @@ export default function NewServiceTicketPage() {
   const [status, setStatus] = useState<
     "new" | "scheduled" | "in_progress" | "follow_up" | "completed" | "cancelled"
   >("new");
-  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState("60");
+  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState("240");
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledStartTime, setScheduledStartTime] = useState("");
   const [scheduledEndTime, setScheduledEndTime] = useState("");
