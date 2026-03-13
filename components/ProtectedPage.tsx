@@ -8,7 +8,7 @@ import { useAuthContext } from "../src/context/auth-context";
 type Props = {
   children: ReactNode;
   fallbackTitle?: string;
-  allowedRoles?: string[]; // ✅ add support for role gating
+  allowedRoles?: string[];
 };
 
 export default function ProtectedPage({
@@ -20,60 +20,56 @@ export default function ProtectedPage({
   const pathname = usePathname();
   const { authUser, appUser } = useAuthContext();
 
-  // If appUser hasn't loaded yet, don't hang forever.
-  // We'll allow a short grace period, then render anyway (AppShell supports null appUser).
-  const [graceExpired, setGraceExpired] = useState(false);
+  // ✅ Give Firebase auth a chance to rehydrate on page load
+  // (prevents redirect loops back to /login immediately after deploy)
+  const [authGraceExpired, setAuthGraceExpired] = useState(false);
 
   useEffect(() => {
-    setGraceExpired(false);
-    const t = window.setTimeout(() => setGraceExpired(true), 2500);
+    setAuthGraceExpired(false);
+    const t = window.setTimeout(() => setAuthGraceExpired(true), 3000);
     return () => window.clearTimeout(t);
+  }, [pathname]);
+
+  const isLoginRoute = useMemo(() => {
+    return (pathname || "").startsWith("/login");
   }, [pathname]);
 
   const isLoggedIn = Boolean(authUser?.uid);
 
+  // ✅ Only redirect to /login if:
+  // - we are NOT already on /login
+  // - auth grace period expired
+  // - still not logged in
   useEffect(() => {
-    // If no auth user, bounce to login.
-    // Preserve where they were trying to go.
-    if (!isLoggedIn) {
-      const next = pathname ? `?next=${encodeURIComponent(pathname)}` : "";
-      router.replace(`/login${next}`);
-    }
-  }, [isLoggedIn, router, pathname]);
+    if (isLoginRoute) return;
+    if (!authGraceExpired) return;
+    if (isLoggedIn) return;
 
+    const next = pathname ? `?next=${encodeURIComponent(pathname)}` : "";
+    router.replace(`/login${next}`);
+  }, [isLoginRoute, authGraceExpired, isLoggedIn, router, pathname]);
+
+  // Role gating
   const roleAllowed = useMemo(() => {
-    if (!allowedRoles || allowedRoles.length === 0) return true; // no gating
+    if (!allowedRoles || allowedRoles.length === 0) return true;
     const role = String(appUser?.role || "").trim();
-    return role && allowedRoles.includes(role);
+    return Boolean(role) && allowedRoles.includes(role);
   }, [allowedRoles, appUser?.role]);
 
   useEffect(() => {
-    // If role gating is enabled and we have an appUser role, enforce it.
-    // (We wait until appUser exists so we don't incorrectly redirect during load.)
     if (!allowedRoles || allowedRoles.length === 0) return;
-    if (!appUser) return;
-
-    if (!roleAllowed) {
-      router.replace("/dashboard");
-    }
+    if (!appUser) return; // wait for profile
+    if (!roleAllowed) router.replace("/dashboard");
   }, [allowedRoles, appUser, roleAllowed, router]);
 
+  // Loading UX:
+  // - show loading while auth is not settled yet OR appUser not loaded yet
   const showLoading = useMemo(() => {
-    // Show loader only while:
-    // - user is logged in AND
-    // - we haven't loaded appUser yet AND
-    // - grace window has not expired
-    return isLoggedIn && !appUser && !graceExpired;
-  }, [isLoggedIn, appUser, graceExpired]);
-
-  if (!isLoggedIn) {
-    // Redirecting...
-    return (
-      <div style={{ padding: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 900 }}>Redirecting…</h1>
-      </div>
-    );
-  }
+    if (isLoginRoute) return false;
+    if (!authGraceExpired && !isLoggedIn) return true; // auth still settling
+    if (isLoggedIn && !appUser) return true; // profile still loading
+    return false;
+  }, [isLoginRoute, authGraceExpired, isLoggedIn, appUser]);
 
   if (showLoading) {
     return (
@@ -82,28 +78,25 @@ export default function ProtectedPage({
           {`Loading ${fallbackTitle}…`}
         </h1>
         <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
-          Loading your profile…
+          Loading your session…
         </div>
       </div>
     );
   }
 
-  // If role gating is enabled but appUser is still null after grace,
-  // show a friendly message rather than rendering a restricted page.
-  if (allowedRoles && allowedRoles.length > 0 && !appUser && graceExpired) {
+  // If we’re on login route, always allow rendering login page
+  if (isLoginRoute) return <>{children}</>;
+
+  // If auth grace expired and still no authUser, we’re redirecting (avoid flash)
+  if (authGraceExpired && !isLoggedIn) {
     return (
       <div style={{ padding: 24 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 900 }}>
-          {fallbackTitle}
-        </h1>
-        <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
-          Your profile is still loading. Please refresh if this persists.
-        </div>
+        <h1 style={{ fontSize: 20, fontWeight: 900 }}>Redirecting…</h1>
       </div>
     );
   }
 
-  // If role gating is enabled and we know the role is not allowed, avoid flashing content.
+  // If role gated and not allowed, avoid flashing protected content
   if (allowedRoles && allowedRoles.length > 0 && appUser && !roleAllowed) {
     return (
       <div style={{ padding: 24 }}>
@@ -115,7 +108,5 @@ export default function ProtectedPage({
     );
   }
 
-  // ✅ Important: render the page even if appUser is still null after grace period,
-  // unless role gating is enabled (handled above).
   return <>{children}</>;
 }
