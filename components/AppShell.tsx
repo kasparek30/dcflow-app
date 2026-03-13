@@ -612,67 +612,58 @@ export default function AppShell({
     </>
   );
 
-  const mobileTabs = (
-    <div
-      style={{
-        position: "fixed",
-        bottom: 0,
-        left: 0,
-        right: 0,
-        height: 64,
-        background: "white",
-        borderTop: "1px solid #eaeaea",
-        zIndex: 9997,
-        display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
-      }}
+const mobileTabs = (
+  <div
+    style={{
+      position: "fixed",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      height: 64,
+      background: "white",
+      borderTop: "1px solid #eaeaea",
+      zIndex: 9997,
+      display: "grid",
+      gridTemplateColumns: "repeat(4, 1fr)", // ✅ was 5
+    }}
+  >
+    <button
+      type="button"
+      onClick={() => router.push("/technician/my-day")}
+      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
     >
-      <button
-        type="button"
-        onClick={() => router.push("/technician/my-day")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>📅</div>
-        <div style={{ fontSize: 11 }}>My Day</div>
-      </button>
+      <div style={{ fontSize: 18 }}>📅</div>
+      <div style={{ fontSize: 11 }}>My Day</div>
+    </button>
 
-      <button
-        type="button"
-        onClick={() => router.push("/schedule")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>🗓️</div>
-        <div style={{ fontSize: 11 }}>Schedule</div>
-      </button>
+    <button
+      type="button"
+      onClick={() => router.push("/schedule")}
+      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+    >
+      <div style={{ fontSize: 18 }}>🗓️</div>
+      <div style={{ fontSize: 11 }}>Schedule</div>
+    </button>
 
-      <button
-        type="button"
-        onClick={() => router.push("/service-tickets")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>🧾</div>
-        <div style={{ fontSize: 11 }}>Tickets</div>
-      </button>
+    <button
+      type="button"
+      onClick={() => router.push("/service-tickets")}
+      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+    >
+      <div style={{ fontSize: 18 }}>🧾</div>
+      <div style={{ fontSize: 11 }}>Tickets</div>
+    </button>
 
-      <button
-        type="button"
-        onClick={() => router.push("/customers")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>👥</div>
-        <div style={{ fontSize: 11 }}>Customers</div>
-      </button>
-
-      <button
-        type="button"
-        onClick={() => setDrawerOpen(true)}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>☰</div>
-        <div style={{ fontSize: 11 }}>More</div>
-      </button>
-    </div>
-  );
+    <button
+      type="button"
+      onClick={() => setDrawerOpen(true)}
+      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+    >
+      <div style={{ fontSize: 18 }}>☰</div>
+      <div style={{ fontSize: 11 }}>More</div>
+    </button>
+  </div>
+);
 
   const pillTheme = useMemo(() => {
     // running = green, paused = orange

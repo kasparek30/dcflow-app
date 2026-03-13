@@ -14,6 +14,7 @@ import {
   updateDoc,
   where,
   orderBy,
+  runTransaction,
 } from "firebase/firestore";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
@@ -257,6 +258,18 @@ function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
     (crew.secondaryTechUid || "") === uid ||
     (crew.secondaryHelperUid || "") === uid
   );
+}
+
+function hhmmLocal(d: Date) {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function addMinutes(date: Date, mins: number) {
+  const d = new Date(date);
+  d.setMinutes(d.getMinutes() + mins);
+  return d;
 }
 
 function crewMembersFromTrip(trip: { crewConfirmed?: TripCrew | null; crew?: TripCrew | null }) {
@@ -1742,6 +1755,166 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
+  async function handleClaimAndStartTrip() {
+  if (!ticket?.id) return;
+  if (!myUid) return;
+
+  // Who can self-dispatch?
+  const role = String(appUser?.role || "");
+  const canSelfDispatch =
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice" ||
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager";
+
+  if (!canSelfDispatch) {
+    alert("You do not have permission to claim tickets.");
+    return;
+  }
+
+  // Only allow claiming tickets that are not completed/cancelled
+  const curStatus = String(ticket.status || "").toLowerCase();
+  if (curStatus === "completed" || curStatus === "cancelled") {
+    alert("This ticket is not claimable.");
+    return;
+  }
+
+  // Optional: only allow claiming if not already assigned
+  // (If you want to allow reassign for admins/dispatch, we can extend.)
+  if (ticket.assignedTechnicianId) {
+    alert("This ticket is already assigned.");
+    return;
+  }
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const date = isoTodayLocal();
+  const startTime = hhmmLocal(now);
+  const endTime = hhmmLocal(addMinutes(now, 60)); // placeholder schedule window
+
+  // Default helper pairing (if this tech has one)
+  const defaultHelperUid =
+    helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
+  const helperUid = defaultHelperUid || "";
+  const helperName = helperUid ? (helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper") : null;
+
+  try {
+    const ticketRef = doc(db, "serviceTickets", ticket.id);
+    const tripsCol = collection(db, "trips");
+    const newTripRef = doc(tripsCol); // generates an ID client-side safely
+
+    await runTransaction(db, async (tx) => {
+      const ticketSnap = await tx.get(ticketRef);
+      if (!ticketSnap.exists()) throw new Error("Ticket not found.");
+
+      const live = ticketSnap.data() as any;
+
+      // Hard guard: prevent double-claim
+      if (live.assignedTechnicianId) {
+        throw new Error("Already claimed by another user.");
+      }
+
+      const liveStatus = String(live.status || "").toLowerCase();
+      if (liveStatus === "completed" || liveStatus === "cancelled") {
+        throw new Error("Ticket is not claimable.");
+      }
+
+      // 1) Create Trip in_progress + running timer immediately
+      tx.set(newTripRef, {
+        active: true,
+        type: "service",
+        status: "in_progress",
+
+        date,
+        timeWindow: "custom",
+        startTime,
+        endTime,
+
+        crew: {
+          primaryTechUid: myUid,
+          primaryTechName: appUser?.displayName || "Technician",
+          helperUid: helperUid || null,
+          helperName: helperName,
+          secondaryTechUid: null,
+          secondaryTechName: null,
+          secondaryHelperUid: null,
+          secondaryHelperName: null,
+        },
+
+        // lock snapshot at start
+        crewConfirmed: {
+          primaryTechUid: myUid,
+          primaryTechName: appUser?.displayName || "Technician",
+          helperUid: helperUid || null,
+          helperName: helperName,
+          secondaryTechUid: null,
+          secondaryTechName: null,
+          secondaryHelperUid: null,
+          secondaryHelperName: null,
+        },
+
+        link: {
+          serviceTicketId: ticket.id,
+          projectId: null,
+          projectStageKey: null,
+        },
+
+        notes: null,
+        cancelReason: null,
+
+        // Timer fields
+        timerState: "running",
+        actualStartAt: nowIso,
+        actualEndAt: null,
+        startedByUid: myUid,
+        endedByUid: null,
+        pauseBlocks: [],
+        actualMinutes: null,
+
+        workNotes: null,
+        resolutionNotes: null,
+        followUpNotes: null,
+        materials: null,
+
+        outcome: null,
+        readyToBillAt: null,
+
+        createdAt: nowIso,
+        createdByUid: myUid,
+        updatedAt: nowIso,
+        updatedByUid: myUid,
+      });
+
+      // 2) Update ticket assignment + status
+      tx.update(ticketRef, {
+        status: "in_progress",
+
+        assignedTechnicianId: myUid,
+        assignedTechnicianName: appUser?.displayName || "Technician",
+
+        primaryTechnicianId: myUid,
+        secondaryTechnicianId: null,
+        secondaryTechnicianName: null,
+
+        helperIds: helperUid ? [helperUid] : null,
+        helperNames: helperName ? [helperName] : null,
+        assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
+
+        updatedAt: nowIso,
+      });
+    });
+
+    alert("✅ Claimed and started trip.");
+
+    // safest UX: reload this ticket so trips + status refresh
+    window.location.reload();
+  } catch (e: any) {
+    alert(e?.message || "Failed to claim ticket.");
+  }
+}
+
   async function handleCancelTrip(t: TripDoc) {
     if (!canDispatch) return;
 
@@ -1882,24 +2055,43 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                 gap: "12px",
               }}
             >
-              <div>
-                <h1 style={{ fontSize: "24px", fontWeight: 800 }}>{ticket.issueSummary}</h1>
-                <p style={{ marginTop: "6px", color: "#666" }}>Ticket ID: {ticketId}</p>
-              </div>
+<div>
+  <h1 style={{ fontSize: "24px", fontWeight: 800 }}>{ticket.issueSummary}</h1>
+  <p style={{ marginTop: "6px", color: "#666" }}>Ticket ID: {ticketId}</p>
+</div>
 
-              <Link
-                href="/service-tickets"
-                style={{
-                  padding: "8px 14px",
-                  border: "1px solid #ccc",
-                  borderRadius: "10px",
-                  textDecoration: "none",
-                  color: "inherit",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Back to Tickets
-              </Link>
+<div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+  {!ticket.assignedTechnicianId ? (
+    <button
+      type="button"
+      onClick={handleClaimAndStartTrip}
+      style={{
+        padding: "10px 14px",
+        border: "1px solid #2e7d32",
+        borderRadius: 12,
+        background: "#eaffea",
+        cursor: "pointer",
+        fontWeight: 900,
+      }}
+    >
+      ✅ Claim & Start Trip
+    </button>
+  ) : null}
+
+  <Link
+    href="/service-tickets"
+    style={{
+      padding: "8px 14px",
+      border: "1px solid #ccc",
+      borderRadius: "10px",
+      textDecoration: "none",
+      color: "inherit",
+      whiteSpace: "nowrap",
+    }}
+  >
+    Back to Tickets
+  </Link>
+</div>
             </div>
 
             {/* Customer + Service Address (tech-facing) */}
