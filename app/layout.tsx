@@ -1,10 +1,17 @@
-import { AuthProvider } from "../src/context/auth-context";
+// app/layout.tsx
+import type { Metadata } from "next";
+import "./globals.css";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "DCFlow",
+  description: "DCFlow by Daniel Cernoch Plumbing",
   manifest: "/manifest.webmanifest",
   icons: {
-    apple: "/icons/apple-touch-icon.png"
+    apple: "/icons/apple-touch-icon.png",
+    icon: [
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
   },
 };
 
@@ -15,9 +22,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <AuthProvider>{children}</AuthProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
