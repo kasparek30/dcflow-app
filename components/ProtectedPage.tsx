@@ -1,10 +1,11 @@
+// components/ProtectedPage.tsx
 "use client";
 
 import { ReactNode, useEffect, useMemo, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuthContext } from "../src/context/auth-context";
 import { signOut } from "firebase/auth";
 import { auth } from "../src/lib/firebase";
-import { useAuthContext } from "../src/context/auth-context";
 
 type Props = {
   children: ReactNode;
@@ -19,7 +20,8 @@ export default function ProtectedPage({
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
-  const { loading, authUser, appUser, error } = useAuthContext();
+
+  const { loading, error, authUser, appUser } = useAuthContext();
 
   const [authGraceExpired, setAuthGraceExpired] = useState(false);
 
@@ -35,7 +37,7 @@ export default function ProtectedPage({
 
   const isLoggedIn = Boolean(authUser?.uid);
 
-  // Redirect to /login ONLY when we are sure auth is settled and still not logged in
+  // Redirect if definitely not logged in
   useEffect(() => {
     if (isLoginRoute) return;
     if (!authGraceExpired) return;
@@ -46,7 +48,6 @@ export default function ProtectedPage({
     router.replace(`/login${next}`);
   }, [isLoginRoute, authGraceExpired, loading, isLoggedIn, router, pathname]);
 
-  // Role gating
   const roleAllowed = useMemo(() => {
     if (!allowedRoles || allowedRoles.length === 0) return true;
     const role = String(appUser?.role || "").trim();
@@ -55,17 +56,13 @@ export default function ProtectedPage({
 
   useEffect(() => {
     if (!allowedRoles || allowedRoles.length === 0) return;
-    if (loading) return;
-    if (!isLoggedIn) return;
-    if (!appUser) return; // wait for profile
-    if (!roleAllowed) router.replace("/dashboard");
+    if (!loading && isLoggedIn && appUser && !roleAllowed) {
+      router.replace("/dashboard");
+    }
   }, [allowedRoles, loading, isLoggedIn, appUser, roleAllowed, router]);
 
-  // Allow login page to render freely
-  if (isLoginRoute) return <>{children}</>;
-
-  // Show loading while auth is settling OR profile fetch is still in progress
-  if (!authGraceExpired || loading) {
+  // ✅ Loading UX: use the ACTUAL auth-context loading flag
+  if (!isLoginRoute && (loading || (!authGraceExpired && !isLoggedIn))) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>
@@ -78,8 +75,11 @@ export default function ProtectedPage({
     );
   }
 
-  // If not logged in after grace + loading complete, show redirecting screen
-  if (!isLoggedIn) {
+  // Always allow login page to render
+  if (isLoginRoute) return <>{children}</>;
+
+  // If not logged in (after grace + not loading), show redirecting
+  if (authGraceExpired && !loading && !isLoggedIn) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>Redirecting…</h1>
@@ -87,44 +87,35 @@ export default function ProtectedPage({
     );
   }
 
-  // Logged in but appUser missing OR error occurred: show the real problem (NO infinite loading)
-  if (!appUser) {
+  // ✅ If logged in but user profile failed to load, STOP infinite loading and show the real problem
+  if (isLoggedIn && !appUser) {
     return (
-      <div style={{ padding: 24, maxWidth: 760 }}>
+      <div style={{ padding: 24, maxWidth: 720 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>
-          Account setup required
+          Couldn’t load your DCFlow user profile
         </h1>
 
-        <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
-          You’re authenticated, but DCFlow can’t load your user profile from Firestore.
+        <div style={{ marginTop: 10, fontSize: 13, color: "#666" }}>
+          Firebase login succeeded, but DCFlow couldn’t read your profile doc in Firestore:
         </div>
 
         <div
           style={{
-            marginTop: 12,
-            padding: 12,
-            border: "1px solid #eee",
+            marginTop: 10,
+            border: "1px solid #ddd",
             borderRadius: 12,
+            padding: 12,
             background: "#fafafa",
             fontSize: 13,
             color: "#333",
+            whiteSpace: "pre-wrap",
           }}
         >
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Details</div>
-          <div><strong>Auth UID:</strong> {authUser?.uid || "—"}</div>
-          <div style={{ marginTop: 6 }}>
-            <strong>Error:</strong> {error || "No appUser returned."}
-          </div>
-          <div style={{ marginTop: 10, color: "#555" }}>
-            Fix: create a Firestore document at{" "}
-            <strong>users/&lt;your-auth-uid&gt;</strong> with at least:
-            <div style={{ marginTop: 8, paddingLeft: 14 }}>
-              <div>uid: (same as auth uid)</div>
-              <div>displayName: "Name"</div>
-              <div>role: "admin" | "dispatcher" | "manager" | "technician" | ...</div>
-              <div>active: true</div>
-            </div>
-          </div>
+          {error || "Unknown error."}
+          {"\n\n"}
+          Fix: ensure Firestore allows reading users/{"{uid}"} and that a document exists for this UID:
+          {"\n"}
+          <strong>{`users/${authUser?.uid}`}</strong>
         </div>
 
         <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -143,7 +134,7 @@ export default function ProtectedPage({
               fontWeight: 900,
             }}
           >
-            Sign out
+            Logout
           </button>
 
           <button
@@ -165,8 +156,8 @@ export default function ProtectedPage({
     );
   }
 
-  // If role gated and not allowed, avoid flashing protected content
-  if (allowedRoles && allowedRoles.length > 0 && !roleAllowed) {
+  // Role gating (avoid flash)
+  if (allowedRoles && allowedRoles.length > 0 && appUser && !roleAllowed) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>Access denied</h1>
