@@ -1,139 +1,167 @@
 // app/api/qbo/_lib.ts
-import { cookies } from "next/headers";
+import { adminDb } from "./admin-db";
 
-type TokenResponse = {
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
-  x_refresh_token_expires_in?: number;
-  token_type?: string;
+type QboTokenDoc = {
+  realmId?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: string; // ISO
+  updatedAt?: string;
+
+  // optional metadata
+  scopes?: string;
+  connectedAt?: string;
+  refreshTokenExpiresAt?: string | null;
+  source?: string;
 };
 
-export async function getQboCookieValues() {
-  const store = await cookies();
-  const accessToken = store.get("dcflow_qbo_access_token")?.value || "";
-  const refreshToken = store.get("dcflow_qbo_refresh_token")?.value || "";
-  const realmId = store.get("dcflow_qbo_realm_id")?.value || "";
-  const connectedAt = store.get("dcflow_qbo_connected_at")?.value || "";
-  const scopes = store.get("dcflow_qbo_scopes")?.value || "";
+type AttemptValue = "original" | "refreshed";
 
-  return { accessToken, refreshToken, realmId, connectedAt, scopes };
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function addSecondsToIso(seconds: number) {
+  const d = new Date();
+  d.setSeconds(d.getSeconds() + seconds);
+  return d.toISOString();
+}
+
+function isExpired(expiresAtIso?: string) {
+  if (!expiresAtIso) return true;
+  const t = new Date(expiresAtIso).getTime();
+  if (!Number.isFinite(t)) return true;
+
+  // refresh a bit early
+  const skewMs = 60_000;
+  return Date.now() + skewMs >= t;
+}
+
+/**
+ * Shared company-wide QBO connection doc.
+ * integrations/qbo
+ */
+async function getSharedQboTokens(): Promise<QboTokenDoc> {
+  const db = adminDb();
+  const ref = db.collection("integrations").doc("qbo");
+  const snap = await ref.get();
+  return (snap.exists ? (snap.data() as QboTokenDoc) : {}) || {};
+}
+
+async function setSharedQboTokens(patch: Partial<QboTokenDoc>) {
+  const db = adminDb();
+  const ref = db.collection("integrations").doc("qbo");
+  await ref.set({ ...patch, updatedAt: nowIso() }, { merge: true });
 }
 
 export function getQboApiBaseUrl() {
-  return process.env.QBO_API_BASE_URL || "https://quickbooks.api.intuit.com";
+  return "https://quickbooks.api.intuit.com";
 }
 
-export async function refreshQboAccessToken() {
-  const clientId = process.env.QBO_CLIENT_ID;
-  const clientSecret = process.env.QBO_CLIENT_SECRET;
-  const tokenUrl =
-    process.env.QBO_TOKEN_URL ||
-    "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
+/**
+ * Backward-compatible name used across routes.
+ * Now reads the shared integration doc (NOT per-user cookies).
+ */
+export async function getQboCookieValues(): Promise<{ realmId: string | null }> {
+  const shared = await getSharedQboTokens();
+  const realmId = String(shared.realmId || "").trim();
+  return { realmId: realmId || null };
+}
+
+export function getQboCompanyUiBaseUrl() {
+  return "https://qbo.intuit.com";
+}
+
+/**
+ * ✅ EXPORT THIS (your build error is because it wasn't exported)
+ * Refresh tokens using Intuit OAuth endpoint.
+ * Uses env vars:
+ * - QBO_CLIENT_ID
+ * - QBO_CLIENT_SECRET
+ */
+export async function refreshQboAccessToken(refreshToken: string) {
+  const clientId =
+    process.env.QBO_CLIENT_ID || process.env.NEXT_PUBLIC_QBO_CLIENT_ID || "";
+  const clientSecret = process.env.QBO_CLIENT_SECRET || "";
 
   if (!clientId || !clientSecret) {
-    throw new Error("Missing QBO_CLIENT_ID or QBO_CLIENT_SECRET in env vars.");
-  }
-
-  const { refreshToken } = await getQboCookieValues();
-
-  if (!refreshToken) {
-    throw new Error("No refresh token found. Reconnect QuickBooks.");
-  }
-
-  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-
-  const res = await fetch(tokenUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basicAuth}`,
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-    }).toString(),
-    cache: "no-store",
-  });
-
-  const raw = await res.text();
-  let body: TokenResponse | { [k: string]: unknown };
-
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    body = { raw };
-  }
-
-  if (!res.ok) {
-    const tid = res.headers.get("intuit_tid") || "";
     throw new Error(
-      `Token refresh failed (status ${res.status}). intuit_tid=${tid || "n/a"}`
+      "Missing QBO_CLIENT_ID or QBO_CLIENT_SECRET environment variables."
     );
   }
 
-  const access_token =
-    "access_token" in body && typeof body.access_token === "string"
-      ? body.access_token
-      : "";
-  const refresh_token =
-    "refresh_token" in body && typeof body.refresh_token === "string"
-      ? body.refresh_token
-      : undefined;
-  const expires_in =
-    "expires_in" in body && typeof body.expires_in === "number"
-      ? body.expires_in
-      : 3600;
-  const refresh_expires_in =
-    "x_refresh_token_expires_in" in body &&
-    typeof body.x_refresh_token_expires_in === "number"
-      ? body.x_refresh_token_expires_in
-      : 60 * 60 * 24 * 100;
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
-  if (!access_token) {
-    throw new Error("Token refresh succeeded but no access_token returned.");
+  const res = await fetch(
+    "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basic}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }).toString(),
+      cache: "no-store",
+    }
+  );
+
+  const body = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const msg =
+      (body as any)?.error_description ||
+      (body as any)?.error ||
+      "Token refresh failed.";
+    throw new Error(`QBO token refresh failed: ${msg}`);
   }
 
-  // Update cookies (HTTP-only, secure)
-  const store = await cookies();
-  store.set("dcflow_qbo_access_token", access_token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: expires_in,
-  });
+  const accessToken = String((body as any)?.access_token || "");
+  const newRefreshToken = String((body as any)?.refresh_token || "");
+  const expiresIn = Number((body as any)?.expires_in || 0);
 
-  // Intuit sometimes rotates refresh tokens. If returned, store it.
-  if (refresh_token) {
-    store.set("dcflow_qbo_refresh_token", refresh_token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: refresh_expires_in,
-    });
+  if (!accessToken || !newRefreshToken || !expiresIn) {
+    throw new Error(
+      "QBO refresh response missing access_token/refresh_token/expires_in."
+    );
   }
 
   return {
-    accessToken: access_token,
-    refreshToken: refresh_token || refreshToken,
-    expiresIn: expires_in,
-    refreshExpiresIn: refresh_expires_in,
-    intuitTid: res.headers.get("intuit_tid") || "",
+    accessToken,
+    refreshToken: newRefreshToken,
+    expiresAt: addSecondsToIso(expiresIn),
   };
 }
 
-export async function qboFetchWithAutoRefresh(url: string, init?: RequestInit) {
-  const { accessToken } = await getQboCookieValues();
-  if (!accessToken) {
-    throw new Error("Not connected to QuickBooks (missing access token).");
+/**
+ * Shared fetch wrapper:
+ * - reads shared tokens from Firestore
+ * - refreshes if expired
+ * - retries once automatically
+ */
+export async function qboFetchWithAutoRefresh(
+  url: string,
+  init?: RequestInit
+): Promise<{ res: Response; body: any; intuitTid?: string; attempt: AttemptValue }> {
+  const shared = await getSharedQboTokens();
+
+  const realmId = String(shared.realmId || "").trim();
+  const accessToken = String(shared.accessToken || "").trim();
+  const refreshToken = String(shared.refreshToken || "").trim();
+
+  if (!realmId) {
+    throw new Error("Not connected to QuickBooks (missing realmId).");
+  }
+  if (!accessToken || !refreshToken) {
+    throw new Error("Not connected to QuickBooks (missing access/refresh token).");
   }
 
-  const doFetch = async (token: string) => {
+  async function doFetch(token: string) {
     const res = await fetch(url, {
-      ...(init || {}),
+      ...init,
       headers: {
         ...(init?.headers || {}),
         Authorization: `Bearer ${token}`,
@@ -142,30 +170,64 @@ export async function qboFetchWithAutoRefresh(url: string, init?: RequestInit) {
       cache: "no-store",
     });
 
-    const text = await res.text();
-    let json: any;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = text;
-    }
-
-    return {
-      res,
-      body: json,
-      intuitTid: res.headers.get("intuit_tid") || "",
-    };
-  };
-
-  // First attempt
-  let first = await doFetch(accessToken);
-
-  // If unauthorized, refresh once and retry
-  if (first.res.status === 401) {
-    const refreshed = await refreshQboAccessToken();
-    const second = await doFetch(refreshed.accessToken);
-    return { attempt: "refreshed", ...second };
+    const intuitTid = res.headers.get("intuit_tid") || undefined;
+    const body = await res.json().catch(() => ({}));
+    return { res, body, intuitTid };
   }
 
-  return { attempt: "original", ...first };
+  // refresh first if expired
+  if (isExpired(shared.expiresAt)) {
+    const refreshed = await refreshQboAccessToken(refreshToken);
+    await setSharedQboTokens({
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt: refreshed.expiresAt,
+    });
+
+    const { res, body, intuitTid } = await doFetch(refreshed.accessToken);
+    return { res, body, intuitTid, attempt: "refreshed" };
+  }
+
+  // try original token
+  const first = await doFetch(accessToken);
+
+  // if unauthorized, refresh once and retry
+  if (first.res.status === 401) {
+    const refreshed = await refreshQboAccessToken(refreshToken);
+    await setSharedQboTokens({
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt: refreshed.expiresAt,
+    });
+
+    const second = await doFetch(refreshed.accessToken);
+    return { ...second, attempt: "refreshed" };
+  }
+
+  return { ...first, attempt: "original" };
+}
+
+/**
+ * ✅ Convenience for /api/qbo/refresh route
+ */
+export async function forceRefreshSharedQboTokens() {
+  const shared = await getSharedQboTokens();
+  const realmId = String(shared.realmId || "").trim();
+  const refreshToken = String(shared.refreshToken || "").trim();
+
+  if (!realmId) throw new Error("Not connected to QuickBooks (missing realmId).");
+  if (!refreshToken) throw new Error("Not connected to QuickBooks (missing refresh token).");
+
+  const refreshed = await refreshQboAccessToken(refreshToken);
+
+  await setSharedQboTokens({
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    expiresAt: refreshed.expiresAt,
+  });
+
+  return {
+    realmId,
+    expiresAt: refreshed.expiresAt,
+  };
 }

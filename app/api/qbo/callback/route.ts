@@ -1,19 +1,26 @@
 // app/api/qbo/callback/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../admin-db"; // ✅ adjust if your admin-db path differs
 
 function getPublicBaseUrl(request: NextRequest): string {
-  // Preferred: explicit env var (best for hosted environments)
   const envBase = process.env.APP_BASE_URL;
   if (envBase && envBase.startsWith("http")) return envBase;
 
-  // Fallback: try forwarded headers (proxy-friendly)
   const proto = request.headers.get("x-forwarded-proto") || "https";
   const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
-
   if (host) return `${proto}://${host}`;
 
-  // Last resort
   return "https://dcflow.app";
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function isoPlusSeconds(seconds: number) {
+  const d = new Date();
+  d.setSeconds(d.getSeconds() + Math.max(0, Number(seconds) || 0));
+  return d.toISOString();
 }
 
 export async function GET(request: NextRequest) {
@@ -40,15 +47,13 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const code = searchParams.get("code");
     const state = searchParams.get("state");
-    const realmId = searchParams.get("realmId");
+    const realmId = (searchParams.get("realmId") || "").trim();
     const oauthError = searchParams.get("error");
 
     if (oauthError) {
       return NextResponse.redirect(
         new URL(
-          `/settings/integrations/quickbooks?error=${encodeURIComponent(
-            oauthError
-          )}`,
+          `/settings/integrations/quickbooks?error=${encodeURIComponent(oauthError)}`,
           baseUrl
         )
       );
@@ -64,7 +69,6 @@ export async function GET(request: NextRequest) {
     }
 
     const savedState = request.cookies.get("dcflow_qbo_oauth_state")?.value;
-
     if (!savedState || savedState !== state) {
       return NextResponse.redirect(
         new URL(
@@ -74,9 +78,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString(
-      "base64"
-    );
+    if (!realmId) {
+      return NextResponse.redirect(
+        new URL(
+          "/settings/integrations/quickbooks?error=Missing%20realmId%20from%20Intuit",
+          baseUrl
+        )
+      );
+    }
+
+    const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
     const tokenResponse = await fetch(tokenUrl, {
       method: "POST",
@@ -114,9 +125,7 @@ export async function GET(request: NextRequest) {
     if (!tokenResponse.ok) {
       return NextResponse.redirect(
         new URL(
-          `/settings/integrations/quickbooks?error=${encodeURIComponent(
-            "Token exchange failed"
-          )}`,
+          `/settings/integrations/quickbooks?error=${encodeURIComponent("Token exchange failed")}`,
           baseUrl
         )
       );
@@ -149,13 +158,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const connectedAt = new Date().toISOString();
+    const connectedAt = nowIso();
+    const scopes = process.env.QBO_SCOPES || "com.intuit.quickbooks.accounting";
+
+    // ✅ SAVE SHARED COMPANY-WIDE CONNECTION
+    const db = adminDb();
+    await db.collection("integrations").doc("qbo").set(
+      {
+        realmId,
+        accessToken,
+        refreshToken,
+        expiresAt: isoPlusSeconds(expiresIn || 3600),
+        refreshTokenExpiresAt: refreshExpiresIn ? isoPlusSeconds(refreshExpiresIn) : null,
+        scopes,
+        connectedAt,
+        updatedAt: connectedAt,
+        source: "qbo_oauth_callback",
+      },
+      { merge: true }
+    );
 
     const redirectResponse = NextResponse.redirect(
       new URL("/settings/integrations/quickbooks?success=1", baseUrl)
     );
 
-    // In production https, secure cookies should be true
+    // Keep cookies (harmless + still useful for admin UI if anything still reads them)
     const cookieBase = {
       httpOnly: true,
       secure: true,
@@ -173,7 +200,7 @@ export async function GET(request: NextRequest) {
       maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
     });
 
-    redirectResponse.cookies.set("dcflow_qbo_realm_id", realmId || "", {
+    redirectResponse.cookies.set("dcflow_qbo_realm_id", realmId, {
       ...cookieBase,
       maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
     });
@@ -183,16 +210,12 @@ export async function GET(request: NextRequest) {
       maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
     });
 
-    redirectResponse.cookies.set(
-      "dcflow_qbo_scopes",
-      process.env.QBO_SCOPES || "com.intuit.quickbooks.accounting",
-      {
-        ...cookieBase,
-        maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
-      }
-    );
+    redirectResponse.cookies.set("dcflow_qbo_scopes", scopes, {
+      ...cookieBase,
+      maxAge: refreshExpiresIn || 60 * 60 * 24 * 100,
+    });
 
-    // Clear one-time state cookie
+    // clear one-time state cookie
     redirectResponse.cookies.set("dcflow_qbo_oauth_state", "", {
       ...cookieBase,
       maxAge: 0,

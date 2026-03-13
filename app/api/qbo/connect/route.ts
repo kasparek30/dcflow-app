@@ -35,7 +35,7 @@ export async function GET() {
     secure: true,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 10,
+    maxAge: 60 * 10, // 10 min
   });
 
   return response;
