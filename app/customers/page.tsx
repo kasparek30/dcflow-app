@@ -1,3 +1,4 @@
+// app/customers/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -10,10 +11,7 @@ import { db } from "../../src/lib/firebase";
 import type { Customer } from "../../src/types/customer";
 
 function normalizeSearchText(input: string) {
-  return (input || "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
+  return (input || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function digitsOnly(input: string) {
@@ -51,11 +49,8 @@ function buildCustomerSearchBlob(c: Customer) {
     }
   }
 
-  // Also add phone digits-only so "9799667783" matches "(979) 966-7783"
-  const phoneDigits = [
-    digitsOnly(c.phonePrimary),
-digitsOnly(c.phoneSecondary || ""),
-  ]
+  // Add phone digits-only so "9799667783" matches "(979) 966-7783"
+  const phoneDigits = [digitsOnly(c.phonePrimary), digitsOnly(c.phoneSecondary || "")]
     .filter(Boolean)
     .join(" ");
 
@@ -74,6 +69,12 @@ export default function CustomersPage() {
   // Search UI
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  // ✅ New UX: hide list until searching
+  const [hideAllUntilSearch, setHideAllUntilSearch] = useState(true);
+
+  // Tune this if you want results to show immediately on 1 character
+  const MIN_CHARS_TO_SEARCH = 2;
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 200);
@@ -125,11 +126,7 @@ export default function CustomersPage() {
 
         setCustomers(items);
       } catch (err: unknown) {
-        if (err instanceof Error) {
-          setError(err.message);
-        } else {
-          setError("Failed to load customers.");
-        }
+        setError(err instanceof Error ? err.message : "Failed to load customers.");
       } finally {
         setLoading(false);
       }
@@ -140,8 +137,7 @@ export default function CustomersPage() {
 
   function getDisplayAddress(customer: Customer) {
     const primaryServiceAddress =
-      customer.serviceAddresses?.find((addr) => addr.isPrimary) ??
-      customer.serviceAddresses?.[0];
+      customer.serviceAddresses?.find((addr) => addr.isPrimary) ?? customer.serviceAddresses?.[0];
 
     if (primaryServiceAddress) {
       return {
@@ -164,7 +160,7 @@ export default function CustomersPage() {
     };
   }
 
-  // Precompute a search blob per customer (cheap, but helps keep filtering fast)
+  // Precompute search blob per customer
   const customersWithSearch = useMemo(() => {
     return customers.map((c) => ({
       customer: c,
@@ -172,25 +168,45 @@ export default function CustomersPage() {
     }));
   }, [customers]);
 
+  const normalizedQuery = useMemo(() => normalizeSearchText(debouncedSearch), [debouncedSearch]);
+  const queryDigits = useMemo(() => digitsOnly(normalizedQuery), [normalizedQuery]);
+
+  // Should we show any list at all?
+  const shouldShowResults = useMemo(() => {
+    if (!hideAllUntilSearch) return true; // show full list mode
+    return normalizedQuery.length >= MIN_CHARS_TO_SEARCH; // show only after typing
+  }, [hideAllUntilSearch, normalizedQuery]);
+
   const filteredCustomers = useMemo(() => {
-    const q = normalizeSearchText(debouncedSearch);
+    // If "show full list" mode:
+    if (!hideAllUntilSearch) {
+      if (!normalizedQuery) return customers;
 
-    if (!q) return customers;
+      // Still filter if they type, even in full list mode
+      return customersWithSearch
+        .filter(({ blob, customer }) => {
+          if (blob.includes(normalizedQuery)) return true;
+          if (queryDigits && digitsOnly(customer.phonePrimary || "").includes(queryDigits)) return true;
+          if (queryDigits && digitsOnly(customer.phoneSecondary || "").includes(queryDigits)) return true;
+          return false;
+        })
+        .map((x) => x.customer);
+    }
 
-    // Also allow digits-only queries to match phone digits
-    const qDigits = digitsOnly(q);
+    // Hide-until-search mode:
+    if (normalizedQuery.length < MIN_CHARS_TO_SEARCH) return [];
 
     const matches = customersWithSearch
       .filter(({ blob, customer }) => {
-        if (blob.includes(q)) return true;
-        if (qDigits && digitsOnly(customer.phonePrimary || "").includes(qDigits)) return true;
-        if (qDigits && digitsOnly(customer.phoneSecondary || "").includes(qDigits)) return true;
+        if (blob.includes(normalizedQuery)) return true;
+        if (queryDigits && digitsOnly(customer.phonePrimary || "").includes(queryDigits)) return true;
+        if (queryDigits && digitsOnly(customer.phoneSecondary || "").includes(queryDigits)) return true;
         return false;
       })
       .map((x) => x.customer);
 
     return matches;
-  }, [customers, customersWithSearch, debouncedSearch]);
+  }, [customers, customersWithSearch, hideAllUntilSearch, normalizedQuery, queryDigits]);
 
   return (
     <ProtectedPage fallbackTitle="Customers">
@@ -205,9 +221,7 @@ export default function CustomersPage() {
             flexWrap: "wrap",
           }}
         >
-          <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>
-            Customers
-          </h1>
+          <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Customers</h1>
 
           <Link
             href="/customers/new"
@@ -224,7 +238,7 @@ export default function CustomersPage() {
           </Link>
         </div>
 
-        {/* Search bar */}
+        {/* Search + controls */}
         <div
           style={{
             border: "1px solid #ddd",
@@ -233,7 +247,7 @@ export default function CustomersPage() {
             background: "#fafafa",
             marginBottom: "16px",
             display: "grid",
-            gap: "8px",
+            gap: "10px",
           }}
         >
           <div style={{ fontSize: "12px", color: "#666", fontWeight: 800 }}>
@@ -274,21 +288,50 @@ export default function CustomersPage() {
             </button>
 
             <div style={{ alignSelf: "center", fontSize: "12px", color: "#666" }}>
-              Showing <strong>{filteredCustomers.length}</strong> of{" "}
-              <strong>{customers.length}</strong>
+              {hideAllUntilSearch ? (
+                <>
+                  Results: <strong>{filteredCustomers.length}</strong>
+                  {normalizedQuery.length < MIN_CHARS_TO_SEARCH ? (
+                    <span style={{ color: "#999" }}> • Type {MIN_CHARS_TO_SEARCH}+ chars</span>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  Showing <strong>{filteredCustomers.length}</strong> of <strong>{customers.length}</strong>
+                </>
+              )}
             </div>
           </div>
+
+          <label style={{ display: "flex", gap: "8px", alignItems: "center", fontSize: "13px", color: "#444" }}>
+            <input
+              type="checkbox"
+              checked={hideAllUntilSearch}
+              onChange={(e) => setHideAllUntilSearch(e.target.checked)}
+            />
+            Hide all customers until I start searching (recommended)
+          </label>
         </div>
 
         {loading ? <p>Loading customers...</p> : null}
         {error ? <p style={{ color: "red" }}>{error}</p> : null}
 
-        {!loading && !error && customers.length === 0 ? (
-          <p>No customers found yet.</p>
-        ) : null}
+        {!loading && !error && customers.length === 0 ? <p>No customers found yet.</p> : null}
 
         {!loading && !error && customers.length > 0 ? (
-          filteredCustomers.length === 0 ? (
+          !shouldShowResults ? (
+            <div
+              style={{
+                border: "1px dashed #ccc",
+                borderRadius: "12px",
+                padding: "12px",
+                background: "white",
+                color: "#666",
+              }}
+            >
+              Start typing in the search box to find a customer. (Name, address, phone, or email)
+            </div>
+          ) : filteredCustomers.length === 0 ? (
             <div
               style={{
                 border: "1px dashed #ccc",
@@ -323,19 +366,13 @@ export default function CustomersPage() {
 
                     <div style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
                       {customer.phonePrimary || "—"}
-                      {customer.email ? (
-                        <span style={{ color: "#777" }}> • {customer.email}</span>
-                      ) : null}
+                      {customer.email ? <span style={{ color: "#777" }}> • {customer.email}</span> : null}
                     </div>
 
-                    <div style={{ marginTop: "6px", fontSize: "14px", color: "#555" }}>
-                      {displayAddress.line1}
-                    </div>
+                    <div style={{ marginTop: "6px", fontSize: "14px", color: "#555" }}>{displayAddress.line1}</div>
 
                     {displayAddress.line2 ? (
-                      <div style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
-                        {displayAddress.line2}
-                      </div>
+                      <div style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>{displayAddress.line2}</div>
                     ) : null}
 
                     <div style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
