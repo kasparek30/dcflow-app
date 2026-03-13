@@ -1,8 +1,9 @@
-// components/ProtectedPage.tsx
 "use client";
 
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import { signOut } from "firebase/auth";
+import { auth } from "../src/lib/firebase";
 import { useAuthContext } from "../src/context/auth-context";
 
 type Props = {
@@ -18,16 +19,8 @@ export default function ProtectedPage({
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
-
   const { loading, authUser, appUser, error } = useAuthContext();
 
-  const isLoginRoute = useMemo(() => {
-    return (pathname || "").startsWith("/login");
-  }, [pathname]);
-
-  const isLoggedIn = Boolean(authUser?.uid);
-
-  // Give Firebase a moment after deploy/hard refresh to rehydrate auth
   const [authGraceExpired, setAuthGraceExpired] = useState(false);
 
   useEffect(() => {
@@ -36,7 +29,13 @@ export default function ProtectedPage({
     return () => window.clearTimeout(t);
   }, [pathname]);
 
-  // Redirect to login only when auth is settled AND still not logged in
+  const isLoginRoute = useMemo(() => {
+    return (pathname || "").startsWith("/login");
+  }, [pathname]);
+
+  const isLoggedIn = Boolean(authUser?.uid);
+
+  // Redirect to /login ONLY when we are sure auth is settled and still not logged in
   useEffect(() => {
     if (isLoginRoute) return;
     if (!authGraceExpired) return;
@@ -47,7 +46,7 @@ export default function ProtectedPage({
     router.replace(`/login${next}`);
   }, [isLoginRoute, authGraceExpired, loading, isLoggedIn, router, pathname]);
 
-  // Role gating (once profile exists)
+  // Role gating
   const roleAllowed = useMemo(() => {
     if (!allowedRoles || allowedRoles.length === 0) return true;
     const role = String(appUser?.role || "").trim();
@@ -56,25 +55,17 @@ export default function ProtectedPage({
 
   useEffect(() => {
     if (!allowedRoles || allowedRoles.length === 0) return;
-    if (!appUser) return; // wait for profile to exist
+    if (loading) return;
+    if (!isLoggedIn) return;
+    if (!appUser) return; // wait for profile
     if (!roleAllowed) router.replace("/dashboard");
-  }, [allowedRoles, appUser, roleAllowed, router]);
+  }, [allowedRoles, loading, isLoggedIn, appUser, roleAllowed, router]);
 
-  // -------------------------
-  // Render logic
-  // -------------------------
-
-  // Always allow login page to render
+  // Allow login page to render freely
   if (isLoginRoute) return <>{children}</>;
 
-  // Show loading while auth is still settling OR provider is still loading
-  const showLoading = useMemo(() => {
-    if (!authGraceExpired && !isLoggedIn) return true; // auth settling
-    if (loading) return true; // context still loading auth/profile
-    return false;
-  }, [authGraceExpired, isLoggedIn, loading]);
-
-  if (showLoading) {
+  // Show loading while auth is settling OR profile fetch is still in progress
+  if (!authGraceExpired || loading) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>
@@ -87,8 +78,8 @@ export default function ProtectedPage({
     );
   }
 
-  // If auth is settled and user is not logged in, we’re redirecting
-  if (authGraceExpired && !isLoggedIn) {
+  // If not logged in after grace + loading complete, show redirecting screen
+  if (!isLoggedIn) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>Redirecting…</h1>
@@ -96,47 +87,86 @@ export default function ProtectedPage({
     );
   }
 
-  // If logged in BUT no appUser, show a real error instead of spinning forever
-  if (isLoggedIn && !appUser) {
+  // Logged in but appUser missing OR error occurred: show the real problem (NO infinite loading)
+  if (!appUser) {
     return (
-      <div style={{ padding: 24 }}>
+      <div style={{ padding: 24, maxWidth: 760 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>
-          Account not set up
+          Account setup required
         </h1>
+
         <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
-          {error || "No matching DCFlow user profile found in Firestore (users/{uid})."}
+          You’re authenticated, but DCFlow can’t load your user profile from Firestore.
         </div>
 
-        <div style={{ marginTop: 14, fontSize: 13, color: "#666" }}>
-Fix: create a Firestore document at <strong>users/&lt;your-auth-uid&gt;</strong> with fields like:          <div style={{ marginTop: 8, padding: 12, border: "1px solid #eee", borderRadius: 10, background: "#fafafa" }}>
-            <div><strong>uid</strong>: (same as auth uid)</div>
-            <div><strong>displayName</strong>: "Kenn"</div>
-            <div><strong>role</strong>: "admin"</div>
-            <div><strong>active</strong>: true</div>
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: "1px solid #eee",
+            borderRadius: 12,
+            background: "#fafafa",
+            fontSize: 13,
+            color: "#333",
+          }}
+        >
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Details</div>
+          <div><strong>Auth UID:</strong> {authUser?.uid || "—"}</div>
+          <div style={{ marginTop: 6 }}>
+            <strong>Error:</strong> {error || "No appUser returned."}
+          </div>
+          <div style={{ marginTop: 10, color: "#555" }}>
+            Fix: create a Firestore document at{" "}
+            <strong>users/&lt;your-auth-uid&gt;</strong> with at least:
+            <div style={{ marginTop: 8, paddingLeft: 14 }}>
+              <div>uid: (same as auth uid)</div>
+              <div>displayName: "Name"</div>
+              <div>role: "admin" | "dispatcher" | "manager" | "technician" | ...</div>
+              <div>active: true</div>
+            </div>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => router.replace("/login")}
-          style={{
-            marginTop: 16,
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: "1px solid #ccc",
-            background: "white",
-            cursor: "pointer",
-            fontWeight: 900,
-          }}
-        >
-          Back to Login
-        </button>
+        <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={async () => {
+              await signOut(auth);
+              router.replace("/login");
+            }}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #ccc",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 900,
+            }}
+          >
+            Sign out
+          </button>
+
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #ccc",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            Reload
+          </button>
+        </div>
       </div>
     );
   }
 
-  // Role gated: show access denied without flashing content
-  if (allowedRoles && allowedRoles.length > 0 && appUser && !roleAllowed) {
+  // If role gated and not allowed, avoid flashing protected content
+  if (allowedRoles && allowedRoles.length > 0 && !roleAllowed) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>Access denied</h1>
