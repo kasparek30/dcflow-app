@@ -28,6 +28,12 @@ type TripLink = {
   projectStageKey?: string | null;
 };
 
+type TripConfirmedEntry = {
+  hours: number;
+  note?: string | null;
+  confirmedAt: string;
+};
+
 type TripDoc = {
   id: string;
   active: boolean;
@@ -44,6 +50,8 @@ type TripDoc = {
 
   outcome?: string | null;
   readyToBillAt?: string | null;
+
+  confirmedBy?: Record<string, TripConfirmedEntry> | null;
 
   createdAt?: string;
   updatedAt?: string;
@@ -187,7 +195,6 @@ function tripRowUids(t: TripDoc): string[] {
     String(t.crew?.secondaryTechUid || "").trim(),
   ].filter(Boolean);
 
-  // de-dupe
   return Array.from(new Set(uids));
 }
 
@@ -222,12 +229,10 @@ function formatTime12h(hhmm?: string) {
 function formatTimeRangeForCard(t: TripDoc) {
   const w = (t.timeWindow || "").toLowerCase();
 
-  // Prefer the timeWindow labels you asked for
   if (w === "all_day") return `All Day • All Day`;
   if (w === "am") return `8AM–12Noon • AM`;
   if (w === "pm") return `1PM–5PM • PM`;
 
-  // Custom: use start/end if present
   const start = t.startTime ? formatTime12h(t.startTime) : "—";
   const end = t.endTime ? formatTime12h(t.endTime) : "—";
   const label = formatWindowLabel(t.timeWindow);
@@ -268,6 +273,24 @@ function monthCalendarWorkWeeks(anchor: Date) {
   return weeks;
 }
 
+function crewConfirmUids(t: TripDoc) {
+  const uids = [
+    String(t.crew?.primaryTechUid || "").trim(),
+    String(t.crew?.helperUid || "").trim(),
+    String(t.crew?.secondaryTechUid || "").trim(),
+    String(t.crew?.secondaryHelperUid || "").trim(),
+  ].filter(Boolean);
+
+  return Array.from(new Set(uids));
+}
+
+function confirmationProgress(t: TripDoc) {
+  const required = crewConfirmUids(t);
+  const confirmedBy = t.confirmedBy || {};
+  const confirmedCount = required.filter((uid) => Boolean((confirmedBy as any)[uid])).length;
+  return { confirmedCount, requiredCount: required.length };
+}
+
 export default function SchedulePage() {
   const { appUser } = useAuthContext();
 
@@ -285,7 +308,6 @@ export default function SchedulePage() {
     return toIsoDate(mon);
   });
 
-  // Filters
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [hideCompleted, setHideCompleted] = useState<boolean>(true);
@@ -300,9 +322,7 @@ export default function SchedulePage() {
   const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
 
-  // Service ticket summaries (for cards)
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
-  // Project summaries (for cards)
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
 
   useEffect(() => {
@@ -428,6 +448,7 @@ export default function SchedulePage() {
             link: d.link ?? null,
             outcome: d.outcome ?? null,
             readyToBillAt: d.readyToBillAt ?? null,
+            confirmedBy: (d.confirmedBy ?? null) as any,
             createdAt: d.createdAt ?? undefined,
             updatedAt: d.updatedAt ?? undefined,
           };
@@ -492,7 +513,7 @@ export default function SchedulePage() {
           })
         );
       } catch {
-        // ignore (best effort)
+        // ignore
       }
 
       if (!cancelled && Object.keys(next).length) {
@@ -555,15 +576,15 @@ export default function SchedulePage() {
         if (normalizeStatus(statusFilter) !== s) return false;
       }
 
-if (techFilter === "ALL") return true;
+      if (techFilter === "ALL") return true;
 
-if (techFilter === "UNASSIGNED") {
-  const hasPrimary = Boolean(String(t.crew?.primaryTechUid || "").trim());
-  const hasSecondary = Boolean(String(t.crew?.secondaryTechUid || "").trim());
-  return !(hasPrimary || hasSecondary);
-}
+      if (techFilter === "UNASSIGNED") {
+        const hasPrimary = Boolean(String(t.crew?.primaryTechUid || "").trim());
+        const hasSecondary = Boolean(String(t.crew?.secondaryTechUid || "").trim());
+        return !(hasPrimary || hasSecondary);
+      }
 
-return isTechOnTrip(t, techFilter);
+      return isTechOnTrip(t, techFilter);
     });
   }, [trips, hideCompleted, statusFilter, techFilter]);
 
@@ -597,36 +618,33 @@ return isTechOnTrip(t, techFilter);
     return map;
   }, [filteredTrips]);
 
-const grid = useMemo(() => {
-  const out = new Map<string, Map<string, TripDoc[]>>();
+  const grid = useMemo(() => {
+    const out = new Map<string, Map<string, TripDoc[]>>();
 
-  for (const t of filteredTrips) {
-    const d = String(t.date || "").trim();
-    if (!d) continue;
+    for (const t of filteredTrips) {
+      const d = String(t.date || "").trim();
+      if (!d) continue;
 
-    const rowUids = tripRowUids(t);
+      const rowUids = tripRowUids(t);
+      const targets = rowUids.length ? rowUids : ["UNASSIGNED"];
 
-    // If nobody assigned, it belongs in UNASSIGNED
-    const targets = rowUids.length ? rowUids : ["UNASSIGNED"];
-
-    for (const uid of targets) {
-      if (!out.has(uid)) out.set(uid, new Map());
-      const byDate = out.get(uid)!;
-      if (!byDate.has(d)) byDate.set(d, []);
-      byDate.get(d)!.push(t);
+      for (const uid of targets) {
+        if (!out.has(uid)) out.set(uid, new Map());
+        const byDate = out.get(uid)!;
+        if (!byDate.has(d)) byDate.set(d, []);
+        byDate.get(d)!.push(t);
+      }
     }
-  }
 
-  // sort each cell by time
-  for (const [, byDate] of out) {
-    for (const [d, list] of byDate) {
-      list.sort(compareTripTime);
-      byDate.set(d, list);
+    for (const [, byDate] of out) {
+      for (const [d, list] of byDate) {
+        list.sort(compareTripTime);
+        byDate.set(d, list);
+      }
     }
-  }
 
-  return out;
-}, [filteredTrips]);
+    return out;
+  }, [filteredTrips]);
 
   function goPrev() {
     if (view === "day") {
@@ -728,7 +746,6 @@ const grid = useMemo(() => {
 
     const timeText = formatTimeRangeForCard(t);
 
-    // Customer + street + city only
     const customerLine =
       isService && ticket
         ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
@@ -736,6 +753,14 @@ const grid = useMemo(() => {
 
     const showTechName = Boolean(opts?.showTechName);
     const techName = t.crew?.primaryTechName || "";
+
+    const prog = isProject ? confirmationProgress(t) : null;
+    const showProgress =
+      isProject &&
+      prog &&
+      prog.requiredCount > 0 &&
+      normalizeStatus(t.status) !== "complete" &&
+      normalizeStatus(t.status) !== "completed";
 
     return (
       <Link
@@ -775,14 +800,16 @@ const grid = useMemo(() => {
           </div>
         </div>
 
-        <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
-          {timeText}
-        </div>
+        <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>{timeText}</div>
+
+        {showProgress ? (
+          <div style={{ marginTop: 6, fontSize: 12, color: "#777", fontWeight: 800 }}>
+            Confirmed: {prog!.confirmedCount}/{prog!.requiredCount}
+          </div>
+        ) : null}
 
         {customerLine ? (
-          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-            {customerLine}
-          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div>
         ) : null}
       </Link>
     );
@@ -894,7 +921,6 @@ const grid = useMemo(() => {
           </div>
         </div>
 
-        {/* Filters */}
         <div
           style={{
             marginTop: 14,
@@ -955,7 +981,6 @@ const grid = useMemo(() => {
 
         {loading ? <p style={{ marginTop: 16 }}>Loading schedule...</p> : null}
 
-        {/* MONTH VIEW */}
         {!loading && view === "month" ? (
           <div style={{ marginTop: 14 }}>
             <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden", background: "white" }}>
@@ -1028,7 +1053,6 @@ const grid = useMemo(() => {
           </div>
         ) : null}
 
-        {/* WEEK + DAY VIEWS */}
         {!loading && view !== "month" ? (
           <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>

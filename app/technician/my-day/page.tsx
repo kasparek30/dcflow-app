@@ -12,6 +12,9 @@ import {
   orderBy,
   query,
   where,
+  setDoc,
+  updateDoc,
+  runTransaction,
 } from "firebase/firestore";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
@@ -38,6 +41,12 @@ type TripLink = {
   serviceTicketId?: string | null;
 };
 
+type TripConfirmedEntry = {
+  hours: number;
+  note?: string | null;
+  confirmedAt: string;
+};
+
 type Trip = {
   id: string;
   active: boolean;
@@ -54,6 +63,8 @@ type Trip = {
   link?: TripLink;
 
   cancelReason?: string | null;
+
+  confirmedBy?: Record<string, TripConfirmedEntry> | null;
 };
 
 type DailyCrewOverride = {
@@ -68,9 +79,8 @@ type DailyCrewOverride = {
 type MyDayItem = {
   id: string;
 
-  // Card
-  headerText: string; // “Service Ticket: …”
-  subLine: string; // time + customer + address
+  headerText: string;
+  subLine: string;
   techText: string;
   helperText?: string;
   secondaryTechText?: string;
@@ -83,6 +93,17 @@ type MyDayItem = {
   sortKey: string;
 
   href: string;
+
+  // For confirm
+  tripType?: string;
+  tripDate?: string;
+  tripWindow?: string;
+  tripStartTime?: string;
+  tripEndTime?: string;
+  projectId?: string | null;
+  projectStageKey?: string | null;
+
+  confirmed?: TripConfirmedEntry | null;
 };
 
 type EmployeeOption = {
@@ -115,6 +136,43 @@ function isoTodayLocal() {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function toIsoDate(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+// Monday-start payroll week bounds
+function getPayrollWeekBounds(entryDateIso: string) {
+  const [y, m, d] = entryDateIso.split("-").map((x) => Number(x));
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setHours(0, 0, 0, 0);
+
+  const wd = dt.getDay(); // 0 Sun .. 6 Sat
+  const diffToMon = (wd + 6) % 7;
+  const weekStart = new Date(dt);
+  weekStart.setDate(weekStart.getDate() - diffToMon);
+
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+
+  return { weekStartDate: toIsoDate(weekStart), weekEndDate: toIsoDate(weekEnd) };
+}
+
+function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
+  return `ws_${employeeId}_${weekStartDate}`;
+}
+
+function safeStr(x: unknown) {
+  return typeof x === "string" ? x : "";
 }
 
 function formatWindow(window?: string) {
@@ -178,10 +236,6 @@ function crewDisplay(crew?: TripCrew) {
   return { primary, helper, secondaryTech, secondaryHelper };
 }
 
-function safeStr(x: unknown) {
-  return typeof x === "string" ? x : "";
-}
-
 function buildAddressLine(t: ServiceTicketLite) {
   const parts: string[] = [];
   const label = safeStr(t.serviceAddressLabel).trim();
@@ -206,7 +260,6 @@ function normalizeStatus(s?: string) {
 }
 
 function timeSortKey(startTime?: string, window?: string) {
-  // We want real timed items first, otherwise order by typical windows.
   const st = safeStr(startTime);
   if (st) return st;
 
@@ -215,6 +268,180 @@ function timeSortKey(startTime?: string, window?: string) {
   if (w === "pm") return "13:00";
   if (w === "all_day") return "08:00";
   return "99:99";
+}
+
+function defaultHoursForTrip(timeWindow?: string, startTime?: string, endTime?: string) {
+  const w = String(timeWindow || "").toLowerCase();
+  if (w === "all_day") return 8;
+  if (w === "am") return 4;
+  if (w === "pm") return 4;
+
+  const parse = (t?: string) => {
+    if (!t || !/^\d{2}:\d{2}$/.test(t)) return null;
+    const [hh, mm] = t.split(":").map((x) => Number(x));
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    return hh * 60 + mm;
+  };
+
+  const s = parse(startTime);
+  const e = parse(endTime);
+  if (s != null && e != null && e > s) {
+    return Math.round(((e - s) / 60) * 4) / 4;
+  }
+  return 8;
+}
+
+function crewUidsForConfirm(crew?: TripCrew | null) {
+  const uids = [
+    String(crew?.primaryTechUid || "").trim(),
+    String(crew?.helperUid || "").trim(),
+    String(crew?.secondaryTechUid || "").trim(),
+    String(crew?.secondaryHelperUid || "").trim(),
+  ].filter(Boolean);
+
+  return Array.from(new Set(uids));
+}
+
+async function confirmProjectTripForEmployee(args: {
+  tripId: string;
+  tripDate: string;
+  projectId: string;
+  projectStageKey?: string | null;
+
+  uid: string;
+  displayName: string;
+  role: string;
+
+  hours: number;
+  note?: string;
+}) {
+  const { tripId, tripDate, projectId, projectStageKey, uid, displayName, role, hours, note } = args;
+
+  if (!uid) throw new Error("Missing uid.");
+  if (!tripId) throw new Error("Missing tripId.");
+  if (!projectId) throw new Error("Missing projectId.");
+  if (!tripDate) throw new Error("Missing trip date.");
+
+  const hrs = Number(hours);
+  if (!Number.isFinite(hrs) || hrs <= 0) throw new Error("Hours must be a number > 0.");
+
+  const now = nowIso();
+  const { weekStartDate, weekEndDate } = getPayrollWeekBounds(tripDate);
+  const timesheetId = buildWeeklyTimesheetId(uid, weekStartDate);
+  const timeEntryId = `trip_${tripId}_${uid}`;
+
+  const tripRef = doc(db, "trips", tripId);
+  const timesheetRef = doc(db, "weeklyTimesheets", timesheetId);
+  const timeEntryRef = doc(db, "timeEntries", timeEntryId);
+
+  // ✅ Transaction so "complete when all confirmed" is consistent under concurrency
+  const result = await runTransaction(db, async (tx) => {
+    const tripSnap = await tx.get(tripRef);
+    if (!tripSnap.exists()) throw new Error("Trip not found.");
+
+    const tripData = tripSnap.data() as any;
+
+    const tripType = String(tripData.type || "").toLowerCase();
+    if (tripType !== "project") throw new Error("Only project trips can be confirmed for payroll.");
+
+    const crew: TripCrew | null = (tripData.crew ?? null) as any;
+    const requiredUids = crewUidsForConfirm(crew);
+
+    // If the current uid is not on the crew, we still allow confirm (admins confirming for others)
+    // BUT the completion rule is based on assigned crew only.
+
+    const existingConfirmedBy: Record<string, TripConfirmedEntry> = (tripData.confirmedBy ?? {}) as any;
+
+    const nextConfirmedBy: Record<string, TripConfirmedEntry> = {
+      ...existingConfirmedBy,
+      [uid]: {
+        hours: hrs,
+        note: note ? String(note).trim() : null,
+        confirmedAt: now,
+      },
+    };
+
+    const allConfirmed =
+      requiredUids.length > 0 && requiredUids.every((u) => Boolean(nextConfirmedBy[u]));
+
+    // 1) Ensure weeklyTimesheets header exists (merge)
+    tx.set(
+      timesheetRef,
+      {
+        employeeId: uid,
+        employeeName: displayName || "Employee",
+        employeeRole: role || "technician",
+        weekStartDate,
+        weekEndDate,
+
+        status: "draft",
+        submittedAt: null,
+        submittedByUid: null,
+
+        createdAt: now,
+        createdByUid: uid,
+        updatedAt: now,
+        updatedByUid: uid,
+      },
+      { merge: true }
+    );
+
+    // 2) Upsert locked time entry
+    tx.set(
+      timeEntryRef,
+      {
+        employeeId: uid,
+        employeeName: displayName || "Employee",
+        employeeRole: role || "technician",
+
+        entryDate: tripDate,
+        weekStartDate,
+        weekEndDate,
+        timesheetId,
+
+        category: "project",
+        payType: "regular",
+        billable: true,
+        source: "trip_daily_confirm",
+
+        hours: hrs,
+        hoursSource: hrs,
+        hoursLocked: true,
+
+        tripId,
+        projectId,
+        projectStageKey: projectStageKey || null,
+
+        entryStatus: "draft",
+        notes: note ? String(note).trim() : null,
+
+        createdAt: now,
+        createdByUid: uid,
+        updatedAt: now,
+        updatedByUid: uid,
+      },
+      { merge: true }
+    );
+
+    // 3) Update trip confirmation + auto-complete when all assigned crew confirms
+    const tripPatch: any = {
+      confirmedBy: nextConfirmedBy,
+      updatedAt: now,
+      updatedByUid: uid,
+    };
+
+    if (allConfirmed) {
+      tripPatch.status = "complete";
+      tripPatch.completedAt = now;
+      tripPatch.completedByUid = uid;
+    }
+
+    tx.update(tripRef, tripPatch);
+
+    return { timeEntryId, timesheetId, tripCompleted: allConfirmed };
+  });
+
+  return result;
 }
 
 export default function TechnicianMyDayPage() {
@@ -232,9 +459,18 @@ export default function TechnicianMyDayPage() {
   const [ticketById, setTicketById] = useState<Record<string, ServiceTicketLite>>({});
   const [followUpByTicketId, setFollowUpByTicketId] = useState<Record<string, string>>({});
 
+  // Confirm modal state
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmTripId, setConfirmTripId] = useState<string>("");
+  const [confirmHours, setConfirmHours] = useState<string>("8");
+  const [confirmNote, setConfirmNote] = useState<string>("");
+  const [confirmSaving, setConfirmSaving] = useState(false);
+  const [confirmErr, setConfirmErr] = useState<string>("");
+
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
   const myRole = appUser?.role || "";
+  const myName = (appUser as any)?.displayName || (appUser as any)?.name || "Me";
 
   const isHelperRole = myRole === "helper" || myRole === "apprentice";
 
@@ -274,7 +510,7 @@ export default function TechnicianMyDayPage() {
 
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setEmployees(items);
-      } catch (e) {
+      } catch {
         // Non-fatal
       } finally {
         setEmployeesLoading(false);
@@ -284,6 +520,19 @@ export default function TechnicianMyDayPage() {
     loadEmployees();
   }, [canViewOtherEmployees]);
 
+  function getSelectedEmployeeInfo(uid: string) {
+    if (!uid) return { uid: "", displayName: "Employee", role: "technician" };
+
+    if (uid === myUid) {
+      return { uid, displayName: myName, role: myRole || "technician" };
+    }
+
+    const match = employees.find((e) => e.uid === uid);
+    if (match) return { uid, displayName: match.displayName, role: match.role || "technician" };
+
+    return { uid, displayName: uid, role: "technician" };
+  }
+
   // Load trips for today
   useEffect(() => {
     async function load() {
@@ -291,11 +540,9 @@ export default function TechnicianMyDayPage() {
       setError("");
 
       try {
-        const whoUid = canViewOtherEmployees
-          ? (selectedEmployeeUid || myUid)
-          : myUid;
+        const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
-        // Pull trips for today only (fast and clean)
+        // Pull trips for today only
         const tripsSnap = await getDocs(
           query(collection(db, "trips"), where("date", "==", todayIso))
         );
@@ -314,6 +561,7 @@ export default function TechnicianMyDayPage() {
             crew: d.crew ?? undefined,
             link: d.link ?? undefined,
             cancelReason: d.cancelReason ?? null,
+            confirmedBy: (d.confirmedBy ?? null) as any,
           };
         });
 
@@ -349,11 +597,7 @@ export default function TechnicianMyDayPage() {
 
         // Enrich: load service ticket docs for visible service trips
         const ticketIds = Array.from(
-          new Set(
-            tripItems
-              .map((t) => t.link?.serviceTicketId || "")
-              .filter(Boolean)
-          )
+          new Set(tripItems.map((t) => t.link?.serviceTicketId || "").filter(Boolean))
         );
 
         const ticketMap: Record<string, ServiceTicketLite> = {};
@@ -394,8 +638,6 @@ export default function TechnicianMyDayPage() {
               if (!t) return;
               if (normalizeStatus(t.status) !== "follow_up") return;
 
-              // Try to get most recent follow-up trip note for this ticket.
-              // If Firestore asks for an index, this will fail gracefully.
               const qTrip = query(
                 collection(db, "trips"),
                 where("link.serviceTicketId", "==", tid),
@@ -427,19 +669,14 @@ export default function TechnicianMyDayPage() {
   }, [todayIso, myUid, isHelperRole, canViewOtherEmployees, selectedEmployeeUid]);
 
   const visibleTrips = useMemo(() => {
-    const whoUid = canViewOtherEmployees
-      ? (selectedEmployeeUid || myUid)
-      : myUid;
+    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
     if (!whoUid) return [];
 
-    // Default: show trips where you are explicitly on the crew
     const explicitCrewTrips = trips
       .filter((t) => t.active !== false)
       .filter((t) => isUidInCrew(whoUid, t.crew));
 
-    // If you are a helper/apprentice AND an override exists:
-    // - also show trips where primary tech == override.assignedTechUid
     if (!canViewOtherEmployees && isHelperRole && override?.assignedTechUid) {
       const overrideTechTrips = trips
         .filter((t) => t.active !== false)
@@ -447,7 +684,6 @@ export default function TechnicianMyDayPage() {
 
       const merged = [...explicitCrewTrips, ...overrideTechTrips];
 
-      // de-dupe
       const byId = new Map<string, Trip>();
       for (const t of merged) byId.set(t.id, t);
 
@@ -458,13 +694,11 @@ export default function TechnicianMyDayPage() {
   }, [trips, myUid, isHelperRole, override, canViewOtherEmployees, selectedEmployeeUid]);
 
   const items = useMemo(() => {
-    const whoUid = canViewOtherEmployees
-      ? (selectedEmployeeUid || myUid)
-      : myUid;
+    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
     const mapped: MyDayItem[] = visibleTrips
       .filter((t) => {
-        // ✅ Hide completed trips from My Day (requested)
+        // Hide completed trips from My Day
         const s = normalizeStatus(t.status);
         if (s === "complete" || s === "completed") return false;
         return true;
@@ -481,11 +715,9 @@ export default function TechnicianMyDayPage() {
 
         const status = normalizeStatus(t.status) || "planned";
 
-        // Service ticket enrichment
         const serviceTicketId = t.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
 
-        // Header per your spec
         let headerText = "";
         if ((t.type || "").toLowerCase() === "service") {
           const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
@@ -497,7 +729,6 @@ export default function TechnicianMyDayPage() {
           headerText = `${formatType(t.type)} • ${((t.type || "") as string) || "Trip"}`;
         }
 
-        // Second line: time block + customer - address
         let subLine = timeText;
         if (st) {
           const cust = safeStr(st.customerDisplayName).trim();
@@ -506,23 +737,19 @@ export default function TechnicianMyDayPage() {
           if (right) subLine = `${timeText} • ${right}`;
         }
 
-        // Issue details bottom line
         const issueDetailsText =
-          (t.type || "").toLowerCase() === "service"
-            ? (safeStr(st?.issueDetails).trim() || "")
-            : "";
+          (t.type || "").toLowerCase() === "service" ? (safeStr(st?.issueDetails).trim() || "") : "";
 
         const followUpText =
           (t.type || "").toLowerCase() === "service" && serviceTicketId
             ? (safeStr(followUpByTicketId[serviceTicketId]).trim() || "")
             : "";
 
-        // Sorting:
-        // - in_progress to top
-        // - otherwise by actual time
         const inProgBoost = status === "in_progress" ? "0" : "1";
         const tKey = timeSortKey(t.startTime, t.timeWindow);
         const sortKey = `${inProgBoost}_${tKey}_${t.id}`;
+
+        const confirmed = whoUid && t.confirmedBy ? (t.confirmedBy[whoUid] as any) : null;
 
         return {
           id: t.id,
@@ -537,6 +764,16 @@ export default function TechnicianMyDayPage() {
           status,
           sortKey,
           href,
+
+          tripType: t.type || "",
+          tripDate: t.date || "",
+          tripWindow: t.timeWindow || "",
+          tripStartTime: t.startTime || "",
+          tripEndTime: t.endTime || "",
+          projectId: t.link?.projectId ?? null,
+          projectStageKey: t.link?.projectStageKey ?? null,
+
+          confirmed: confirmed || null,
         };
       });
 
@@ -545,9 +782,7 @@ export default function TechnicianMyDayPage() {
   }, [visibleTrips, ticketById, followUpByTicketId, myUid, canViewOtherEmployees, selectedEmployeeUid]);
 
   const banner = useMemo(() => {
-    const whoUid = canViewOtherEmployees
-      ? (selectedEmployeeUid || myUid)
-      : myUid;
+    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
     if (!whoUid) return null;
 
@@ -571,23 +806,123 @@ export default function TechnicianMyDayPage() {
   }, [myUid, isHelperRole, override, canViewOtherEmployees, selectedEmployeeUid]);
 
   function statusStyles(status: string) {
-    // requested: in_progress green, planned blue
     if (status === "in_progress") {
-      return {
-        border: "1px solid #b7e3c2",
-        background: "#f2fff6",
-      };
+      return { border: "1px solid #b7e3c2", background: "#f2fff6" };
     }
     if (status === "planned") {
-      return {
-        border: "1px solid #b7cff5",
-        background: "#f4f8ff",
-      };
+      return { border: "1px solid #b7cff5", background: "#f4f8ff" };
     }
-    return {
-      border: "1px solid #ddd",
-      background: "white",
-    };
+    return { border: "1px solid #ddd", background: "white" };
+  }
+
+  function openConfirmModal(item: MyDayItem) {
+    setConfirmErr("");
+
+    const suggested = defaultHoursForTrip(item.tripWindow, item.tripStartTime, item.tripEndTime);
+    setConfirmHours(String(suggested));
+    setConfirmNote("");
+    setConfirmTripId(item.id);
+    setConfirmOpen(true);
+  }
+
+  function closeConfirmModal() {
+    setConfirmOpen(false);
+    setConfirmTripId("");
+    setConfirmErr("");
+    setConfirmSaving(false);
+    setConfirmNote("");
+  }
+
+  async function submitConfirm() {
+    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+
+    const trip = trips.find((t) => t.id === confirmTripId);
+    if (!trip) {
+      setConfirmErr("Trip not found.");
+      return;
+    }
+
+    const type = String(trip.type || "").toLowerCase();
+    if (type !== "project") {
+      setConfirmErr("Only project trips can be confirmed for payroll.");
+      return;
+    }
+
+    const tripDate = String(trip.date || "").trim();
+    const projectId = String(trip.link?.projectId || "").trim();
+    const stageKey = String(trip.link?.projectStageKey || "").trim() || null;
+
+    if (!tripDate) {
+      setConfirmErr("Trip is missing a date.");
+      return;
+    }
+    if (!projectId) {
+      setConfirmErr("Trip is missing projectId.");
+      return;
+    }
+    if (!whoUid) {
+      setConfirmErr("Missing employee uid.");
+      return;
+    }
+
+    const hrs = Number(confirmHours);
+    if (!Number.isFinite(hrs) || hrs <= 0) {
+      setConfirmErr("Hours must be a number > 0.");
+      return;
+    }
+
+    // Permission rule:
+    const allowed = whoUid === myUid || canViewOtherEmployees;
+    if (!allowed) {
+      setConfirmErr("You do not have permission to confirm for this employee.");
+      return;
+    }
+
+    setConfirmSaving(true);
+    setConfirmErr("");
+
+    try {
+      const emp = getSelectedEmployeeInfo(whoUid);
+
+      const res = await confirmProjectTripForEmployee({
+        tripId: trip.id,
+        tripDate,
+        projectId,
+        projectStageKey: stageKey,
+        uid: emp.uid,
+        displayName: emp.displayName,
+        role: emp.role,
+        hours: hrs,
+        note: confirmNote.trim() || undefined,
+      });
+
+      // Update local trip state so UI reflects confirmed instantly
+      const confirmedAt = nowIso();
+      setTrips((prev) =>
+        prev.map((t) =>
+          t.id === trip.id
+            ? {
+                ...t,
+                status: res.tripCompleted ? "complete" : t.status,
+                confirmedBy: {
+                  ...(t.confirmedBy || {}),
+                  [emp.uid]: {
+                    hours: hrs,
+                    note: confirmNote.trim() || null,
+                    confirmedAt,
+                  },
+                },
+              }
+            : t
+        )
+      );
+
+      closeConfirmModal();
+    } catch (e: any) {
+      setConfirmErr(e?.message || "Failed to confirm trip.");
+    } finally {
+      setConfirmSaving(false);
+    }
   }
 
   return (
@@ -707,6 +1042,8 @@ export default function TechnicianMyDayPage() {
               <div style={{ display: "grid", gap: "12px" }}>
                 {items.map((item) => {
                   const styles = statusStyles(item.status);
+                  const isProject = String(item.tripType || "").toLowerCase() === "project";
+                  const canConfirm = isProject && (canViewOtherEmployees || (selectedEmployeeUid || myUid) === myUid);
 
                   return (
                     <Link
@@ -721,35 +1058,39 @@ export default function TechnicianMyDayPage() {
                         ...(styles as any),
                       }}
                     >
-                      {/* Header */}
-                      <div style={{ fontWeight: 950, fontSize: "15px" }}>{item.headerText}</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                        <div style={{ fontWeight: 950, fontSize: "15px" }}>{item.headerText}</div>
 
-                      {/* Line 2: time + customer + address */}
+                        {isProject && item.confirmed ? (
+                          <div
+                            style={{
+                              fontSize: 12,
+                              padding: "4px 10px",
+                              borderRadius: 999,
+                              border: "1px solid #b7e3c2",
+                              background: "#eaffea",
+                              color: "#1f6b1f",
+                              fontWeight: 900,
+                              whiteSpace: "nowrap",
+                            }}
+                            title={item.confirmed.note ? `Note: ${item.confirmed.note}` : "Confirmed"}
+                          >
+                            ✅ Confirmed ({Number(item.confirmed.hours).toFixed(2)}h)
+                          </div>
+                        ) : null}
+                      </div>
+
                       <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
                         {item.subLine}
                       </div>
 
-                      {/* Crew */}
                       <div style={{ marginTop: "8px", fontSize: "12px", color: "#555" }}>
                         {item.techText}
                       </div>
-                      {item.helperText ? (
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                          {item.helperText}
-                        </div>
-                      ) : null}
-                      {item.secondaryTechText ? (
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                          {item.secondaryTechText}
-                        </div>
-                      ) : null}
-                      {item.secondaryHelperText ? (
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>
-                          {item.secondaryHelperText}
-                        </div>
-                      ) : null}
+                      {item.helperText ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>{item.helperText}</div> : null}
+                      {item.secondaryTechText ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>{item.secondaryTechText}</div> : null}
+                      {item.secondaryHelperText ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>{item.secondaryHelperText}</div> : null}
 
-                      {/* Issue details + follow-up notes */}
                       {item.issueDetailsText ? (
                         <div
                           style={{
@@ -766,15 +1107,55 @@ export default function TechnicianMyDayPage() {
                       ) : null}
 
                       {item.followUpText ? (
+                        <div style={{ marginTop: "8px", fontSize: "12px", color: "#6a4b00", whiteSpace: "pre-wrap" }}>
+                          <strong>Follow-up notes:</strong> {item.followUpText}
+                        </div>
+                      ) : null}
+
+                      {isProject ? (
                         <div
                           style={{
-                            marginTop: "8px",
-                            fontSize: "12px",
-                            color: "#6a4b00",
-                            whiteSpace: "pre-wrap",
+                            marginTop: "12px",
+                            paddingTop: "10px",
+                            borderTop: "1px solid rgba(0,0,0,0.06)",
+                            display: "flex",
+                            gap: 10,
+                            flexWrap: "wrap",
+                            alignItems: "center",
                           }}
                         >
-                          <strong>Follow-up notes:</strong> {item.followUpText}
+                          {!item.confirmed ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (!canConfirm) return;
+                                openConfirmModal(item);
+                              }}
+                              disabled={!canConfirm}
+                              style={{
+                                padding: "8px 12px",
+                                border: "1px solid #2e7d32",
+                                borderRadius: "10px",
+                                background: canConfirm ? "#eaffea" : "#f5f5f5",
+                                cursor: canConfirm ? "pointer" : "not-allowed",
+                                fontWeight: 900,
+                              }}
+                            >
+                              ✅ Confirm Trip
+                            </button>
+                          ) : (
+                            <div style={{ fontSize: 12, color: "#666" }}>
+                              Confirmed time will appear in <strong>Time Entries</strong> for payroll.
+                            </div>
+                          )}
+
+                          {!canConfirm ? (
+                            <div style={{ fontSize: 12, color: "#999" }}>
+                              Only the employee (or Admin/Dispatcher/Manager) can confirm project hours.
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                     </Link>
@@ -782,6 +1163,121 @@ export default function TechnicianMyDayPage() {
                 })}
               </div>
             )}
+          </div>
+        ) : null}
+
+        {confirmOpen ? (
+          <div
+            onClick={() => {
+              if (!confirmSaving) closeConfirmModal();
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.35)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 14,
+              zIndex: 9999,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "100%",
+                maxWidth: 520,
+                borderRadius: 16,
+                border: "1px solid #ddd",
+                background: "white",
+                padding: 14,
+              }}
+            >
+              <div style={{ fontWeight: 950, fontSize: 16 }}>✅ Confirm Project Trip</div>
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                Enter hours spent on this project today. This creates a <strong>locked draft time entry</strong>.
+              </div>
+
+              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 900 }}>Hours</label>
+                  <input
+                    type="number"
+                    min="0.25"
+                    step="0.25"
+                    value={confirmHours}
+                    onChange={(e) => setConfirmHours(e.target.value)}
+                    disabled={confirmSaving}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      marginTop: 6,
+                    }}
+                  />
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                    Tip: If you worked 6 hours on the project, you can log the other 2 hours as a separate manual entry.
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 900 }}>Note (optional)</label>
+                  <textarea
+                    value={confirmNote}
+                    onChange={(e) => setConfirmNote(e.target.value)}
+                    rows={3}
+                    disabled={confirmSaving}
+                    placeholder="What did you work on today? (optional)"
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      marginTop: 6,
+                    }}
+                  />
+                </div>
+
+                {confirmErr ? <div style={{ fontSize: 12, color: "red" }}>{confirmErr}</div> : null}
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => closeConfirmModal()}
+                    disabled={confirmSaving}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      background: "white",
+                      cursor: "pointer",
+                      fontWeight: 900,
+                    }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => submitConfirm()}
+                    disabled={confirmSaving}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #2e7d32",
+                      background: "#eaffea",
+                      cursor: "pointer",
+                      fontWeight: 950,
+                    }}
+                  >
+                    {confirmSaving ? "Confirming..." : "Confirm Hours"}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         ) : null}
       </AppShell>
