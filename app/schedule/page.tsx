@@ -171,6 +171,26 @@ function primaryTechUid(t: TripDoc) {
   return String(t.crew?.primaryTechUid || "").trim();
 }
 
+function isTechOnTrip(t: TripDoc, techUid: string) {
+  const uid = String(techUid || "").trim();
+  if (!uid) return false;
+
+  const primary = String(t.crew?.primaryTechUid || "").trim();
+  const secondary = String(t.crew?.secondaryTechUid || "").trim();
+
+  return primary === uid || secondary === uid;
+}
+
+function tripRowUids(t: TripDoc): string[] {
+  const uids = [
+    String(t.crew?.primaryTechUid || "").trim(),
+    String(t.crew?.secondaryTechUid || "").trim(),
+  ].filter(Boolean);
+
+  // de-dupe
+  return Array.from(new Set(uids));
+}
+
 function formatWindowLabel(w?: string) {
   const x = (w || "").toLowerCase();
   if (x === "am") return "AM";
@@ -535,10 +555,15 @@ export default function SchedulePage() {
         if (normalizeStatus(statusFilter) !== s) return false;
       }
 
-      const uid = primaryTechUid(t);
-      if (techFilter === "ALL") return true;
-      if (techFilter === "UNASSIGNED") return !uid;
-      return uid === techFilter;
+if (techFilter === "ALL") return true;
+
+if (techFilter === "UNASSIGNED") {
+  const hasPrimary = Boolean(String(t.crew?.primaryTechUid || "").trim());
+  const hasSecondary = Boolean(String(t.crew?.secondaryTechUid || "").trim());
+  return !(hasPrimary || hasSecondary);
+}
+
+return isTechOnTrip(t, techFilter);
     });
   }, [trips, hideCompleted, statusFilter, techFilter]);
 
@@ -572,30 +597,36 @@ export default function SchedulePage() {
     return map;
   }, [filteredTrips]);
 
-  const grid = useMemo(() => {
-    const out = new Map<string, Map<string, TripDoc[]>>();
+const grid = useMemo(() => {
+  const out = new Map<string, Map<string, TripDoc[]>>();
 
-    for (const t of filteredTrips) {
-      const d = (t.date || "").trim();
-      if (!d) continue;
+  for (const t of filteredTrips) {
+    const d = String(t.date || "").trim();
+    if (!d) continue;
 
-      const uid = primaryTechUid(t) || "UNASSIGNED";
+    const rowUids = tripRowUids(t);
 
+    // If nobody assigned, it belongs in UNASSIGNED
+    const targets = rowUids.length ? rowUids : ["UNASSIGNED"];
+
+    for (const uid of targets) {
       if (!out.has(uid)) out.set(uid, new Map());
       const byDate = out.get(uid)!;
       if (!byDate.has(d)) byDate.set(d, []);
       byDate.get(d)!.push(t);
     }
+  }
 
-    for (const [, byDate] of out) {
-      for (const [d, list] of byDate) {
-        list.sort(compareTripTime);
-        byDate.set(d, list);
-      }
+  // sort each cell by time
+  for (const [, byDate] of out) {
+    for (const [d, list] of byDate) {
+      list.sort(compareTripTime);
+      byDate.set(d, list);
     }
+  }
 
-    return out;
-  }, [filteredTrips]);
+  return out;
+}, [filteredTrips]);
 
   function goPrev() {
     if (view === "day") {
