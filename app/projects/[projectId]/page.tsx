@@ -4,16 +4,18 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
-  orderBy,
-  query,
   updateDoc,
+  query,
   where,
+  orderBy,
+  setDoc,
   writeBatch,
+  deleteDoc,
+  addDoc,
 } from "firebase/firestore";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
@@ -887,6 +889,111 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
   }
 
+  function safeTrim(x: any) {
+  return String(x || "").trim();
+}
+
+function defaultStageTripDate(stageKey: StageKey) {
+  const start =
+    stageKey === "roughIn"
+      ? safeTrim(roughInScheduledDate)
+      : stageKey === "topOutVent"
+        ? safeTrim(topOutVentScheduledDate)
+        : safeTrim(trimFinishScheduledDate);
+
+  // fallback: today
+  if (start) return start;
+  return toIsoDate(new Date());
+}
+
+function makeProjectTripId(projectId: string, stageKey: StageKey, dateIso: string) {
+  // Unique enough to allow multiple trips on same date if needed
+  const suffix = Math.random().toString(36).slice(2, 7);
+  return `proj_${projectId}_${stageKey}_${dateIso}_${suffix}`;
+}
+
+async function addStageTrip(stageKey: StageKey) {
+  if (!project) return;
+  if (!canEditProject) {
+    alert("Only Admin/Dispatcher/Manager can add project trips.");
+    return;
+  }
+
+  const dateIso = defaultStageTripDate(stageKey);
+
+  // Use effective crew for stage
+  const crew = getEffectiveCrewForStage(stageKey);
+
+  const primaryUid = safeTrim(crew.primary);
+  if (!primaryUid) {
+    alert("Stage crew requires a Primary Technician (stage override or project default).");
+    return;
+  }
+
+  const secondaryUid = safeTrim(crew.secondary);
+  const helpers = Array.isArray(crew.helpers) ? crew.helpers : [];
+
+  const helperUid = safeTrim(helpers[0] || "");
+  const secondaryHelperUid = safeTrim(helpers[1] || "");
+
+  const primaryName = findTechName(primaryUid) || "Primary Tech";
+  const secondaryName = secondaryUid ? (findTechName(secondaryUid) || "Secondary Tech") : null;
+  const helperName = helperUid ? (findHelperName(helperUid) || "Helper") : null;
+  const secondaryHelperName = secondaryHelperUid ? (findHelperName(secondaryHelperUid) || "Helper") : null;
+
+  const now = nowIso();
+  const id = makeProjectTripId(project.id, stageKey, dateIso);
+
+  const payload: any = {
+    active: true,
+    type: "project",
+    status: "planned",
+
+    date: dateIso,
+    timeWindow: "all_day",
+    startTime: "08:00",
+    endTime: "17:00",
+
+    crew: {
+      primaryTechUid: primaryUid,
+      primaryTechName: primaryName,
+      helperUid: helperUid || null,
+      helperName: helperName,
+      secondaryTechUid: secondaryUid || null,
+      secondaryTechName: secondaryName,
+      secondaryHelperUid: secondaryHelperUid || null,
+      secondaryHelperName: secondaryHelperName,
+    },
+
+    link: {
+      projectId: project.id,
+      projectStageKey: stageKey,
+      serviceTicketId: null,
+    },
+
+    notes: null,
+    cancelReason: null,
+
+    createdAt: now,
+    createdByUid: myUid || null,
+    updatedAt: now,
+    updatedByUid: myUid || null,
+  };
+
+  try {
+    // Create doc without overwriting anything else
+    await setDoc(doc(db, "trips", id), payload, { merge: false });
+
+    // Update local state (keeps UI snappy)
+    const newTrip: TripDoc = { id, ...(payload as any) };
+    setProjectTrips((prev) => [...prev, newTrip].sort((a, b) => `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`)));
+
+    // If you're currently viewing that stage, it will show immediately
+  } catch (e: any) {
+    alert(e?.message || "Failed to add trip.");
+  }
+}
+
   // -----------------------------
   // Trip edit / cancel
   // -----------------------------
@@ -1030,6 +1137,30 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       alert(e?.message || "Failed to cancel trip.");
     }
   }
+
+async function removeTrip(t: TripDoc) {
+  if (!project) return;
+
+  if (!canEditProject) {
+    alert("Only Admin/Dispatcher/Manager can remove project trips.");
+    return;
+  }
+
+  const ok = window.confirm(
+    `Permanently delete this trip?\n\n${t.date} • ${String(t.timeWindow || "").replaceAll("_", " ")} • ${t.startTime}-${t.endTime}\n\nThis cannot be undone.`
+  );
+  if (!ok) return;
+
+  try {
+    await deleteDoc(doc(db, "trips", t.id));
+    setProjectTrips((prev) => prev.filter((x) => x.id !== t.id));
+
+    // If the edit modal is open for this trip, close it
+    if (editTripId === t.id) closeEditTrip();
+  } catch (e: any) {
+    alert(e?.message || "Failed to remove trip.");
+  }
+}
 
   // -----------------------------
   // Add Project Trip (no stages / time+materials)
@@ -1447,21 +1578,38 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                           <strong>Helpers:</strong> {sum.helpers}
                         </p>
 
-                        <button
-                          type="button"
-                          onClick={() => setActiveStageTab(key)}
-                          style={{
-                            marginTop: "10px",
-                            padding: "8px 12px",
-                            border: "1px solid #ccc",
-                            borderRadius: "10px",
-                            background: "white",
-                            cursor: "pointer",
-                            fontWeight: 900,
-                          }}
-                        >
-                          Open {label} Details →
-                        </button>
+<div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
+  <button
+    type="button"
+    onClick={() => setActiveStageTab(key as StageKey)}
+    style={{
+      padding: "8px 12px",
+      border: "1px solid #ccc",
+      borderRadius: "10px",
+      background: "white",
+      cursor: "pointer",
+      fontWeight: 900,
+    }}
+  >
+    Open {label} Details →
+  </button>
+
+  <button
+    type="button"
+    onClick={() => addStageTrip(key as StageKey)}
+    disabled={!canEditProject}
+    style={{
+      padding: "8px 12px",
+      border: "1px solid #2e7d32",
+      borderRadius: "10px",
+      background: canEditProject ? "#eaffea" : "#f5f5f5",
+      cursor: canEditProject ? "pointer" : "not-allowed",
+      fontWeight: 900,
+    }}
+  >
+    + Add Trip
+  </button>
+</div>
                       </div>
                     </div>
                   );
@@ -1493,31 +1641,41 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 </div>
 
                 <div style={{ border: "1px solid #eee", borderRadius: "12px", padding: "12px", background: "white" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-                    <div>
-                      <div style={{ fontWeight: 900, fontSize: "16px" }}>{stageLabel(activeStageTab)} • Trips</div>
-                      <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
-                        These are scheduling blocks (1 per day). Editable by Admin/Dispatcher/Manager. Techs can edit trips they’re assigned to.
-                      </div>
-                    </div>
+ <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+  <button
+    type="button"
+    onClick={() => syncStageTrips(activeStageTab)}
+    disabled={!canEditProject}
+    style={{
+      padding: "10px 14px",
+      border: "1px solid #ccc",
+      borderRadius: "12px",
+      background: canEditProject ? "white" : "#f5f5f5",
+      cursor: canEditProject ? "pointer" : "not-allowed",
+      fontWeight: 900,
+      whiteSpace: "nowrap",
+    }}
+  >
+    🔄 Sync Stage Trips
+  </button>
 
-                    <button
-                      type="button"
-                      onClick={() => syncStageTrips(activeStageTab)}
-                      disabled={!canEditProject}
-                      style={{
-                        padding: "10px 14px",
-                        border: "1px solid #ccc",
-                        borderRadius: "12px",
-                        background: canEditProject ? "white" : "#f5f5f5",
-                        cursor: canEditProject ? "pointer" : "not-allowed",
-                        fontWeight: 900,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      🔄 Sync Stage Trips
-                    </button>
-                  </div>
+  <button
+    type="button"
+    onClick={() => addStageTrip(activeStageTab)}
+    disabled={!canEditProject}
+    style={{
+      padding: "10px 14px",
+      border: "1px solid #2e7d32",
+      borderRadius: "12px",
+      background: canEditProject ? "#eaffea" : "#f5f5f5",
+      cursor: canEditProject ? "pointer" : "not-allowed",
+      fontWeight: 900,
+      whiteSpace: "nowrap",
+    }}
+  >
+    + Add Trip
+  </button>
+</div>
 
                   <div style={{ marginTop: "10px", display: "grid", gap: "10px" }}>
                     <div style={{ borderTop: "1px solid #eee", paddingTop: "10px" }}>
@@ -1605,41 +1763,60 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                                   </div>
                                 ) : null}
 
-                                <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditTrip(t)}
-                                    disabled={!canEditThis}
-                                    style={{
-                                      padding: "8px 12px",
-                                      border: "1px solid #ccc",
-                                      borderRadius: "10px",
-                                      background: "white",
-                                      cursor: canEditThis ? "pointer" : "not-allowed",
-                                      fontWeight: 900,
-                                    }}
-                                  >
-                                    Edit / Reschedule
-                                  </button>
+ <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+  <button
+    type="button"
+    onClick={() => openEditTrip(t)}
+    disabled={!canEditThis}
+    style={{
+      padding: "8px 12px",
+      border: "1px solid #ccc",
+      borderRadius: "10px",
+      background: "white",
+      cursor: canEditThis ? "pointer" : "not-allowed",
+      fontWeight: 900,
+    }}
+  >
+    Edit / Reschedule
+  </button>
 
-                                  {canEditProject ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => cancelTrip(t)}
-                                      disabled={cancelled}
-                                      style={{
-                                        padding: "8px 12px",
-                                        border: "1px solid #ccc",
-                                        borderRadius: "10px",
-                                        background: "white",
-                                        cursor: cancelled ? "not-allowed" : "pointer",
-                                        fontWeight: 900,
-                                      }}
-                                    >
-                                      Cancel
-                                    </button>
-                                  ) : null}
-                                </div>
+  {canEditProject ? (
+    <>
+      <button
+        type="button"
+        onClick={() => cancelTrip(t)}
+        disabled={cancelled}
+        style={{
+          padding: "8px 12px",
+          border: "1px solid #ccc",
+          borderRadius: "10px",
+          background: "white",
+          cursor: cancelled ? "not-allowed" : "pointer",
+          fontWeight: 900,
+        }}
+      >
+        Cancel
+      </button>
+
+      <button
+        type="button"
+        onClick={() => removeTrip(t)}
+        style={{
+          padding: "8px 10px",
+          border: "1px solid #ddd",
+          borderRadius: "10px",
+          background: "white",
+          cursor: "pointer",
+          fontWeight: 900,
+        }}
+        title="Remove trip"
+        aria-label="Remove trip"
+      >
+        🗑️
+      </button>
+    </>
+  ) : null}
+</div>
 
                                 {!canEditThis ? (
                                   <div style={{ marginTop: "8px", fontSize: "12px", color: "#999" }}>
