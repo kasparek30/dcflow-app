@@ -130,6 +130,13 @@ type ServiceTicketLite = {
   servicePostalCode?: string;
 };
 
+type CompanyHoliday = {
+  id: string;
+  date: string; // YYYY-MM-DD
+  name: string;
+  active: boolean;
+};
+
 function isoTodayLocal() {
   const d = new Date();
   const y = d.getFullYear();
@@ -467,6 +474,8 @@ export default function TechnicianMyDayPage() {
   const [confirmSaving, setConfirmSaving] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string>("");
 
+  const [holiday, setHoliday] = useState<CompanyHoliday | null>(null);
+
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
   const myRole = appUser?.role || "";
@@ -541,6 +550,33 @@ export default function TechnicianMyDayPage() {
 
       try {
         const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+
+        // Load company holiday (today)
+try {
+  const hsnap = await getDocs(
+    query(
+      collection(db, "companyHolidays"),
+      where("date", "==", todayIso),
+      where("active", "==", true)
+    )
+  );
+
+  if (!hsnap.empty) {
+    const hdoc = hsnap.docs[0];
+    const d = hdoc.data() as any;
+    setHoliday({
+      id: hdoc.id,
+      date: String(d.date ?? todayIso),
+      name: String(d.name ?? d.title ?? "Holiday"),
+      active: typeof d.active === "boolean" ? d.active : true,
+    });
+  } else {
+    setHoliday(null);
+  }
+} catch {
+  // best effort
+  setHoliday(null);
+}
 
         // Pull trips for today only
         const tripsSnap = await getDocs(
@@ -1021,6 +1057,27 @@ export default function TechnicianMyDayPage() {
           </div>
         ) : null}
 
+        {holiday ? (
+  <div
+    style={{
+      marginTop: "14px",
+      border: "1px solid #ffe2a8",
+      borderRadius: "12px",
+      padding: "12px",
+      background: "#fff7e6",
+      maxWidth: "980px",
+    }}
+  >
+    <div style={{ fontWeight: 950 }}>🎉 Company Holiday</div>
+    <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 900 }}>
+      {holiday.name} • {holiday.date}
+    </div>
+    <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00" }}>
+      If any work is scheduled today, it will still appear below.
+    </div>
+  </div>
+) : null}
+
         {loading ? <p style={{ marginTop: "16px" }}>Loading your day...</p> : null}
         {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
 
@@ -1036,8 +1093,7 @@ export default function TechnicianMyDayPage() {
                   color: "#666",
                 }}
               >
-                No trips scheduled for this employee today.
-              </div>
+{holiday ? `No trips scheduled. Today is a company holiday: ${holiday.name}.` : "No trips scheduled for this employee today."}              </div>
             ) : (
               <div style={{ display: "grid", gap: "12px" }}>
                 {items.map((item) => {

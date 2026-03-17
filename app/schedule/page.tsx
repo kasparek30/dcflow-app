@@ -89,6 +89,14 @@ type TechFilterValue = "ALL" | "UNASSIGNED" | string;
 type AddTripType = "service" | "project";
 type SlotKey = "am" | "pm";
 
+type CompanyHoliday = {
+  id: string;
+  holidayDate: string; // YYYY-MM-DD
+  name: string;
+  active: boolean;
+  scheduleBlocked?: boolean;
+};
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -351,21 +359,6 @@ function computeSlotAvailability(cellTrips: TripDoc[]) {
   return { amBusy, pmBusy, allBusy: amBusy && pmBusy };
 }
 
-function useIsMobile(breakpoint = 900) {
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    function update() {
-      setIsMobile(window.innerWidth < breakpoint);
-    }
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, [breakpoint]);
-
-  return isMobile;
-}
-
 export default function SchedulePage() {
   const { appUser } = useAuthContext();
 
@@ -378,8 +371,6 @@ export default function SchedulePage() {
   const canEditSchedule =
     appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
 
-  const isMobile = useIsMobile(900);
-
   const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => {
     const d = new Date();
@@ -387,9 +378,6 @@ export default function SchedulePage() {
     const mon = startOfWorkWeek(d);
     return toIsoDate(mon);
   });
-
-  // Mobile: week view needs a selected day chip
-  const [mobileSelectedIso, setMobileSelectedIso] = useState<string>("");
 
   // Filters
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
@@ -406,6 +394,11 @@ export default function SchedulePage() {
   const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
 
+  // Holidays
+  const [holidaysLoading, setHolidaysLoading] = useState(true);
+  const [holidaysError, setHolidaysError] = useState("");
+  const [holidayByDate, setHolidayByDate] = useState<Record<string, CompanyHoliday>>({});
+
   // Service ticket summaries (for cards)
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
   // Project summaries (for cards)
@@ -421,9 +414,6 @@ export default function SchedulePage() {
   const [addNotes, setAddNotes] = useState("");
   const [addSaving, setAddSaving] = useState(false);
   const [addErr, setAddErr] = useState("");
-
-  // Mobile: expandable tech sections
-  const [mobileOpenTechs, setMobileOpenTechs] = useState<Record<string, boolean>>({});
 
   function findTechName(uid: string) {
     const t = techs.find((x) => x.uid === uid);
@@ -473,6 +463,13 @@ export default function SchedulePage() {
       setAddErr("Missing/invalid date.");
       return;
     }
+
+    // Block scheduling on holidays
+    if (holidayByDate[dateIso]) {
+      setAddErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
+      return;
+    }
+
     if (!linkId) {
       setAddErr(addTripType === "service" ? "Enter a Service Ticket ID." : "Enter a Project ID.");
       return;
@@ -484,7 +481,6 @@ export default function SchedulePage() {
     try {
       const now = nowIso();
       const techName = findTechName(techUid) || "Technician";
-
       const slot = slotDefaults(addSlot);
 
       const payload: any = {
@@ -537,16 +533,13 @@ export default function SchedulePage() {
     }
   }
 
-  // Read URL params (and mobile default view)
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
-
-      const hasViewParam = url.searchParams.has("view");
       const v = (url.searchParams.get("view") || "").toLowerCase();
       const d = (url.searchParams.get("date") || "").trim();
 
-      if (v === "day" || v === "week" || v === "month") setView(v as ViewMode);
+      if (v === "day" || v === "week" || v === "month") setView(v);
       if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
 
       const hide = url.searchParams.get("hideCompleted");
@@ -557,23 +550,10 @@ export default function SchedulePage() {
 
       const sf = url.searchParams.get("status");
       if (sf) setStatusFilter(sf);
-
-      // ✅ Mobile defaults (only when user didn't explicitly set view in URL)
-      if (!hasViewParam && isMobile) {
-        setView("day");
-        // If anchorIso is Monday by default, this is fine; day range uses anchorIso.
-        // We'll also align anchor to today (next workday if weekend)
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        let d2 = today;
-        while (isWeekend(d2)) d2 = addDays(d2, 1);
-        setAnchorIso(toIsoDate(d2));
-      }
     } catch {
       // ignore
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile]);
+  }, []);
 
   useEffect(() => {
     try {
@@ -614,28 +594,54 @@ export default function SchedulePage() {
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
 
-  // Keep mobile selected day in sync
-  useEffect(() => {
-    if (!isMobile) return;
+// Load holidays in range (uses holidayDate from your schema)
+useEffect(() => {
+  async function loadHolidays() {
+    setHolidaysLoading(true);
+    setHolidaysError("");
 
-    if (view === "day") {
-      setMobileSelectedIso(anchorIso);
-      return;
-    }
+    try {
+      // Company holidays are a small dataset. Avoid range/index headaches:
+      // load all + filter client-side.
+      const snap = await getDocs(collection(db, "companyHolidays"));
 
-    if (view === "week") {
-      const weekStart = startOfWorkWeek(anchorDate);
-      const days = workWeekDays(weekStart).map((d) => toIsoDate(d));
+      const map: Record<string, CompanyHoliday> = {};
 
-      // If current selected not in this week, pick Monday
-      if (!mobileSelectedIso || !days.includes(mobileSelectedIso)) {
-        setMobileSelectedIso(days[0]);
+      for (const ds of snap.docs) {
+        const d = ds.data() as any;
+
+        const active = typeof d.active === "boolean" ? d.active : true;
+        if (!active) continue;
+
+        const iso = String(d.holidayDate || "").trim(); // ✅ your field name
+        if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
+
+        // only keep holidays in current visible range
+        if (iso < range.startIso || iso > range.endIso) continue;
+
+        // optional behavior: only show “blocking” holidays (if you want)
+        // if (d.scheduleBlocked === false) continue;
+
+        map[iso] = {
+          id: ds.id,
+          holidayDate: iso,
+          name: String(d.name ?? d.title ?? "Holiday"),
+          active: true,
+          scheduleBlocked: typeof d.scheduleBlocked === "boolean" ? d.scheduleBlocked : undefined,
+        };
       }
-      return;
-    }
 
-    // Month view: keep as-is (not used)
-  }, [isMobile, view, anchorIso, anchorDate, mobileSelectedIso]);
+      setHolidayByDate(map);
+    } catch (e: any) {
+      setHolidaysError(e?.message || "Failed to load company holidays.");
+      setHolidayByDate({});
+    } finally {
+      setHolidaysLoading(false);
+    }
+  }
+
+  loadHolidays();
+}, [range.startIso, range.endIso]);
 
   useEffect(() => {
     async function loadTechs() {
@@ -717,8 +723,8 @@ export default function SchedulePage() {
   }, [range.startIso, range.endIso]);
 
   useEffect(() => {
-    setLoading(tripsLoading || techsLoading);
-  }, [tripsLoading, techsLoading]);
+    setLoading(tripsLoading || techsLoading || holidaysLoading);
+  }, [tripsLoading, techsLoading, holidaysLoading]);
 
   const serviceTicketIdsInRange = useMemo(() => {
     const set = new Set<string>();
@@ -973,6 +979,30 @@ export default function SchedulePage() {
     return `Schedule • Week (${formatShort(d0)} – ${formatShort(d1)})`;
   }, [view, anchorIso, daysForWeekOrDay]);
 
+  function renderHolidayBadge(iso: string) {
+    const h = holidayByDate[iso];
+    if (!h) return null;
+
+    return (
+      <span
+        style={{
+          marginLeft: 8,
+          fontSize: 11,
+          padding: "2px 8px",
+          borderRadius: 999,
+          border: "1px solid #ffe2a8",
+          background: "#fff7e6",
+          color: "#7a4b00",
+          fontWeight: 900,
+          whiteSpace: "nowrap",
+        }}
+        title={h.name}
+      >
+        🎉 {h.name}
+      </span>
+    );
+  }
+
   function renderTripCard(t: TripDoc, opts?: { showTechName?: boolean }) {
     const badgeStyle = statusBadgeStyle(t.status);
 
@@ -986,12 +1016,12 @@ export default function SchedulePage() {
     const projectId = String(t.link?.projectId || "").trim();
     const project = projectId ? projectMap[projectId] : undefined;
 
-    const titleTextCard =
+    const titleText =
       isService
         ? (ticket?.issueSummary || "Service Ticket")
         : isProject
-        ? (project?.name || "Project")
-        : "Trip";
+          ? (project?.name || "Project")
+          : "Trip";
 
     const icon = isService ? "🔧" : isProject ? "📐" : "🧳";
 
@@ -999,9 +1029,7 @@ export default function SchedulePage() {
 
     const customerLine =
       isService && ticket
-        ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${
-            ticket.serviceCity ? `, ${ticket.serviceCity}` : ""
-          }`
+        ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
         : "";
 
     const showTechName = Boolean(opts?.showTechName);
@@ -1031,7 +1059,7 @@ export default function SchedulePage() {
       >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
           <div style={{ fontWeight: 900, lineHeight: 1.2 }}>
-            {icon} {titleTextCard}
+            {icon} {titleText}
             {showTechName && techName ? (
               <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 800 }}>
                 • {techName}
@@ -1061,217 +1089,10 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        {customerLine ? <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div> : null}
+        {customerLine ? (
+          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div>
+        ) : null}
       </Link>
-    );
-  }
-
-  function toggleMobileTech(uid: string) {
-    setMobileOpenTechs((prev) => ({ ...prev, [uid]: !prev[uid] }));
-  }
-
-  // ✅ Mobile agenda renderer (Day + Week)
-  function renderMobileAgenda() {
-    const dayIso =
-      view === "week" ? (mobileSelectedIso || toIsoDate(daysForWeekOrDay[0])) : anchorIso;
-
-    const dayTripsAll = tripsByDate[dayIso] || [];
-
-    const weekDays = view === "week"
-      ? workWeekDays(startOfWorkWeek(anchorDate))
-      : [];
-
-    return (
-      <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
-        {view === "week" ? (
-          <div
-            style={{
-              border: "1px solid #ddd",
-              borderRadius: 12,
-              padding: 10,
-              background: "#fafafa",
-              overflowX: "auto",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-            }}
-          >
-            {weekDays.map((d) => {
-              const iso = toIsoDate(d);
-              const isActive = iso === dayIso;
-              const count = (tripsByDate[iso] || []).length;
-
-              return (
-                <button
-                  key={iso}
-                  type="button"
-                  onClick={() => setMobileSelectedIso(iso)}
-                  style={{
-                    flex: "0 0 auto",
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #ccc",
-                    background: isActive ? "white" : "#f5f5f5",
-                    cursor: "pointer",
-                    fontWeight: 950,
-                  }}
-                >
-                  <div style={{ fontSize: 12, color: "#555", fontWeight: 900 }}>{formatDow(d)}</div>
-                  <div style={{ fontSize: 12 }}>{formatShort(d)}</div>
-                  <div style={{ fontSize: 11, color: "#777", marginTop: 2 }}>{count} trip(s)</div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div
-            style={{
-              border: "1px solid #ddd",
-              borderRadius: 12,
-              padding: 10,
-              background: "#fafafa",
-              display: "flex",
-              justifyContent: "space-between",
-              gap: 10,
-              flexWrap: "wrap",
-              alignItems: "center",
-            }}
-          >
-            <div style={{ fontWeight: 950 }}>
-              {dayIso} • <span style={{ color: "#666" }}>{dayTripsAll.length} trip(s)</span>
-            </div>
-          </div>
-        )}
-
-        {rows.length === 0 ? (
-          <div
-            style={{
-              border: "1px dashed #ccc",
-              borderRadius: 12,
-              padding: 14,
-              background: "white",
-              color: "#666",
-            }}
-          >
-            No matching technicians/trips.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {rows.map((r) => {
-              const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
-              const cellTrips = grid.get(rowKey)?.get(dayIso) || [];
-              const avail = computeSlotAvailability(cellTrips);
-              const count = cellTrips.length;
-
-              const isOpen = mobileOpenTechs[rowKey] ?? (count > 0);
-              const canShowPlus = canEditSchedule && rowKey !== "UNASSIGNED" && !avail.allBusy;
-
-              return (
-                <div
-                  key={`${rowKey}_${dayIso}`}
-                  style={{
-                    border: "1px solid #ddd",
-                    borderRadius: 12,
-                    background: "white",
-                    overflow: "hidden",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleMobileTech(rowKey)}
-                    style={{
-                      width: "100%",
-                      textAlign: "left",
-                      padding: 12,
-                      background: "#fafafa",
-                      border: "none",
-                      cursor: "pointer",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 10,
-                      alignItems: "center",
-                    }}
-                  >
-                    <div style={{ fontWeight: 950, fontSize: 14 }}>
-                      {r.label}
-                      <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 900 }}>
-                        • {count} trip(s)
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#666", fontWeight: 900 }}>
-                      {isOpen ? "▾" : "▸"}
-                    </div>
-                  </button>
-
-                  {isOpen ? (
-                    <div style={{ padding: 12 }}>
-                      {/* Slot “+” controls (mobile) */}
-                      {canShowPlus ? (
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                          {!avail.amBusy ? (
-                            <button
-                              type="button"
-                              onClick={() => openAddModal({ techUid: rowKey, dateIso: dayIso, slot: "am" })}
-                              style={{
-                                padding: "10px 12px",
-                                borderRadius: 12,
-                                border: "1px solid #c6dbff",
-                                background: "#eaf2ff",
-                                cursor: "pointer",
-                                fontWeight: 950,
-                                fontSize: 13,
-                              }}
-                              title="Add AM trip"
-                            >
-                              + AM
-                            </button>
-                          ) : null}
-
-                          {!avail.pmBusy ? (
-                            <button
-                              type="button"
-                              onClick={() => openAddModal({ techUid: rowKey, dateIso: dayIso, slot: "pm" })}
-                              style={{
-                                padding: "10px 12px",
-                                borderRadius: 12,
-                                border: "1px solid #c6dbff",
-                                background: "#eaf2ff",
-                                cursor: "pointer",
-                                fontWeight: 950,
-                                fontSize: 13,
-                              }}
-                              title="Add PM trip"
-                            >
-                              + PM
-                            </button>
-                          ) : null}
-
-                          {avail.allBusy ? (
-                            <div style={{ fontSize: 12, color: "#777", fontWeight: 800 }}>
-                              Fully booked (AM + PM)
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-
-                      {cellTrips.length === 0 ? (
-                        <div style={{ color: "#999", fontSize: 13 }}>— No trips —</div>
-                      ) : (
-                        <div style={{ display: "grid", gap: 10 }}>
-                          {cellTrips.map((t) =>
-                            // On mobile, if techFilter is ALL, it’s still useful to show primary tech name inside cards
-                            renderTripCard(t, { showTechName: techFilter === "ALL" })
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     );
   }
 
@@ -1439,15 +1260,11 @@ export default function SchedulePage() {
 
         {techsError ? <p style={{ color: "red", marginTop: 12 }}>{techsError}</p> : null}
         {tripsError ? <p style={{ color: "red", marginTop: 12 }}>{tripsError}</p> : null}
+        {holidaysError ? <p style={{ color: "red", marginTop: 12 }}>{holidaysError}</p> : null}
 
         {loading ? <p style={{ marginTop: 16 }}>Loading schedule...</p> : null}
 
-        {/* ✅ MOBILE: agenda mode for Day/Week */}
-        {!loading && isMobile && view !== "month" ? (
-          renderMobileAgenda()
-        ) : null}
-
-        {/* MONTH VIEW (desktop + mobile ok) */}
+        {/* MONTH VIEW */}
         {!loading && view === "month" ? (
           <div style={{ marginTop: 14 }}>
             <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden", background: "white" }}>
@@ -1482,6 +1299,7 @@ export default function SchedulePage() {
 
                       const iso = toIsoDate(cellDate);
                       const dayTrips = tripsByDate[iso] || [];
+                      const h = holidayByDate[iso];
 
                       return (
                         <div
@@ -1490,6 +1308,7 @@ export default function SchedulePage() {
                             borderRight: cIdx < 4 ? "1px solid #eee" : undefined,
                             padding: 10,
                             verticalAlign: "top",
+                            background: h ? "#fffaf0" : "white",
                           }}
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -1497,8 +1316,16 @@ export default function SchedulePage() {
                             <div style={{ fontSize: 11, color: "#777" }}>{iso}</div>
                           </div>
 
+                          {h ? (
+                            <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00", fontWeight: 900 }}>
+                              🎉 {h.name}
+                            </div>
+                          ) : null}
+
                           {dayTrips.length === 0 ? (
-                            <div style={{ marginTop: 8, fontSize: 12, color: "#bbb" }}>—</div>
+                            <div style={{ marginTop: 8, fontSize: 12, color: "#bbb" }}>
+                              {h ? "Holiday" : "—"}
+                            </div>
                           ) : (
                             <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                               {dayTrips.slice(0, 6).map((t) => {
@@ -1520,8 +1347,8 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        {/* DESKTOP: WEEK + DAY grid */}
-        {!loading && !isMobile && view !== "month" ? (
+        {/* WEEK + DAY VIEWS */}
+        {!loading && view !== "month" ? (
           <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
               <thead>
@@ -1542,9 +1369,22 @@ export default function SchedulePage() {
 
                   {daysForWeekOrDay.map((d) => {
                     const iso = toIsoDate(d);
+                    const h = holidayByDate[iso];
                     return (
-                      <th key={iso} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #eee", minWidth: 260 }}>
-                        <div style={{ fontWeight: 900 }}>{formatDow(d)}</div>
+                      <th
+                        key={iso}
+                        style={{
+                          textAlign: "left",
+                          padding: 10,
+                          borderBottom: "1px solid #eee",
+                          minWidth: 260,
+                          background: h ? "#fffaf0" : "#fafafa",
+                        }}
+                      >
+                        <div style={{ fontWeight: 900, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                          {formatDow(d)}
+                          {renderHolidayBadge(iso)}
+                        </div>
                         <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
                       </th>
                     );
@@ -1584,14 +1424,31 @@ export default function SchedulePage() {
                           const iso = toIsoDate(d);
                           const cellTrips = grid.get(rowKey)?.get(iso) || [];
                           const avail = computeSlotAvailability(cellTrips);
+                          const holiday = holidayByDate[iso];
 
                           const canShowPlus =
                             canEditSchedule &&
                             rowKey !== "UNASSIGNED" &&
-                            !avail.allBusy;
+                            !avail.allBusy &&
+                            !holiday; // ✅ do not schedule on holidays
 
                           return (
-                            <td key={`${r.key}_${iso}`} style={{ verticalAlign: "top", borderBottom: "1px solid #f0f0f0", padding: 10 }}>
+                            <td
+                              key={`${r.key}_${iso}`}
+                              style={{
+                                verticalAlign: "top",
+                                borderBottom: "1px solid #f0f0f0",
+                                padding: 10,
+                                background: holiday ? "#fffaf0" : "white",
+                              }}
+                            >
+                              {/* Holiday label */}
+                              {holiday ? (
+                                <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 900, color: "#7a4b00" }}>
+                                  🎉 {holiday.name}
+                                </div>
+                              ) : null}
+
                               {/* Slot “+” controls */}
                               {canShowPlus ? (
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
@@ -1636,7 +1493,9 @@ export default function SchedulePage() {
                               ) : null}
 
                               {cellTrips.length === 0 ? (
-                                <div style={{ color: "#bbb", fontSize: 12 }}>—</div>
+                                <div style={{ color: "#bbb", fontSize: 12 }}>
+                                  {holiday ? "Holiday" : "—"}
+                                </div>
                               ) : (
                                 <div style={{ display: "grid", gap: 8 }}>
                                   {cellTrips.map((t) => renderTripCard(t))}
@@ -1691,6 +1550,12 @@ export default function SchedulePage() {
                 Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong> • Date:{" "}
                 <strong>{addDateIso}</strong> • Slot: <strong>{addSlot.toUpperCase()}</strong>
               </div>
+
+              {holidayByDate[addDateIso] ? (
+                <div style={{ marginTop: 10, fontSize: 12, color: "#7a4b00", fontWeight: 900 }}>
+                  🎉 This date is a company holiday: {holidayByDate[addDateIso].name}
+                </div>
+              ) : null}
 
               <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
                 <div>
@@ -1778,7 +1643,7 @@ export default function SchedulePage() {
                   <button
                     type="button"
                     onClick={() => submitAddTrip()}
-                    disabled={addSaving}
+                    disabled={addSaving || Boolean(holidayByDate[addDateIso])}
                     style={{
                       padding: "10px 14px",
                       borderRadius: 12,
@@ -1786,6 +1651,7 @@ export default function SchedulePage() {
                       background: "#eaffea",
                       cursor: "pointer",
                       fontWeight: 950,
+                      opacity: holidayByDate[addDateIso] ? 0.5 : 1,
                     }}
                   >
                     {addSaving ? "Scheduling..." : "Schedule Trip"}
