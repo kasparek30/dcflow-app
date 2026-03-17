@@ -3,7 +3,16 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs, query, where, orderBy, doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  doc,
+  getDoc,
+  addDoc,
+} from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -77,6 +86,9 @@ type ProjectSummary = {
 
 type TechFilterValue = "ALL" | "UNASSIGNED" | string;
 
+type AddTripType = "service" | "project";
+type SlotKey = "am" | "pm";
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -126,6 +138,10 @@ function formatDow(d: Date) {
 
 function formatShort(d: Date) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function tripHref(t: TripDoc) {
@@ -214,6 +230,12 @@ function parseHHMM(hhmm?: string) {
   return { hh, mm };
 }
 
+function minutesFromHHMM(hhmm?: string) {
+  const p = parseHHMM(hhmm);
+  if (!p) return null;
+  return p.hh * 60 + p.mm;
+}
+
 function formatTime12h(hhmm?: string) {
   const p = parseHHMM(hhmm);
   if (!p) return "—";
@@ -291,6 +313,59 @@ function confirmationProgress(t: TripDoc) {
   return { confirmedCount, requiredCount: required.length };
 }
 
+// Slot windows: AM=8-12, PM=13-17
+const SLOT_AM_START = 8 * 60;
+const SLOT_AM_END = 12 * 60;
+const SLOT_PM_START = 13 * 60;
+const SLOT_PM_END = 17 * 60;
+
+function tripBlocksSlot(t: TripDoc, slot: SlotKey) {
+  const w = String(t.timeWindow || "").toLowerCase();
+
+  // Cancelled/inactive shouldn't block scheduling
+  if (t.active === false) return false;
+  if (normalizeStatus(t.status) === "cancelled") return false;
+
+  if (w === "all_day") return true;
+  if (w === "am") return slot === "am";
+  if (w === "pm") return slot === "pm";
+
+  // Custom: check overlap with AM/PM ranges
+  const stMin = minutesFromHHMM(t.startTime) ?? null;
+  const etMin = minutesFromHHMM(t.endTime) ?? null;
+  if (stMin == null || etMin == null || etMin <= stMin) {
+    // If custom but times are invalid, treat as blocking all day to avoid overbooking
+    return true;
+  }
+
+  const [slotStart, slotEnd] =
+    slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
+
+  const overlaps = stMin < slotEnd && etMin > slotStart;
+  return overlaps;
+}
+
+function computeSlotAvailability(cellTrips: TripDoc[]) {
+  const amBusy = cellTrips.some((t) => tripBlocksSlot(t, "am"));
+  const pmBusy = cellTrips.some((t) => tripBlocksSlot(t, "pm"));
+  return { amBusy, pmBusy, allBusy: amBusy && pmBusy };
+}
+
+function useIsMobile(breakpoint = 900) {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    function update() {
+      setIsMobile(window.innerWidth < breakpoint);
+    }
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [breakpoint]);
+
+  return isMobile;
+}
+
 export default function SchedulePage() {
   const { appUser } = useAuthContext();
 
@@ -300,6 +375,11 @@ export default function SchedulePage() {
     appUser?.role === "manager" ||
     appUser?.role === "office_display";
 
+  const canEditSchedule =
+    appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
+
+  const isMobile = useIsMobile(900);
+
   const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => {
     const d = new Date();
@@ -308,6 +388,10 @@ export default function SchedulePage() {
     return toIsoDate(mon);
   });
 
+  // Mobile: week view needs a selected day chip
+  const [mobileSelectedIso, setMobileSelectedIso] = useState<string>("");
+
+  // Filters
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [hideCompleted, setHideCompleted] = useState<boolean>(true);
@@ -322,16 +406,147 @@ export default function SchedulePage() {
   const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
 
+  // Service ticket summaries (for cards)
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
+  // Project summaries (for cards)
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
 
+  // Add Trip modal
+  const [addOpen, setAddOpen] = useState(false);
+  const [addTechUid, setAddTechUid] = useState("");
+  const [addDateIso, setAddDateIso] = useState("");
+  const [addSlot, setAddSlot] = useState<SlotKey>("am");
+  const [addTripType, setAddTripType] = useState<AddTripType>("service");
+  const [addLinkId, setAddLinkId] = useState("");
+  const [addNotes, setAddNotes] = useState("");
+  const [addSaving, setAddSaving] = useState(false);
+  const [addErr, setAddErr] = useState("");
+
+  // Mobile: expandable tech sections
+  const [mobileOpenTechs, setMobileOpenTechs] = useState<Record<string, boolean>>({});
+
+  function findTechName(uid: string) {
+    const t = techs.find((x) => x.uid === uid);
+    return t?.name || "";
+  }
+
+  function slotDefaults(slot: SlotKey) {
+    if (slot === "am") return { timeWindow: "am" as const, startTime: "08:00", endTime: "12:00" };
+    return { timeWindow: "pm" as const, startTime: "13:00", endTime: "17:00" };
+  }
+
+  function openAddModal(args: { techUid: string; dateIso: string; slot: SlotKey }) {
+    setAddErr("");
+    setAddTechUid(args.techUid);
+    setAddDateIso(args.dateIso);
+    setAddSlot(args.slot);
+    setAddTripType("service");
+    setAddLinkId("");
+    setAddNotes("");
+    setAddOpen(true);
+  }
+
+  function closeAddModal() {
+    if (addSaving) return;
+    setAddOpen(false);
+    setAddErr("");
+    setAddSaving(false);
+    setAddLinkId("");
+    setAddNotes("");
+  }
+
+  async function submitAddTrip() {
+    if (!canEditSchedule) {
+      setAddErr("Only Admin/Dispatcher/Manager can schedule trips.");
+      return;
+    }
+
+    const techUid = String(addTechUid || "").trim();
+    const dateIso = String(addDateIso || "").trim();
+    const linkId = String(addLinkId || "").trim();
+
+    if (!techUid) {
+      setAddErr("Missing technician.");
+      return;
+    }
+    if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) {
+      setAddErr("Missing/invalid date.");
+      return;
+    }
+    if (!linkId) {
+      setAddErr(addTripType === "service" ? "Enter a Service Ticket ID." : "Enter a Project ID.");
+      return;
+    }
+
+    setAddSaving(true);
+    setAddErr("");
+
+    try {
+      const now = nowIso();
+      const techName = findTechName(techUid) || "Technician";
+
+      const slot = slotDefaults(addSlot);
+
+      const payload: any = {
+        active: true,
+        type: addTripType,
+        status: "planned",
+
+        date: dateIso,
+        timeWindow: slot.timeWindow,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+
+        crew: {
+          primaryTechUid: techUid,
+          primaryTechName: techName,
+          helperUid: null,
+          helperName: null,
+          secondaryTechUid: null,
+          secondaryTechName: null,
+          secondaryHelperUid: null,
+          secondaryHelperName: null,
+        },
+
+        link: {
+          serviceTicketId: addTripType === "service" ? linkId : null,
+          projectId: addTripType === "project" ? linkId : null,
+          projectStageKey: addTripType === "project" ? null : null,
+        },
+
+        notes: addNotes.trim() || null,
+        cancelReason: null,
+
+        createdAt: now,
+        createdByUid: appUser?.uid || null,
+        updatedAt: now,
+        updatedByUid: appUser?.uid || null,
+      };
+
+      const created = await addDoc(collection(db, "trips"), payload);
+
+      // Update local state so UI shows instantly
+      const newTrip: TripDoc = { id: created.id, ...(payload as any) };
+      setTrips((prev) => [...prev, newTrip].sort(compareTripTime));
+
+      closeAddModal();
+    } catch (e: any) {
+      setAddErr(e?.message || "Failed to add trip.");
+    } finally {
+      setAddSaving(false);
+    }
+  }
+
+  // Read URL params (and mobile default view)
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
+
+      const hasViewParam = url.searchParams.has("view");
       const v = (url.searchParams.get("view") || "").toLowerCase();
       const d = (url.searchParams.get("date") || "").trim();
 
-      if (v === "day" || v === "week" || v === "month") setView(v);
+      if (v === "day" || v === "week" || v === "month") setView(v as ViewMode);
       if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
 
       const hide = url.searchParams.get("hideCompleted");
@@ -342,10 +557,23 @@ export default function SchedulePage() {
 
       const sf = url.searchParams.get("status");
       if (sf) setStatusFilter(sf);
+
+      // ✅ Mobile defaults (only when user didn't explicitly set view in URL)
+      if (!hasViewParam && isMobile) {
+        setView("day");
+        // If anchorIso is Monday by default, this is fine; day range uses anchorIso.
+        // We'll also align anchor to today (next workday if weekend)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        let d2 = today;
+        while (isWeekend(d2)) d2 = addDays(d2, 1);
+        setAnchorIso(toIsoDate(d2));
+      }
     } catch {
       // ignore
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile]);
 
   useEffect(() => {
     try {
@@ -385,6 +613,29 @@ export default function SchedulePage() {
     const weekDays = workWeekDays(weekStart);
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
+
+  // Keep mobile selected day in sync
+  useEffect(() => {
+    if (!isMobile) return;
+
+    if (view === "day") {
+      setMobileSelectedIso(anchorIso);
+      return;
+    }
+
+    if (view === "week") {
+      const weekStart = startOfWorkWeek(anchorDate);
+      const days = workWeekDays(weekStart).map((d) => toIsoDate(d));
+
+      // If current selected not in this week, pick Monday
+      if (!mobileSelectedIso || !days.includes(mobileSelectedIso)) {
+        setMobileSelectedIso(days[0]);
+      }
+      return;
+    }
+
+    // Month view: keep as-is (not used)
+  }, [isMobile, view, anchorIso, anchorDate, mobileSelectedIso]);
 
   useEffect(() => {
     async function loadTechs() {
@@ -735,12 +986,12 @@ export default function SchedulePage() {
     const projectId = String(t.link?.projectId || "").trim();
     const project = projectId ? projectMap[projectId] : undefined;
 
-    const titleText =
+    const titleTextCard =
       isService
         ? (ticket?.issueSummary || "Service Ticket")
         : isProject
-          ? (project?.name || "Project")
-          : "Trip";
+        ? (project?.name || "Project")
+        : "Trip";
 
     const icon = isService ? "🔧" : isProject ? "📐" : "🧳";
 
@@ -748,7 +999,9 @@ export default function SchedulePage() {
 
     const customerLine =
       isService && ticket
-        ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
+        ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${
+            ticket.serviceCity ? `, ${ticket.serviceCity}` : ""
+          }`
         : "";
 
     const showTechName = Boolean(opts?.showTechName);
@@ -778,7 +1031,7 @@ export default function SchedulePage() {
       >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
           <div style={{ fontWeight: 900, lineHeight: 1.2 }}>
-            {icon} {titleText}
+            {icon} {titleTextCard}
             {showTechName && techName ? (
               <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 800 }}>
                 • {techName}
@@ -808,10 +1061,217 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        {customerLine ? (
-          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div>
-        ) : null}
+        {customerLine ? <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div> : null}
       </Link>
+    );
+  }
+
+  function toggleMobileTech(uid: string) {
+    setMobileOpenTechs((prev) => ({ ...prev, [uid]: !prev[uid] }));
+  }
+
+  // ✅ Mobile agenda renderer (Day + Week)
+  function renderMobileAgenda() {
+    const dayIso =
+      view === "week" ? (mobileSelectedIso || toIsoDate(daysForWeekOrDay[0])) : anchorIso;
+
+    const dayTripsAll = tripsByDate[dayIso] || [];
+
+    const weekDays = view === "week"
+      ? workWeekDays(startOfWorkWeek(anchorDate))
+      : [];
+
+    return (
+      <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+        {view === "week" ? (
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 12,
+              padding: 10,
+              background: "#fafafa",
+              overflowX: "auto",
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            {weekDays.map((d) => {
+              const iso = toIsoDate(d);
+              const isActive = iso === dayIso;
+              const count = (tripsByDate[iso] || []).length;
+
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  onClick={() => setMobileSelectedIso(iso)}
+                  style={{
+                    flex: "0 0 auto",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: "1px solid #ccc",
+                    background: isActive ? "white" : "#f5f5f5",
+                    cursor: "pointer",
+                    fontWeight: 950,
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: "#555", fontWeight: 900 }}>{formatDow(d)}</div>
+                  <div style={{ fontSize: 12 }}>{formatShort(d)}</div>
+                  <div style={{ fontSize: 11, color: "#777", marginTop: 2 }}>{count} trip(s)</div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 12,
+              padding: 10,
+              background: "#fafafa",
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
+            <div style={{ fontWeight: 950 }}>
+              {dayIso} • <span style={{ color: "#666" }}>{dayTripsAll.length} trip(s)</span>
+            </div>
+          </div>
+        )}
+
+        {rows.length === 0 ? (
+          <div
+            style={{
+              border: "1px dashed #ccc",
+              borderRadius: 12,
+              padding: 14,
+              background: "white",
+              color: "#666",
+            }}
+          >
+            No matching technicians/trips.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {rows.map((r) => {
+              const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+              const cellTrips = grid.get(rowKey)?.get(dayIso) || [];
+              const avail = computeSlotAvailability(cellTrips);
+              const count = cellTrips.length;
+
+              const isOpen = mobileOpenTechs[rowKey] ?? (count > 0);
+              const canShowPlus = canEditSchedule && rowKey !== "UNASSIGNED" && !avail.allBusy;
+
+              return (
+                <div
+                  key={`${rowKey}_${dayIso}`}
+                  style={{
+                    border: "1px solid #ddd",
+                    borderRadius: 12,
+                    background: "white",
+                    overflow: "hidden",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleMobileTech(rowKey)}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      padding: 12,
+                      background: "#fafafa",
+                      border: "none",
+                      cursor: "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ fontWeight: 950, fontSize: 14 }}>
+                      {r.label}
+                      <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 900 }}>
+                        • {count} trip(s)
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#666", fontWeight: 900 }}>
+                      {isOpen ? "▾" : "▸"}
+                    </div>
+                  </button>
+
+                  {isOpen ? (
+                    <div style={{ padding: 12 }}>
+                      {/* Slot “+” controls (mobile) */}
+                      {canShowPlus ? (
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                          {!avail.amBusy ? (
+                            <button
+                              type="button"
+                              onClick={() => openAddModal({ techUid: rowKey, dateIso: dayIso, slot: "am" })}
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: 12,
+                                border: "1px solid #c6dbff",
+                                background: "#eaf2ff",
+                                cursor: "pointer",
+                                fontWeight: 950,
+                                fontSize: 13,
+                              }}
+                              title="Add AM trip"
+                            >
+                              + AM
+                            </button>
+                          ) : null}
+
+                          {!avail.pmBusy ? (
+                            <button
+                              type="button"
+                              onClick={() => openAddModal({ techUid: rowKey, dateIso: dayIso, slot: "pm" })}
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: 12,
+                                border: "1px solid #c6dbff",
+                                background: "#eaf2ff",
+                                cursor: "pointer",
+                                fontWeight: 950,
+                                fontSize: 13,
+                              }}
+                              title="Add PM trip"
+                            >
+                              + PM
+                            </button>
+                          ) : null}
+
+                          {avail.allBusy ? (
+                            <div style={{ fontSize: 12, color: "#777", fontWeight: 800 }}>
+                              Fully booked (AM + PM)
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {cellTrips.length === 0 ? (
+                        <div style={{ color: "#999", fontSize: 13 }}>— No trips —</div>
+                      ) : (
+                        <div style={{ display: "grid", gap: 10 }}>
+                          {cellTrips.map((t) =>
+                            // On mobile, if techFilter is ALL, it’s still useful to show primary tech name inside cards
+                            renderTripCard(t, { showTechName: techFilter === "ALL" })
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -921,6 +1381,7 @@ export default function SchedulePage() {
           </div>
         </div>
 
+        {/* Filters */}
         <div
           style={{
             marginTop: 14,
@@ -981,6 +1442,12 @@ export default function SchedulePage() {
 
         {loading ? <p style={{ marginTop: 16 }}>Loading schedule...</p> : null}
 
+        {/* ✅ MOBILE: agenda mode for Day/Week */}
+        {!loading && isMobile && view !== "month" ? (
+          renderMobileAgenda()
+        ) : null}
+
+        {/* MONTH VIEW (desktop + mobile ok) */}
         {!loading && view === "month" ? (
           <div style={{ marginTop: 14 }}>
             <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden", background: "white" }}>
@@ -1053,7 +1520,8 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        {!loading && view !== "month" ? (
+        {/* DESKTOP: WEEK + DAY grid */}
+        {!loading && !isMobile && view !== "month" ? (
           <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
               <thead>
@@ -1115,9 +1583,58 @@ export default function SchedulePage() {
                         {daysForWeekOrDay.map((d) => {
                           const iso = toIsoDate(d);
                           const cellTrips = grid.get(rowKey)?.get(iso) || [];
+                          const avail = computeSlotAvailability(cellTrips);
+
+                          const canShowPlus =
+                            canEditSchedule &&
+                            rowKey !== "UNASSIGNED" &&
+                            !avail.allBusy;
 
                           return (
                             <td key={`${r.key}_${iso}`} style={{ verticalAlign: "top", borderBottom: "1px solid #f0f0f0", padding: 10 }}>
+                              {/* Slot “+” controls */}
+                              {canShowPlus ? (
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                                  {!avail.amBusy ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
+                                      style={{
+                                        padding: "6px 8px",
+                                        borderRadius: 10,
+                                        border: "1px solid #c6dbff",
+                                        background: "#eaf2ff",
+                                        cursor: "pointer",
+                                        fontWeight: 900,
+                                        fontSize: 12,
+                                      }}
+                                      title="Add AM trip"
+                                    >
+                                      + AM
+                                    </button>
+                                  ) : null}
+
+                                  {!avail.pmBusy ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
+                                      style={{
+                                        padding: "6px 8px",
+                                        borderRadius: 10,
+                                        border: "1px solid #c6dbff",
+                                        background: "#eaf2ff",
+                                        cursor: "pointer",
+                                        fontWeight: 900,
+                                        fontSize: 12,
+                                      }}
+                                      title="Add PM trip"
+                                    >
+                                      + PM
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ) : null}
+
                               {cellTrips.length === 0 ? (
                                 <div style={{ color: "#bbb", fontSize: 12 }}>—</div>
                               ) : (
@@ -1140,6 +1657,142 @@ export default function SchedulePage() {
         {!canSeeAll ? (
           <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>
             Note: We can restrict visibility later if you want role-based schedule access.
+          </div>
+        ) : null}
+
+        {/* Add Trip Modal */}
+        {addOpen ? (
+          <div
+            onClick={() => closeAddModal()}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.35)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 14,
+              zIndex: 9999,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "100%",
+                maxWidth: 540,
+                borderRadius: 16,
+                border: "1px solid #ddd",
+                background: "white",
+                padding: 14,
+              }}
+            >
+              <div style={{ fontWeight: 950, fontSize: 16 }}>➕ Schedule Trip</div>
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong> • Date:{" "}
+                <strong>{addDateIso}</strong> • Slot: <strong>{addSlot.toUpperCase()}</strong>
+              </div>
+
+              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 900 }}>Trip Type</label>
+                  <select
+                    value={addTripType}
+                    onChange={(e) => setAddTripType(e.target.value as any)}
+                    disabled={addSaving}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      marginTop: 6,
+                      background: "white",
+                    }}
+                  >
+                    <option value="service">Service Ticket</option>
+                    <option value="project">Project</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 900 }}>
+                    {addTripType === "service" ? "Service Ticket ID" : "Project ID"}
+                  </label>
+                  <input
+                    value={addLinkId}
+                    onChange={(e) => setAddLinkId(e.target.value)}
+                    disabled={addSaving}
+                    placeholder={addTripType === "service" ? "e.g. ST_12345" : "e.g. proj_ABC123"}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      marginTop: 6,
+                    }}
+                  />
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                    V1 is “paste the ID”. Next upgrade can be a searchable picker.
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 900 }}>Notes (optional)</label>
+                  <textarea
+                    value={addNotes}
+                    onChange={(e) => setAddNotes(e.target.value)}
+                    rows={3}
+                    disabled={addSaving}
+                    placeholder="Optional dispatch note…"
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      marginTop: 6,
+                    }}
+                  />
+                </div>
+
+                {addErr ? <div style={{ fontSize: 12, color: "red" }}>{addErr}</div> : null}
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => closeAddModal()}
+                    disabled={addSaving}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      background: "white",
+                      cursor: "pointer",
+                      fontWeight: 900,
+                    }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => submitAddTrip()}
+                    disabled={addSaving}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #2e7d32",
+                      background: "#eaffea",
+                      cursor: "pointer",
+                      fontWeight: 950,
+                    }}
+                  >
+                    {addSaving ? "Scheduling..." : "Schedule Trip"}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         ) : null}
       </AppShell>
