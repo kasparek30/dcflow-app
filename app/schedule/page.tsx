@@ -91,10 +91,9 @@ type SlotKey = "am" | "pm";
 
 type CompanyHoliday = {
   id: string;
-  holidayDate: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
   name: string;
   active: boolean;
-  scheduleBlocked?: boolean;
 };
 
 function pad2(n: number) {
@@ -330,7 +329,6 @@ const SLOT_PM_END = 17 * 60;
 function tripBlocksSlot(t: TripDoc, slot: SlotKey) {
   const w = String(t.timeWindow || "").toLowerCase();
 
-  // Cancelled/inactive shouldn't block scheduling
   if (t.active === false) return false;
   if (normalizeStatus(t.status) === "cancelled") return false;
 
@@ -338,25 +336,35 @@ function tripBlocksSlot(t: TripDoc, slot: SlotKey) {
   if (w === "am") return slot === "am";
   if (w === "pm") return slot === "pm";
 
-  // Custom: check overlap with AM/PM ranges
   const stMin = minutesFromHHMM(t.startTime) ?? null;
   const etMin = minutesFromHHMM(t.endTime) ?? null;
-  if (stMin == null || etMin == null || etMin <= stMin) {
-    // If custom but times are invalid, treat as blocking all day to avoid overbooking
-    return true;
-  }
+  if (stMin == null || etMin == null || etMin <= stMin) return true;
 
   const [slotStart, slotEnd] =
     slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
 
-  const overlaps = stMin < slotEnd && etMin > slotStart;
-  return overlaps;
+  return stMin < slotEnd && etMin > slotStart;
 }
 
 function computeSlotAvailability(cellTrips: TripDoc[]) {
   const amBusy = cellTrips.some((t) => tripBlocksSlot(t, "am"));
   const pmBusy = cellTrips.some((t) => tripBlocksSlot(t, "pm"));
   return { amBusy, pmBusy, allBusy: amBusy && pmBusy };
+}
+
+// ✅ Small helper to detect mobile widths
+function useIsMobile(breakpoint = 760) {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
+    const apply = () => setIsMobile(Boolean(mq.matches));
+    apply();
+    mq.addEventListener?.("change", apply);
+    return () => mq.removeEventListener?.("change", apply);
+  }, [breakpoint]);
+
+  return isMobile;
 }
 
 export default function SchedulePage() {
@@ -371,6 +379,8 @@ export default function SchedulePage() {
   const canEditSchedule =
     appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
 
+  const isMobile = useIsMobile(760);
+
   const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => {
     const d = new Date();
@@ -379,7 +389,6 @@ export default function SchedulePage() {
     return toIsoDate(mon);
   });
 
-  // Filters
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [hideCompleted, setHideCompleted] = useState<boolean>(true);
@@ -394,17 +403,13 @@ export default function SchedulePage() {
   const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
 
-  // Holidays
   const [holidaysLoading, setHolidaysLoading] = useState(true);
   const [holidaysError, setHolidaysError] = useState("");
   const [holidayByDate, setHolidayByDate] = useState<Record<string, CompanyHoliday>>({});
 
-  // Service ticket summaries (for cards)
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
-  // Project summaries (for cards)
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
 
-  // Add Trip modal
   const [addOpen, setAddOpen] = useState(false);
   const [addTechUid, setAddTechUid] = useState("");
   const [addDateIso, setAddDateIso] = useState("");
@@ -414,6 +419,12 @@ export default function SchedulePage() {
   const [addNotes, setAddNotes] = useState("");
   const [addSaving, setAddSaving] = useState(false);
   const [addErr, setAddErr] = useState("");
+
+  // ✅ Make mobile start in Day view (requested earlier)
+  useEffect(() => {
+    if (isMobile) setView("day");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile]);
 
   function findTechName(uid: string) {
     const t = techs.find((x) => x.uid === uid);
@@ -455,25 +466,14 @@ export default function SchedulePage() {
     const dateIso = String(addDateIso || "").trim();
     const linkId = String(addLinkId || "").trim();
 
-    if (!techUid) {
-      setAddErr("Missing technician.");
-      return;
-    }
-    if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) {
-      setAddErr("Missing/invalid date.");
-      return;
-    }
+    if (!techUid) return setAddErr("Missing technician.");
+    if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return setAddErr("Missing/invalid date.");
 
-    // Block scheduling on holidays
     if (holidayByDate[dateIso]) {
-      setAddErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
-      return;
+      return setAddErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
     }
 
-    if (!linkId) {
-      setAddErr(addTripType === "service" ? "Enter a Service Ticket ID." : "Enter a Project ID.");
-      return;
-    }
+    if (!linkId) return setAddErr(addTripType === "service" ? "Enter a Service Ticket ID." : "Enter a Project ID.");
 
     setAddSaving(true);
     setAddErr("");
@@ -487,12 +487,10 @@ export default function SchedulePage() {
         active: true,
         type: addTripType,
         status: "planned",
-
         date: dateIso,
         timeWindow: slot.timeWindow,
         startTime: slot.startTime,
         endTime: slot.endTime,
-
         crew: {
           primaryTechUid: techUid,
           primaryTechName: techName,
@@ -503,16 +501,13 @@ export default function SchedulePage() {
           secondaryHelperUid: null,
           secondaryHelperName: null,
         },
-
         link: {
           serviceTicketId: addTripType === "service" ? linkId : null,
           projectId: addTripType === "project" ? linkId : null,
           projectStageKey: addTripType === "project" ? null : null,
         },
-
         notes: addNotes.trim() || null,
         cancelReason: null,
-
         createdAt: now,
         createdByUid: appUser?.uid || null,
         updatedAt: now,
@@ -520,8 +515,6 @@ export default function SchedulePage() {
       };
 
       const created = await addDoc(collection(db, "trips"), payload);
-
-      // Update local state so UI shows instantly
       const newTrip: TripDoc = { id: created.id, ...(payload as any) };
       setTrips((prev) => [...prev, newTrip].sort(compareTripTime));
 
@@ -553,6 +546,7 @@ export default function SchedulePage() {
     } catch {
       // ignore
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -594,54 +588,62 @@ export default function SchedulePage() {
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
 
-// Load holidays in range (uses holidayDate from your schema)
-useEffect(() => {
-  async function loadHolidays() {
-    setHolidaysLoading(true);
-    setHolidaysError("");
+  useEffect(() => {
+    async function loadHolidays() {
+      setHolidaysLoading(true);
+      setHolidaysError("");
 
-    try {
-      // Company holidays are a small dataset. Avoid range/index headaches:
-      // load all + filter client-side.
-      const snap = await getDocs(collection(db, "companyHolidays"));
+      try {
+        let snap;
+        try {
+          snap = await getDocs(
+            query(
+              collection(db, "companyHolidays"),
+              where("active", "==", true),
+              where("date", ">=", range.startIso),
+              where("date", "<=", range.endIso),
+              orderBy("date", "asc")
+            )
+          );
+        } catch {
+          snap = await getDocs(
+            query(
+              collection(db, "companyHolidays"),
+              where("date", ">=", range.startIso),
+              where("date", "<=", range.endIso),
+              orderBy("date", "asc")
+            )
+          );
+        }
 
-      const map: Record<string, CompanyHoliday> = {};
+        const map: Record<string, CompanyHoliday> = {};
+        for (const ds of snap.docs) {
+          const d = ds.data() as any;
+          const date = String(d.date || "").trim();
+          if (!date) continue;
 
-      for (const ds of snap.docs) {
-        const d = ds.data() as any;
+          const holiday: CompanyHoliday = {
+            id: ds.id,
+            date,
+            name: String(d.name ?? d.title ?? "Holiday"),
+            active: typeof d.active === "boolean" ? d.active : true,
+          };
 
-        const active = typeof d.active === "boolean" ? d.active : true;
-        if (!active) continue;
+          if (holiday.active === false) continue;
+          map[date] = holiday;
+        }
 
-        const iso = String(d.holidayDate || "").trim(); // ✅ your field name
-        if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
-
-        // only keep holidays in current visible range
-        if (iso < range.startIso || iso > range.endIso) continue;
-
-        // optional behavior: only show “blocking” holidays (if you want)
-        // if (d.scheduleBlocked === false) continue;
-
-        map[iso] = {
-          id: ds.id,
-          holidayDate: iso,
-          name: String(d.name ?? d.title ?? "Holiday"),
-          active: true,
-          scheduleBlocked: typeof d.scheduleBlocked === "boolean" ? d.scheduleBlocked : undefined,
-        };
+        setHolidayByDate(map);
+      } catch (e: any) {
+        setHolidaysError(e?.message || "Failed to load company holidays.");
+        setHolidayByDate({});
+      } finally {
+        setHolidaysLoading(false);
       }
-
-      setHolidayByDate(map);
-    } catch (e: any) {
-      setHolidaysError(e?.message || "Failed to load company holidays.");
-      setHolidayByDate({});
-    } finally {
-      setHolidaysLoading(false);
     }
-  }
 
-  loadHolidays();
-}, [range.startIso, range.endIso]);
+    loadHolidays();
+  }, [range.startIso, range.endIso]);
 
   useEffect(() => {
     async function loadTechs() {
@@ -1020,11 +1022,10 @@ useEffect(() => {
       isService
         ? (ticket?.issueSummary || "Service Ticket")
         : isProject
-          ? (project?.name || "Project")
-          : "Trip";
+        ? (project?.name || "Project")
+        : "Trip";
 
     const icon = isService ? "🔧" : isProject ? "📐" : "🧳";
-
     const timeText = formatTimeRangeForCard(t);
 
     const customerLine =
@@ -1093,6 +1094,116 @@ useEffect(() => {
           <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div>
         ) : null}
       </Link>
+    );
+  }
+
+  // ✅ MOBILE week renderer: stacked by day, then technician
+  function renderMobileWeek() {
+    return (
+      <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+        {daysForWeekOrDay.map((d) => {
+          const iso = toIsoDate(d);
+          const holiday = holidayByDate[iso];
+
+          return (
+            <div
+              key={iso}
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: 14,
+                overflow: "hidden",
+                background: holiday ? "#fffaf0" : "white",
+              }}
+            >
+              <div
+                style={{
+                  padding: 12,
+                  borderBottom: "1px solid #eee",
+                  background: holiday ? "#fff7e6" : "#fafafa",
+                }}
+              >
+                <div style={{ fontWeight: 950, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {formatDow(d)} <span style={{ color: "#666", fontWeight: 800 }}>{iso}</span>
+                  {holiday ? (
+                    <span style={{ color: "#7a4b00", fontWeight: 950 }}>🎉 {holiday.name}</span>
+                  ) : null}
+                </div>
+              </div>
+
+              <div style={{ padding: 12, display: "grid", gap: 12 }}>
+                {rows
+                  .filter((r) => r.key !== "UNASSIGNED") // on mobile keep it simple; can add UNASSIGNED later if desired
+                  .map((r) => {
+                    const rowKey = r.key;
+                    const cellTrips = grid.get(rowKey)?.get(iso) || [];
+
+                    // If tech has nothing today, keep the row compact
+                    const hasTrips = cellTrips.length > 0;
+
+                    // Slot availability for + buttons (if you want them on mobile too)
+                    const avail = computeSlotAvailability(cellTrips);
+                    const canShowPlus = canEditSchedule && !avail.allBusy && !holiday;
+
+                    return (
+                      <div key={`${rowKey}_${iso}`} style={{ borderTop: "1px solid #f1f1f1", paddingTop: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                          <div style={{ fontWeight: 950 }}>{r.label}</div>
+
+                          {canShowPlus ? (
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {!avail.amBusy ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid #c6dbff",
+                                    background: "#eaf2ff",
+                                    cursor: "pointer",
+                                    fontWeight: 950,
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  + AM
+                                </button>
+                              ) : null}
+                              {!avail.pmBusy ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid #c6dbff",
+                                    background: "#eaf2ff",
+                                    cursor: "pointer",
+                                    fontWeight: 950,
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  + PM
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {!hasTrips ? (
+                          <div style={{ marginTop: 6, fontSize: 12, color: "#bbb" }}>—</div>
+                        ) : (
+                          <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                            {cellTrips.map((t) => renderTripCard(t))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     );
   }
 
@@ -1349,168 +1460,171 @@ useEffect(() => {
 
         {/* WEEK + DAY VIEWS */}
         {!loading && view !== "month" ? (
-          <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
-              <thead>
-                <tr style={{ background: "#fafafa" }}>
-                  <th
-                    style={{
-                      position: "sticky",
-                      left: 0,
-                      zIndex: 2,
-                      textAlign: "left",
-                      padding: 10,
-                      borderBottom: "1px solid #eee",
-                      width: 220,
-                    }}
-                  >
-                    Technician
-                  </th>
-
-                  {daysForWeekOrDay.map((d) => {
-                    const iso = toIsoDate(d);
-                    const h = holidayByDate[iso];
-                    return (
+          <>
+            {/* ✅ Mobile week uses stacked layout */}
+            {view === "week" && isMobile ? (
+              renderMobileWeek()
+            ) : (
+              <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
+                  <thead>
+                    <tr style={{ background: "#fafafa" }}>
                       <th
-                        key={iso}
                         style={{
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 2,
                           textAlign: "left",
                           padding: 10,
                           borderBottom: "1px solid #eee",
-                          minWidth: 260,
-                          background: h ? "#fffaf0" : "#fafafa",
+                          width: 220,
                         }}
                       >
-                        <div style={{ fontWeight: 900, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-                          {formatDow(d)}
-                          {renderHolidayBadge(iso)}
-                        </div>
-                        <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
+                        Technician
                       </th>
-                    );
-                  })}
-                </tr>
-              </thead>
 
-              <tbody>
-                {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={1 + daysForWeekOrDay.length} style={{ padding: 14, color: "#666" }}>
-                      No matching technicians/trips.
-                    </td>
-                  </tr>
-                ) : (
-                  rows.map((r) => {
-                    const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+                      {daysForWeekOrDay.map((d) => {
+                        const iso = toIsoDate(d);
+                        const h = holidayByDate[iso];
+                        return (
+                          <th
+                            key={iso}
+                            style={{
+                              textAlign: "left",
+                              padding: 10,
+                              borderBottom: "1px solid #eee",
+                              minWidth: 260,
+                              background: h ? "#fffaf0" : "#fafafa",
+                            }}
+                          >
+                            <div style={{ fontWeight: 900, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                              {formatDow(d)}
+                              {renderHolidayBadge(iso)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
 
-                    return (
-                      <tr key={r.key}>
-                        <td
-                          style={{
-                            position: "sticky",
-                            left: 0,
-                            zIndex: 1,
-                            background: "white",
-                            borderBottom: "1px solid #f0f0f0",
-                            padding: 10,
-                            fontWeight: 900,
-                            width: 220,
-                          }}
-                        >
-                          {r.label}
+                  <tbody>
+                    {rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={1 + daysForWeekOrDay.length} style={{ padding: 14, color: "#666" }}>
+                          No matching technicians/trips.
                         </td>
+                      </tr>
+                    ) : (
+                      rows.map((r) => {
+                        const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
 
-                        {daysForWeekOrDay.map((d) => {
-                          const iso = toIsoDate(d);
-                          const cellTrips = grid.get(rowKey)?.get(iso) || [];
-                          const avail = computeSlotAvailability(cellTrips);
-                          const holiday = holidayByDate[iso];
-
-                          const canShowPlus =
-                            canEditSchedule &&
-                            rowKey !== "UNASSIGNED" &&
-                            !avail.allBusy &&
-                            !holiday; // ✅ do not schedule on holidays
-
-                          return (
+                        return (
+                          <tr key={r.key}>
                             <td
-                              key={`${r.key}_${iso}`}
                               style={{
-                                verticalAlign: "top",
+                                position: "sticky",
+                                left: 0,
+                                zIndex: 1,
+                                background: "white",
                                 borderBottom: "1px solid #f0f0f0",
                                 padding: 10,
-                                background: holiday ? "#fffaf0" : "white",
+                                fontWeight: 900,
+                                width: 220,
                               }}
                             >
-                              {/* Holiday label */}
-                              {holiday ? (
-                                <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 900, color: "#7a4b00" }}>
-                                  🎉 {holiday.name}
-                                </div>
-                              ) : null}
-
-                              {/* Slot “+” controls */}
-                              {canShowPlus ? (
-                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-                                  {!avail.amBusy ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
-                                      style={{
-                                        padding: "6px 8px",
-                                        borderRadius: 10,
-                                        border: "1px solid #c6dbff",
-                                        background: "#eaf2ff",
-                                        cursor: "pointer",
-                                        fontWeight: 900,
-                                        fontSize: 12,
-                                      }}
-                                      title="Add AM trip"
-                                    >
-                                      + AM
-                                    </button>
-                                  ) : null}
-
-                                  {!avail.pmBusy ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
-                                      style={{
-                                        padding: "6px 8px",
-                                        borderRadius: 10,
-                                        border: "1px solid #c6dbff",
-                                        background: "#eaf2ff",
-                                        cursor: "pointer",
-                                        fontWeight: 900,
-                                        fontSize: 12,
-                                      }}
-                                      title="Add PM trip"
-                                    >
-                                      + PM
-                                    </button>
-                                  ) : null}
-                                </div>
-                              ) : null}
-
-                              {cellTrips.length === 0 ? (
-                                <div style={{ color: "#bbb", fontSize: 12 }}>
-                                  {holiday ? "Holiday" : "—"}
-                                </div>
-                              ) : (
-                                <div style={{ display: "grid", gap: 8 }}>
-                                  {cellTrips.map((t) => renderTripCard(t))}
-                                </div>
-                              )}
+                              {r.label}
                             </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+
+                            {daysForWeekOrDay.map((d) => {
+                              const iso = toIsoDate(d);
+                              const cellTrips = grid.get(rowKey)?.get(iso) || [];
+                              const avail = computeSlotAvailability(cellTrips);
+                              const holiday = holidayByDate[iso];
+
+                              const canShowPlus =
+                                canEditSchedule &&
+                                rowKey !== "UNASSIGNED" &&
+                                !avail.allBusy &&
+                                !holiday;
+
+                              return (
+                                <td
+                                  key={`${r.key}_${iso}`}
+                                  style={{
+                                    verticalAlign: "top",
+                                    borderBottom: "1px solid #f0f0f0",
+                                    padding: 10,
+                                    background: holiday ? "#fffaf0" : "white",
+                                  }}
+                                >
+                                  {holiday ? (
+                                    <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 900, color: "#7a4b00" }}>
+                                      🎉 {holiday.name}
+                                    </div>
+                                  ) : null}
+
+                                  {canShowPlus ? (
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                                      {!avail.amBusy ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
+                                          style={{
+                                            padding: "6px 8px",
+                                            borderRadius: 10,
+                                            border: "1px solid #c6dbff",
+                                            background: "#eaf2ff",
+                                            cursor: "pointer",
+                                            fontWeight: 900,
+                                            fontSize: 12,
+                                          }}
+                                          title="Add AM trip"
+                                        >
+                                          + AM
+                                        </button>
+                                      ) : null}
+
+                                      {!avail.pmBusy ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
+                                          style={{
+                                            padding: "6px 8px",
+                                            borderRadius: 10,
+                                            border: "1px solid #c6dbff",
+                                            background: "#eaf2ff",
+                                            cursor: "pointer",
+                                            fontWeight: 900,
+                                            fontSize: 12,
+                                          }}
+                                          title="Add PM trip"
+                                        >
+                                          + PM
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+
+                                  {cellTrips.length === 0 ? (
+                                    <div style={{ color: "#bbb", fontSize: 12 }}>{holiday ? "Holiday" : "—"}</div>
+                                  ) : (
+                                    <div style={{ display: "grid", gap: 8 }}>
+                                      {cellTrips.map((t) => renderTripCard(t))}
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         ) : null}
 
         {!canSeeAll ? (

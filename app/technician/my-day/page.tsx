@@ -132,9 +132,10 @@ type ServiceTicketLite = {
 
 type CompanyHoliday = {
   id: string;
-  date: string; // YYYY-MM-DD
+  holidayDate: string; // YYYY-MM-DD
   name: string;
   active: boolean;
+  scheduleBlocked?: boolean;
 };
 
 function isoTodayLocal() {
@@ -551,12 +552,12 @@ export default function TechnicianMyDayPage() {
       try {
         const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
-        // Load company holiday (today)
+// Load company holiday (today) — uses holidayDate from your schema
 try {
   const hsnap = await getDocs(
     query(
       collection(db, "companyHolidays"),
-      where("date", "==", todayIso),
+      where("holidayDate", "==", todayIso),
       where("active", "==", true)
     )
   );
@@ -564,11 +565,13 @@ try {
   if (!hsnap.empty) {
     const hdoc = hsnap.docs[0];
     const d = hdoc.data() as any;
+
     setHoliday({
       id: hdoc.id,
-      date: String(d.date ?? todayIso),
+      holidayDate: String(d.holidayDate ?? todayIso),
       name: String(d.name ?? d.title ?? "Holiday"),
       active: typeof d.active === "boolean" ? d.active : true,
+      scheduleBlocked: typeof d.scheduleBlocked === "boolean" ? d.scheduleBlocked : undefined,
     });
   } else {
     setHoliday(null);
@@ -1070,7 +1073,7 @@ try {
   >
     <div style={{ fontWeight: 950 }}>🎉 Company Holiday</div>
     <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 900 }}>
-      {holiday.name} • {holiday.date}
+{holiday.name} • {holiday.holidayDate}
     </div>
     <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00" }}>
       If any work is scheduled today, it will still appear below.
@@ -1099,8 +1102,11 @@ try {
                 {items.map((item) => {
                   const styles = statusStyles(item.status);
                   const isProject = String(item.tripType || "").toLowerCase() === "project";
-                  const canConfirm = isProject && (canViewOtherEmployees || (selectedEmployeeUid || myUid) === myUid);
-
+                  const holidayBlocks = Boolean(holiday?.scheduleBlocked);
+const canConfirm =
+  !holidayBlocks &&
+  isProject &&
+  (canViewOtherEmployees || (selectedEmployeeUid || myUid) === myUid);
                   return (
                     <Link
                       key={item.id}
