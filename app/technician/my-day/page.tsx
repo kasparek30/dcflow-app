@@ -13,7 +13,6 @@ import {
   query,
   where,
   setDoc,
-  updateDoc,
   runTransaction,
 } from "firebase/firestore";
 import AppShell from "../../../components/AppShell";
@@ -136,6 +135,19 @@ type CompanyHoliday = {
   name: string;
   active: boolean;
   scheduleBlocked?: boolean;
+};
+
+type CompanyEvent = {
+  id: string;
+  date: string; // YYYY-MM-DD
+  title: string;
+  active: boolean;
+
+  // optional scheduling fields
+  timeWindow?: "am" | "pm" | "all_day" | "custom" | string | null;
+  startTime?: string | null; // "08:00"
+  endTime?: string | null; // "09:00"
+  notes?: string | null;
 };
 
 function isoTodayLocal() {
@@ -310,6 +322,18 @@ function crewUidsForConfirm(crew?: TripCrew | null) {
   return Array.from(new Set(uids));
 }
 
+function formatEventTime(e: CompanyEvent) {
+  const w = String(e.timeWindow || "").toLowerCase();
+  if (w === "all_day") return "All Day";
+  if (w === "am") return "AM (8–12)";
+  if (w === "pm") return "PM (1–5)";
+  const st = String(e.startTime || "").trim();
+  const et = String(e.endTime || "").trim();
+  if (st && et) return `${st}–${et}`;
+  if (st) return `Starts ${st}`;
+  return "—";
+}
+
 async function confirmProjectTripForEmployee(args: {
   tripId: string;
   tripDate: string;
@@ -342,7 +366,6 @@ async function confirmProjectTripForEmployee(args: {
   const timesheetRef = doc(db, "weeklyTimesheets", timesheetId);
   const timeEntryRef = doc(db, "timeEntries", timeEntryId);
 
-  // ✅ Transaction so "complete when all confirmed" is consistent under concurrency
   const result = await runTransaction(db, async (tx) => {
     const tripSnap = await tx.get(tripRef);
     if (!tripSnap.exists()) throw new Error("Trip not found.");
@@ -355,9 +378,6 @@ async function confirmProjectTripForEmployee(args: {
     const crew: TripCrew | null = (tripData.crew ?? null) as any;
     const requiredUids = crewUidsForConfirm(crew);
 
-    // If the current uid is not on the crew, we still allow confirm (admins confirming for others)
-    // BUT the completion rule is based on assigned crew only.
-
     const existingConfirmedBy: Record<string, TripConfirmedEntry> = (tripData.confirmedBy ?? {}) as any;
 
     const nextConfirmedBy: Record<string, TripConfirmedEntry> = {
@@ -369,10 +389,8 @@ async function confirmProjectTripForEmployee(args: {
       },
     };
 
-    const allConfirmed =
-      requiredUids.length > 0 && requiredUids.every((u) => Boolean(nextConfirmedBy[u]));
+    const allConfirmed = requiredUids.length > 0 && requiredUids.every((u) => Boolean((nextConfirmedBy as any)[u]));
 
-    // 1) Ensure weeklyTimesheets header exists (merge)
     tx.set(
       timesheetRef,
       {
@@ -394,7 +412,6 @@ async function confirmProjectTripForEmployee(args: {
       { merge: true }
     );
 
-    // 2) Upsert locked time entry
     tx.set(
       timeEntryRef,
       {
@@ -431,7 +448,6 @@ async function confirmProjectTripForEmployee(args: {
       { merge: true }
     );
 
-    // 3) Update trip confirmation + auto-complete when all assigned crew confirms
     const tripPatch: any = {
       confirmedBy: nextConfirmedBy,
       updatedAt: now,
@@ -477,6 +493,9 @@ export default function TechnicianMyDayPage() {
 
   const [holiday, setHoliday] = useState<CompanyHoliday | null>(null);
 
+  // ✅ NEW: Company events (meetings)
+  const [companyEvents, setCompanyEvents] = useState<CompanyEvent[]>([]);
+
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
   const myRole = appUser?.role || "";
@@ -487,14 +506,12 @@ export default function TechnicianMyDayPage() {
   const canViewOtherEmployees =
     myRole === "admin" || myRole === "dispatcher" || myRole === "manager";
 
-  // Default selected employee:
   useEffect(() => {
     if (!selectedEmployeeUid && myUid) {
       setSelectedEmployeeUid(myUid);
     }
   }, [selectedEmployeeUid, myUid]);
 
-  // Load employees list (for admin/dispatch/manager picker)
   useEffect(() => {
     async function loadEmployees() {
       if (!canViewOtherEmployees) {
@@ -521,7 +538,7 @@ export default function TechnicianMyDayPage() {
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setEmployees(items);
       } catch {
-        // Non-fatal
+        // best effort
       } finally {
         setEmployeesLoading(false);
       }
@@ -543,7 +560,6 @@ export default function TechnicianMyDayPage() {
     return { uid, displayName: uid, role: "technician" };
   }
 
-  // Load trips for today
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -552,36 +568,78 @@ export default function TechnicianMyDayPage() {
       try {
         const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
-// Load company holiday (today) — uses holidayDate from your schema
-try {
-  const hsnap = await getDocs(
-    query(
-      collection(db, "companyHolidays"),
-      where("holidayDate", "==", todayIso),
-      where("active", "==", true)
-    )
-  );
+        // ---- Load company holiday (today) — uses holidayDate schema ----
+        try {
+          const hsnap = await getDocs(
+            query(
+              collection(db, "companyHolidays"),
+              where("holidayDate", "==", todayIso),
+              where("active", "==", true)
+            )
+          );
 
-  if (!hsnap.empty) {
-    const hdoc = hsnap.docs[0];
-    const d = hdoc.data() as any;
+          if (!hsnap.empty) {
+            const hdoc = hsnap.docs[0];
+            const d = hdoc.data() as any;
 
-    setHoliday({
-      id: hdoc.id,
-      holidayDate: String(d.holidayDate ?? todayIso),
-      name: String(d.name ?? d.title ?? "Holiday"),
-      active: typeof d.active === "boolean" ? d.active : true,
-      scheduleBlocked: typeof d.scheduleBlocked === "boolean" ? d.scheduleBlocked : undefined,
-    });
-  } else {
-    setHoliday(null);
-  }
-} catch {
-  // best effort
-  setHoliday(null);
-}
+            setHoliday({
+              id: hdoc.id,
+              holidayDate: String(d.holidayDate ?? todayIso),
+              name: String(d.name ?? d.title ?? "Holiday"),
+              active: typeof d.active === "boolean" ? d.active : true,
+              scheduleBlocked: typeof d.scheduleBlocked === "boolean" ? d.scheduleBlocked : undefined,
+            });
+          } else {
+            setHoliday(null);
+          }
+        } catch {
+          setHoliday(null);
+        }
 
-        // Pull trips for today only
+        // ✅ NEW: Load company events (meetings) for today
+        try {
+          let esnap;
+          try {
+            esnap = await getDocs(
+              query(
+                collection(db, "companyEvents"),
+                where("date", "==", todayIso),
+                where("active", "==", true),
+                orderBy("startTime", "asc")
+              )
+            );
+          } catch {
+            esnap = await getDocs(
+              query(
+                collection(db, "companyEvents"),
+                where("date", "==", todayIso),
+                where("active", "==", true)
+              )
+            );
+          }
+
+          const events: CompanyEvent[] = esnap.docs.map((ds) => {
+            const d = ds.data() as any;
+            return {
+              id: ds.id,
+              date: String(d.date ?? todayIso),
+              title: String(d.title ?? d.name ?? "Meeting"),
+              active: typeof d.active === "boolean" ? d.active : true,
+              timeWindow: d.timeWindow ?? null,
+              startTime: d.startTime ?? null,
+              endTime: d.endTime ?? null,
+              notes: d.notes ?? d.description ?? null,
+            };
+          }).filter((e) => e.active);
+
+          // Sort defensively if no orderBy
+          events.sort((a, b) => String(a.startTime || "99:99").localeCompare(String(b.startTime || "99:99")));
+          setCompanyEvents(events);
+        } catch {
+          setCompanyEvents([]);
+        }
+
+        // ---- Pull trips for today only ----
         const tripsSnap = await getDocs(
           query(collection(db, "trips"), where("date", "==", todayIso))
         );
@@ -604,7 +662,7 @@ try {
           };
         });
 
-        // Load daily crew override for THIS helper (if helper/apprentice)
+        // ---- Load daily crew override for THIS helper (if helper/apprentice) ----
         let foundOverride: DailyCrewOverride | null = null;
 
         if (isHelperRole && whoUid) {
@@ -634,12 +692,12 @@ try {
         setTrips(tripItems);
         setOverride(foundOverride);
 
-        // Enrich: load service ticket docs for visible service trips
+        // ---- Enrich: load service ticket docs for visible service trips ----
         const ticketIds = Array.from(
           new Set(tripItems.map((t) => t.link?.serviceTicketId || "").filter(Boolean))
         );
 
-        const ticketMap: Record<string, ServiceTicketLite> = {};
+        const nextTicketMap: Record<string, ServiceTicketLite> = {};
         await Promise.all(
           ticketIds.map(async (tid) => {
             try {
@@ -647,7 +705,7 @@ try {
               if (!snap.exists()) return;
 
               const d = snap.data() as any;
-              ticketMap[tid] = {
+              nextTicketMap[tid] = {
                 id: tid,
                 issueSummary: d.issueSummary ?? "",
                 issueDetails: d.issueDetails ?? "",
@@ -662,18 +720,18 @@ try {
                 servicePostalCode: d.servicePostalCode ?? "",
               };
             } catch {
-              // ignore per ticket
+              // ignore
             }
           })
         );
-        setTicketById(ticketMap);
+        setTicketById(nextTicketMap);
 
-        // Enrich: if ticket is follow_up, try to fetch latest followUpNotes
+        // ---- Enrich: follow-up notes (best effort) ----
         const followUpMap: Record<string, string> = {};
         await Promise.all(
           ticketIds.map(async (tid) => {
             try {
-              const t = ticketMap[tid];
+              const t = nextTicketMap[tid];
               if (!t) return;
               if (normalizeStatus(t.status) !== "follow_up") return;
 
@@ -692,7 +750,7 @@ try {
               const note = String(d.followUpNotes ?? "").trim();
               if (note) followUpMap[tid] = note;
             } catch {
-              // ignore (index missing, etc.)
+              // ignore
             }
           })
         );
@@ -737,7 +795,6 @@ try {
 
     const mapped: MyDayItem[] = visibleTrips
       .filter((t) => {
-        // Hide completed trips from My Day
         const s = normalizeStatus(t.status);
         if (s === "complete" || s === "completed") return false;
         return true;
@@ -788,7 +845,7 @@ try {
         const tKey = timeSortKey(t.startTime, t.timeWindow);
         const sortKey = `${inProgBoost}_${tKey}_${t.id}`;
 
-        const confirmed = whoUid && t.confirmedBy ? (t.confirmedBy[whoUid] as any) : null;
+        const confirmed = whoUid && t.confirmedBy ? ((t.confirmedBy as any)[whoUid] as any) : null;
 
         return {
           id: t.id,
@@ -865,6 +922,7 @@ try {
   }
 
   function closeConfirmModal() {
+    if (confirmSaving) return;
     setConfirmOpen(false);
     setConfirmTripId("");
     setConfirmErr("");
@@ -910,7 +968,6 @@ try {
       return;
     }
 
-    // Permission rule:
     const allowed = whoUid === myUid || canViewOtherEmployees;
     if (!allowed) {
       setConfirmErr("You do not have permission to confirm for this employee.");
@@ -935,7 +992,6 @@ try {
         note: confirmNote.trim() || undefined,
       });
 
-      // Update local trip state so UI reflects confirmed instantly
       const confirmedAt = nowIso();
       setTrips((prev) =>
         prev.map((t) =>
@@ -963,6 +1019,8 @@ try {
       setConfirmSaving(false);
     }
   }
+
+  const holidayBlocks = Boolean(holiday?.scheduleBlocked);
 
   return (
     <ProtectedPage fallbackTitle="My Day">
@@ -1061,25 +1119,60 @@ try {
         ) : null}
 
         {holiday ? (
-  <div
-    style={{
-      marginTop: "14px",
-      border: "1px solid #ffe2a8",
-      borderRadius: "12px",
-      padding: "12px",
-      background: "#fff7e6",
-      maxWidth: "980px",
-    }}
-  >
-    <div style={{ fontWeight: 950 }}>🎉 Company Holiday</div>
-    <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 900 }}>
-{holiday.name} • {holiday.holidayDate}
-    </div>
-    <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00" }}>
-      If any work is scheduled today, it will still appear below.
-    </div>
-  </div>
-) : null}
+          <div
+            style={{
+              marginTop: "14px",
+              border: "1px solid #ffe2a8",
+              borderRadius: "12px",
+              padding: "12px",
+              background: "#fff7e6",
+              maxWidth: "980px",
+            }}
+          >
+            <div style={{ fontWeight: 950 }}>🎉 Company Holiday</div>
+            <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 900 }}>
+              {holiday.name} • {holiday.holidayDate}
+              {holiday.scheduleBlocked ? " • Scheduling Blocked" : ""}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00" }}>
+              If any work is scheduled today, it will still appear below.
+            </div>
+          </div>
+        ) : null}
+
+        {/* ✅ NEW: Company Events (Meetings) */}
+        {companyEvents.length > 0 ? (
+          <div style={{ marginTop: 14, maxWidth: 980, display: "grid", gap: 10 }}>
+            {companyEvents.map((e) => (
+              <div
+                key={e.id}
+                style={{
+                  border: "1px solid #c6dbff",
+                  borderRadius: 12,
+                  padding: 12,
+                  background: "#eaf2ff",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 950 }}>📣 Meeting</div>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "#1b4fbf" }}>
+                    {formatEventTime(e)}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 900, color: "#1b4fbf" }}>
+                  {e.title}
+                </div>
+
+                {e.notes ? (
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#2b3a55", whiteSpace: "pre-wrap" }}>
+                    {e.notes}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
 
         {loading ? <p style={{ marginTop: "16px" }}>Loading your day...</p> : null}
         {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
@@ -1096,17 +1189,20 @@ try {
                   color: "#666",
                 }}
               >
-{holiday ? `No trips scheduled. Today is a company holiday: ${holiday.name}.` : "No trips scheduled for this employee today."}              </div>
+                {holiday
+                  ? `No trips scheduled. Today is a company holiday: ${holiday.name}.`
+                  : "No trips scheduled for this employee today."}
+              </div>
             ) : (
               <div style={{ display: "grid", gap: "12px" }}>
                 {items.map((item) => {
                   const styles = statusStyles(item.status);
                   const isProject = String(item.tripType || "").toLowerCase() === "project";
-                  const holidayBlocks = Boolean(holiday?.scheduleBlocked);
-const canConfirm =
-  !holidayBlocks &&
-  isProject &&
-  (canViewOtherEmployees || (selectedEmployeeUid || myUid) === myUid);
+                  const canConfirm =
+                    !holidayBlocks &&
+                    isProject &&
+                    (canViewOtherEmployees || (selectedEmployeeUid || myUid) === myUid);
+
                   return (
                     <Link
                       key={item.id}
@@ -1186,7 +1282,11 @@ const canConfirm =
                             alignItems: "center",
                           }}
                         >
-                          {!item.confirmed ? (
+                          {holidayBlocks ? (
+                            <div style={{ fontSize: 12, color: "#7a4b00", fontWeight: 900 }}>
+                              Holiday blocks confirmations today.
+                            </div>
+                          ) : !item.confirmed ? (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1213,7 +1313,7 @@ const canConfirm =
                             </div>
                           )}
 
-                          {!canConfirm ? (
+                          {!canConfirm && !holidayBlocks ? (
                             <div style={{ fontSize: 12, color: "#999" }}>
                               Only the employee (or Admin/Dispatcher/Manager) can confirm project hours.
                             </div>
@@ -1228,6 +1328,7 @@ const canConfirm =
           </div>
         ) : null}
 
+        {/* Confirm Modal */}
         {confirmOpen ? (
           <div
             onClick={() => {
