@@ -64,6 +64,10 @@ type Trip = {
   cancelReason?: string | null;
 
   confirmedBy?: Record<string, TripConfirmedEntry> | null;
+
+  // optional fields written by transaction
+  completedAt?: string | null;
+  completedByUid?: string | null;
 };
 
 type DailyCrewOverride = {
@@ -143,11 +147,12 @@ type CompanyEvent = {
   title: string;
   active: boolean;
 
-  // optional scheduling fields
   timeWindow?: "am" | "pm" | "all_day" | "custom" | string | null;
   startTime?: string | null; // "08:00"
   endTime?: string | null; // "09:00"
+  location?: string | null;
   notes?: string | null;
+  type?: string | null; // meeting, etc
 };
 
 function isoTodayLocal() {
@@ -168,6 +173,17 @@ function pad2(n: number) {
 
 function toIsoDate(d: Date) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function fromIsoDate(iso: string) {
+  const [y, m, day] = iso.split("-").map((x) => Number(x));
+  return new Date(y, (m || 1) - 1, day || 1);
+}
+
+function addDays(d: Date, days: number) {
+  const out = new Date(d);
+  out.setDate(out.getDate() + days);
+  return out;
 }
 
 // Monday-start payroll week bounds
@@ -472,7 +488,13 @@ export default function TechnicianMyDayPage() {
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
+
+  // Today trips
   const [trips, setTrips] = useState<Trip[]>([]);
+
+  // ✅ NEW: recent past project trips for “missed confirm”
+  const [recentTrips, setRecentTrips] = useState<Trip[]>([]);
+
   const [override, setOverride] = useState<DailyCrewOverride | null>(null);
   const [error, setError] = useState("");
 
@@ -491,9 +513,12 @@ export default function TechnicianMyDayPage() {
   const [confirmSaving, setConfirmSaving] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string>("");
 
+  // UI toggle
+  const [showCompleted, setShowCompleted] = useState(false);
+
   const [holiday, setHoliday] = useState<CompanyHoliday | null>(null);
 
-  // ✅ NEW: Company events (meetings)
+  // Company events (meetings)
   const [companyEvents, setCompanyEvents] = useState<CompanyEvent[]>([]);
 
   const todayIso = useMemo(() => isoTodayLocal(), []);
@@ -560,6 +585,8 @@ export default function TechnicianMyDayPage() {
     return { uid, displayName: uid, role: "technician" };
   }
 
+  // Load today: holiday, company events, today trips, override, enrichment,
+  // PLUS recent past project trips so missed confirms are visible.
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -596,7 +623,7 @@ export default function TechnicianMyDayPage() {
           setHoliday(null);
         }
 
-        // ✅ NEW: Load company events (meetings) for today
+        // ---- Load company events (meetings) for today ----
         try {
           let esnap;
           try {
@@ -618,22 +645,28 @@ export default function TechnicianMyDayPage() {
             );
           }
 
-          const events: CompanyEvent[] = esnap.docs.map((ds) => {
-            const d = ds.data() as any;
-            return {
-              id: ds.id,
-              date: String(d.date ?? todayIso),
-              title: String(d.title ?? d.name ?? "Meeting"),
-              active: typeof d.active === "boolean" ? d.active : true,
-              timeWindow: d.timeWindow ?? null,
-              startTime: d.startTime ?? null,
-              endTime: d.endTime ?? null,
-              notes: d.notes ?? d.description ?? null,
-            };
-          }).filter((e) => e.active);
+          const events: CompanyEvent[] = esnap.docs
+            .map((ds) => {
+              const d = ds.data() as any;
+              return {
+                id: ds.id,
+                date: String(d.date ?? todayIso),
+                title: String(d.title ?? d.name ?? "Meeting"),
+                active: typeof d.active === "boolean" ? d.active : true,
+                timeWindow: d.timeWindow ?? null,
+                startTime: d.startTime ?? null,
+                endTime: d.endTime ?? null,
+                location: d.location ?? null,
+                notes: d.notes ?? d.description ?? null,
+                type: d.type ?? null,
+              };
+            })
+            .filter((e) => e.active);
 
-          // Sort defensively if no orderBy
-          events.sort((a, b) => String(a.startTime || "99:99").localeCompare(String(b.startTime || "99:99")));
+          events.sort((a, b) =>
+            String(a.startTime || "99:99").localeCompare(String(b.startTime || "99:99"))
+          );
+
           setCompanyEvents(events);
         } catch {
           setCompanyEvents([]);
@@ -644,7 +677,7 @@ export default function TechnicianMyDayPage() {
           query(collection(db, "trips"), where("date", "==", todayIso))
         );
 
-        const tripItems: Trip[] = tripsSnap.docs.map((docSnap) => {
+        const todayTripItems: Trip[] = tripsSnap.docs.map((docSnap) => {
           const d = docSnap.data() as any;
           return {
             id: docSnap.id,
@@ -659,6 +692,8 @@ export default function TechnicianMyDayPage() {
             link: d.link ?? undefined,
             cancelReason: d.cancelReason ?? null,
             confirmedBy: (d.confirmedBy ?? null) as any,
+            completedAt: d.completedAt ?? null,
+            completedByUid: d.completedByUid ?? null,
           };
         });
 
@@ -689,12 +724,65 @@ export default function TechnicianMyDayPage() {
           }
         }
 
-        setTrips(tripItems);
+        setTrips(todayTripItems);
         setOverride(foundOverride);
 
-        // ---- Enrich: load service ticket docs for visible service trips ----
+        // ✅ NEW: Load recent past trips for missed confirmations
+        // We keep the query broad (date range) and filter client-side to avoid complex indexes.
+        // Default: last 14 days (includes weekends; fine).
+        const start = addDays(fromIsoDate(todayIso), -14);
+        start.setHours(0, 0, 0, 0);
+        const startIso = toIsoDate(start);
+
+        let recentSnap;
+        try {
+          recentSnap = await getDocs(
+            query(
+              collection(db, "trips"),
+              where("date", ">=", startIso),
+              where("date", "<", todayIso),
+              orderBy("date", "desc"),
+              limit(120)
+            )
+          );
+        } catch {
+          // Fallback: smaller query (still date constrained)
+          recentSnap = await getDocs(
+            query(
+              collection(db, "trips"),
+              where("date", ">=", startIso),
+              where("date", "<", todayIso),
+              orderBy("date", "desc"),
+              limit(60)
+            )
+          );
+        }
+
+        const recentItems: Trip[] = recentSnap.docs.map((ds) => {
+          const d = ds.data() as any;
+          return {
+            id: ds.id,
+            active: typeof d.active === "boolean" ? d.active : true,
+            type: d.type ?? undefined,
+            status: d.status ?? undefined,
+            date: d.date ?? undefined,
+            timeWindow: d.timeWindow ?? undefined,
+            startTime: d.startTime ?? undefined,
+            endTime: d.endTime ?? undefined,
+            crew: d.crew ?? undefined,
+            link: d.link ?? undefined,
+            cancelReason: d.cancelReason ?? null,
+            confirmedBy: (d.confirmedBy ?? null) as any,
+            completedAt: d.completedAt ?? null,
+            completedByUid: d.completedByUid ?? null,
+          };
+        });
+
+        setRecentTrips(recentItems);
+
+        // ---- Enrich: load service ticket docs for TODAY trips (fast) ----
         const ticketIds = Array.from(
-          new Set(tripItems.map((t) => t.link?.serviceTicketId || "").filter(Boolean))
+          new Set(todayTripItems.map((t) => t.link?.serviceTicketId || "").filter(Boolean))
         );
 
         const nextTicketMap: Record<string, ServiceTicketLite> = {};
@@ -765,15 +853,18 @@ export default function TechnicianMyDayPage() {
     load();
   }, [todayIso, myUid, isHelperRole, canViewOtherEmployees, selectedEmployeeUid]);
 
-  const visibleTrips = useMemo(() => {
-    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+  const whoUid = useMemo(() => {
+    return canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+  }, [canViewOtherEmployees, selectedEmployeeUid, myUid]);
 
+  const visibleTrips = useMemo(() => {
     if (!whoUid) return [];
 
     const explicitCrewTrips = trips
       .filter((t) => t.active !== false)
       .filter((t) => isUidInCrew(whoUid, t.crew));
 
+    // Helper override behavior (for seeing schedule)
     if (!canViewOtherEmployees && isHelperRole && override?.assignedTechUid) {
       const overrideTechTrips = trips
         .filter((t) => t.active !== false)
@@ -788,15 +879,47 @@ export default function TechnicianMyDayPage() {
     }
 
     return explicitCrewTrips;
-  }, [trips, myUid, isHelperRole, override, canViewOtherEmployees, selectedEmployeeUid]);
+  }, [trips, whoUid, isHelperRole, override, canViewOtherEmployees]);
+
+  // ✅ Unconfirmed past trips (project-only) that this employee needs to confirm
+  const unconfirmedPastTrips = useMemo(() => {
+    if (!whoUid) return [];
+
+    const out = recentTrips
+      .filter((t) => t.active !== false)
+      .filter((t) => String(t.type || "").toLowerCase() === "project")
+      .filter((t) => {
+        const s = normalizeStatus(t.status);
+        if (s === "cancelled") return false;
+        // If complete, still might be missing one person's confirm? In theory no,
+        // but we still allow confirm if missing.
+        return true;
+      })
+      .filter((t) => isUidInCrew(whoUid, t.crew))
+      .filter((t) => {
+        const confirmed = t.confirmedBy ? (t.confirmedBy as any)[whoUid] : null;
+        return !confirmed;
+      })
+      .filter((t) => {
+        const d = String(t.date || "").trim();
+        if (!d) return false;
+        return d < todayIso;
+      });
+
+    out.sort((a, b) => {
+      const aKey = `${a.date || ""}_${timeSortKey(a.startTime, a.timeWindow)}_${a.id}`;
+      const bKey = `${b.date || ""}_${timeSortKey(b.startTime, b.timeWindow)}_${b.id}`;
+      return bKey.localeCompare(aKey); // newest first
+    });
+
+    return out.slice(0, 20);
+  }, [recentTrips, whoUid, todayIso]);
 
   const items = useMemo(() => {
-    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
-
     const mapped: MyDayItem[] = visibleTrips
       .filter((t) => {
         const s = normalizeStatus(t.status);
-        if (s === "complete" || s === "completed") return false;
+        if (!showCompleted && (s === "complete" || s === "completed")) return false;
         return true;
       })
       .map((t) => {
@@ -811,6 +934,7 @@ export default function TechnicianMyDayPage() {
 
         const status = normalizeStatus(t.status) || "planned";
 
+        // Service ticket enrichment (today only)
         const serviceTicketId = t.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
 
@@ -841,6 +965,9 @@ export default function TechnicianMyDayPage() {
             ? (safeStr(followUpByTicketId[serviceTicketId]).trim() || "")
             : "";
 
+        // Sorting:
+        // - in_progress to top
+        // - otherwise by actual time
         const inProgBoost = status === "in_progress" ? "0" : "1";
         const tKey = timeSortKey(t.startTime, t.timeWindow);
         const sortKey = `${inProgBoost}_${tKey}_${t.id}`;
@@ -875,11 +1002,9 @@ export default function TechnicianMyDayPage() {
 
     mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     return mapped;
-  }, [visibleTrips, ticketById, followUpByTicketId, myUid, canViewOtherEmployees, selectedEmployeeUid]);
+  }, [visibleTrips, ticketById, followUpByTicketId, whoUid, showCompleted]);
 
   const banner = useMemo(() => {
-    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
-
     if (!whoUid) return null;
 
     if (!canViewOtherEmployees && isHelperRole) {
@@ -899,7 +1024,7 @@ export default function TechnicianMyDayPage() {
     }
 
     return null;
-  }, [myUid, isHelperRole, override, canViewOtherEmployees, selectedEmployeeUid]);
+  }, [whoUid, isHelperRole, override, canViewOtherEmployees]);
 
   function statusStyles(status: string) {
     if (status === "in_progress") {
@@ -908,12 +1033,23 @@ export default function TechnicianMyDayPage() {
     if (status === "planned") {
       return { border: "1px solid #b7cff5", background: "#f4f8ff" };
     }
+    if (status === "complete" || status === "completed") {
+      return { border: "1px solid #eee", background: "#fafafa" };
+    }
     return { border: "1px solid #ddd", background: "white" };
+  }
+
+  function openConfirmModalFromTrip(t: Trip) {
+    setConfirmErr("");
+    const suggested = defaultHoursForTrip(t.timeWindow, t.startTime, t.endTime);
+    setConfirmHours(String(suggested));
+    setConfirmNote("");
+    setConfirmTripId(t.id);
+    setConfirmOpen(true);
   }
 
   function openConfirmModal(item: MyDayItem) {
     setConfirmErr("");
-
     const suggested = defaultHoursForTrip(item.tripWindow, item.tripStartTime, item.tripEndTime);
     setConfirmHours(String(suggested));
     setConfirmNote("");
@@ -931,11 +1067,17 @@ export default function TechnicianMyDayPage() {
   }
 
   async function submitConfirm() {
-    const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+    if (!whoUid) {
+      setConfirmErr("Missing employee uid.");
+      return;
+    }
 
-    const trip = trips.find((t) => t.id === confirmTripId);
+    // IMPORTANT: confirm may be for TODAY trips OR past unconfirmed trips.
+    const allKnownTrips = [...trips, ...recentTrips];
+    const trip = allKnownTrips.find((t) => t.id === confirmTripId);
+
     if (!trip) {
-      setConfirmErr("Trip not found.");
+      setConfirmErr("Trip not found (try refreshing).");
       return;
     }
 
@@ -957,10 +1099,6 @@ export default function TechnicianMyDayPage() {
       setConfirmErr("Trip is missing projectId.");
       return;
     }
-    if (!whoUid) {
-      setConfirmErr("Missing employee uid.");
-      return;
-    }
 
     const hrs = Number(confirmHours);
     if (!Number.isFinite(hrs) || hrs <= 0) {
@@ -968,6 +1106,9 @@ export default function TechnicianMyDayPage() {
       return;
     }
 
+    // Permission rule:
+    // - employee can confirm for self
+    // - admin/dispatcher/manager can confirm while viewing another employee
     const allowed = whoUid === myUid || canViewOtherEmployees;
     if (!allowed) {
       setConfirmErr("You do not have permission to confirm for this employee.");
@@ -993,7 +1134,28 @@ export default function TechnicianMyDayPage() {
       });
 
       const confirmedAt = nowIso();
+
+      // Update local state (today trips + recent trips)
       setTrips((prev) =>
+        prev.map((t) =>
+          t.id === trip.id
+            ? {
+                ...t,
+                status: res.tripCompleted ? "complete" : t.status,
+                confirmedBy: {
+                  ...(t.confirmedBy || {}),
+                  [emp.uid]: {
+                    hours: hrs,
+                    note: confirmNote.trim() || null,
+                    confirmedAt,
+                  },
+                },
+              }
+            : t
+        )
+      );
+
+      setRecentTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
             ? {
@@ -1042,6 +1204,15 @@ export default function TechnicianMyDayPage() {
             <p style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
               Trips-driven view (scheduling + time capture)
             </p>
+
+            <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={showCompleted}
+                onChange={(e) => setShowCompleted(e.target.checked)}
+              />
+              <span style={{ fontSize: 13, fontWeight: 800 }}>Show completed trips</span>
+            </label>
           </div>
 
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
@@ -1118,6 +1289,79 @@ export default function TechnicianMyDayPage() {
           </div>
         ) : null}
 
+        {/* ✅ Unconfirmed Past Trips Banner */}
+        {!loading && !error && unconfirmedPastTrips.length > 0 ? (
+          <div
+            style={{
+              marginTop: 14,
+              border: "1px solid #ffe2a8",
+              borderRadius: 12,
+              padding: 12,
+              background: "#fff7e6",
+              maxWidth: 980,
+            }}
+          >
+            <div style={{ fontWeight: 950 }}>⚠️ Unconfirmed Project Trips</div>
+            <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 800 }}>
+              You have <strong>{unconfirmedPastTrips.length}</strong> past trip(s) that still need hours confirmed.
+            </div>
+
+            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+              {unconfirmedPastTrips.map((t) => {
+                const crew = crewDisplay(t.crew);
+                const timeText =
+                  t.startTime || t.endTime
+                    ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
+                    : formatWindow(t.timeWindow);
+
+                return (
+                  <div
+                    key={t.id}
+                    style={{
+                      border: "1px solid #ffe2a8",
+                      borderRadius: 12,
+                      background: "white",
+                      padding: 12,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 950 }}>
+                        📐 Project • {t.date} • {timeText}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openConfirmModalFromTrip(t)}
+                        style={{
+                          padding: "8px 12px",
+                          border: "1px solid #2e7d32",
+                          borderRadius: 10,
+                          background: "#eaffea",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                        }}
+                      >
+                        ✅ Confirm Hours
+                      </button>
+                    </div>
+
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                      Crew: <strong>{crew.primary}</strong>
+                      {crew.helper ? ` • ${crew.helper}` : ""}
+                      {crew.secondaryTech ? ` • ${crew.secondaryTech}` : ""}
+                      {crew.secondaryHelper ? ` • ${crew.secondaryHelper}` : ""}
+                    </div>
+
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#777" }}>
+                      Trip ID: {t.id}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Holiday */}
         {holiday ? (
           <div
             style={{
@@ -1132,45 +1376,60 @@ export default function TechnicianMyDayPage() {
             <div style={{ fontWeight: 950 }}>🎉 Company Holiday</div>
             <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 900 }}>
               {holiday.name} • {holiday.holidayDate}
-              {holiday.scheduleBlocked ? " • Scheduling Blocked" : ""}
             </div>
             <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00" }}>
-              If any work is scheduled today, it will still appear below.
+              {holidayBlocks ? "Scheduling is blocked today." : "If any work is scheduled today, it will still appear below."}
             </div>
           </div>
         ) : null}
 
-        {/* ✅ NEW: Company Events (Meetings) */}
-        {companyEvents.length > 0 ? (
-          <div style={{ marginTop: 14, maxWidth: 980, display: "grid", gap: 10 }}>
-            {companyEvents.map((e) => (
-              <div
-                key={e.id}
-                style={{
-                  border: "1px solid #c6dbff",
-                  borderRadius: 12,
-                  padding: 12,
-                  background: "#eaf2ff",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 950 }}>📣 Meeting</div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "#1b4fbf" }}>
-                    {formatEventTime(e)}
+        {/* Company Events (Meetings) */}
+        {!loading && companyEvents.length > 0 ? (
+          <div
+            style={{
+              marginTop: 14,
+              border: "1px solid #ddd",
+              borderRadius: 12,
+              padding: 12,
+              background: "#fafafa",
+              maxWidth: 980,
+            }}
+          >
+            <div style={{ fontWeight: 950 }}>📣 Company Event{companyEvents.length > 1 ? "s" : ""}</div>
+            <div style={{ marginTop: 8, display: "grid", gap: 10 }}>
+              {companyEvents.map((e) => (
+                <div
+                  key={e.id}
+                  style={{
+                    border: "1px solid #eee",
+                    borderRadius: 12,
+                    background: "white",
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 950 }}>
+                      📣 {e.title}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#666", fontWeight: 900 }}>
+                      {formatEventTime(e)}
+                    </div>
                   </div>
-                </div>
 
-                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 900, color: "#1b4fbf" }}>
-                  {e.title}
-                </div>
+                  {e.location ? (
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                      Location: <strong>{e.location}</strong>
+                    </div>
+                  ) : null}
 
-                {e.notes ? (
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#2b3a55", whiteSpace: "pre-wrap" }}>
-                    {e.notes}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+                  {e.notes ? (
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#555", whiteSpace: "pre-wrap" }}>
+                      {e.notes}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -1189,19 +1448,14 @@ export default function TechnicianMyDayPage() {
                   color: "#666",
                 }}
               >
-                {holiday
-                  ? `No trips scheduled. Today is a company holiday: ${holiday.name}.`
-                  : "No trips scheduled for this employee today."}
+                {holiday ? `No trips scheduled. Today is a company holiday: ${holiday.name}.` : "No trips scheduled for this employee today."}
               </div>
             ) : (
               <div style={{ display: "grid", gap: "12px" }}>
                 {items.map((item) => {
                   const styles = statusStyles(item.status);
                   const isProject = String(item.tripType || "").toLowerCase() === "project";
-                  const canConfirm =
-                    !holidayBlocks &&
-                    isProject &&
-                    (canViewOtherEmployees || (selectedEmployeeUid || myUid) === myUid);
+                  const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
 
                   return (
                     <Link
@@ -1282,11 +1536,7 @@ export default function TechnicianMyDayPage() {
                             alignItems: "center",
                           }}
                         >
-                          {holidayBlocks ? (
-                            <div style={{ fontSize: 12, color: "#7a4b00", fontWeight: 900 }}>
-                              Holiday blocks confirmations today.
-                            </div>
-                          ) : !item.confirmed ? (
+                          {!item.confirmed ? (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1313,7 +1563,7 @@ export default function TechnicianMyDayPage() {
                             </div>
                           )}
 
-                          {!canConfirm && !holidayBlocks ? (
+                          {!canConfirm ? (
                             <div style={{ fontSize: 12, color: "#999" }}>
                               Only the employee (or Admin/Dispatcher/Manager) can confirm project hours.
                             </div>
@@ -1358,7 +1608,7 @@ export default function TechnicianMyDayPage() {
             >
               <div style={{ fontWeight: 950, fontSize: 16 }}>✅ Confirm Project Trip</div>
               <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                Enter hours spent on this project today. This creates a <strong>locked draft time entry</strong>.
+                Enter hours spent on this project. This creates a <strong>locked draft time entry</strong>.
               </div>
 
               <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
@@ -1392,7 +1642,7 @@ export default function TechnicianMyDayPage() {
                     onChange={(e) => setConfirmNote(e.target.value)}
                     rows={3}
                     disabled={confirmSaving}
-                    placeholder="What did you work on today? (optional)"
+                    placeholder="What did you work on? (optional)"
                     style={{
                       display: "block",
                       width: "100%",

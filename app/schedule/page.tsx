@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   getDocs,
@@ -12,7 +12,6 @@ import {
   getDoc,
   addDoc,
   writeBatch,
-  setDoc,
 } from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -241,10 +240,7 @@ function isTechOnTrip(t: TripDoc, techUid: string) {
 }
 
 function tripRowUids(t: TripDoc): string[] {
-  const uids = [
-    String(t.crew?.primaryTechUid || "").trim(),
-    String(t.crew?.secondaryTechUid || "").trim(),
-  ].filter(Boolean);
+  const uids = [String(t.crew?.primaryTechUid || "").trim(), String(t.crew?.secondaryTechUid || "").trim()].filter(Boolean);
   return Array.from(new Set(uids));
 }
 
@@ -343,24 +339,12 @@ async function createPaidMeetingEntries(args: {
 
   createdByUid: string | null;
 }) {
-  const {
-    eventId,
-    dateIso,
-    title,
-    timeWindow,
-    startTime,
-    endTime,
-    location,
-    appliesToRoles,
-    appliesToUids,
-    createdByUid,
-  } = args;
+  const { eventId, dateIso, title, timeWindow, startTime, endTime, location, appliesToRoles, appliesToUids, createdByUid } = args;
 
   const now = nowIso();
   const hours = defaultMeetingHours(timeWindow, startTime, endTime);
   const { weekStartDate, weekEndDate } = getPayrollWeekBounds(dateIso);
 
-  // Load all active users and filter to applicable recipients
   const usersSnap = await getDocs(collection(db, "users"));
   const recipients = usersSnap.docs
     .map((ds) => {
@@ -374,23 +358,17 @@ async function createPaidMeetingEntries(args: {
     })
     .filter((u) => u.active)
     .filter((u) => {
-      // If appliesToUids specified, it must include the user
-      if (Array.isArray(appliesToUids) && appliesToUids.length > 0) {
-        return appliesToUids.includes(u.uid);
-      }
-      // Otherwise role must match (empty roles list would be "all", but we set it explicitly)
+      if (Array.isArray(appliesToUids) && appliesToUids.length > 0) return appliesToUids.includes(u.uid);
       return appliesToRoles.map((r) => r.toLowerCase()).includes((u.role || "").toLowerCase());
     });
 
   if (recipients.length === 0) return;
 
-  // Batch writes (safe for your scale; chunk if ever needed)
   const batch = writeBatch(db);
 
   for (const u of recipients) {
     const timesheetId = buildWeeklyTimesheetId(u.uid, weekStartDate);
 
-    // timesheet header (merge-safe)
     batch.set(
       doc(db, "weeklyTimesheets", timesheetId),
       {
@@ -412,7 +390,6 @@ async function createPaidMeetingEntries(args: {
       { merge: true }
     );
 
-    // meeting time entry
     const timeEntryId = `meeting_${eventId}_${u.uid}`;
     batch.set(
       doc(db, "timeEntries", timeEntryId),
@@ -530,7 +507,6 @@ function tripBlocksSlot(t: TripDoc, slot: SlotKey) {
   return stMin < slotEnd && etMin > slotStart;
 }
 
-// ✅ Meeting overlaps slot (only if blocksSchedule=true)
 function eventBlocksSlot(e: CompanyEvent, slot: SlotKey) {
   if (!e.active) return false;
   if (!e.blocksSchedule) return false;
@@ -547,12 +523,6 @@ function eventBlocksSlot(e: CompanyEvent, slot: SlotKey) {
 
   const [slotStart, slotEnd] = slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
   return stMin < slotEnd && etMin > slotStart;
-}
-
-function computeSlotAvailability(cellTrips: TripDoc[]) {
-  const amBusy = cellTrips.some((t) => tripBlocksSlot(t, "am"));
-  const pmBusy = cellTrips.some((t) => tripBlocksSlot(t, "pm"));
-  return { amBusy, pmBusy, allBusy: amBusy && pmBusy };
 }
 
 function looksApprovedPto(d: any) {
@@ -596,10 +566,9 @@ function extractPtoDates(d: any): string[] {
   return [];
 }
 
-// ✅ Meeting applicability (role-based, optionally uid-specific)
 function eventAppliesToRoleOrAll(e: CompanyEvent, role: string) {
   const roles = (e.appliesToRoles || []) as string[];
-  if (!roles || roles.length === 0) return true; // treat empty as "all"
+  if (!roles || roles.length === 0) return true;
   return roles.map((x) => String(x).toLowerCase()).includes(String(role || "").toLowerCase());
 }
 
@@ -612,8 +581,7 @@ export default function SchedulePage() {
     appUser?.role === "manager" ||
     appUser?.role === "office_display";
 
-  const canEditSchedule =
-    appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
+  const canEditSchedule = appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
 
   const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => {
@@ -622,6 +590,9 @@ export default function SchedulePage() {
     const mon = startOfWorkWeek(d);
     return toIsoDate(mon);
   });
+
+  const [isMobile, setIsMobile] = useState(false);
+  const didApplyMobileDefaultRef = useRef(false);
 
   // Filters
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
@@ -649,7 +620,7 @@ export default function SchedulePage() {
   const [ptoByUidByDate, setPtoByUidByDate] = useState<Record<string, Record<string, PtoDay>>>({});
   const [ptoNamesByDate, setPtoNamesByDate] = useState<Record<string, string[]>>({});
 
-  // ✅ Meetings/events
+  // Meetings/events
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
   const [eventsByDate, setEventsByDate] = useState<Record<string, CompanyEvent[]>>({});
@@ -670,7 +641,7 @@ export default function SchedulePage() {
   const [addSaving, setAddSaving] = useState(false);
   const [addErr, setAddErr] = useState("");
 
-  // ✅ Add Meeting modal
+  // Add Meeting modal
   const [meetOpen, setMeetOpen] = useState(false);
   const [meetDateIso, setMeetDateIso] = useState("");
   const [meetTitle, setMeetTitle] = useState("");
@@ -729,7 +700,7 @@ export default function SchedulePage() {
     if (holidayByDate[dateIso]) return setAddErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
     if (ptoByUidByDate[techUid]?.[dateIso]) return setAddErr(`That technician is on approved PTO for ${dateIso}.`);
 
-    // ✅ block scheduling if an event blocks this slot
+    // block scheduling if an event blocks this slot
     const todaysEvents = eventsByDate[dateIso] || [];
     const anyBlocking = todaysEvents.some((e) => eventBlocksSlot(e, addSlot));
     if (anyBlocking) return setAddErr(`That slot is blocked by a company meeting/event.`);
@@ -794,7 +765,7 @@ export default function SchedulePage() {
     }
   }
 
-  // ✅ Meeting modal
+  // Meeting modal
   function openMeetingModal(defaultDateIso: string) {
     setMeetErr("");
     setMeetDateIso(defaultDateIso);
@@ -867,19 +838,19 @@ export default function SchedulePage() {
       };
 
       const created = await addDoc(collection(db, "companyEvents"), payload);
-      // ✅ Create paid time entries for everyone this applies to
-await createPaidMeetingEntries({
-  eventId: created.id,
-  dateIso: payload.date,
-  title: payload.title,
-  timeWindow: payload.timeWindow,
-  startTime: payload.startTime,
-  endTime: payload.endTime,
-  location: payload.location,
-  appliesToRoles: payload.appliesToRoles || [],
-  appliesToUids: payload.appliesToUids || [],
-  createdByUid: appUser?.uid || null,
-});
+
+      await createPaidMeetingEntries({
+        eventId: created.id,
+        dateIso: payload.date,
+        title: payload.title,
+        timeWindow: payload.timeWindow,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        location: payload.location,
+        appliesToRoles: payload.appliesToRoles || [],
+        appliesToUids: payload.appliesToUids || [],
+        createdByUid: appUser?.uid || null,
+      });
 
       const newEvent: CompanyEvent = { id: created.id, ...(payload as any) };
       setEventsByDate((prev) => {
@@ -890,8 +861,6 @@ await createPaidMeetingEntries({
         return next;
       });
 
-      
-
       closeMeetingModal();
     } catch (e: any) {
       setMeetErr(e?.message || "Failed to schedule meeting.");
@@ -900,6 +869,25 @@ await createPaidMeetingEntries({
     }
   }
 
+  // ✅ Track mobile
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const mq = window.matchMedia("(max-width: 860px)");
+    const apply = () => setIsMobile(Boolean(mq.matches));
+    apply();
+
+    try {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } catch {
+      // Safari fallback
+      mq.addListener(apply);
+      return () => mq.removeListener(apply);
+    }
+  }, []);
+
+  // Read URL params
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
@@ -922,6 +910,25 @@ await createPaidMeetingEntries({
     }
   }, []);
 
+  // ✅ Mobile default: start in Day view if no explicit ?view=
+  useEffect(() => {
+    if (!isMobile) return;
+    if (didApplyMobileDefaultRef.current) return;
+
+    try {
+      const url = new URL(window.location.href);
+      const v = (url.searchParams.get("view") || "").toLowerCase();
+      if (!v) {
+        setView("day");
+      }
+    } catch {
+      setView("day");
+    }
+
+    didApplyMobileDefaultRef.current = true;
+  }, [isMobile]);
+
+  // Persist URL params
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
@@ -961,50 +968,44 @@ await createPaidMeetingEntries({
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
 
-  // Load holidays in range (unchanged)
+  // ✅ FIXED: Load holidays in range (supports date OR holidayDate)
   useEffect(() => {
     async function loadHolidays() {
       setHolidaysLoading(true);
       setHolidaysError("");
 
       try {
+        // NOTE:
+        // Your holiday docs use holidayDate (screenshot), not date.
+        // Firestore can't "OR" fields in one query easily.
+        // So: fetch active holidays, then normalize + filter in memory.
         let snap;
         try {
-          snap = await getDocs(
-            query(
-              collection(db, "companyHolidays"),
-              where("active", "==", true),
-              where("date", ">=", range.startIso),
-              where("date", "<=", range.endIso),
-              orderBy("date", "asc")
-            )
-          );
+          snap = await getDocs(query(collection(db, "companyHolidays"), where("active", "==", true)));
         } catch {
-          snap = await getDocs(
-            query(
-              collection(db, "companyHolidays"),
-              where("date", ">=", range.startIso),
-              where("date", "<=", range.endIso),
-              orderBy("date", "asc")
-            )
-          );
+          // fallback: all docs
+          snap = await getDocs(collection(db, "companyHolidays"));
         }
 
         const map: Record<string, CompanyHoliday> = {};
+
         for (const ds of snap.docs) {
           const d = ds.data() as any;
-          const date = String(d.date || "").trim();
-          if (!date) continue;
 
-          const holiday: CompanyHoliday = {
+          const active = typeof d.active === "boolean" ? d.active : true;
+          if (!active) continue;
+
+          const rawDate = String(d.date ?? d.holidayDate ?? d.holiday_date ?? "").trim();
+          if (!rawDate || !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) continue;
+
+          if (rawDate < range.startIso || rawDate > range.endIso) continue;
+
+          map[rawDate] = {
             id: ds.id,
-            date,
+            date: rawDate,
             name: String(d.name ?? d.title ?? "Holiday"),
-            active: typeof d.active === "boolean" ? d.active : true,
+            active: true,
           };
-
-          if (holiday.active === false) continue;
-          map[date] = holiday;
         }
 
         setHolidayByDate(map);
@@ -1019,7 +1020,7 @@ await createPaidMeetingEntries({
     loadHolidays();
   }, [range.startIso, range.endIso]);
 
-  // Load PTO in range (unchanged from your working version)
+  // Load PTO in range
   useEffect(() => {
     async function loadPto() {
       setPtoLoading(true);
@@ -1083,7 +1084,7 @@ await createPaidMeetingEntries({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range.startIso, range.endIso, techs.map((t) => t.uid).join("|")]);
 
-  // ✅ Load meetings/events in range
+  // Load meetings/events in range
   useEffect(() => {
     async function loadEvents() {
       setEventsLoading(true);
@@ -1102,7 +1103,6 @@ await createPaidMeetingEntries({
             )
           );
         } catch {
-          // fallback if index isn’t ready
           snap = await getDocs(collection(db, "companyEvents"));
         }
 
@@ -1112,6 +1112,7 @@ await createPaidMeetingEntries({
           const d = ds.data() as any;
           const date = String(d.date || "").trim();
           if (!date) continue;
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
           if (date < range.startIso || date > range.endIso) continue;
 
           const ev: CompanyEvent = {
@@ -1151,6 +1152,7 @@ await createPaidMeetingEntries({
     loadEvents();
   }, [range.startIso, range.endIso]);
 
+  // Load techs
   useEffect(() => {
     async function loadTechs() {
       setTechsLoading(true);
@@ -1181,6 +1183,7 @@ await createPaidMeetingEntries({
     loadTechs();
   }, []);
 
+  // Load trips
   useEffect(() => {
     async function loadTrips() {
       setTripsLoading(true);
@@ -1266,7 +1269,6 @@ await createPaidMeetingEntries({
           missing.map(async (id) => {
             const snap = await getDoc(doc(db, "serviceTickets", id));
             if (!snap.exists()) return;
-
             const d = snap.data() as any;
             next[id] = {
               id,
@@ -1303,7 +1305,6 @@ await createPaidMeetingEntries({
           missing.map(async (id) => {
             const snap = await getDoc(doc(db, "projects", id));
             if (!snap.exists()) return;
-
             const d = snap.data() as any;
             next[id] = { id, name: String(d.name ?? d.projectName ?? d.title ?? "Project") };
           })
@@ -1477,7 +1478,6 @@ await createPaidMeetingEntries({
   function renderHolidayBadge(iso: string) {
     const h = holidayByDate[iso];
     if (!h) return null;
-
     return (
       <span
         style={{
@@ -1555,10 +1555,15 @@ await createPaidMeetingEntries({
   function renderMeetingCard(e: CompanyEvent) {
     const w = String(e.timeWindow || "").toLowerCase();
     const timeLabel =
-      w === "all_day" ? "All Day" :
-      w === "am" ? "AM" :
-      w === "pm" ? "PM" :
-      e.startTime && e.endTime ? `${formatTime12h(String(e.startTime))}–${formatTime12h(String(e.endTime))}` : "Custom";
+      w === "all_day"
+        ? "All Day"
+        : w === "am"
+          ? "AM"
+          : w === "pm"
+            ? "PM"
+            : e.startTime && e.endTime
+              ? `${formatTime12h(String(e.startTime))}–${formatTime12h(String(e.endTime))}`
+              : "Custom";
 
     return (
       <div
@@ -1572,12 +1577,12 @@ await createPaidMeetingEntries({
       >
         <div style={{ fontWeight: 950, color: "#065f46" }}>📣 {e.title}</div>
         <div style={{ marginTop: 4, fontSize: 12, color: "#065f46" }}>
-          {timeLabel}{e.location ? ` • ${e.location}` : ""}{e.blocksSchedule ? " • Blocks schedule" : ""}
+          {timeLabel}
+          {e.location ? ` • ${e.location}` : ""}
+          {e.blocksSchedule ? " • Blocks schedule" : ""}
         </div>
         {e.notes ? (
-          <div style={{ marginTop: 6, fontSize: 12, color: "#064e3b", whiteSpace: "pre-wrap" }}>
-            {e.notes}
-          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#064e3b", whiteSpace: "pre-wrap" }}>{e.notes}</div>
         ) : null}
       </div>
     );
@@ -1596,11 +1601,7 @@ await createPaidMeetingEntries({
     const projectId = String(t.link?.projectId || "").trim();
     const project = projectId ? projectMap[projectId] : undefined;
 
-    const titleText =
-      isService ? (ticket?.issueSummary || "Service Ticket") :
-      isProject ? (project?.name || "Project") :
-      "Trip";
-
+    const titleText = isService ? (ticket?.issueSummary || "Service Ticket") : isProject ? (project?.name || "Project") : "Trip";
     const icon = isService ? "🔧" : isProject ? "📐" : "🧳";
     const timeText = formatTimeRangeForCard(t);
 
@@ -1613,12 +1614,7 @@ await createPaidMeetingEntries({
     const techName = t.crew?.primaryTechName || "";
 
     const prog = isProject ? confirmationProgress(t) : null;
-    const showProgress =
-      isProject &&
-      prog &&
-      prog.requiredCount > 0 &&
-      normalizeStatus(t.status) !== "complete" &&
-      normalizeStatus(t.status) !== "completed";
+    const showProgress = isProject && prog && prog.requiredCount > 0 && !isCompletedStatus(t.status);
 
     return (
       <Link
@@ -1638,9 +1634,7 @@ await createPaidMeetingEntries({
           <div style={{ fontWeight: 900, lineHeight: 1.2 }}>
             {icon} {titleText}
             {showTechName && techName ? (
-              <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 800 }}>
-                • {techName}
-              </span>
+              <span style={{ marginLeft: 8, fontSize: 12, color: "#666", fontWeight: 800 }}>• {techName}</span>
             ) : null}
           </div>
 
@@ -1666,12 +1660,31 @@ await createPaidMeetingEntries({
           </div>
         ) : null}
 
-        {customerLine ? (
-          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div>
-        ) : null}
+        {customerLine ? <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>{customerLine}</div> : null}
       </Link>
     );
   }
+
+  function computeCellAvailability(rowKey: string, iso: string, cellTrips: TripDoc[]) {
+    // base busy from trips
+    const amBusyTrips = cellTrips.some((t) => tripBlocksSlot(t, "am"));
+    const pmBusyTrips = cellTrips.some((t) => tripBlocksSlot(t, "pm"));
+
+    // meetings for that day (we treat rows as technicians here)
+    const meetings = (eventsByDate[iso] || []).filter((e) => eventAppliesToRoleOrAll(e, "technician"));
+    const amBusyMeet = meetings.some((e) => eventBlocksSlot(e, "am"));
+    const pmBusyMeet = meetings.some((e) => eventBlocksSlot(e, "pm"));
+
+    const holiday = Boolean(holidayByDate[iso]);
+    const pto = rowKey !== "UNASSIGNED" ? Boolean(ptoByUidByDate[rowKey]?.[iso]) : false;
+
+    const amBusy = amBusyTrips || amBusyMeet || holiday || pto;
+    const pmBusy = pmBusyTrips || pmBusyMeet || holiday || pto;
+
+    return { amBusy, pmBusy, allBusy: amBusy && pmBusy, meetings };
+  }
+
+  const monthWeeksSafe = useMemo(() => (view === "month" ? monthWeeks : []), [view, monthWeeks]);
 
   return (
     <ProtectedPage fallbackTitle="Schedule">
@@ -1679,23 +1692,14 @@ await createPaidMeetingEntries({
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0 }}>{titleText}</h1>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-              Week/Day = Technician rows. Month = Calendar grid (Mon–Fri).
-            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>Week/Day = Technician rows. Month = Calendar grid (Mon–Fri).</div>
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <button
               type="button"
               onClick={goPrev}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-                fontWeight: 800,
-              }}
+              style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer", fontWeight: 800 }}
             >
               ← Prev
             </button>
@@ -1703,14 +1707,7 @@ await createPaidMeetingEntries({
             <button
               type="button"
               onClick={goToday}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-                fontWeight: 800,
-              }}
+              style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer", fontWeight: 800 }}
             >
               Today
             </button>
@@ -1718,31 +1715,16 @@ await createPaidMeetingEntries({
             <button
               type="button"
               onClick={goNext}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-                fontWeight: 800,
-              }}
+              style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer", fontWeight: 800 }}
             >
               Next →
             </button>
 
-            {/* ✅ Add Meeting */}
             {canEditSchedule ? (
               <button
                 type="button"
                 onClick={() => openMeetingModal(range.startIso)}
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #065f46",
-                  borderRadius: 10,
-                  background: "#ecfdf5",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
+                style={{ padding: "8px 12px", border: "1px solid #065f46", borderRadius: 10, background: "#ecfdf5", cursor: "pointer", fontWeight: 900 }}
                 title="Schedule a company meeting"
               >
                 ➕ Meeting
@@ -1755,42 +1737,21 @@ await createPaidMeetingEntries({
               <button
                 type="button"
                 onClick={() => setView("day")}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                  background: view === "day" ? "white" : "#f5f5f5",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
+                style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: view === "day" ? "white" : "#f5f5f5", cursor: "pointer", fontWeight: 900 }}
               >
                 Day
               </button>
               <button
                 type="button"
                 onClick={() => setView("week")}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                  background: view === "week" ? "white" : "#f5f5f5",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
+                style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: view === "week" ? "white" : "#f5f5f5", cursor: "pointer", fontWeight: 900 }}
               >
                 Week
               </button>
               <button
                 type="button"
                 onClick={() => setView("month")}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                  background: view === "month" ? "white" : "#f5f5f5",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
+                style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: view === "month" ? "white" : "#f5f5f5", cursor: "pointer", fontWeight: 900 }}
               >
                 Month
               </button>
@@ -1814,11 +1775,7 @@ await createPaidMeetingEntries({
         >
           <div style={{ display: "grid", gap: 6 }}>
             <div style={{ fontSize: 12, color: "#666", fontWeight: 800 }}>Technician</div>
-            <select
-              value={techFilter}
-              onChange={(e) => setTechFilter(e.target.value)}
-              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: "white" }}
-            >
+            <select value={techFilter} onChange={(e) => setTechFilter(e.target.value)} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: "white" }}>
               <option value="ALL">All</option>
               <option value="UNASSIGNED">Unassigned</option>
               {techs.map((t) => (
@@ -1831,11 +1788,7 @@ await createPaidMeetingEntries({
 
           <div style={{ display: "grid", gap: 6 }}>
             <div style={{ fontSize: 12, color: "#666", fontWeight: 800 }}>Status</div>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: "white" }}
-            >
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", background: "white" }}>
               <option value="ALL">All</option>
               <option value="planned">planned</option>
               <option value="in_progress">in_progress</option>
@@ -1875,28 +1828,15 @@ await createPaidMeetingEntries({
               </div>
 
               <div style={{ display: "grid", gap: 0 }}>
-                {monthWeeks.map((week, idx) => (
-                  <div
-                    key={`week-${idx}`}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(5, 1fr)",
-                      borderTop: "1px solid #eee",
-                      minHeight: 140,
-                    }}
-                  >
+                {monthWeeksSafe.map((week, idx) => (
+                  <div key={`week-${idx}`} style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", borderTop: "1px solid #eee", minHeight: 140 }}>
                     {week.map((cellDate, cIdx) => {
                       if (!cellDate) {
-                        return (
-                          <div
-                            key={`empty-${idx}-${cIdx}`}
-                            style={{ borderRight: "1px solid #eee", padding: 10, background: "#fbfbfb" }}
-                          />
-                        );
+                        return <div key={`empty-${idx}-${cIdx}`} style={{ borderRight: "1px solid #eee", padding: 10, background: "#fbfbfb" }} />;
                       }
 
                       const iso = toIsoDate(cellDate);
-                      const dayTrips = tripsByDate[iso] || [];
+                      const dayTrips = (filteredTrips || []).filter((t) => String(t.date || "") === iso);
                       const h = holidayByDate[iso];
                       const ptoNames = ptoNamesByDate[iso] || [];
                       const meets = eventsByDate[iso] || [];
@@ -1916,28 +1856,16 @@ await createPaidMeetingEntries({
                             <div style={{ fontSize: 11, color: "#777" }}>{iso}</div>
                           </div>
 
-                          {h ? (
-                            <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00", fontWeight: 900 }}>
-                              🎉 {h.name}
-                            </div>
-                          ) : null}
-
+                          {h ? <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00", fontWeight: 900 }}>🎉 {h.name}</div> : null}
                           {ptoNames.length ? (
                             <div style={{ marginTop: 6, fontSize: 12, color: "#5b21b6", fontWeight: 900 }}>
                               🏖️ PTO: {ptoNames.length === 1 ? ptoNames[0] : `${ptoNames.length} employees`}
                             </div>
                           ) : null}
-
-                          {meets.length ? (
-                            <div style={{ marginTop: 6, fontSize: 12, color: "#065f46", fontWeight: 900 }}>
-                              📣 Meetings: {meets.length}
-                            </div>
-                          ) : null}
+                          {meets.length ? <div style={{ marginTop: 6, fontSize: 12, color: "#065f46", fontWeight: 900 }}>📣 Meetings: {meets.length}</div> : null}
 
                           {dayTrips.length === 0 ? (
-                            <div style={{ marginTop: 8, fontSize: 12, color: "#bbb" }}>
-                              {h ? "Holiday" : ptoNames.length ? "PTO" : meets.length ? "Meeting(s)" : "—"}
-                            </div>
+                            <div style={{ marginTop: 8, fontSize: 12, color: "#bbb" }}>{h ? "Holiday" : ptoNames.length ? "PTO" : meets.length ? "Meeting(s)" : "—"}</div>
                           ) : (
                             <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                               {(eventsByDate[iso] || []).slice(0, 2).map(renderMeetingCard)}
@@ -1945,9 +1873,7 @@ await createPaidMeetingEntries({
                                 const showTechName = techFilter === "ALL";
                                 return renderTripCard(t, { showTechName });
                               })}
-                              {dayTrips.length > 6 ? (
-                                <div style={{ fontSize: 12, color: "#777" }}>+{dayTrips.length - 6} more…</div>
-                              ) : null}
+                              {dayTrips.length > 6 ? <div style={{ fontSize: 12, color: "#777" }}>+{dayTrips.length - 6} more…</div> : null}
                             </div>
                           )}
                         </div>
@@ -1962,115 +1888,62 @@ await createPaidMeetingEntries({
 
         {/* WEEK + DAY VIEWS */}
         {!loading && view !== "month" ? (
-          <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
-              <thead>
-                <tr style={{ background: "#fafafa" }}>
-                  <th
-                    style={{
-                      position: "sticky",
-                      left: 0,
-                      zIndex: 2,
-                      textAlign: "left",
-                      padding: 10,
-                      borderBottom: "1px solid #eee",
-                      width: 220,
-                    }}
-                  >
-                    Technician
-                  </th>
+          <>
+            {/* ✅ Mobile-friendly agenda layout */}
+            {isMobile ? (
+              <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+                {daysForWeekOrDay.map((d) => {
+                  const iso = toIsoDate(d);
+                  const holiday = holidayByDate[iso];
+                  const ptoNames = ptoNamesByDate[iso] || [];
+                  const meets = eventsByDate[iso] || [];
 
-                  {daysForWeekOrDay.map((d) => {
-                    const iso = toIsoDate(d);
-                    const h = holidayByDate[iso];
-                    return (
-                      <th
-                        key={iso}
+                  return (
+                    <div key={iso} style={{ border: "1px solid #ddd", borderRadius: 14, background: "white", overflow: "hidden" }}>
+                      <div
                         style={{
-                          textAlign: "left",
-                          padding: 10,
+                          padding: 12,
                           borderBottom: "1px solid #eee",
-                          minWidth: 260,
-                          background: h ? "#fffaf0" : "#fafafa",
+                          background: holiday ? "#fffaf0" : ptoNames.length ? "#faf5ff" : meets.length ? "#f0fdf4" : "#fafafa",
                         }}
                       >
-                        <div style={{ fontWeight: 900, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-                          {formatDow(d)}
+                        <div style={{ fontWeight: 950, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                          {formatDow(d)} <span style={{ color: "#666", fontWeight: 800 }}>{iso}</span>
                           {renderHolidayBadge(iso)}
                           {renderPtoBadgeSmall(iso)}
                           {renderMeetingsBadgeSmall(iso)}
                         </div>
-                        <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
+                      </div>
 
-              <tbody>
-                {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={1 + daysForWeekOrDay.length} style={{ padding: 14, color: "#666" }}>
-                      No matching technicians/trips.
-                    </td>
-                  </tr>
-                ) : (
-                  rows.map((r) => {
-                    const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+                      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+                        {rows.map((r) => {
+                          const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
 
-                    return (
-                      <tr key={r.key}>
-                        <td
-                          style={{
-                            position: "sticky",
-                            left: 0,
-                            zIndex: 1,
-                            background: "white",
-                            borderBottom: "1px solid #f0f0f0",
-                            padding: 10,
-                            fontWeight: 900,
-                            width: 220,
-                          }}
-                        >
-                          {r.label}
-                        </td>
-
-                        {daysForWeekOrDay.map((d) => {
-                          const iso = toIsoDate(d);
+                          // On mobile/day view, respect tech filter naturally because rows already reflect it.
                           const cellTrips = grid.get(rowKey)?.get(iso) || [];
-                          const avail = computeSlotAvailability(cellTrips);
-
-                          const holiday = holidayByDate[iso];
                           const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
 
-                          const meetings = (eventsByDate[iso] || []).filter((e) =>
-                            eventAppliesToRoleOrAll(e, "technician")
-                          );
-
-                          const meetingsBlockAm = meetings.some((e) => eventBlocksSlot(e, "am"));
-                          const meetingsBlockPm = meetings.some((e) => eventBlocksSlot(e, "pm"));
-
-                          const amBusy = avail.amBusy || meetingsBlockAm;
-                          const pmBusy = avail.pmBusy || meetingsBlockPm;
-                          const allBusy = amBusy && pmBusy;
+                          const { amBusy, pmBusy, allBusy, meetings } = computeCellAvailability(rowKey, iso, cellTrips);
 
                           const canShowPlus =
                             canEditSchedule &&
                             rowKey !== "UNASSIGNED" &&
-                            !allBusy &&
                             !holiday &&
-                            !pto;
+                            !pto &&
+                            !allBusy;
 
                           return (
-                            <td
-                              key={`${r.key}_${iso}`}
+                            <div
+                              key={`${rowKey}_${iso}`}
                               style={{
-                                verticalAlign: "top",
-                                borderBottom: "1px solid #f0f0f0",
-                                padding: 10,
+                                border: "1px solid #eee",
+                                borderRadius: 14,
+                                padding: 12,
                                 background: holiday ? "#fffaf0" : pto ? "#faf5ff" : meetings.length ? "#f0fdf4" : "white",
                               }}
                             >
+                              <div style={{ fontWeight: 950, marginBottom: 8 }}>{r.label}</div>
+
                               {holiday ? (
                                 <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 900, color: "#7a4b00" }}>
                                   🎉 {holiday.name}
@@ -2084,32 +1957,29 @@ await createPaidMeetingEntries({
                               ) : null}
 
                               {meetings.length ? (
-                                <div style={{ marginBottom: 8, display: "grid", gap: 8 }}>
+                                <div style={{ marginBottom: 10, display: "grid", gap: 8 }}>
                                   {meetings.slice(0, 2).map(renderMeetingCard)}
                                   {meetings.length > 2 ? (
-                                    <div style={{ fontSize: 12, color: "#065f46", fontWeight: 900 }}>
-                                      +{meetings.length - 2} more meeting(s)
-                                    </div>
+                                    <div style={{ fontSize: 12, color: "#065f46", fontWeight: 900 }}>+{meetings.length - 2} more meeting(s)</div>
                                   ) : null}
                                 </div>
                               ) : null}
 
                               {canShowPlus ? (
-                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                                   {!amBusy ? (
                                     <button
                                       type="button"
                                       onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
                                       style={{
-                                        padding: "6px 8px",
-                                        borderRadius: 10,
+                                        padding: "8px 10px",
+                                        borderRadius: 12,
                                         border: "1px solid #c6dbff",
                                         background: "#eaf2ff",
                                         cursor: "pointer",
-                                        fontWeight: 900,
+                                        fontWeight: 950,
                                         fontSize: 12,
                                       }}
-                                      title="Add AM trip"
                                     >
                                       + AM
                                     </button>
@@ -2120,15 +1990,14 @@ await createPaidMeetingEntries({
                                       type="button"
                                       onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
                                       style={{
-                                        padding: "6px 8px",
-                                        borderRadius: 10,
+                                        padding: "8px 10px",
+                                        borderRadius: 12,
                                         border: "1px solid #c6dbff",
                                         background: "#eaf2ff",
                                         cursor: "pointer",
-                                        fontWeight: 900,
+                                        fontWeight: 950,
                                         fontSize: 12,
                                       }}
-                                      title="Add PM trip"
                                     >
                                       + PM
                                     </button>
@@ -2137,33 +2006,211 @@ await createPaidMeetingEntries({
                               ) : null}
 
                               {cellTrips.length === 0 ? (
-                                <div style={{ color: "#bbb", fontSize: 12 }}>
+                                <div style={{ color: "#999", fontSize: 12 }}>
                                   {holiday ? "Holiday" : pto ? "PTO" : meetings.length ? "Meeting(s)" : "—"}
                                 </div>
                               ) : (
-                                <div style={{ display: "grid", gap: 8 }}>
+                                <div style={{ display: "grid", gap: 10 }}>
                                   {cellTrips.map((t) => renderTripCard(t))}
                                 </div>
                               )}
-                            </td>
+                            </div>
                           );
                         })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              // ✅ Desktop table layout (unchanged)
+              <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
+                  <thead>
+                    <tr style={{ background: "#fafafa" }}>
+                      <th
+                        style={{
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 2,
+                          textAlign: "left",
+                          padding: 10,
+                          borderBottom: "1px solid #eee",
+                          width: 220,
+                        }}
+                      >
+                        Technician
+                      </th>
+
+                      {daysForWeekOrDay.map((d) => {
+                        const iso = toIsoDate(d);
+                        const h = holidayByDate[iso];
+                        return (
+                          <th
+                            key={iso}
+                            style={{
+                              textAlign: "left",
+                              padding: 10,
+                              borderBottom: "1px solid #eee",
+                              minWidth: 260,
+                              background: h ? "#fffaf0" : "#fafafa",
+                            }}
+                          >
+                            <div style={{ fontWeight: 900, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                              {formatDow(d)}
+                              {renderHolidayBadge(iso)}
+                              {renderPtoBadgeSmall(iso)}
+                              {renderMeetingsBadgeSmall(iso)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#666" }}>{iso}</div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={1 + daysForWeekOrDay.length} style={{ padding: 14, color: "#666" }}>
+                          No matching technicians/trips.
+                        </td>
                       </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+                    ) : (
+                      rows.map((r) => {
+                        const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+
+                        return (
+                          <tr key={r.key}>
+                            <td
+                              style={{
+                                position: "sticky",
+                                left: 0,
+                                zIndex: 1,
+                                background: "white",
+                                borderBottom: "1px solid #f0f0f0",
+                                padding: 10,
+                                fontWeight: 900,
+                                width: 220,
+                              }}
+                            >
+                              {r.label}
+                            </td>
+
+                            {daysForWeekOrDay.map((d) => {
+                              const iso = toIsoDate(d);
+                              const cellTrips = grid.get(rowKey)?.get(iso) || [];
+
+                              const holiday = holidayByDate[iso];
+                              const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
+
+                              const { amBusy, pmBusy, allBusy, meetings } = computeCellAvailability(rowKey, iso, cellTrips);
+
+                              const canShowPlus = canEditSchedule && rowKey !== "UNASSIGNED" && !allBusy && !holiday && !pto;
+
+                              return (
+                                <td
+                                  key={`${r.key}_${iso}`}
+                                  style={{
+                                    verticalAlign: "top",
+                                    borderBottom: "1px solid #f0f0f0",
+                                    padding: 10,
+                                    background: holiday ? "#fffaf0" : pto ? "#faf5ff" : meetings.length ? "#f0fdf4" : "white",
+                                  }}
+                                >
+                                  {holiday ? (
+                                    <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 900, color: "#7a4b00" }}>
+                                      🎉 {holiday.name}
+                                    </div>
+                                  ) : null}
+
+                                  {pto ? (
+                                    <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 950, color: "#5b21b6" }}>
+                                      🏖️ PTO (Approved){pto.hours ? ` • ${pto.hours}h` : ""}
+                                    </div>
+                                  ) : null}
+
+                                  {meetings.length ? (
+                                    <div style={{ marginBottom: 8, display: "grid", gap: 8 }}>
+                                      {meetings.slice(0, 2).map(renderMeetingCard)}
+                                      {meetings.length > 2 ? (
+                                        <div style={{ fontSize: 12, color: "#065f46", fontWeight: 900 }}>
+                                          +{meetings.length - 2} more meeting(s)
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+
+                                  {canShowPlus ? (
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                                      {!amBusy ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
+                                          style={{
+                                            padding: "6px 8px",
+                                            borderRadius: 10,
+                                            border: "1px solid #c6dbff",
+                                            background: "#eaf2ff",
+                                            cursor: "pointer",
+                                            fontWeight: 900,
+                                            fontSize: 12,
+                                          }}
+                                          title="Add AM trip"
+                                        >
+                                          + AM
+                                        </button>
+                                      ) : null}
+
+                                      {!pmBusy ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
+                                          style={{
+                                            padding: "6px 8px",
+                                            borderRadius: 10,
+                                            border: "1px solid #c6dbff",
+                                            background: "#eaf2ff",
+                                            cursor: "pointer",
+                                            fontWeight: 900,
+                                            fontSize: 12,
+                                          }}
+                                          title="Add PM trip"
+                                        >
+                                          + PM
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+
+                                  {cellTrips.length === 0 ? (
+                                    <div style={{ color: "#bbb", fontSize: 12 }}>
+                                      {holiday ? "Holiday" : pto ? "PTO" : meetings.length ? "Meeting(s)" : "—"}
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: "grid", gap: 8 }}>
+                                      {cellTrips.map((t) => renderTripCard(t))}
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         ) : null}
 
         {!canSeeAll ? (
-          <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>
-            Note: We can restrict visibility later if you want role-based schedule access.
-          </div>
+          <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>Note: We can restrict visibility later if you want role-based schedule access.</div>
         ) : null}
 
-        {/* Add Trip Modal (unchanged) */}
+        {/* Add Trip Modal */}
         {addOpen ? (
           <div
             onClick={() => closeAddModal()}
@@ -2191,8 +2238,8 @@ await createPaidMeetingEntries({
             >
               <div style={{ fontWeight: 950, fontSize: 16 }}>➕ Schedule Trip</div>
               <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong> • Date:{" "}
-                <strong>{addDateIso}</strong> • Slot: <strong>{addSlot.toUpperCase()}</strong>
+                Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong> • Date: <strong>{addDateIso}</strong> • Slot:{" "}
+                <strong>{addSlot.toUpperCase()}</strong>
               </div>
 
               <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
@@ -2218,9 +2265,7 @@ await createPaidMeetingEntries({
                 </div>
 
                 <div>
-                  <label style={{ fontSize: 12, fontWeight: 900 }}>
-                    {addTripType === "service" ? "Service Ticket ID" : "Project ID"}
-                  </label>
+                  <label style={{ fontSize: 12, fontWeight: 900 }}>{addTripType === "service" ? "Service Ticket ID" : "Project ID"}</label>
                   <input
                     value={addLinkId}
                     onChange={(e) => setAddLinkId(e.target.value)}
@@ -2235,9 +2280,7 @@ await createPaidMeetingEntries({
                       marginTop: 6,
                     }}
                   />
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                    V1 is “paste the ID”. Next upgrade can be a searchable picker.
-                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>V1 is “paste the ID”. Next upgrade can be a searchable picker.</div>
                 </div>
 
                 <div>
@@ -2299,7 +2342,7 @@ await createPaidMeetingEntries({
           </div>
         ) : null}
 
-        {/* ✅ Meeting Modal */}
+        {/* Meeting Modal */}
         {meetOpen ? (
           <div
             onClick={() => closeMeetingModal()}
@@ -2464,15 +2507,8 @@ await createPaidMeetingEntries({
                 </div>
 
                 <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={meetBlocks}
-                    onChange={(e) => setMeetBlocks(e.target.checked)}
-                    disabled={meetSaving}
-                  />
-                  <span style={{ fontSize: 13, fontWeight: 900 }}>
-                    Block schedule during this meeting
-                  </span>
+                  <input type="checkbox" checked={meetBlocks} onChange={(e) => setMeetBlocks(e.target.checked)} disabled={meetSaving} />
+                  <span style={{ fontSize: 13, fontWeight: 900 }}>Block schedule during this meeting</span>
                 </label>
 
                 {meetErr ? <div style={{ fontSize: 12, color: "red" }}>{meetErr}</div> : null}
