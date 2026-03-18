@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import LogoutButton from "./LogoutButton";
 import type { AppUser } from "../src/types/app-user";
@@ -155,9 +155,11 @@ function pickLatestTrip(trips: TripDoc[]) {
 }
 
 /**
- * Realtime “find my in_progress trip”.
- * We listen to 4 small queries (crew slot fields) and dedupe results.
- * Instant status updates, no polling.
+ * ✅ Realtime “find my in_progress trip”.
+ * We listen to 4 small queries (crew slot fields), dedupe results,
+ * AND (critical) remove trips that no longer match queries.
+ *
+ * This fixes the “pill stays until navigation” issue.
  */
 function useRealtimeActiveTrip(uid: string) {
   const [trip, setTrip] = useState<TripDoc | null>(null);
@@ -172,13 +174,38 @@ function useRealtimeActiveTrip(uid: string) {
     const base = collection(db, "trips");
 
     const qs = [
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.primaryTechUid", "==", u), limit(10)),
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.helperUid", "==", u), limit(10)),
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.secondaryTechUid", "==", u), limit(10)),
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.secondaryHelperUid", "==", u), limit(10)),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.primaryTechUid", "==", u),
+        limit(10)
+      ),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.helperUid", "==", u),
+        limit(10)
+      ),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.secondaryTechUid", "==", u),
+        limit(10)
+      ),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.secondaryHelperUid", "==", u),
+        limit(10)
+      ),
     ];
 
     const map = new Map<string, TripDoc>();
+    const idsByQuery = qs.map(() => new Set<string>());
 
     function upsertFromDoc(id: string, d: any) {
       map.set(id, {
@@ -201,47 +228,47 @@ function useRealtimeActiveTrip(uid: string) {
       });
     }
 
-    function removeMissing(currentIds: Set<string>) {
-      // Keep anything that still appears in at least one snapshot
-      for (const key of Array.from(map.keys())) {
-        if (!currentIds.has(key)) map.delete(key);
+    function recompute() {
+      // Union of all current snapshot IDs
+      const union = new Set<string>();
+      for (const s of idsByQuery) for (const id of s) union.add(id);
+
+      // Remove anything no longer in any query snapshot
+      for (const id of Array.from(map.keys())) {
+        if (!union.has(id)) map.delete(id);
       }
+
+      const chosen = pickLatestTrip(Array.from(map.values()));
+      setTrip(chosen);
     }
 
     const unsubs: Unsubscribe[] = [];
-    const lastSeenIds = new Set<string>();
 
-    qs.forEach((q) => {
+    qs.forEach((q, idx) => {
       const unsub = onSnapshot(
         q,
         (snap) => {
-          // For this snapshot, capture current IDs for this query
           const idsThisSnap = new Set<string>();
           snap.docs.forEach((ds) => {
             idsThisSnap.add(ds.id);
-            lastSeenIds.add(ds.id);
             upsertFromDoc(ds.id, ds.data() as any);
           });
 
-          // We can't safely delete based on one query alone (trip might match another crew slot).
-          // So we do a lightweight recompute: only delete if a trip is not present in ANY query results
-          // by rebuilding a “still present” set across all active snapshots.
-          // Practical approach: don’t aggressively delete; instead recompute selection from current map.
-          const chosen = pickLatestTrip(Array.from(map.values()));
-          setTrip(chosen);
+          idsByQuery[idx] = idsThisSnap;
+          recompute();
         },
         () => {
-          // ignore errors; if snapshots fail, pill won’t show
-          setTrip((prev) => prev);
+          // If one query errors, don't crash UI; keep current state
+          recompute();
         }
       );
       unsubs.push(unsub);
     });
 
     return () => {
-      unsubs.forEach((u) => u());
+      unsubs.forEach((fn) => fn());
       map.clear();
-      removeMissing(lastSeenIds);
+      setTrip(null);
     };
   }, [uid]);
 
@@ -612,58 +639,58 @@ export default function AppShell({
     </>
   );
 
-const mobileTabs = (
-  <div
-    style={{
-      position: "fixed",
-      bottom: 0,
-      left: 0,
-      right: 0,
-      height: 64,
-      background: "white",
-      borderTop: "1px solid #eaeaea",
-      zIndex: 9997,
-      display: "grid",
-      gridTemplateColumns: "repeat(4, 1fr)", // ✅ was 5
-    }}
-  >
-    <button
-      type="button"
-      onClick={() => router.push("/technician/my-day")}
-      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+  const mobileTabs = (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 64,
+        background: "white",
+        borderTop: "1px solid #eaeaea",
+        zIndex: 9997,
+        display: "grid",
+        gridTemplateColumns: "repeat(4, 1fr)", // ✅ was 5
+      }}
     >
-      <div style={{ fontSize: 18 }}>📅</div>
-      <div style={{ fontSize: 11 }}>My Day</div>
-    </button>
+      <button
+        type="button"
+        onClick={() => router.push("/technician/my-day")}
+        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+      >
+        <div style={{ fontSize: 18 }}>📅</div>
+        <div style={{ fontSize: 11 }}>My Day</div>
+      </button>
 
-    <button
-      type="button"
-      onClick={() => router.push("/schedule")}
-      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-    >
-      <div style={{ fontSize: 18 }}>🗓️</div>
-      <div style={{ fontSize: 11 }}>Schedule</div>
-    </button>
+      <button
+        type="button"
+        onClick={() => router.push("/schedule")}
+        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+      >
+        <div style={{ fontSize: 18 }}>🗓️</div>
+        <div style={{ fontSize: 11 }}>Schedule</div>
+      </button>
 
-    <button
-      type="button"
-      onClick={() => router.push("/service-tickets")}
-      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-    >
-      <div style={{ fontSize: 18 }}>🧾</div>
-      <div style={{ fontSize: 11 }}>Tickets</div>
-    </button>
+      <button
+        type="button"
+        onClick={() => router.push("/service-tickets")}
+        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+      >
+        <div style={{ fontSize: 18 }}>🧾</div>
+        <div style={{ fontSize: 11 }}>Tickets</div>
+      </button>
 
-    <button
-      type="button"
-      onClick={() => setDrawerOpen(true)}
-      style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-    >
-      <div style={{ fontSize: 18 }}>☰</div>
-      <div style={{ fontSize: 11 }}>More</div>
-    </button>
-  </div>
-);
+      <button
+        type="button"
+        onClick={() => setDrawerOpen(true)}
+        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+      >
+        <div style={{ fontSize: 18 }}>☰</div>
+        <div style={{ fontSize: 11 }}>More</div>
+      </button>
+    </div>
+  );
 
   const pillTheme = useMemo(() => {
     // running = green, paused = orange
@@ -738,7 +765,7 @@ const mobileTabs = (
                 {pill.statusLabel} • {liveMinutes} min
               </div>
               <div style={{ fontWeight: 900, color: "rgba(255,255,255,0.92)", fontSize: 11, whiteSpace: "nowrap" }}>
-                Tap to return →
+                Tap to return
               </div>
             </div>
 
