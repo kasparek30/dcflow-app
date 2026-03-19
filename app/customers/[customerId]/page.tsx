@@ -1,3 +1,4 @@
+// app/customers/[customerId]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -63,15 +64,65 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function safeStr(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function isAppleDevice() {
+  if (typeof window === "undefined") return false;
+  const ua = window.navigator.userAgent || "";
+  return /iPhone|iPad|iPod/i.test(ua);
+}
+
+function buildMapsUrl(address: string) {
+  const q = encodeURIComponent(address);
+  if (isAppleDevice()) return `https://maps.apple.com/?q=${q}`;
+  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+}
+
 export default function CustomerDetailPage({ params }: CustomerDetailPageProps) {
   const { appUser } = useAuthContext();
   const router = useRouter();
 
+  const canCreateTicket =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager";
+
+  const canEditCustomer =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager" ||
+    appUser?.role === "billing";
+
   const [loading, setLoading] = useState(true);
   const [customerId, setCustomerId] = useState("");
   const [customer, setCustomer] = useState<Customer | null>(null);
+  const [rawCustomer, setRawCustomer] = useState<any>(null);
   const [error, setError] = useState("");
 
+  // ✅ Editable customer fields (Contact + Billing)
+  const [editSaving, setEditSaving] = useState(false);
+  const [editErr, setEditErr] = useState("");
+  const [editOk, setEditOk] = useState("");
+
+  const [editDisplayName, setEditDisplayName] = useState("");
+  const [editPhonePrimary, setEditPhonePrimary] = useState("");
+  const [editPhoneSecondary, setEditPhoneSecondary] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+
+  const [editBillLine1, setEditBillLine1] = useState("");
+  const [editBillLine2, setEditBillLine2] = useState("");
+  const [editBillCity, setEditBillCity] = useState("");
+  const [editBillState, setEditBillState] = useState("");
+  const [editBillPostal, setEditBillPostal] = useState("");
+
+  // ✅ QBO sync UI
+  const [qboSyncing, setQboSyncing] = useState(false);
+  const [qboSyncErr, setQboSyncErr] = useState("");
+  const [qboSyncOk, setQboSyncOk] = useState("");
+
+  // ✅ Add Service Address state
   const [savingAddress, setSavingAddress] = useState(false);
   const [serviceAddressError, setServiceAddressError] = useState("");
 
@@ -84,6 +135,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [serviceNotes, setServiceNotes] = useState("");
   const [serviceIsPrimary, setServiceIsPrimary] = useState(false);
 
+  // ✅ Call logs
   const [callLogsLoading, setCallLogsLoading] = useState(true);
   const [callLogs, setCallLogs] = useState<CallLogItem[]>([]);
   const [callLogError, setCallLogError] = useState("");
@@ -102,12 +154,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [followUpNeeded, setFollowUpNeeded] = useState(false);
   const [followUpNote, setFollowUpNote] = useState("");
 
-  // ✅ New Service Ticket state
-  const canCreateTicket =
-    appUser?.role === "admin" ||
-    appUser?.role === "dispatcher" ||
-    appUser?.role === "manager";
-
+  // ✅ Create Ticket state
   const [ticketSaving, setTicketSaving] = useState(false);
   const [ticketError, setTicketError] = useState("");
   const [issueSummary, setIssueSummary] = useState("");
@@ -115,6 +162,9 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState("60");
   const [selectedAddressKey, setSelectedAddressKey] = useState("");
 
+  // -----------------------------
+  // Load Customer
+  // -----------------------------
   useEffect(() => {
     async function loadCustomer() {
       try {
@@ -132,22 +182,71 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         }
 
         const data = snap.data();
+        setRawCustomer(data);
+
+        // NOTE: Your app currently has two schemas in the wild.
+        // Old schema: displayName, phonePrimary, billingAddressLine1, etc.
+        // New QBO schema: customerDisplayName/displayName, phone/email, billAddrLine1, etc.
+        const displayName =
+          safeStr((data as any).displayName) ||
+          safeStr((data as any).customerDisplayName) ||
+          safeStr((data as any).qboDisplayName) ||
+          "";
+
+        const phonePrimary =
+          safeStr((data as any).phonePrimary) ||
+          safeStr((data as any).phone) ||
+          "";
+
+        const phoneSecondary = safeStr((data as any).phoneSecondary) || "";
+
+        const email =
+          safeStr((data as any).email) ||
+          "";
+
+        const billingAddressLine1 =
+          safeStr((data as any).billingAddressLine1) ||
+          safeStr((data as any).billAddrLine1) ||
+          "";
+
+        const billingAddressLine2 =
+          safeStr((data as any).billingAddressLine2) ||
+          safeStr((data as any).billAddrLine2) ||
+          safeStr((data as any).billAddrLine3) ||
+          "";
+
+        const billingCity =
+          safeStr((data as any).billingCity) ||
+          safeStr((data as any).billAddrCity) ||
+          "";
+
+        const billingState =
+          safeStr((data as any).billingState) ||
+          safeStr((data as any).billAddrState) ||
+          "";
+
+        const billingPostalCode =
+          safeStr((data as any).billingPostalCode) ||
+          safeStr((data as any).billAddrPostalCode) ||
+          "";
 
         const item: Customer = {
           id: snap.id,
-          quickbooksCustomerId: data.quickbooksCustomerId ?? undefined,
-          source: data.source ?? "dcflow",
-          displayName: data.displayName ?? "",
-          phonePrimary: data.phonePrimary ?? "",
-          phoneSecondary: data.phoneSecondary ?? undefined,
-          email: data.email ?? undefined,
-          billingAddressLine1: data.billingAddressLine1 ?? "",
-          billingAddressLine2: data.billingAddressLine2 ?? undefined,
-          billingCity: data.billingCity ?? "",
-          billingState: data.billingState ?? "",
-          billingPostalCode: data.billingPostalCode ?? "",
-          serviceAddresses: Array.isArray(data.serviceAddresses)
-            ? data.serviceAddresses.map((addr: any) => ({
+          quickbooksCustomerId: (data as any).quickbooksCustomerId ?? (data as any).qboCustomerId ?? undefined,
+          source: (data as any).source ?? "dcflow",
+          displayName,
+          phonePrimary,
+          phoneSecondary: phoneSecondary || undefined,
+          email: email || undefined,
+
+          billingAddressLine1,
+          billingAddressLine2: billingAddressLine2 || undefined,
+          billingCity,
+          billingState,
+          billingPostalCode,
+
+          serviceAddresses: Array.isArray((data as any).serviceAddresses)
+            ? (data as any).serviceAddresses.map((addr: any) => ({
                 id: addr.id ?? crypto.randomUUID(),
                 label: addr.label ?? undefined,
                 addressLine1: addr.addressLine1 ?? "",
@@ -162,17 +261,26 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 updatedAt: addr.updatedAt ?? undefined,
               }))
             : [],
-          notes: data.notes ?? undefined,
-          active: data.active ?? true,
+
+          notes: (data as any).notes ?? undefined,
+          active: (data as any).active ?? true,
         };
 
         setCustomer(item);
+
+        // Seed edit controls
+        setEditDisplayName(item.displayName || "");
+        setEditPhonePrimary(item.phonePrimary || "");
+        setEditPhoneSecondary(item.phoneSecondary || "");
+        setEditEmail(item.email || "");
+
+        setEditBillLine1(item.billingAddressLine1 || "");
+        setEditBillLine2(item.billingAddressLine2 || "");
+        setEditBillCity(item.billingCity || "");
+        setEditBillState(item.billingState || "");
+        setEditBillPostal(item.billingPostalCode || "");
       } catch (err: unknown) {
-        if (err instanceof Error) {
-          setError(err.message);
-        } else {
-          setError("Failed to load customer.");
-        }
+        setError(err instanceof Error ? err.message : "Failed to load customer.");
       } finally {
         setLoading(false);
       }
@@ -181,6 +289,9 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     loadCustomer();
   }, [params]);
 
+  // -----------------------------
+  // Load Call Logs
+  // -----------------------------
   useEffect(() => {
     async function loadCallLogs() {
       try {
@@ -193,7 +304,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         const items: CallLogItem[] = snap.docs
           .map((docSnap) => {
             const data = docSnap.data();
-
             return {
               id: docSnap.id,
               customerId: data.customerId ?? "",
@@ -216,11 +326,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
         setCallLogs(items);
       } catch (err: unknown) {
-        if (err instanceof Error) {
-          setCallLogError(err.message);
-        } else {
-          setCallLogError("Failed to load call logs.");
-        }
+        setCallLogError(err instanceof Error ? err.message : "Failed to load call logs.");
       } finally {
         setCallLogsLoading(false);
       }
@@ -229,6 +335,9 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     loadCallLogs();
   }, [params]);
 
+  // -----------------------------
+  // Address choices for ticket creation
+  // -----------------------------
   const addressChoices = useMemo((): AddressChoice[] => {
     if (!customer) return [];
 
@@ -263,7 +372,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     return [...services, billing];
   }, [customer]);
 
-  // choose default address on load
   useEffect(() => {
     if (!selectedAddressKey && addressChoices.length) {
       const primary = addressChoices.find((a) => a.source === "service" && a.isPrimary);
@@ -275,9 +383,135 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     return addressChoices.find((a) => a.key === key) || null;
   }
 
+  // -----------------------------
+  // ✅ Save customer edits (DCFlow)
+  // -----------------------------
+  async function handleSaveCustomerEdits(syncToQboAfter: boolean) {
+    if (!customer) return;
+    if (!canEditCustomer) {
+      setEditErr("You do not have permission to edit customers.");
+      return;
+    }
+
+    setEditErr("");
+    setEditOk("");
+    setQboSyncErr("");
+    setQboSyncOk("");
+    setEditSaving(true);
+
+    try {
+      const now = nowIso();
+
+      const payload: any = {
+        // Old schema (what this page reads)
+        displayName: safeStr(editDisplayName),
+        phonePrimary: safeStr(editPhonePrimary),
+        phoneSecondary: safeStr(editPhoneSecondary) || null,
+        email: safeStr(editEmail) || null,
+
+        billingAddressLine1: safeStr(editBillLine1),
+        billingAddressLine2: safeStr(editBillLine2) || null,
+        billingCity: safeStr(editBillCity),
+        billingState: safeStr(editBillState),
+        billingPostalCode: safeStr(editBillPostal),
+
+        updatedAt: now,
+
+        // New QBO schema mirrors (so everything stays consistent going forward)
+        customerDisplayName: safeStr(editDisplayName),
+        phone: safeStr(editPhonePrimary),
+        billAddrLine1: safeStr(editBillLine1),
+        billAddrLine2: safeStr(editBillLine2),
+        billAddrCity: safeStr(editBillCity),
+        billAddrState: safeStr(editBillState),
+        billAddrPostalCode: safeStr(editBillPostal),
+      };
+
+      await updateDoc(doc(db, "customers", customer.id), payload);
+
+      setCustomer((prev) =>
+        prev
+          ? {
+              ...prev,
+              displayName: safeStr(editDisplayName),
+              phonePrimary: safeStr(editPhonePrimary),
+              phoneSecondary: safeStr(editPhoneSecondary) || undefined,
+              email: safeStr(editEmail) || undefined,
+              billingAddressLine1: safeStr(editBillLine1),
+              billingAddressLine2: safeStr(editBillLine2) || undefined,
+              billingCity: safeStr(editBillCity),
+              billingState: safeStr(editBillState),
+              billingPostalCode: safeStr(editBillPostal),
+            }
+          : prev
+      );
+
+      setEditOk(syncToQboAfter ? "✅ Saved in DCFlow. Syncing to QBO..." : "✅ Saved in DCFlow.");
+
+      if (syncToQboAfter) {
+        await handleSyncToQbo({ updateName: true });
+      }
+    } catch (err: unknown) {
+      setEditErr(err instanceof Error ? err.message : "Failed to save customer.");
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  // -----------------------------
+  // ✅ Sync customer to QBO (Option B)
+  // -----------------------------
+  async function handleSyncToQbo(opts?: { updateName?: boolean }) {
+    if (!customer) return;
+
+    // We consider the customer "QBO-linked" if either field exists.
+    const qboLinkedId =
+      safeStr((rawCustomer as any)?.qboCustomerId) ||
+      safeStr((rawCustomer as any)?.quickbooksCustomerId) ||
+      safeStr((customer as any)?.quickbooksCustomerId);
+
+    if (!qboLinkedId) {
+      setQboSyncErr("This customer is not linked to QuickBooks yet.");
+      return;
+    }
+
+    setQboSyncErr("");
+    setQboSyncOk("");
+    setQboSyncing(true);
+
+    try {
+      const res = await fetch("/api/qbo/customers/update-from-dcflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // IMPORTANT: API expects the DCFlow doc id; it reads qboCustomerId inside the doc.
+        // Our save step writes qbo-friendly fields, but if your API only reads qboCustomerId,
+        // make sure your customer doc has it (your sync route writes it).
+        body: JSON.stringify({
+          dcCustomerId: customer.id,
+          updateName: Boolean(opts?.updateName),
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setQboSyncErr(data?.error || "Failed to sync customer to QBO.");
+        return;
+      }
+
+      setQboSyncOk("✅ Synced to QBO.");
+    } catch (err: unknown) {
+      setQboSyncErr(err instanceof Error ? err.message : "Failed to sync to QBO.");
+    } finally {
+      setQboSyncing(false);
+    }
+  }
+
+  // -----------------------------
+  // Add Service Address
+  // -----------------------------
   async function handleAddServiceAddress(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-
     if (!customer) return;
 
     setServiceAddressError("");
@@ -336,19 +570,17 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       setServiceNotes("");
       setServiceIsPrimary(false);
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        setServiceAddressError(err.message);
-      } else {
-        setServiceAddressError("Failed to add service address.");
-      }
+      setServiceAddressError(err instanceof Error ? err.message : "Failed to add service address.");
     } finally {
       setSavingAddress(false);
     }
   }
 
+  // -----------------------------
+  // Add Call Log
+  // -----------------------------
   async function handleAddCallLog(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-
     if (!customer) return;
 
     setNewCallLogError("");
@@ -403,17 +635,15 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       setFollowUpNeeded(false);
       setFollowUpNote("");
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        setNewCallLogError(err.message);
-      } else {
-        setNewCallLogError("Failed to save call log.");
-      }
+      setNewCallLogError(err instanceof Error ? err.message : "Failed to save call log.");
     } finally {
       setSavingCallLog(false);
     }
   }
 
-  // ✅ Create Service Ticket from customer
+  // -----------------------------
+  // Create Service Ticket
+  // -----------------------------
   async function handleCreateServiceTicket(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!customer) return;
@@ -427,7 +657,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
     try {
       const now = nowIso();
-
       const sum = issueSummary.trim();
       if (!sum) {
         setTicketError("Issue Summary is required.");
@@ -442,7 +671,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
       const minutes = Math.max(1, Number(estimatedDurationMinutes || "60"));
 
-      // If they selected a specific service address, try to store serviceAddressId
       const serviceAddressId =
         addr.source === "service" ? addr.key.replace("service:", "") : null;
 
@@ -450,7 +678,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         customerId: customer.id,
         customerDisplayName: customer.displayName || "",
 
-        // Address snapshot on ticket (so tech always sees it even if customer changes later)
         serviceAddressId: serviceAddressId,
         serviceAddressLabel: addr.source === "service" ? addr.label : "Billing Address",
         serviceAddressLine1: addr.addressLine1 || "",
@@ -465,7 +692,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         status: "new",
         estimatedDurationMinutes: minutes,
 
-        // staffing defaults
         assignedTechnicianId: null,
         assignedTechnicianName: null,
         primaryTechnicianId: null,
@@ -483,8 +709,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       };
 
       const created = await addDoc(collection(db, "serviceTickets"), payload);
-
-      // redirect to the ticket
       router.push(`/service-tickets/${created.id}`);
     } catch (err: unknown) {
       setTicketError(err instanceof Error ? err.message : "Failed to create service ticket.");
@@ -492,6 +716,49 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       setTicketSaving(false);
     }
   }
+
+  // -----------------------------
+  // Render helpers
+  // -----------------------------
+  const qboStatus = useMemo(() => {
+    const d = rawCustomer || {};
+    const linked =
+      safeStr(d.qboCustomerId) ||
+      safeStr(d.quickbooksCustomerId) ||
+      safeStr(d.qboCustomerId || d.qboCustomerId);
+
+    return {
+      linkedId: linked,
+      syncStatus: safeStr(d.qboSyncStatus) || "",
+      lastSyncedAt: safeStr(d.qboLastSyncedAt) || "",
+      lastError: safeStr(d.qboLastSyncError) || "",
+      lastTid: safeStr(d.qboLastSyncIntuitTid) || "",
+    };
+  }, [rawCustomer]);
+
+  const billingFull = useMemo(() => {
+    const line1 = safeStr(editBillLine1);
+    const line2 = safeStr(editBillLine2);
+    const city = safeStr(editBillCity);
+    const st = safeStr(editBillState);
+    const zip = safeStr(editBillPostal);
+
+    const parts = [
+      line1,
+      line2 ? line2 : "",
+      `${city}${city && st ? ", " : ""}${st} ${zip}`.trim(),
+    ].filter(Boolean);
+
+    return parts.join(" • ");
+  }, [editBillLine1, editBillLine2, editBillCity, editBillState, editBillPostal]);
+
+  const billingMapsUrl = useMemo(() => {
+    const full = [editBillLine1, editBillLine2, editBillCity, editBillState, editBillPostal]
+      .map((x) => safeStr(x))
+      .filter(Boolean)
+      .join(", ");
+    return full ? buildMapsUrl(full) : "";
+  }, [editBillLine1, editBillLine2, editBillCity, editBillState, editBillPostal]);
 
   return (
     <ProtectedPage fallbackTitle="Customer Detail">
@@ -501,13 +768,399 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
         {!loading && !error && customer ? (
           <div style={{ display: "grid", gap: "18px" }}>
-            <div>
-              <h1 style={{ fontSize: "24px", fontWeight: 700 }}>
-                {customer.displayName}
-              </h1>
-              <p style={{ marginTop: "6px", color: "#666" }}>
-                Customer ID: {customerId}
-              </p>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>
+                  {customer.displayName}
+                </h1>
+                <p style={{ marginTop: "6px", color: "#666" }}>
+                  Customer ID: {customerId}
+                </p>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => router.push("/customers")}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 12,
+                    border: "1px solid #ccc",
+                    background: "white",
+                    cursor: "pointer",
+                    fontWeight: 900,
+                  }}
+                >
+                  Back to Customers
+                </button>
+              </div>
+            </div>
+
+            {/* ✅ Edit + Sync panel */}
+            <div
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: 12,
+                padding: 16,
+                background: "#fafafa",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <h2 style={{ fontSize: 18, fontWeight: 1000, margin: 0 }}>Customer Info</h2>
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                    Edit in DCFlow and (optionally) sync to QBO.
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveCustomerEdits(false)}
+                    disabled={!canEditCustomer || editSaving}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
+                      background: "white",
+                      cursor: canEditCustomer ? "pointer" : "not-allowed",
+                      fontWeight: 900,
+                    }}
+                  >
+                    {editSaving ? "Saving..." : "Save"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSaveCustomerEdits(true)}
+                    disabled={!canEditCustomer || editSaving || qboSyncing}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #1f6b1f",
+                      background: "#1f8f3a",
+                      color: "white",
+                      cursor: canEditCustomer ? "pointer" : "not-allowed",
+                      fontWeight: 1000,
+                    }}
+                    title="Save in DCFlow, then push changes to QBO"
+                  >
+                    {qboSyncing ? "Syncing..." : "Save & Sync to QBO"}
+                  </button>
+                </div>
+              </div>
+
+              {editErr ? <div style={{ marginTop: 10, color: "red" }}>{editErr}</div> : null}
+              {editOk ? <div style={{ marginTop: 10, color: "green" }}>{editOk}</div> : null}
+              {qboSyncErr ? <div style={{ marginTop: 10, color: "red" }}>{qboSyncErr}</div> : null}
+              {qboSyncOk ? <div style={{ marginTop: 10, color: "green" }}>{qboSyncOk}</div> : null}
+
+              <div style={{ marginTop: 14, display: "grid", gap: 12, maxWidth: 980 }}>
+                <div
+                  style={{
+                    border: "1px solid #e6e6e6",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "white",
+                    display: "grid",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ fontWeight: 950 }}>Contact</div>
+
+                  <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Customer Name</label>
+                      <input
+                        value={editDisplayName}
+                        onChange={(e) => setEditDisplayName(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Email</label>
+                      <input
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Primary Phone</label>
+                      <input
+                        value={editPhonePrimary}
+                        onChange={(e) => setEditPhonePrimary(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                      <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {editPhonePrimary ? (
+                          <a
+                            href={`tel:${editPhonePrimary}`}
+                            style={{
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              background: "white",
+                              textDecoration: "none",
+                              color: "inherit",
+                              fontWeight: 900,
+                              fontSize: 12,
+                            }}
+                          >
+                            📞 Call
+                          </a>
+                        ) : null}
+                        {editPhonePrimary ? (
+                          <a
+                            href={`sms:${editPhonePrimary}`}
+                            style={{
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              background: "white",
+                              textDecoration: "none",
+                              color: "inherit",
+                              fontWeight: 900,
+                              fontSize: 12,
+                            }}
+                          >
+                            💬 Text
+                          </a>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Secondary Phone</label>
+                      <input
+                        value={editPhoneSecondary}
+                        onChange={(e) => setEditPhoneSecondary(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    border: "1px solid #e6e6e6",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "white",
+                    display: "grid",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontWeight: 950 }}>Billing Address</div>
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                        {billingFull || "—"}
+                      </div>
+                    </div>
+
+                    {billingMapsUrl ? (
+                      <a
+                        href={billingMapsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          background: "white",
+                          textDecoration: "none",
+                          color: "inherit",
+                          fontWeight: 900,
+                          height: "fit-content",
+                        }}
+                      >
+                        📍 Open in Maps
+                      </a>
+                    ) : null}
+                  </div>
+
+                  <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Address Line 1</label>
+                      <input
+                        value={editBillLine1}
+                        onChange={(e) => setEditBillLine1(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Address Line 2</label>
+                      <input
+                        value={editBillLine2}
+                        onChange={(e) => setEditBillLine2(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>City</label>
+                      <input
+                        value={editBillCity}
+                        onChange={(e) => setEditBillCity(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>State</label>
+                      <input
+                        value={editBillState}
+                        onChange={(e) => setEditBillState(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 12 }}>Postal Code</label>
+                      <input
+                        value={editBillPostal}
+                        onChange={(e) => setEditBillPostal(e.target.value)}
+                        disabled={!canEditCustomer || editSaving}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                          marginTop: 6,
+                          background: !canEditCustomer ? "#f1f1f1" : "white",
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    border: "1px solid #e6e6e6",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "white",
+                  }}
+                >
+                  <div style={{ fontWeight: 950 }}>QuickBooks Sync Status</div>
+                  <div style={{ marginTop: 8, fontSize: 13, color: "#555" }}>
+                    <div>
+                      <strong>Linked:</strong>{" "}
+                      {qboStatus.linkedId ? `Yes (${qboStatus.linkedId})` : "No"}
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      <strong>Status:</strong>{" "}
+                      {qboStatus.syncStatus || "—"}
+                      {qboStatus.lastSyncedAt ? ` • Last sync: ${qboStatus.lastSyncedAt}` : ""}
+                    </div>
+                    {qboStatus.lastError ? (
+                      <div style={{ marginTop: 6, color: "red" }}>
+                        <strong>Last Error:</strong> {qboStatus.lastError}
+                      </div>
+                    ) : null}
+                    {qboStatus.lastTid ? (
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                        Intuit TID: {qboStatus.lastTid}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={() => handleSyncToQbo({ updateName: true })}
+                      disabled={!canEditCustomer || qboSyncing}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
+                        background: "white",
+                        cursor: canEditCustomer ? "pointer" : "not-allowed",
+                        fontWeight: 900,
+                      }}
+                    >
+                      {qboSyncing ? "Syncing..." : "Sync Now"}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* ✅ Create Service Ticket */}
@@ -647,6 +1300,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
               )}
             </div>
 
+            {/* Service Addresses */}
             <div
               style={{
                 border: "1px solid #ddd",
@@ -654,95 +1308,75 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 padding: "16px",
               }}
             >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
-                Contact
-              </h2>
-              <p>
-                <strong>Primary Phone:</strong> {customer.phonePrimary || "—"}
-              </p>
-              <p>
-                <strong>Secondary Phone:</strong>{" "}
-                {customer.phoneSecondary || "—"}
-              </p>
-              <p>
-                <strong>Email:</strong> {customer.email || "—"}
-              </p>
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
-                Billing Address
-              </h2>
-              <p>{customer.billingAddressLine1 || "—"}</p>
-              <p>{customer.billingAddressLine2 || ""}</p>
-              <p>
-                {customer.billingCity}, {customer.billingState}{" "}
-                {customer.billingPostalCode}
-              </p>
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
+              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>
                 Service Addresses
               </h2>
 
               {customer.serviceAddresses && customer.serviceAddresses.length > 0 ? (
                 <div style={{ display: "grid", gap: "10px" }}>
-                  {customer.serviceAddresses.map((addr) => (
-                    <div
-                      key={addr.id}
-                      style={{
-                        border: "1px solid #eee",
-                        borderRadius: "10px",
-                        padding: "10px",
-                      }}
-                    >
-                      <p>
-                        <strong>{addr.label || "Service Address"}</strong>
-                        {addr.isPrimary ? " (Primary)" : ""}
-                      </p>
-                      <p>{addr.addressLine1}</p>
-                      <p>{addr.addressLine2 || ""}</p>
-                      <p>
-                        {addr.city}, {addr.state} {addr.postalCode}
-                      </p>
-                    </div>
-                  ))}
+                  {customer.serviceAddresses.map((addr) => {
+                    const fullAddr = [addr.addressLine1, addr.addressLine2, addr.city, addr.state, addr.postalCode]
+                      .map((x) => safeStr(x))
+                      .filter(Boolean)
+                      .join(", ");
+                    const maps = fullAddr ? buildMapsUrl(fullAddr) : "";
+
+                    return (
+                      <div
+                        key={addr.id}
+                        style={{
+                          border: "1px solid #eee",
+                          borderRadius: "12px",
+                          padding: "12px",
+                          background: "white",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                          <div>
+                            <div style={{ fontWeight: 900 }}>
+                              {addr.label || "Service Address"}{addr.isPrimary ? " (Primary)" : ""}
+                            </div>
+                            <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
+                              {addr.addressLine1}
+                              {addr.addressLine2 ? `, ${addr.addressLine2}` : ""} • {addr.city}, {addr.state}{" "}
+                              {addr.postalCode}
+                            </div>
+                            {addr.notes ? (
+                              <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                                Notes: {addr.notes}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {maps ? (
+                            <a
+                              href={maps}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: 12,
+                                border: "1px solid #ccc",
+                                background: "white",
+                                textDecoration: "none",
+                                color: "inherit",
+                                fontWeight: 900,
+                                height: "fit-content",
+                              }}
+                            >
+                              📍 Maps
+                            </a>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <p>No service addresses added yet.</p>
               )}
 
+              {/* Add Service Address */}
               <div
                 style={{
                   marginTop: "16px",
@@ -750,13 +1384,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                   paddingTop: "16px",
                 }}
               >
-                <h3
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: 700,
-                    marginBottom: "10px",
-                  }}
-                >
+                <h3 style={{ fontSize: "16px", fontWeight: 900, marginBottom: "10px" }}>
                   Add Service Address
                 </h3>
 
@@ -773,8 +1401,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                       style={{
                         display: "block",
                         width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
+                        padding: "10px",
+                        marginTop: "6px",
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
                       }}
                     />
                   </div>
@@ -788,8 +1418,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                       style={{
                         display: "block",
                         width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
+                        padding: "10px",
+                        marginTop: "6px",
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
                       }}
                     />
                   </div>
@@ -802,55 +1434,65 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                       style={{
                         display: "block",
                         width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
+                        padding: "10px",
+                        marginTop: "6px",
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
                       }}
                     />
                   </div>
 
-                  <div>
-                    <label>City</label>
-                    <input
-                      value={serviceCity}
-                      onChange={(e) => setServiceCity(e.target.value)}
-                      required
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
-                      }}
-                    />
-                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(140px, 1fr))", gap: 10 }}>
+                    <div>
+                      <label>City</label>
+                      <input
+                        value={serviceCity}
+                        onChange={(e) => setServiceCity(e.target.value)}
+                        required
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px",
+                          marginTop: "6px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                        }}
+                      />
+                    </div>
 
-                  <div>
-                    <label>State</label>
-                    <input
-                      value={serviceState}
-                      onChange={(e) => setServiceState(e.target.value)}
-                      required
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
-                      }}
-                    />
-                  </div>
+                    <div>
+                      <label>State</label>
+                      <input
+                        value={serviceState}
+                        onChange={(e) => setServiceState(e.target.value)}
+                        required
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px",
+                          marginTop: "6px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                        }}
+                      />
+                    </div>
 
-                  <div>
-                    <label>Postal Code</label>
-                    <input
-                      value={servicePostalCode}
-                      onChange={(e) => setServicePostalCode(e.target.value)}
-                      required
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
-                      }}
-                    />
+                    <div>
+                      <label>Postal Code</label>
+                      <input
+                        value={servicePostalCode}
+                        onChange={(e) => setServicePostalCode(e.target.value)}
+                        required
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "10px",
+                          marginTop: "6px",
+                          borderRadius: 12,
+                          border: "1px solid #ccc",
+                        }}
+                      />
+                    </div>
                   </div>
 
                   <div>
@@ -862,30 +1504,24 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                       style={{
                         display: "block",
                         width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
+                        padding: "10px",
+                        marginTop: "6px",
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
                       }}
                     />
                   </div>
 
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                    }}
-                  >
+                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <input
                       type="checkbox"
                       checked={serviceIsPrimary}
                       onChange={(e) => setServiceIsPrimary(e.target.checked)}
                     />
-                    Set as primary service address
+                    <span style={{ fontWeight: 900 }}>Set as primary service address</span>
                   </label>
 
-                  {serviceAddressError ? (
-                    <p style={{ color: "red" }}>{serviceAddressError}</p>
-                  ) : null}
+                  {serviceAddressError ? <p style={{ color: "red" }}>{serviceAddressError}</p> : null}
 
                   <button
                     type="submit"
@@ -893,10 +1529,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     style={{
                       padding: "10px 16px",
                       border: "1px solid #ccc",
-                      borderRadius: "10px",
+                      borderRadius: 12,
                       background: "white",
                       cursor: "pointer",
-                      fontWeight: 600,
+                      fontWeight: 900,
                       width: "fit-content",
                     }}
                   >
@@ -906,74 +1542,15 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
               </div>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
-                DCFlow / QuickBooks
-              </h2>
-              <p>
-                <strong>Source:</strong> {customer.source}
-              </p>
-              <p>
-                <strong>QuickBooks Customer ID:</strong>{" "}
-                {customer.quickbooksCustomerId || "Not linked yet"}
-              </p>
-              <p>
-                <strong>Active:</strong> {String(customer.active)}
-              </p>
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
-                Notes
-              </h2>
-              <p>{customer.notes || "No notes yet."}</p>
-            </div>
-
             {/* Add Call Log */}
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
+            <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 900, marginBottom: 10 }}>
                 Add Call Log
               </h2>
 
               <form
                 onSubmit={handleAddCallLog}
-                style={{ display: "grid", gap: "10px", maxWidth: "700px" }}
+                style={{ display: "grid", gap: 10, maxWidth: 700 }}
               >
                 <div>
                   <label>Call Type</label>
@@ -992,8 +1569,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     style={{
                       display: "block",
                       width: "100%",
-                      padding: "8px",
-                      marginTop: "4px",
+                      padding: 10,
+                      marginTop: 6,
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
                     }}
                   >
                     <option value="new_information">New Information</option>
@@ -1012,8 +1591,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     style={{
                       display: "block",
                       width: "100%",
-                      padding: "8px",
-                      marginTop: "4px",
+                      padding: 10,
+                      marginTop: 6,
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
                     }}
                   >
                     <option value="inbound">Inbound</option>
@@ -1030,8 +1611,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     style={{
                       display: "block",
                       width: "100%",
-                      padding: "8px",
-                      marginTop: "4px",
+                      padding: 10,
+                      marginTop: 6,
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
                     }}
                   />
                 </div>
@@ -1045,37 +1628,39 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     style={{
                       display: "block",
                       width: "100%",
-                      padding: "8px",
-                      marginTop: "4px",
+                      padding: 10,
+                      marginTop: 6,
+                      borderRadius: 12,
+                      border: "1px solid #ccc",
                     }}
                   />
                 </div>
 
-                <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <input
                     type="checkbox"
                     checked={visibleToTech}
                     onChange={(e) => setVisibleToTech(e.target.checked)}
                   />
-                  Visible to technician
+                  <span style={{ fontWeight: 900 }}>Visible to technician</span>
                 </label>
 
-                <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <input
                     type="checkbox"
                     checked={updatesTicketNotes}
                     onChange={(e) => setUpdatesTicketNotes(e.target.checked)}
                   />
-                  Updates ticket notes
+                  <span style={{ fontWeight: 900 }}>Updates ticket notes</span>
                 </label>
 
-                <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <input
                     type="checkbox"
                     checked={followUpNeeded}
                     onChange={(e) => setFollowUpNeeded(e.target.checked)}
                   />
-                  Follow-up needed
+                  <span style={{ fontWeight: 900 }}>Follow-up needed</span>
                 </label>
 
                 {followUpNeeded ? (
@@ -1087,8 +1672,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                       style={{
                         display: "block",
                         width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
+                        padding: 10,
+                        marginTop: 6,
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
                       }}
                     />
                   </div>
@@ -1102,10 +1689,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                   style={{
                     padding: "10px 16px",
                     border: "1px solid #ccc",
-                    borderRadius: "10px",
+                    borderRadius: 12,
                     background: "white",
                     cursor: "pointer",
-                    fontWeight: 600,
+                    fontWeight: 900,
                     width: "fit-content",
                   }}
                 >
@@ -1115,20 +1702,8 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
             </div>
 
             {/* Call History */}
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  marginBottom: "10px",
-                }}
-              >
+            <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 900, marginBottom: 10 }}>
                 Call History
               </h2>
 
@@ -1140,33 +1715,32 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
               ) : null}
 
               {!callLogsLoading && !callLogError && callLogs.length > 0 ? (
-                <div style={{ display: "grid", gap: "10px" }}>
+                <div style={{ display: "grid", gap: 10 }}>
                   {callLogs.map((log) => (
                     <div
                       key={log.id}
                       style={{
                         border: "1px solid #eee",
-                        borderRadius: "10px",
-                        padding: "10px",
+                        borderRadius: 12,
+                        padding: 12,
+                        background: "white",
                       }}
                     >
-                      <p>
-                        <strong>{log.summary}</strong>
-                      </p>
-                      <p style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
+                      <div style={{ fontWeight: 900 }}>{log.summary}</div>
+                      <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
                         {log.callType} • {log.direction}
-                      </p>
-                      <p style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
                         {log.details || "No additional details."}
-                      </p>
-                      <p style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
                         Visible to Tech: {String(log.visibleToTech)} | Follow-up Needed:{" "}
                         {String(log.followUpNeeded)}
-                      </p>
+                      </div>
                       {log.followUpNote ? (
-                        <p style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
                           Follow-up Note: {log.followUpNote}
-                        </p>
+                        </div>
                       ) : null}
                     </div>
                   ))}
