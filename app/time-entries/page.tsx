@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs, orderBy, query } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, orderBy, query } from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -66,30 +66,14 @@ function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
   ];
 }
 
-// -----------------------------
-// Formatting helpers
-// -----------------------------
-function formatCategory(category: TimeEntry["category"]) {
-  switch (category) {
-    case "service_ticket":
-      return "Service Ticket";
-    case "project_stage":
-      return "Project Stage";
-    case "meeting":
-      return "Meeting";
-    case "shop":
-      return "Shop";
-    case "office":
-      return "Office";
-    case "pto":
-      return "PTO";
-    case "holiday":
-      return "Holiday";
-    case "manual_other":
-      return "Manual Other";
-    default:
-      return category;
-  }
+function safeTrim(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function truncateLine(s: string, max = 64) {
+  const x = (s || "").trim();
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
 }
 
 function formatPayType(payType: TimeEntry["payType"]) {
@@ -133,8 +117,30 @@ function formatDisplayDate(isoDate: string) {
   });
 }
 
-function humanStage(stage?: string) {
-  const s = String(stage || "").trim();
+function isServiceCategory(cat: string) {
+  const c = safeTrim(cat).toLowerCase();
+  return c === "service" || c === "service_ticket";
+}
+
+function isProjectCategory(cat: string) {
+  const c = safeTrim(cat).toLowerCase();
+  return c === "project" || c === "project_stage";
+}
+
+function categoryLabel(cat: string) {
+  const c = safeTrim(cat).toLowerCase();
+  if (c === "service" || c === "service_ticket") return "service";
+  if (c === "project" || c === "project_stage") return "project";
+  if (c === "meeting") return "meeting";
+  if (c === "shop") return "shop";
+  if (c === "office") return "office";
+  if (c === "pto") return "pto";
+  if (c === "holiday") return "holiday";
+  return c || "other";
+}
+
+function stageLabel(stage?: string) {
+  const s = safeTrim(stage);
   if (!s) return "";
   if (s === "roughIn") return "Rough-In";
   if (s === "topOutVent") return "Top-Out / Vent";
@@ -142,86 +148,18 @@ function humanStage(stage?: string) {
   return s;
 }
 
-function humanOutcome(outcome?: string) {
-  const o = String(outcome || "").trim().toLowerCase();
-  if (!o) return "";
-  if (o === "resolved") return "Resolved";
-  if (o === "follow_up" || o === "follow-up" || o === "follow up") return "Follow Up";
-  return outcome || "";
-}
-
-function truncateLine(s: string, max = 120) {
-  const x = (s || "").trim();
-  if (x.length <= max) return x;
-  return x.slice(0, max - 1) + "…";
-}
-
-// -----------------------------
-// Notes parsing (NO extra reads)
-// We pull display fields from your rich timeEntry.notes.
-// Expected lines like:
-//   Customer: John Doe
-//   Address: 123 Main St, ...
-//   Issue: Water heater leaking
-//   Outcome: Resolved
-//   Project: Smith New Build
-//   Stage: roughIn
-// -----------------------------
-function extractNotesField(notes: string | undefined, label: string) {
-  const raw = String(notes || "").trim();
+// Parses notes like:
+// "AUTO_TIME_FROM_TRIP:... • Resolved"
+// "AUTO_TIME_FROM_TRIP:... • Follow Up"
+function parseOutcomeFromNotes(notes?: string) {
+  const raw = safeTrim(notes);
   if (!raw) return "";
-  const prefix = `${label}:`;
-  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
-  const line = lines.find((l) => l.toLowerCase().startsWith(prefix.toLowerCase()));
-  if (!line) return "";
-  return line.slice(prefix.length).trim();
-}
-
-function deriveEntryTitle(entry: TimeEntry) {
-  const notes = entry.notes;
-
-  // Service: show customer name (from notes if present)
-  if (entry.category === "service_ticket") {
-    const cust = extractNotesField(notes, "Customer");
-    return cust || "Service Ticket";
-  }
-
-  // Project: show project name (from notes if present)
-  if (entry.category === "project_stage") {
-    const proj = extractNotesField(notes, "Project");
-    return proj || "Project";
-  }
-
-  // Other categories
-  return formatCategory(entry.category);
-}
-
-function deriveEntrySubline(entry: TimeEntry) {
-  const notes = entry.notes;
-
-  if (entry.category === "service_ticket") {
-    const issue = extractNotesField(notes, "Issue");
-    return issue ? truncateLine(issue, 110) : "";
-  }
-
-  if (entry.category === "project_stage") {
-    const stageFromNotes = extractNotesField(notes, "Stage");
-    const stage = humanStage(entry.projectStageKey || stageFromNotes);
-    return stage ? `Stage: ${stage}` : "";
-  }
-
+  const lower = raw.toLowerCase();
+  if (lower.includes("• resolved") || lower.endsWith("resolved")) return "Resolved";
+  if (lower.includes("• follow up") || lower.includes("• follow-up") || lower.endsWith("follow up")) return "Follow Up";
   return "";
 }
 
-function deriveOutcome(entry: TimeEntry) {
-  const notes = entry.notes;
-  const outcome = extractNotesField(notes, "Outcome");
-  return humanOutcome(outcome);
-}
-
-// -----------------------------
-// Page
-// -----------------------------
 export default function TimeEntriesPage() {
   const { appUser } = useAuthContext();
 
@@ -232,6 +170,10 @@ export default function TimeEntriesPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | TimeEntry["entryStatus"]>("all");
   const [categoryFilter, setCategoryFilter] = useState<"all" | TimeEntry["category"]>("all");
   const [weekOffset, setWeekOffset] = useState(0);
+
+  // Lookup maps for better card titles
+  const [serviceTicketMetaById, setServiceTicketMetaById] = useState<Record<string, { customerName: string; issueSummary: string }>>({});
+  const [projectNameById, setProjectNameById] = useState<Record<string, string>>({});
 
   const canSeeAll =
     appUser?.role === "admin" ||
@@ -258,6 +200,7 @@ export default function TimeEntriesPage() {
             weekStartDate: data.weekStartDate ?? "",
             weekEndDate: data.weekEndDate ?? "",
 
+            // IMPORTANT: your DB currently stores category like "service" / "project"
             category: data.category ?? "manual_other",
             hours: typeof data.hours === "number" ? data.hours : 0,
             payType: data.payType ?? "regular",
@@ -317,6 +260,97 @@ export default function TimeEntriesPage() {
 
     return items;
   }, [entries, canSeeAll, appUser?.uid, weekStart, weekEnd, statusFilter, categoryFilter]);
+
+  // Fetch the names needed for the current visible week (fast + keeps reads reasonable)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMeta() {
+      const needService = new Set<string>();
+      const needProjects = new Set<string>();
+
+      for (const e of visibleEntries) {
+        const cat = safeTrim(e.category).toLowerCase();
+        if (isServiceCategory(cat) && e.serviceTicketId) {
+          if (!serviceTicketMetaById[e.serviceTicketId]) needService.add(e.serviceTicketId);
+        }
+        if (isProjectCategory(cat) && e.projectId) {
+          if (!projectNameById[e.projectId]) needProjects.add(e.projectId);
+        }
+      }
+
+      // nothing new needed
+      if (needService.size === 0 && needProjects.size === 0) return;
+
+      try {
+        const serviceReads = Array.from(needService).map(async (id) => {
+          try {
+            const snap = await getDoc(doc(db, "serviceTickets", id));
+            if (!snap.exists()) return { id, customerName: "Service Ticket", issueSummary: "" };
+            const d = snap.data() as any;
+            return {
+              id,
+              customerName: safeTrim(d.customerDisplayName) || "Customer",
+              issueSummary: safeTrim(d.issueSummary) || "",
+            };
+          } catch {
+            return { id, customerName: "Service Ticket", issueSummary: "" };
+          }
+        });
+
+        const projectReads = Array.from(needProjects).map(async (id) => {
+          try {
+            const snap = await getDoc(doc(db, "projects", id));
+            if (!snap.exists()) return { id, name: "Project" };
+            const d = snap.data() as any;
+
+            // Try common fields (adjust if your project schema uses a different one)
+            const name =
+              safeTrim(d.projectName) || "Project";
+            return { id, name };
+          } catch {
+            return { id, name: "Project" };
+          }
+        });
+
+        const [serviceResults, projectResults] = await Promise.all([
+          Promise.all(serviceReads),
+          Promise.all(projectReads),
+        ]);
+
+        if (cancelled) return;
+
+        if (serviceResults.length) {
+          setServiceTicketMetaById((prev) => {
+            const next = { ...prev };
+            for (const r of serviceResults) {
+              next[r.id] = { customerName: r.customerName, issueSummary: r.issueSummary };
+            }
+            return next;
+          });
+        }
+
+        if (projectResults.length) {
+          setProjectNameById((prev) => {
+            const next = { ...prev };
+            for (const r of projectResults) {
+              next[r.id] = r.name;
+            }
+            return next;
+          });
+        }
+      } catch {
+        // ignore; cards will fall back gracefully
+      }
+    }
+
+    loadMeta();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleEntries]);
 
   const entriesByDay = useMemo(() => {
     const result: Record<string, TimeEntry[]> = {};
@@ -559,7 +593,9 @@ export default function TimeEntriesPage() {
                         <div style={{ fontWeight: 800, fontSize: "18px" }}>
                           {day.label} {formatDisplayDate(day.isoDate)}
                         </div>
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#666" }}>{day.isoDate}</div>
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#666" }}>
+                          {day.isoDate}
+                        </div>
                       </div>
 
                       <div style={{ fontSize: "13px", color: "#666", fontWeight: 700 }}>
@@ -583,17 +619,33 @@ export default function TimeEntriesPage() {
                     ) : (
                       <div style={{ display: "grid", gap: "10px" }}>
                         {dayEntries.map((entry) => {
-                          const title = deriveEntryTitle(entry);
-                          const subline = deriveEntrySubline(entry);
-                          const outcome = deriveOutcome(entry);
+                          const catRaw = safeTrim(entry.category).toLowerCase();
+                          const pill = categoryLabel(catRaw);
 
-                          // Small badge label just to disambiguate (optional but helpful)
-                          const badge =
-                            entry.category === "service_ticket"
-                              ? "Service"
-                              : entry.category === "project_stage"
-                                ? "Project"
-                                : formatCategory(entry.category);
+                          const isService = isServiceCategory(catRaw);
+                          const isProject = isProjectCategory(catRaw);
+
+                          const outcome = parseOutcomeFromNotes(entry.notes);
+
+                          const stId = safeTrim(entry.serviceTicketId);
+                          const projId = safeTrim(entry.projectId);
+
+                          const stMeta = stId ? serviceTicketMetaById[stId] : null;
+                          const projectName = projId ? projectNameById[projId] : "";
+
+                          const title =
+                            isService
+                              ? (stMeta?.customerName || "Customer")
+                              : isProject
+                                ? (projectName || "Project")
+                                : (pill ? pill[0].toUpperCase() + pill.slice(1) : "Entry");
+
+                          const subline =
+                            isService
+                              ? (stMeta?.issueSummary ? truncateLine(stMeta.issueSummary, 80) : "")
+                              : isProject
+                                ? (entry.projectStageKey ? `Stage: ${stageLabel(String(entry.projectStageKey))}` : "")
+                                : "";
 
                           return (
                             <Link
@@ -602,88 +654,71 @@ export default function TimeEntriesPage() {
                               style={{
                                 display: "block",
                                 border: "1px solid #ddd",
-                                borderRadius: "12px",
+                                borderRadius: "14px",
                                 padding: "12px",
                                 background: "white",
                                 textDecoration: "none",
                                 color: "inherit",
                               }}
                             >
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                              {/* Top row: title + hours */}
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
                                 <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 950, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  <div style={{ fontWeight: 950, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                     {canSeeAll ? `${entry.employeeName} • ` : ""}
                                     {title}
                                   </div>
 
-                                  <div style={{ marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                    <span
-                                      style={{
-                                        fontSize: 11,
-                                        fontWeight: 900,
-                                        padding: "4px 8px",
-                                        borderRadius: 999,
-                                        border: "1px solid #e6e6e6",
-                                        background: "#fafafa",
-                                      }}
-                                    >
-                                      {badge}
-                                    </span>
-
-                                    {outcome ? (
-                                      <span
-                                        style={{
-                                          fontSize: 11,
-                                          fontWeight: 900,
-                                          padding: "4px 8px",
-                                          borderRadius: 999,
-                                          border: "1px solid #e6e6e6",
-                                          background: "#fafafa",
-                                        }}
-                                      >
-                                        Result: {outcome}
-                                      </span>
-                                    ) : null}
-
-                                    {entry.category === "project_stage" && (entry.projectStageKey || extractNotesField(entry.notes, "Stage")) ? (
-                                      <span
-                                        style={{
-                                          fontSize: 11,
-                                          fontWeight: 900,
-                                          padding: "4px 8px",
-                                          borderRadius: 999,
-                                          border: "1px solid #e6e6e6",
-                                          background: "#fafafa",
-                                        }}
-                                      >
-                                        {subline || "Stage: —"}
-                                      </span>
-                                    ) : null}
-                                  </div>
-
-                                  {entry.category === "service_ticket" && subline ? (
-                                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                                      Issue: {truncateLine(subline.replace(/^Issue:\s*/i, ""), 120)}
+                                  {subline ? (
+                                    <div style={{ marginTop: 4, fontSize: 13, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {subline}
                                     </div>
                                   ) : null}
                                 </div>
 
-                                <div style={{ textAlign: "right" }}>
-                                  <div style={{ fontWeight: 950, fontSize: 14 }}>
-                                    {Number(entry.hours).toFixed(2)} hr
-                                  </div>
-                                  <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
-                                    {formatPayType(entry.payType)}
-                                  </div>
+                                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                                  <div style={{ fontWeight: 950, fontSize: 16 }}>{entry.hours.toFixed(2)} hr</div>
+                                  <div style={{ marginTop: 2, fontSize: 12, color: "#666" }}>{formatPayType(entry.payType)}</div>
                                 </div>
                               </div>
 
-                              <div style={{ marginTop: 8, fontSize: 12, color: "#777", display: "flex", gap: 10, flexWrap: "wrap" }}>
-                                <span>Billable: <strong>{String(entry.billable)}</strong></span>
-                                <span>Status: <strong>{formatStatus(entry.entryStatus)}</strong></span>
-                                {entry.linkedTechnicianName ? (
-                                  <span>Linked Tech: <strong>{entry.linkedTechnicianName}</strong></span>
+                              {/* Tags row */}
+                              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                <span
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    border: "1px solid #e6e6e6",
+                                    background: "#fafafa",
+                                    fontSize: 12,
+                                    fontWeight: 900,
+                                    textTransform: "lowercase",
+                                  }}
+                                >
+                                  {pill}
+                                </span>
+
+                                {outcome ? (
+                                  <span
+                                    style={{
+                                      padding: "6px 10px",
+                                      borderRadius: 999,
+                                      border: "1px solid #e6e6e6",
+                                      background: "#fff",
+                                      fontSize: 12,
+                                      fontWeight: 900,
+                                      color: outcome === "Resolved" ? "#1f6b1f" : "#5b21b6",
+                                    }}
+                                  >
+                                    Outcome: {outcome}
+                                  </span>
                                 ) : null}
+                              </div>
+
+                              {/* Bottom meta row */}
+                              <div style={{ marginTop: 10, fontSize: 12, color: "#777" }}>
+                                Billable: <strong>{String(entry.billable)}</strong> &nbsp;&nbsp; Status:{" "}
+                                <strong>{formatStatus(entry.entryStatus)}</strong>
                               </div>
 
                               <div style={{ marginTop: 10, fontSize: 12, color: "#0a58ca", fontWeight: 800 }}>
