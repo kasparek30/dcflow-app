@@ -229,11 +229,9 @@ function useRealtimeActiveTrip(uid: string) {
     }
 
     function recompute() {
-      // Union of all current snapshot IDs
       const union = new Set<string>();
       for (const s of idsByQuery) for (const id of s) union.add(id);
 
-      // Remove anything no longer in any query snapshot
       for (const id of Array.from(map.keys())) {
         if (!union.has(id)) map.delete(id);
       }
@@ -258,7 +256,6 @@ function useRealtimeActiveTrip(uid: string) {
           recompute();
         },
         () => {
-          // If one query errors, don't crash UI; keep current state
           recompute();
         }
       );
@@ -453,8 +450,7 @@ export default function AppShell({
     if (!activeTrip) return false;
     const c = activeTrip.crewConfirmed || activeTrip.crew || null;
     const onCrew = userIsOnCrew(myUid, c);
-    const elevated =
-      role === "admin" || role === "manager" || role === "dispatcher";
+    const elevated = role === "admin" || role === "manager" || role === "dispatcher";
     return Boolean(myUid) && (onCrew || elevated);
   }, [activeTrip, myUid, role]);
 
@@ -475,10 +471,7 @@ export default function AppShell({
         : [];
 
       const openIdx = findOpenPauseIndex(curBlocks);
-      if (openIdx !== -1) {
-        // already paused
-        return;
-      }
+      if (openIdx !== -1) return;
 
       curBlocks.push({ startAt: now, endAt: null });
 
@@ -508,10 +501,7 @@ export default function AppShell({
         : [];
 
       const openIdx = findOpenPauseIndex(curBlocks);
-      if (openIdx === -1) {
-        // nothing to resume
-        return;
-      }
+      if (openIdx === -1) return;
 
       curBlocks[openIdx] = { ...curBlocks[openIdx], endAt: now };
 
@@ -526,8 +516,13 @@ export default function AppShell({
     }
   }
 
-  // padding so pill + bottom bar don’t cover content
-  const bottomBarHeight = isMobile ? 64 : 0;
+  // --- iOS-style mobile dock metrics ---
+  const DOCK_HEIGHT = 66; // visual height of dock
+  const DOCK_SAFE_GAP = 12; // gap from screen bottom
+  const DOCK_TOTAL = DOCK_HEIGHT + DOCK_SAFE_GAP;
+
+  // padding so pill + bottom dock don’t cover content
+  const bottomBarHeight = isMobile ? DOCK_TOTAL : 0;
   const pillHeight = isMobile && pill ? 66 : 0;
   const bottomPadding = bottomBarHeight + pillHeight + (isMobile ? 14 : 0);
 
@@ -639,56 +634,127 @@ export default function AppShell({
     </>
   );
 
-  const mobileTabs = (
+  // --- iOS-style dock tab helpers ---
+  function isActivePath(target: string) {
+    if (!target) return false;
+    if (target === "/") return pathname === "/";
+    if (pathname === target) return true;
+    return pathname?.startsWith(target + "/");
+  }
+
+  function DockTab(args: {
+    label: string;
+    icon: string;
+    onClick: () => void;
+    active: boolean;
+  }) {
+    const { label, icon, onClick, active } = args;
+
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
+          border: "none",
+          background: "transparent",
+          padding: 0,
+          cursor: "pointer",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 4,
+          height: DOCK_HEIGHT,
+          userSelect: "none",
+          WebkitTapHighlightColor: "transparent",
+        }}
+        aria-current={active ? "page" : undefined}
+      >
+        <div
+          style={{
+            width: 40,
+            height: 32,
+            borderRadius: 14,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: active ? "rgba(0,0,0,0.06)" : "transparent",
+            border: active ? "1px solid rgba(0,0,0,0.08)" : "1px solid transparent",
+          }}
+        >
+          <div style={{ fontSize: 19, lineHeight: "19px" }}>{icon}</div>
+        </div>
+
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: active ? 950 : 800,
+            color: active ? "#111" : "#555",
+            letterSpacing: "-0.1px",
+          }}
+        >
+          {label}
+        </div>
+      </button>
+    );
+  }
+
+  const mobileDock = (
     <div
       style={{
         position: "fixed",
-        bottom: 0,
         left: 0,
         right: 0,
-        height: 64,
-        background: "white",
-        borderTop: "1px solid #eaeaea",
+        bottom: 0,
         zIndex: 9997,
-        display: "grid",
-        gridTemplateColumns: "repeat(4, 1fr)", // ✅ was 5
+        display: "flex",
+        justifyContent: "center",
+        paddingBottom: DOCK_SAFE_GAP,
+        pointerEvents: "none", // allow only the dock itself to receive clicks
       }}
     >
-      <button
-        type="button"
-        onClick={() => router.push("/technician/my-day")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
+      <div
+        style={{
+          pointerEvents: "auto",
+          width: "min(520px, calc(100vw - 24px))",
+          height: DOCK_HEIGHT,
+          borderRadius: 999,
+          padding: "0 10px",
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          alignItems: "center",
+          background: "rgba(255,255,255,0.86)",
+          border: "1px solid rgba(0,0,0,0.08)",
+          boxShadow: "0 12px 30px rgba(0,0,0,0.18)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+        }}
       >
-        <div style={{ fontSize: 18 }}>📅</div>
-        <div style={{ fontSize: 11 }}>My Day</div>
-      </button>
-
-      <button
-        type="button"
-        onClick={() => router.push("/schedule")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>🗓️</div>
-        <div style={{ fontSize: 11 }}>Schedule</div>
-      </button>
-
-      <button
-        type="button"
-        onClick={() => router.push("/service-tickets")}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>🧾</div>
-        <div style={{ fontSize: 11 }}>Tickets</div>
-      </button>
-
-      <button
-        type="button"
-        onClick={() => setDrawerOpen(true)}
-        style={{ border: "none", background: "transparent", padding: 8, cursor: "pointer", fontWeight: 900 }}
-      >
-        <div style={{ fontSize: 18 }}>☰</div>
-        <div style={{ fontSize: 11 }}>More</div>
-      </button>
+        <DockTab
+          label="My Day"
+          icon="📅"
+          onClick={() => router.push("/technician/my-day")}
+          active={isActivePath("/technician/my-day")}
+        />
+        <DockTab
+          label="Schedule"
+          icon="🗓️"
+          onClick={() => router.push("/schedule")}
+          active={isActivePath("/schedule")}
+        />
+        <DockTab
+          label="Tickets"
+          icon="🧾"
+          onClick={() => router.push("/service-tickets")}
+          active={isActivePath("/service-tickets")}
+        />
+        <DockTab
+          label="More"
+          icon="☰"
+          onClick={() => setDrawerOpen(true)}
+          active={drawerOpen}
+        />
+      </div>
     </div>
   );
 
@@ -722,7 +788,7 @@ export default function AppShell({
   }, [isPaused, isRunning]);
 
   const activeTripPill = isMobile && pill ? (
-    <div style={{ position: "fixed", left: 12, right: 12, bottom: 64 + 10, zIndex: 9996 }}>
+    <div style={{ position: "fixed", left: 12, right: 12, bottom: DOCK_TOTAL + 10, zIndex: 9996 }}>
       <div
         style={{
           display: "flex",
@@ -901,7 +967,7 @@ export default function AppShell({
       <main style={{ padding: 14, paddingBottom: bottomPadding }}>{children}</main>
 
       {activeTripPill}
-      {mobileTabs}
+      {mobileDock}
     </div>
   );
 }
