@@ -23,24 +23,102 @@ function safeStr(x: unknown) {
   return String(x ?? "").trim();
 }
 
-function buildQboAddressFromDc(d: any, prefix: "bill" | "ship"): QboAddress | null {
-  const Line1 = safeStr(d?.[`${prefix}AddrLine1`]);
-  const Line2 = safeStr(d?.[`${prefix}AddrLine2`]);
-  const Line3 = safeStr(d?.[`${prefix}AddrLine3`]);
-  const City = safeStr(d?.[`${prefix}AddrCity`]);
-  const CountrySubDivisionCode = safeStr(d?.[`${prefix}AddrState`]);
-  const PostalCode = safeStr(d?.[`${prefix}AddrPostalCode`]);
+/**
+ * Supports both schemas:
+ * - New QBO import: billAddrLine1, shipAddrLine1, phone, qboCustomerId
+ * - Legacy DCFlow UI: billingAddressLine1, phonePrimary, quickbooksCustomerId, serviceAddresses[]
+ */
+function getQboCustomerIdFromDc(d: any) {
+  return safeStr(d?.qboCustomerId) || safeStr(d?.quickbooksCustomerId);
+}
 
-  // If it’s totally empty, don’t send it (prevents wiping QBO fields accidentally)
-  const hasAny =
-    Line1 || Line2 || Line3 || City || CountrySubDivisionCode || PostalCode;
+function getDcEmail(d: any) {
+  return safeStr(d?.email);
+}
 
+function getDcPhone(d: any) {
+  return safeStr(d?.phone) || safeStr(d?.phonePrimary);
+}
+
+function getDcDisplayName(d: any) {
+  return safeStr(d?.displayName || d?.customerDisplayName);
+}
+
+function buildBillAddrFromDc(d: any): QboAddress | null {
+  // Prefer new import fields
+  const Line1 = safeStr(d?.billAddrLine1) || safeStr(d?.billingAddressLine1);
+  const Line2 = safeStr(d?.billAddrLine2) || safeStr(d?.billingAddressLine2);
+  const Line3 = safeStr(d?.billAddrLine3);
+  const City = safeStr(d?.billAddrCity) || safeStr(d?.billingCity);
+  const CountrySubDivisionCode = safeStr(d?.billAddrState) || safeStr(d?.billingState);
+  const PostalCode = safeStr(d?.billAddrPostalCode) || safeStr(d?.billingPostalCode);
+
+  const hasAny = Line1 || Line2 || Line3 || City || CountrySubDivisionCode || PostalCode;
   if (!hasAny) return null;
 
   return {
     ...(Line1 ? { Line1 } : {}),
     ...(Line2 ? { Line2 } : {}),
     ...(Line3 ? { Line3 } : {}),
+    ...(City ? { City } : {}),
+    ...(CountrySubDivisionCode ? { CountrySubDivisionCode } : {}),
+    ...(PostalCode ? { PostalCode } : {}),
+  };
+}
+
+function pickPrimaryServiceAddress(d: any): any | null {
+  const arr = Array.isArray(d?.serviceAddresses) ? d.serviceAddresses : [];
+  if (!arr.length) return null;
+
+  // Prefer explicit primary, else first active, else first
+  const primary = arr.find((a: any) => a?.active !== false && a?.isPrimary);
+  if (primary) return primary;
+
+  const active = arr.find((a: any) => a?.active !== false);
+  return active || arr[0] || null;
+}
+
+/**
+ * ShipAddr strategy:
+ * - If you have flat shipAddr* fields (QBO import), use them.
+ * - Else, use the customer's primary service address (legacy UI), if present.
+ * - Else, don't send ShipAddr (prevents wiping QBO).
+ */
+function buildShipAddrFromDc(d: any): QboAddress | null {
+  const flatLine1 = safeStr(d?.shipAddrLine1);
+  const flatLine2 = safeStr(d?.shipAddrLine2);
+  const flatLine3 = safeStr(d?.shipAddrLine3);
+  const flatCity = safeStr(d?.shipAddrCity);
+  const flatState = safeStr(d?.shipAddrState);
+  const flatPostal = safeStr(d?.shipAddrPostalCode);
+
+  const flatHasAny = flatLine1 || flatLine2 || flatLine3 || flatCity || flatState || flatPostal;
+  if (flatHasAny) {
+    return {
+      ...(flatLine1 ? { Line1: flatLine1 } : {}),
+      ...(flatLine2 ? { Line2: flatLine2 } : {}),
+      ...(flatLine3 ? { Line3: flatLine3 } : {}),
+      ...(flatCity ? { City: flatCity } : {}),
+      ...(flatState ? { CountrySubDivisionCode: flatState } : {}),
+      ...(flatPostal ? { PostalCode: flatPostal } : {}),
+    };
+  }
+
+  const svc = pickPrimaryServiceAddress(d);
+  if (!svc) return null;
+
+  const Line1 = safeStr(svc?.addressLine1);
+  const Line2 = safeStr(svc?.addressLine2);
+  const City = safeStr(svc?.city);
+  const CountrySubDivisionCode = safeStr(svc?.state);
+  const PostalCode = safeStr(svc?.postalCode);
+
+  const hasAny = Line1 || Line2 || City || CountrySubDivisionCode || PostalCode;
+  if (!hasAny) return null;
+
+  return {
+    ...(Line1 ? { Line1 } : {}),
+    ...(Line2 ? { Line2 } : {}),
     ...(City ? { City } : {}),
     ...(CountrySubDivisionCode ? { CountrySubDivisionCode } : {}),
     ...(PostalCode ? { PostalCode } : {}),
@@ -62,10 +140,7 @@ export async function POST(req: Request) {
     // REQUIRED:
     const dcCustomerId = safeStr(body?.dcCustomerId);
     if (!dcCustomerId) {
-      return NextResponse.json(
-        { error: "Missing dcCustomerId." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing dcCustomerId." }, { status: 400 });
     }
 
     // OPTIONAL: allow explicitly changing name in QBO from DCFlow
@@ -81,10 +156,10 @@ export async function POST(req: Request) {
 
     const d = snap.data() as any;
 
-    const qboCustomerId = safeStr(d?.qboCustomerId);
+    const qboCustomerId = getQboCustomerIdFromDc(d);
     if (!qboCustomerId) {
       return NextResponse.json(
-        { error: "Customer is missing qboCustomerId (not linked to QBO)." },
+        { error: "Customer is missing qboCustomerId/quickbooksCustomerId (not linked to QBO)." },
         { status: 400 }
       );
     }
@@ -138,12 +213,12 @@ export async function POST(req: Request) {
     }
 
     // 2) Build sparse update payload
-    const dcEmail = safeStr(d?.email);
-    const dcPhone = safeStr(d?.phone);
-    const dcDisplayName = safeStr(d?.displayName || d?.customerDisplayName);
+    const dcEmail = getDcEmail(d);
+    const dcPhone = getDcPhone(d);
+    const dcDisplayName = getDcDisplayName(d);
 
-    const BillAddr = buildQboAddressFromDc(d, "bill");
-    const ShipAddr = buildQboAddressFromDc(d, "ship");
+    const BillAddr = buildBillAddrFromDc(d);
+    const ShipAddr = buildShipAddrFromDc(d);
 
     const updatePayload: any = {
       sparse: true,
@@ -179,7 +254,7 @@ export async function POST(req: Request) {
           qboLastSyncAttempt: upAttempt === "refreshed" ? "refreshed" : "original",
           qboLastSyncIntuitTid: upTid || "",
           qboLastSyncedAt: nowIso,
-          qboLastUpdatePayload: updatePayload, // helpful for debugging; remove later if you want
+          qboLastUpdatePayload: updatePayload, // remove later if you want
         },
         { merge: true }
       );
@@ -218,6 +293,13 @@ export async function POST(req: Request) {
       realmId,
       intuit_tid: upTid || "",
       attempt: upAttempt === "refreshed" ? "refreshed" : "original",
+      sent: {
+        email: Boolean(dcEmail),
+        phone: Boolean(dcPhone),
+        billAddr: Boolean(BillAddr),
+        shipAddr: Boolean(ShipAddr),
+        displayName: Boolean(updateName && dcDisplayName),
+      },
     });
   } catch (err: unknown) {
     return NextResponse.json(
@@ -227,4 +309,5 @@ export async function POST(req: Request) {
   }
 }
 
+// Force TS to treat this as a module in any weird editor/compile edge-cases
 export {};

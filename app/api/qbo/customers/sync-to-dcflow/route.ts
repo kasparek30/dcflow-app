@@ -1,4 +1,3 @@
-// app/api/qbo/customers/sync-to-dcflow/route.ts
 import { NextResponse } from "next/server";
 import {
   qboFetchWithAutoRefresh,
@@ -17,7 +16,7 @@ type QboAddress = {
   Line2?: string;
   Line3?: string;
   City?: string;
-  CountrySubDivisionCode?: string; // state
+  CountrySubDivisionCode?: string;
   PostalCode?: string;
 };
 
@@ -29,11 +28,8 @@ type QboCustomer = {
   FamilyName?: string;
   MiddleName?: string;
   Active?: boolean;
-
   PrimaryEmailAddr?: { Address?: string };
   PrimaryPhone?: { FreeFormNumber?: string };
-  Mobile?: { FreeFormNumber?: string };
-
   BillAddr?: QboAddress;
   ShipAddr?: QboAddress;
 };
@@ -47,12 +43,50 @@ function normalizeAttempt(value: unknown): AttemptValue {
   return value === "refreshed" ? "refreshed" : "original";
 }
 
-function dcCustomerIdFromQboId(qboId: string) {
-  return `qbo_${qboId}`;
-}
-
 function safeStr(x: unknown) {
   return String(x ?? "").trim();
+}
+
+function buildDisplayName(c: QboCustomer) {
+  const displayName =
+    safeStr(c.DisplayName) ||
+    safeStr(c.CompanyName) ||
+    `${safeStr(c.GivenName)} ${safeStr(c.FamilyName)}`.trim();
+
+  return displayName || `QBO Customer ${safeStr(c.Id) || "Unknown"}`;
+}
+
+function normalizePhone(phoneRaw: string) {
+  // Keep simple for now — you can add E.164 formatting later if you want.
+  return safeStr(phoneRaw);
+}
+
+function addressToServiceAddress(addr: QboAddress, label: string, isPrimary: boolean) {
+  return {
+    id: crypto.randomUUID(),
+    label,
+    addressLine1: safeStr(addr.Line1),
+    addressLine2: safeStr(addr.Line2) || undefined,
+    city: safeStr(addr.City),
+    state: safeStr(addr.CountrySubDivisionCode),
+    postalCode: safeStr(addr.PostalCode),
+    notes: undefined,
+    active: true,
+    isPrimary,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function isAddressMeaningful(addr?: QboAddress) {
+  if (!addr) return false;
+  return Boolean(
+    safeStr(addr.Line1) ||
+      safeStr(addr.Line2) ||
+      safeStr(addr.City) ||
+      safeStr(addr.CountrySubDivisionCode) ||
+      safeStr(addr.PostalCode)
+  );
 }
 
 export async function POST() {
@@ -117,64 +151,61 @@ export async function POST() {
       const qboId = safeStr(c.Id);
       if (!qboId) continue;
 
-      const dcId = dcCustomerIdFromQboId(qboId);
+      // ✅ Use QBO ID as the Firestore doc ID (matches your existing pattern)
+      const dcId = `qbo_${qboId}`;
       const docRef = db.collection("customers").doc(dcId);
 
-      const displayName =
-        safeStr(c.DisplayName) ||
-        safeStr(c.CompanyName) ||
-        `${safeStr(c.GivenName)} ${safeStr(c.FamilyName)}`.trim() ||
-        `QBO Customer ${qboId}`;
+      const displayName = buildDisplayName(c);
 
-      const phone =
-        safeStr(c.PrimaryPhone?.FreeFormNumber) ||
-        safeStr(c.Mobile?.FreeFormNumber) ||
-        "";
+      // ✅ Map addresses into the schema your Customer page expects
+      const bill = c.BillAddr;
+      const ship = c.ShipAddr;
+
+      const billingAddressLine1 = safeStr(bill?.Line1);
+      const billingAddressLine2 = safeStr(bill?.Line2) || undefined;
+      const billingCity = safeStr(bill?.City);
+      const billingState = safeStr(bill?.CountrySubDivisionCode);
+      const billingPostalCode = safeStr(bill?.PostalCode);
+
+      // ✅ Build serviceAddresses:
+      // Prefer ShipAddr as primary service address, else fall back to BillAddr.
+      const serviceAddresses: any[] = [];
+
+      if (isAddressMeaningful(ship)) {
+        serviceAddresses.push(addressToServiceAddress(ship!, "Service Address (QBO)", true));
+      } else if (isAddressMeaningful(bill)) {
+        serviceAddresses.push(addressToServiceAddress(bill!, "Service Address (From Billing)", true));
+      }
 
       const payload = {
-        // DCFlow display
-        customerDisplayName: displayName,
+        // ✅ DCFlow Customer schema (matches src/types/customer.ts)
+        source: "quickbooks",
         displayName,
 
-        // QBO link
-        qboCustomerId: qboId,
-        qboDisplayName: safeStr(c.DisplayName) || displayName,
-        realmId,
+        phonePrimary: normalizePhone(c.PrimaryPhone?.FreeFormNumber ?? ""),
+        phoneSecondary: null,
+        email: safeStr(c.PrimaryEmailAddr?.Address) || null,
 
-        // Contact
-        email: safeStr(c.PrimaryEmailAddr?.Address),
-        phone,
+        billingAddressLine1: billingAddressLine1 || "",
+        billingAddressLine2: billingAddressLine2 || null,
+        billingCity: billingCity || "",
+        billingState: billingState || "",
+        billingPostalCode: billingPostalCode || "",
 
-        // Billing address (v1 flat)
-        billAddrLine1: safeStr(c.BillAddr?.Line1),
-        billAddrLine2: safeStr(c.BillAddr?.Line2),
-        billAddrLine3: safeStr(c.BillAddr?.Line3),
-        billAddrCity: safeStr(c.BillAddr?.City),
-        billAddrState: safeStr(c.BillAddr?.CountrySubDivisionCode),
-        billAddrPostalCode: safeStr(c.BillAddr?.PostalCode),
+        serviceAddresses: serviceAddresses.length ? serviceAddresses : [],
 
-        // Shipping address (v1 flat)
-        shipAddrLine1: safeStr(c.ShipAddr?.Line1),
-        shipAddrLine2: safeStr(c.ShipAddr?.Line2),
-        shipAddrLine3: safeStr(c.ShipAddr?.Line3),
-        shipAddrCity: safeStr(c.ShipAddr?.City),
-        shipAddrState: safeStr(c.ShipAddr?.CountrySubDivisionCode),
-        shipAddrPostalCode: safeStr(c.ShipAddr?.PostalCode),
-
+        notes: null,
         active: typeof c.Active === "boolean" ? c.Active : true,
 
-        // sync metadata
-        qboSyncStatus: "synced",
-        qboLastSyncedAt: nowIso,
-        qboLastSyncAttempt: lastAttempt,
-        qboLastSyncIntuitTid: lastIntuitTid,
+        // ✅ Linkage field your Customer type uses
+        quickbooksCustomerId: qboId,
 
-        source: "qbo_import",
+        // ✅ housekeeping
+        realmId,
+        lastSyncIntuitTid: lastIntuitTid,
+        lastSyncAttempt: lastAttempt,
         updatedAt: nowIso,
-
-        // NOTE: leaving this as-is (it will overwrite). If you want "only set once"
-        // we can convert to a transaction-based firstSeenAt later.
-        firstSeenAt: nowIso,
+        createdAt: nowIso, // ok to set; merge won't overwrite existing if you prefer
       };
 
       batch.set(docRef, payload, { merge: true });
@@ -195,7 +226,7 @@ export async function POST() {
 
     return NextResponse.json({
       ok: true,
-      message: "Imported QBO customers into DCFlow customers collection.",
+      message: "Imported QBO customers into DCFlow customers collection (DCFlow schema).",
       realmId,
       attempt: lastAttempt,
       intuit_tid: lastIntuitTid,
@@ -203,6 +234,7 @@ export async function POST() {
       upsertedCount: totalUpserts,
       collection: "customers",
       idStrategy: "customers/qbo_<qboCustomerId>",
+      schema: "dcflow_customer_v1",
     });
   } catch (err: unknown) {
     return NextResponse.json(
