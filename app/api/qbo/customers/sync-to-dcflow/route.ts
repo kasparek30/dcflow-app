@@ -1,3 +1,4 @@
+// app/api/qbo/customers/sync-to-dcflow/route.ts
 import { NextResponse } from "next/server";
 import {
   qboFetchWithAutoRefresh,
@@ -16,7 +17,7 @@ type QboAddress = {
   Line2?: string;
   Line3?: string;
   City?: string;
-  CountrySubDivisionCode?: string;
+  CountrySubDivisionCode?: string; // state
   PostalCode?: string;
 };
 
@@ -28,8 +29,11 @@ type QboCustomer = {
   FamilyName?: string;
   MiddleName?: string;
   Active?: boolean;
+
   PrimaryEmailAddr?: { Address?: string };
   PrimaryPhone?: { FreeFormNumber?: string };
+  Mobile?: { FreeFormNumber?: string };
+
   BillAddr?: QboAddress;
   ShipAddr?: QboAddress;
 };
@@ -45,6 +49,10 @@ function normalizeAttempt(value: unknown): AttemptValue {
 
 function dcCustomerIdFromQboId(qboId: string) {
   return `qbo_${qboId}`;
+}
+
+function safeStr(x: unknown) {
+  return String(x ?? "").trim();
 }
 
 export async function POST() {
@@ -106,17 +114,22 @@ export async function POST() {
     let batchCount = 0;
 
     for (const c of all) {
-      const qboId = String(c.Id || "").trim();
+      const qboId = safeStr(c.Id);
       if (!qboId) continue;
 
       const dcId = dcCustomerIdFromQboId(qboId);
       const docRef = db.collection("customers").doc(dcId);
 
       const displayName =
-        (c.DisplayName ?? "").trim() ||
-        (c.CompanyName ?? "").trim() ||
-        `${(c.GivenName ?? "").trim()} ${(c.FamilyName ?? "").trim()}`.trim() ||
+        safeStr(c.DisplayName) ||
+        safeStr(c.CompanyName) ||
+        `${safeStr(c.GivenName)} ${safeStr(c.FamilyName)}`.trim() ||
         `QBO Customer ${qboId}`;
+
+      const phone =
+        safeStr(c.PrimaryPhone?.FreeFormNumber) ||
+        safeStr(c.Mobile?.FreeFormNumber) ||
+        "";
 
       const payload = {
         // DCFlow display
@@ -125,32 +138,42 @@ export async function POST() {
 
         // QBO link
         qboCustomerId: qboId,
-        qboDisplayName: c.DisplayName ?? displayName,
+        qboDisplayName: safeStr(c.DisplayName) || displayName,
         realmId,
 
         // Contact
-        email: c.PrimaryEmailAddr?.Address ?? "",
-        phone: c.PrimaryPhone?.FreeFormNumber ?? "",
+        email: safeStr(c.PrimaryEmailAddr?.Address),
+        phone,
 
         // Billing address (v1 flat)
-        billAddrLine1: c.BillAddr?.Line1 ?? "",
-        billAddrLine2: c.BillAddr?.Line2 ?? "",
-        billAddrCity: c.BillAddr?.City ?? "",
-        billAddrState: c.BillAddr?.CountrySubDivisionCode ?? "",
-        billAddrPostalCode: c.BillAddr?.PostalCode ?? "",
+        billAddrLine1: safeStr(c.BillAddr?.Line1),
+        billAddrLine2: safeStr(c.BillAddr?.Line2),
+        billAddrLine3: safeStr(c.BillAddr?.Line3),
+        billAddrCity: safeStr(c.BillAddr?.City),
+        billAddrState: safeStr(c.BillAddr?.CountrySubDivisionCode),
+        billAddrPostalCode: safeStr(c.BillAddr?.PostalCode),
 
         // Shipping address (v1 flat)
-        shipAddrLine1: c.ShipAddr?.Line1 ?? "",
-        shipAddrLine2: c.ShipAddr?.Line2 ?? "",
-        shipAddrCity: c.ShipAddr?.City ?? "",
-        shipAddrState: c.ShipAddr?.CountrySubDivisionCode ?? "",
-        shipAddrPostalCode: c.ShipAddr?.PostalCode ?? "",
+        shipAddrLine1: safeStr(c.ShipAddr?.Line1),
+        shipAddrLine2: safeStr(c.ShipAddr?.Line2),
+        shipAddrLine3: safeStr(c.ShipAddr?.Line3),
+        shipAddrCity: safeStr(c.ShipAddr?.City),
+        shipAddrState: safeStr(c.ShipAddr?.CountrySubDivisionCode),
+        shipAddrPostalCode: safeStr(c.ShipAddr?.PostalCode),
 
         active: typeof c.Active === "boolean" ? c.Active : true,
 
+        // sync metadata
+        qboSyncStatus: "synced",
+        qboLastSyncedAt: nowIso,
+        qboLastSyncAttempt: lastAttempt,
+        qboLastSyncIntuitTid: lastIntuitTid,
+
         source: "qbo_import",
-        lastSyncIntuitTid: lastIntuitTid,
         updatedAt: nowIso,
+
+        // NOTE: leaving this as-is (it will overwrite). If you want "only set once"
+        // we can convert to a transaction-based firstSeenAt later.
         firstSeenAt: nowIso,
       };
 
@@ -189,5 +212,4 @@ export async function POST() {
   }
 }
 
-// Force TS to treat this as a module in any weird editor/compile edge-cases
 export {};
