@@ -23,6 +23,81 @@ type Props = {
   params: Promise<{ timeEntryId: string }>;
 };
 
+type LocalTimeEntry = TimeEntry & {
+  tripId?: string;
+  companyEventId?: string;
+  title?: string | null;
+  location?: string | null;
+};
+
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+  helperUid?: string | null;
+  helperName?: string | null;
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
+
+type TripDoc = {
+  id: string;
+  type?: string;
+  status?: string;
+  date?: string;
+  timeWindow?: string;
+  startTime?: string;
+  endTime?: string;
+  link?: {
+    serviceTicketId?: string | null;
+    projectId?: string | null;
+    projectStageKey?: string | null;
+  } | null;
+
+  crewConfirmed?: TripCrew | null;
+  crew?: TripCrew | null;
+
+  workNotes?: string | null;
+  resolutionNotes?: string | null;
+  followUpNotes?: string | null;
+  outcome?: string | null;
+
+  actualMinutes?: number | null;
+
+  updatedAt?: string | null;
+};
+
+type ServiceTicketLite = {
+  id: string;
+  customerDisplayName?: string;
+  serviceAddressLine1?: string;
+  serviceAddressLine2?: string;
+  serviceCity?: string;
+  serviceState?: string;
+  servicePostalCode?: string;
+  issueSummary?: string;
+};
+
+type ProjectLite = {
+  id: string;
+  name?: string;
+  projectName?: string;
+  title?: string;
+};
+
+type CompanyEventLite = {
+  id: string;
+  title?: string;
+  date?: string;
+  timeWindow?: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  location?: string | null;
+  notes?: string | null;
+  type?: string;
+};
+
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -42,6 +117,14 @@ function getCurrentWeekMondayIso() {
   monday.setDate(base.getDate() + mondayOffset);
 
   return toIsoDate(monday);
+}
+
+function safeStr(x: unknown) {
+  return typeof x === "string" ? x : "";
+}
+
+function normalize(s: unknown) {
+  return safeStr(s).trim();
 }
 
 function formatCategory(category: TimeEntry["category"]) {
@@ -67,6 +150,117 @@ function formatCategory(category: TimeEntry["category"]) {
   }
 }
 
+function formatStage(stageKey?: string) {
+  const s = (stageKey || "").toLowerCase();
+  if (s === "roughin") return "Rough-In";
+  if (s === "topoutvent") return "Top-Out / Vent";
+  if (s === "trimfinish") return "Trim / Finish";
+  return stageKey || "—";
+}
+
+function buildAddressLine(t: ServiceTicketLite) {
+  const parts: string[] = [];
+  const l1 = normalize(t.serviceAddressLine1);
+  const l2 = normalize(t.serviceAddressLine2);
+  const city = normalize(t.serviceCity);
+  const state = normalize(t.serviceState);
+  const zip = normalize(t.servicePostalCode);
+
+  if (l1) parts.push(l1);
+  if (l2) parts.push(l2);
+  const csz = [city, state, zip].filter(Boolean).join(" ");
+  if (csz) parts.push(csz);
+
+  return parts.join(" • ");
+}
+
+function compactLines(lines: string[]) {
+  return lines.map((x) => x.trim()).filter(Boolean);
+}
+
+function buildAutoNotes(args: {
+  entry: LocalTimeEntry;
+  trip?: TripDoc | null;
+  ticket?: ServiceTicketLite | null;
+  project?: ProjectLite | null;
+  event?: CompanyEventLite | null;
+}) {
+  const { entry, trip, ticket, project, event } = args;
+
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`AUTO • ${formatCategory(entry.category)} • ${entry.entryDate}`);
+
+  // Meeting
+  if (entry.category === "meeting") {
+    const title = normalize(entry.title) || normalize(event?.title) || "Meeting";
+    const loc = normalize(entry.location) || normalize(event?.location);
+    lines.push(`📣 ${title}${loc ? ` • ${loc}` : ""}`);
+    if (normalize(event?.notes)) {
+      lines.push(`Notes: ${normalize(event?.notes)}`);
+    }
+    if (normalize(entry.companyEventId)) lines.push(`companyEventId: ${normalize(entry.companyEventId)}`);
+    return compactLines(lines).join("\n");
+  }
+
+  // Trip-based (service/project)
+  const tripId = normalize(entry.tripId);
+  const stId = normalize(entry.serviceTicketId);
+  const projId = normalize(entry.projectId);
+
+  if (trip || tripId || stId || projId) {
+    if (ticket) {
+      const cust = normalize(ticket.customerDisplayName);
+      const addr = buildAddressLine(ticket);
+      const issue = normalize(ticket.issueSummary);
+      if (cust || addr) lines.push(`Customer: ${[cust, addr].filter(Boolean).join(" — ")}`);
+      if (issue) lines.push(`Issue: ${issue}`);
+    }
+
+    if (project) {
+      const name = normalize(project.name) || normalize(project.projectName) || normalize(project.title) || "";
+      if (name) lines.push(`Project: ${name}`);
+    }
+
+    if (trip) {
+      const window = normalize(trip.timeWindow);
+      const time = [normalize(trip.startTime), normalize(trip.endTime)].filter(Boolean).join("-");
+      const when = [normalize(trip.date), window || "", time || ""].filter(Boolean).join(" • ");
+      if (when) lines.push(`Trip: ${when}`);
+
+      const outcome = normalize(trip.outcome).toLowerCase();
+      if (outcome) lines.push(`Outcome: ${outcome}`);
+
+      const follow = normalize(trip.followUpNotes);
+      const res = normalize(trip.resolutionNotes);
+      const work = normalize(trip.workNotes);
+
+      if (outcome === "follow_up" && follow) lines.push(`Follow-up notes: ${follow}`);
+      if (outcome === "resolved" && res) lines.push(`Resolution notes: ${res}`);
+      if (!outcome && (follow || res)) {
+        if (follow) lines.push(`Follow-up notes: ${follow}`);
+        if (res) lines.push(`Resolution notes: ${res}`);
+      }
+      if (work) lines.push(`Work notes: ${work}`);
+
+      if (typeof trip.actualMinutes === "number" && Number.isFinite(trip.actualMinutes)) {
+        lines.push(`Trip minutes: ${trip.actualMinutes}`);
+      }
+    }
+
+    if (tripId) lines.push(`tripId: ${tripId}`);
+    if (stId) lines.push(`serviceTicketId: ${stId}`);
+    if (projId) {
+      lines.push(
+        `projectId: ${projId}${entry.projectStageKey ? ` • stage: ${formatStage(entry.projectStageKey)}` : ""}`
+      );
+    }
+  }
+
+  return compactLines(lines).join("\n");
+}
+
 export default function TimeEntryDetailPage({ params }: Props) {
   const { appUser } = useAuthContext();
 
@@ -74,7 +268,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
   const [saving, setSaving] = useState(false);
 
   const [timeEntryId, setTimeEntryId] = useState("");
-  const [entry, setEntry] = useState<TimeEntry | null>(null);
+  const [entry, setEntry] = useState<LocalTimeEntry | null>(null);
   const [matchingTimesheet, setMatchingTimesheet] = useState<WeeklyTimesheet | null>(null);
 
   const [error, setError] = useState("");
@@ -88,6 +282,13 @@ export default function TimeEntryDetailPage({ params }: Props) {
   const [linkedTechnicianId, setLinkedTechnicianId] = useState("");
   const [linkedTechnicianName, setLinkedTechnicianName] = useState("");
   const [notes, setNotes] = useState("");
+
+  // ✅ Auto details state
+  const [trip, setTrip] = useState<TripDoc | null>(null);
+  const [ticket, setTicket] = useState<ServiceTicketLite | null>(null);
+  const [project, setProject] = useState<ProjectLite | null>(null);
+  const [event, setEvent] = useState<CompanyEventLite | null>(null);
+  const [autoLoading, setAutoLoading] = useState(false);
 
   const canEditOtherUsers =
     appUser?.role === "admin" ||
@@ -109,9 +310,9 @@ export default function TimeEntryDetailPage({ params }: Props) {
           return;
         }
 
-        const data = entrySnap.data();
+        const data = entrySnap.data() as any;
 
-        const item: TimeEntry = {
+        const item: LocalTimeEntry = {
           id: entrySnap.id,
           employeeId: data.employeeId ?? "",
           employeeName: data.employeeName ?? "",
@@ -142,6 +343,12 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
+
+          // ✅ extra linkage fields (safe)
+          tripId: data.tripId ?? undefined,
+          companyEventId: data.companyEventId ?? undefined,
+          title: data.title ?? null,
+          location: data.location ?? null,
         };
 
         setEntry(item);
@@ -215,6 +422,111 @@ export default function TimeEntryDetailPage({ params }: Props) {
     loadEntry();
   }, [params]);
 
+  // ✅ Load auto context (trip/ticket/project/event) when entry changes
+  useEffect(() => {
+    async function loadAutoContext() {
+      if (!entry) return;
+
+      setAutoLoading(true);
+      setTrip(null);
+      setTicket(null);
+      setProject(null);
+      setEvent(null);
+
+      try {
+        // Meeting: companyEventId optional, but if present fetch it
+        if (entry.category === "meeting") {
+          const ceid = normalize(entry.companyEventId);
+          if (ceid) {
+            const es = await getDoc(doc(db, "companyEvents", ceid));
+            if (es.exists()) {
+              const d = es.data() as any;
+              setEvent({
+                id: es.id,
+                title: d.title ?? d.name ?? "Meeting",
+                date: d.date ?? "",
+                timeWindow: d.timeWindow ?? "",
+                startTime: d.startTime ?? null,
+                endTime: d.endTime ?? null,
+                location: d.location ?? null,
+                notes: d.notes ?? null,
+                type: d.type ?? "meeting",
+              });
+            }
+          }
+          return;
+        }
+
+        // Trip
+        const tid = normalize(entry.tripId);
+        if (tid) {
+          const ts = await getDoc(doc(db, "trips", tid));
+          if (ts.exists()) {
+            const d = ts.data() as any;
+            setTrip({
+              id: ts.id,
+              type: d.type ?? undefined,
+              status: d.status ?? undefined,
+              date: d.date ?? undefined,
+              timeWindow: d.timeWindow ?? undefined,
+              startTime: d.startTime ?? undefined,
+              endTime: d.endTime ?? undefined,
+              link: d.link ?? null,
+              crewConfirmed: d.crewConfirmed ?? null,
+              crew: d.crew ?? null,
+              workNotes: d.workNotes ?? null,
+              resolutionNotes: d.resolutionNotes ?? null,
+              followUpNotes: d.followUpNotes ?? null,
+              outcome: d.outcome ?? null,
+              actualMinutes: typeof d.actualMinutes === "number" ? d.actualMinutes : null,
+              updatedAt: d.updatedAt ?? null,
+            });
+          }
+        }
+
+        // Service ticket
+        const stid = normalize(entry.serviceTicketId);
+        if (stid) {
+          const ss = await getDoc(doc(db, "serviceTickets", stid));
+          if (ss.exists()) {
+            const d = ss.data() as any;
+            setTicket({
+              id: ss.id,
+              customerDisplayName: d.customerDisplayName ?? "",
+              serviceAddressLine1: d.serviceAddressLine1 ?? "",
+              serviceAddressLine2: d.serviceAddressLine2 ?? "",
+              serviceCity: d.serviceCity ?? "",
+              serviceState: d.serviceState ?? "",
+              servicePostalCode: d.servicePostalCode ?? "",
+              issueSummary: d.issueSummary ?? "",
+            });
+          }
+        }
+
+        // Project
+        const pid = normalize(entry.projectId);
+        if (pid) {
+          const ps = await getDoc(doc(db, "projects", pid));
+          if (ps.exists()) {
+            const d = ps.data() as any;
+            setProject({
+              id: ps.id,
+              name: d.name ?? undefined,
+              projectName: d.projectName ?? undefined,
+              title: d.title ?? undefined,
+            });
+          }
+        }
+      } catch {
+        // best-effort only
+      } finally {
+        setAutoLoading(false);
+      }
+    }
+
+    loadAutoContext();
+  }, [entry?.id]);
+
   const isOwnEntry = useMemo(() => {
     if (!entry || !appUser?.uid) return false;
     return entry.employeeId === appUser.uid;
@@ -242,6 +554,36 @@ export default function TimeEntryDetailPage({ params }: Props) {
     if (isTimesheetLocked) return false;
     return true;
   }, [entry, appUser, isOwnEntry, canEditOtherUsers, isHistoricalWeek, isTimesheetLocked]);
+
+  const suggestedAutoNotes = useMemo(() => {
+    if (!entry) return "";
+    return buildAutoNotes({ entry, trip, ticket, project, event });
+  }, [entry, trip, ticket, project, event]);
+
+  function appendAutoToNotes() {
+    const auto = (suggestedAutoNotes || "").trim();
+    if (!auto) return;
+
+    const cur = (notes || "").trim();
+    if (!cur) {
+      setNotes(auto);
+      return;
+    }
+
+    // Avoid double-append if already present
+    if (cur.includes("AUTO •")) {
+      setNotes(cur); // keep as-is
+      return;
+    }
+
+    setNotes(`${cur}\n\n${auto}`);
+  }
+
+  function replaceNotesWithAuto() {
+    const auto = (suggestedAutoNotes || "").trim();
+    if (!auto) return;
+    setNotes(auto);
+  }
 
   async function handleSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -388,7 +730,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 Payroll Week: {entry.weekStartDate} through {entry.weekEndDate}
               </div>
               <div style={{ fontSize: "13px", color: "#555" }}>
-                Source: {entry.source === "auto_suggested" ? "Auto-Suggested" : "Manual"}
+                Source: {entry.source === "auto_suggested" ? "Auto-Suggested" : entry.source || "Manual"}
               </div>
               <div style={{ fontSize: "13px", color: "#555" }}>
                 Pay Type: {entry.payType}
@@ -396,6 +738,175 @@ export default function TimeEntryDetailPage({ params }: Props) {
               <div style={{ fontSize: "12px", color: "#666" }}>
                 Time Entry ID: {timeEntryId}
               </div>
+            </div>
+
+            {/* ✅ Auto Details */}
+            <div
+              style={{
+                marginTop: "16px",
+                border: "1px solid #ddd",
+                borderRadius: "12px",
+                padding: "16px",
+                background: "#ffffff",
+                maxWidth: "900px",
+                display: "grid",
+                gap: "10px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 950, fontSize: 16 }}>Auto Details</div>
+                {autoLoading ? <div style={{ fontSize: 12, color: "#777" }}>Loading details…</div> : null}
+              </div>
+
+              {/* Service ticket context */}
+              {ticket ? (
+                <div style={{ fontSize: 13, color: "#333" }}>
+                  <div style={{ fontWeight: 900 }}>Customer</div>
+                  <div style={{ marginTop: 4 }}>
+                    {normalize(ticket.customerDisplayName) || "—"}
+                    {buildAddressLine(ticket) ? ` — ${buildAddressLine(ticket)}` : ""}
+                  </div>
+
+                  {normalize(ticket.issueSummary) ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900 }}>Issue</div>
+                      <div style={{ marginTop: 4 }}>{normalize(ticket.issueSummary)}</div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Project context */}
+              {project ? (
+                <div style={{ fontSize: 13, color: "#333" }}>
+                  <div style={{ fontWeight: 900 }}>Project</div>
+                  <div style={{ marginTop: 4 }}>
+                    {normalize(project.name) || normalize(project.projectName) || normalize(project.title) || project.id}
+                    {entry.projectStageKey ? ` • ${formatStage(entry.projectStageKey)}` : ""}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Trip context */}
+              {trip ? (
+                <div style={{ fontSize: 13, color: "#333" }}>
+                  <div style={{ fontWeight: 900 }}>Trip</div>
+                  <div style={{ marginTop: 4 }}>
+                    {trip.date || "—"}
+                    {trip.timeWindow ? ` • ${trip.timeWindow}` : ""}
+                    {trip.startTime && trip.endTime ? ` • ${trip.startTime}-${trip.endTime}` : ""}
+                  </div>
+
+                  {normalize(trip.outcome) ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900 }}>Outcome</div>
+                      <div style={{ marginTop: 4 }}>{normalize(trip.outcome)}</div>
+                    </div>
+                  ) : null}
+
+                  {normalize(trip.followUpNotes) ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900 }}>Follow-up notes</div>
+                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(trip.followUpNotes)}</div>
+                    </div>
+                  ) : null}
+
+                  {normalize(trip.resolutionNotes) ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900 }}>Resolution notes</div>
+                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(trip.resolutionNotes)}</div>
+                    </div>
+                  ) : null}
+
+                  {normalize(trip.workNotes) ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900 }}>Work notes</div>
+                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(trip.workNotes)}</div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Meeting context */}
+              {entry.category === "meeting" ? (
+                <div style={{ fontSize: 13, color: "#333" }}>
+                  <div style={{ fontWeight: 900 }}>Meeting</div>
+                  <div style={{ marginTop: 4 }}>
+                    📣 {normalize(entry.title) || normalize(event?.title) || "Meeting"}
+                    {normalize(entry.location) || normalize(event?.location)
+                      ? ` • ${normalize(entry.location) || normalize(event?.location)}`
+                      : ""}
+                  </div>
+                  {normalize(event?.notes) ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900 }}>Notes</div>
+                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(event?.notes)}</div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Suggested notes */}
+              {suggestedAutoNotes ? (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Suggested Notes (auto)</div>
+                  <textarea
+                    value={suggestedAutoNotes}
+                    readOnly
+                    rows={6}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "10px",
+                      borderRadius: "10px",
+                      border: "1px solid #ddd",
+                      background: "#fafafa",
+                      fontSize: 12,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  />
+                  {canEdit ? (
+                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        onClick={appendAutoToNotes}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          border: "1px solid #c6dbff",
+                          background: "#eaf2ff",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                        }}
+                      >
+                        ➕ Append Auto Details to Notes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={replaceNotesWithAuto}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          border: "1px solid #ddd",
+                          background: "white",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                        }}
+                      >
+                        ♻ Replace Notes with Auto Details
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#777" }}>
+                      (Read-only week/timesheet — cannot write notes.)
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "#777" }}>
+                  No auto-linked details found for this entry.
+                </div>
+              )}
             </div>
 
             <div
@@ -570,7 +1081,10 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 </div>
               ) : null}
 
-              {(entry.linkedTechnicianId || entry.linkedTechnicianName || entry.employeeRole === "helper" || entry.employeeRole === "apprentice") ? (
+              {(entry.linkedTechnicianId ||
+                entry.linkedTechnicianName ||
+                entry.employeeRole === "helper" ||
+                entry.employeeRole === "apprentice") ? (
                 <div
                   style={{
                     border: "1px solid #e6e6e6",
