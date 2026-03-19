@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, doc, getDoc, getDocs, orderBy, query } from "firebase/firestore";
+import { collection, getDocs, orderBy, query, doc, getDoc } from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -66,16 +66,6 @@ function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
   ];
 }
 
-function safeTrim(x: unknown) {
-  return String(x ?? "").trim();
-}
-
-function truncateLine(s: string, max = 64) {
-  const x = (s || "").trim();
-  if (x.length <= max) return x;
-  return x.slice(0, max - 1) + "…";
-}
-
 function formatPayType(payType: TimeEntry["payType"]) {
   switch (payType) {
     case "regular":
@@ -87,7 +77,7 @@ function formatPayType(payType: TimeEntry["payType"]) {
     case "holiday":
       return "Holiday";
     default:
-      return payType;
+      return String(payType || "");
   }
 }
 
@@ -104,7 +94,7 @@ function formatStatus(status: TimeEntry["entryStatus"]) {
     case "exported":
       return "Exported";
     default:
-      return status;
+      return String(status || "");
   }
 }
 
@@ -117,25 +107,38 @@ function formatDisplayDate(isoDate: string) {
   });
 }
 
-function isServiceCategory(cat: string) {
-  const c = safeTrim(cat).toLowerCase();
-  return c === "service" || c === "service_ticket";
+function safeTrim(x: unknown) {
+  return String(x ?? "").trim();
 }
 
-function isProjectCategory(cat: string) {
-  const c = safeTrim(cat).toLowerCase();
-  return c === "project" || c === "project_stage";
+function firstMeaningfulLine(notes?: string) {
+  const raw = safeTrim(notes);
+  if (!raw) return "";
+  const lines = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const preferred = lines.find((l) => !l.startsWith("AUTO_TIME_FROM_TRIP:")) || lines[0] || "";
+  return preferred;
 }
 
-function categoryLabel(cat: string) {
+function truncateLine(s: string, max = 80) {
+  const x = safeTrim(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
+}
+
+/**
+ * ✅ Because your Firestore stores category as:
+ * service | project | meeting
+ * we treat those as the primary display categories.
+ */
+function categoryPillLabel(cat: string) {
   const c = safeTrim(cat).toLowerCase();
-  if (c === "service" || c === "service_ticket") return "service";
-  if (c === "project" || c === "project_stage") return "project";
+  if (c === "service") return "service";
+  if (c === "project") return "project";
   if (c === "meeting") return "meeting";
-  if (c === "shop") return "shop";
-  if (c === "office") return "office";
-  if (c === "pto") return "pto";
-  if (c === "holiday") return "holiday";
   return c || "other";
 }
 
@@ -148,17 +151,16 @@ function stageLabel(stage?: string) {
   return s;
 }
 
-// Parses notes like:
-// "AUTO_TIME_FROM_TRIP:... • Resolved"
-// "AUTO_TIME_FROM_TRIP:... • Follow Up"
-function parseOutcomeFromNotes(notes?: string) {
-  const raw = safeTrim(notes);
-  if (!raw) return "";
-  const lower = raw.toLowerCase();
-  if (lower.includes("• resolved") || lower.endsWith("resolved")) return "Resolved";
-  if (lower.includes("• follow up") || lower.includes("• follow-up") || lower.endsWith("follow up")) return "Follow Up";
-  return "";
-}
+type ServiceTicketMini = {
+  id: string;
+  customerDisplayName: string;
+  issueSummary: string;
+};
+
+type ProjectMini = {
+  id: string;
+  projectName: string;
+};
 
 export default function TimeEntriesPage() {
   const { appUser } = useAuthContext();
@@ -168,17 +170,17 @@ export default function TimeEntriesPage() {
   const [error, setError] = useState("");
 
   const [statusFilter, setStatusFilter] = useState<"all" | TimeEntry["entryStatus"]>("all");
-  const [categoryFilter, setCategoryFilter] = useState<"all" | TimeEntry["category"]>("all");
+  const [categoryFilter, setCategoryFilter] = useState<"all" | string>("all");
   const [weekOffset, setWeekOffset] = useState(0);
-
-  // Lookup maps for better card titles
-  const [serviceTicketMetaById, setServiceTicketMetaById] = useState<Record<string, { customerName: string; issueSummary: string }>>({});
-  const [projectNameById, setProjectNameById] = useState<Record<string, string>>({});
 
   const canSeeAll =
     appUser?.role === "admin" ||
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
+
+  // ✅ lookup caches (id -> display)
+  const [ticketMiniById, setTicketMiniById] = useState<Record<string, ServiceTicketMini>>({});
+  const [projectMiniById, setProjectMiniById] = useState<Record<string, ProjectMini>>({});
 
   useEffect(() => {
     async function loadEntries() {
@@ -187,8 +189,7 @@ export default function TimeEntriesPage() {
         const snap = await getDocs(q);
 
         const items: TimeEntry[] = snap.docs.map((docSnap) => {
-          const data = docSnap.data();
-
+          const data: any = docSnap.data();
           return {
             id: docSnap.id,
             employeeId: data.employeeId ?? "",
@@ -200,7 +201,7 @@ export default function TimeEntriesPage() {
             weekStartDate: data.weekStartDate ?? "",
             weekEndDate: data.weekEndDate ?? "",
 
-            // IMPORTANT: your DB currently stores category like "service" / "project"
+            // IMPORTANT: Firestore uses "service" | "project" | "meeting"
             category: data.category ?? "manual_other",
             hours: typeof data.hours === "number" ? data.hours : 0,
             payType: data.payType ?? "regular",
@@ -255,116 +256,95 @@ export default function TimeEntriesPage() {
     }
 
     if (categoryFilter !== "all") {
-      items = items.filter((entry) => entry.category === categoryFilter);
+      items = items.filter((entry) => safeTrim(entry.category).toLowerCase() === safeTrim(categoryFilter).toLowerCase());
     }
 
     return items;
   }, [entries, canSeeAll, appUser?.uid, weekStart, weekEnd, statusFilter, categoryFilter]);
 
-  // Fetch the names needed for the current visible week (fast + keeps reads reasonable)
+  // ✅ After visible entries change, hydrate needed display info (serviceTicket + project)
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadMeta() {
-      const needService = new Set<string>();
-      const needProjects = new Set<string>();
+    async function hydrate() {
+      const needTicketIds = new Set<string>();
+      const needProjectIds = new Set<string>();
 
       for (const e of visibleEntries) {
-        const cat = safeTrim(e.category).toLowerCase();
-        if (isServiceCategory(cat) && e.serviceTicketId) {
-          if (!serviceTicketMetaById[e.serviceTicketId]) needService.add(e.serviceTicketId);
+        const cat = safeTrim((e as any).category).toLowerCase();
+        if (cat === "service") {
+          const tid = safeTrim((e as any).serviceTicketId);
+          if (tid && !ticketMiniById[tid]) needTicketIds.add(tid);
         }
-        if (isProjectCategory(cat) && e.projectId) {
-          if (!projectNameById[e.projectId]) needProjects.add(e.projectId);
+        if (cat === "project") {
+          const pid = safeTrim((e as any).projectId);
+          if (pid && !projectMiniById[pid]) needProjectIds.add(pid);
         }
       }
 
-      // nothing new needed
-      if (needService.size === 0 && needProjects.size === 0) return;
+      if (needTicketIds.size === 0 && needProjectIds.size === 0) return;
 
-      try {
-        const serviceReads = Array.from(needService).map(async (id) => {
-          try {
-            const snap = await getDoc(doc(db, "serviceTickets", id));
-            if (!snap.exists()) return { id, customerName: "Service Ticket", issueSummary: "" };
-            const d = snap.data() as any;
-            return {
-              id,
-              customerName: safeTrim(d.customerDisplayName) || "Customer",
-              issueSummary: safeTrim(d.issueSummary) || "",
-            };
-          } catch {
-            return { id, customerName: "Service Ticket", issueSummary: "" };
-          }
-        });
-
-        const projectReads = Array.from(needProjects).map(async (id) => {
-          try {
-            const snap = await getDoc(doc(db, "projects", id));
-            if (!snap.exists()) return { id, name: "Project" };
-            const d = snap.data() as any;
-
-            // Try common fields (adjust if your project schema uses a different one)
-            const name =
-              safeTrim(d.projectName) || "Project";
-            return { id, name };
-          } catch {
-            return { id, name: "Project" };
-          }
-        });
-
-        const [serviceResults, projectResults] = await Promise.all([
-          Promise.all(serviceReads),
-          Promise.all(projectReads),
-        ]);
-
-        if (cancelled) return;
-
-        if (serviceResults.length) {
-          setServiceTicketMetaById((prev) => {
-            const next = { ...prev };
-            for (const r of serviceResults) {
-              next[r.id] = { customerName: r.customerName, issueSummary: r.issueSummary };
-            }
-            return next;
-          });
+      // Fetch in parallel
+      const ticketFetches = Array.from(needTicketIds).map(async (id) => {
+        try {
+          const snap = await getDoc(doc(db, "serviceTickets", id));
+          if (!snap.exists()) return null;
+          const d: any = snap.data();
+          return {
+            id,
+            customerDisplayName: safeTrim(d.customerDisplayName) || "Customer",
+            issueSummary: safeTrim(d.issueSummary) || "Service Ticket",
+          } as ServiceTicketMini;
+        } catch {
+          return null;
         }
+      });
 
-        if (projectResults.length) {
-          setProjectNameById((prev) => {
-            const next = { ...prev };
-            for (const r of projectResults) {
-              next[r.id] = r.name;
-            }
-            return next;
-          });
+      const projectFetches = Array.from(needProjectIds).map(async (id) => {
+        try {
+          const snap = await getDoc(doc(db, "projects", id));
+          if (!snap.exists()) return null;
+          const d: any = snap.data();
+          return {
+            id,
+            projectName: safeTrim(d.projectName) || "Project",
+          } as ProjectMini;
+        } catch {
+          return null;
         }
-      } catch {
-        // ignore; cards will fall back gracefully
+      });
+
+      const [ticketResults, projectResults] = await Promise.all([
+        Promise.all(ticketFetches),
+        Promise.all(projectFetches),
+      ]);
+
+      const nextTickets: Record<string, ServiceTicketMini> = {};
+      for (const t of ticketResults) if (t?.id) nextTickets[t.id] = t;
+
+      const nextProjects: Record<string, ProjectMini> = {};
+      for (const p of projectResults) if (p?.id) nextProjects[p.id] = p;
+
+      if (Object.keys(nextTickets).length) {
+        setTicketMiniById((prev) => ({ ...prev, ...nextTickets }));
+      }
+      if (Object.keys(nextProjects).length) {
+        setProjectMiniById((prev) => ({ ...prev, ...nextProjects }));
       }
     }
 
-    loadMeta();
-
-    return () => {
-      cancelled = true;
-    };
+    hydrate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleEntries]);
 
   const entriesByDay = useMemo(() => {
     const result: Record<string, TimeEntry[]> = {};
     for (const day of payrollWeekDays) result[day.isoDate] = [];
-
     for (const entry of visibleEntries) {
       if (!result[entry.entryDate]) continue;
       result[entry.entryDate].push(entry);
     }
-
     for (const day of payrollWeekDays) {
       result[day.isoDate].sort((a, b) => a.createdAt?.localeCompare(b.createdAt ?? "") ?? 0);
     }
-
     return result;
   }, [visibleEntries, payrollWeekDays]);
 
@@ -376,9 +356,36 @@ export default function TimeEntriesPage() {
     return totals;
   }, [entriesByDay, payrollWeekDays]);
 
-  const weekTotal = useMemo(() => {
-    return visibleEntries.reduce((sum, entry) => sum + entry.hours, 0);
-  }, [visibleEntries]);
+  const weekTotal = useMemo(() => visibleEntries.reduce((sum, entry) => sum + entry.hours, 0), [visibleEntries]);
+
+  function renderTitleAndSubtitle(entry: TimeEntry) {
+    const cat = safeTrim((entry as any).category).toLowerCase();
+
+    if (cat === "service") {
+      const tid = safeTrim((entry as any).serviceTicketId);
+      const mini = tid ? ticketMiniById[tid] : null;
+      const title = mini?.customerDisplayName || "Service";
+      const subtitle = mini?.issueSummary || "";
+      return { title, subtitle };
+    }
+
+    if (cat === "project") {
+      const pid = safeTrim((entry as any).projectId);
+      const mini = pid ? projectMiniById[pid] : null;
+      const title = mini?.projectName || "Project";
+      const stage = stageLabel((entry as any).projectStageKey);
+      const subtitle = stage ? `Stage: ${stage}` : "";
+      return { title, subtitle };
+    }
+
+    if (cat === "meeting") {
+      const title = "Meeting";
+      const subtitle = truncateLine(firstMeaningfulLine((entry as any).notes), 60);
+      return { title, subtitle };
+    }
+
+    return { title: safeTrim((entry as any).category) || "Entry", subtitle: "" };
+  }
 
   return (
     <ProtectedPage fallbackTitle="This Week's Time Entries">
@@ -508,7 +515,7 @@ export default function TimeEntriesPage() {
               <label style={{ fontWeight: 700 }}>Status</label>
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as "all" | TimeEntry["entryStatus"])}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
                 style={{
                   display: "block",
                   width: "100%",
@@ -531,7 +538,7 @@ export default function TimeEntriesPage() {
               <label style={{ fontWeight: 700 }}>Category</label>
               <select
                 value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value as "all" | TimeEntry["category"])}
+                onChange={(e) => setCategoryFilter(e.target.value)}
                 style={{
                   display: "block",
                   width: "100%",
@@ -542,14 +549,9 @@ export default function TimeEntriesPage() {
                 }}
               >
                 <option value="all">All Categories</option>
-                <option value="service_ticket">Service Ticket</option>
-                <option value="project_stage">Project Stage</option>
+                <option value="service">Service</option>
+                <option value="project">Project</option>
                 <option value="meeting">Meeting</option>
-                <option value="shop">Shop</option>
-                <option value="office">Office</option>
-                <option value="pto">PTO</option>
-                <option value="holiday">Holiday</option>
-                <option value="manual_other">Manual Other</option>
               </select>
             </div>
           </div>
@@ -619,33 +621,8 @@ export default function TimeEntriesPage() {
                     ) : (
                       <div style={{ display: "grid", gap: "10px" }}>
                         {dayEntries.map((entry) => {
-                          const catRaw = safeTrim(entry.category).toLowerCase();
-                          const pill = categoryLabel(catRaw);
-
-                          const isService = isServiceCategory(catRaw);
-                          const isProject = isProjectCategory(catRaw);
-
-                          const outcome = parseOutcomeFromNotes(entry.notes);
-
-                          const stId = safeTrim(entry.serviceTicketId);
-                          const projId = safeTrim(entry.projectId);
-
-                          const stMeta = stId ? serviceTicketMetaById[stId] : null;
-                          const projectName = projId ? projectNameById[projId] : "";
-
-                          const title =
-                            isService
-                              ? (stMeta?.customerName || "Customer")
-                              : isProject
-                                ? (projectName || "Project")
-                                : (pill ? pill[0].toUpperCase() + pill.slice(1) : "Entry");
-
-                          const subline =
-                            isService
-                              ? (stMeta?.issueSummary ? truncateLine(stMeta.issueSummary, 80) : "")
-                              : isProject
-                                ? (entry.projectStageKey ? `Stage: ${stageLabel(String(entry.projectStageKey))}` : "")
-                                : "";
+                          const { title, subtitle } = renderTitleAndSubtitle(entry);
+                          const pill = categoryPillLabel(String((entry as any).category || ""));
 
                           return (
                             <Link
@@ -661,63 +638,53 @@ export default function TimeEntriesPage() {
                                 color: "inherit",
                               }}
                             >
-                              {/* Top row: title + hours */}
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
                                 <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 950, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  <div style={{ fontWeight: 950, fontSize: 18, lineHeight: 1.15 }}>
                                     {canSeeAll ? `${entry.employeeName} • ` : ""}
                                     {title}
                                   </div>
 
-                                  {subline ? (
-                                    <div style={{ marginTop: 4, fontSize: 13, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {subline}
+                                  <div
+                                    style={{
+                                      marginTop: 8,
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 8,
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        padding: "4px 10px",
+                                        borderRadius: 999,
+                                        border: "1px solid #e6e6e6",
+                                        background: "#fafafa",
+                                        fontSize: 12,
+                                        fontWeight: 900,
+                                        textTransform: "lowercase",
+                                      }}
+                                    >
+                                      {pill}
+                                    </span>
+                                  </div>
+
+                                  {subtitle ? (
+                                    <div style={{ marginTop: 8, fontSize: 13, color: "#555", fontWeight: 700 }}>
+                                      {subtitle}
                                     </div>
                                   ) : null}
                                 </div>
 
                                 <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                                  <div style={{ fontWeight: 950, fontSize: 16 }}>{entry.hours.toFixed(2)} hr</div>
-                                  <div style={{ marginTop: 2, fontSize: 12, color: "#666" }}>{formatPayType(entry.payType)}</div>
+                                  <div style={{ fontWeight: 1000, fontSize: 18 }}>{Number(entry.hours).toFixed(2)} hr</div>
+                                  <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>{formatPayType(entry.payType)}</div>
                                 </div>
                               </div>
 
-                              {/* Tags row */}
-                              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                <span
-                                  style={{
-                                    padding: "6px 10px",
-                                    borderRadius: 999,
-                                    border: "1px solid #e6e6e6",
-                                    background: "#fafafa",
-                                    fontSize: 12,
-                                    fontWeight: 900,
-                                    textTransform: "lowercase",
-                                  }}
-                                >
-                                  {pill}
-                                </span>
-
-                                {outcome ? (
-                                  <span
-                                    style={{
-                                      padding: "6px 10px",
-                                      borderRadius: 999,
-                                      border: "1px solid #e6e6e6",
-                                      background: "#fff",
-                                      fontSize: 12,
-                                      fontWeight: 900,
-                                      color: outcome === "Resolved" ? "#1f6b1f" : "#5b21b6",
-                                    }}
-                                  >
-                                    Outcome: {outcome}
-                                  </span>
-                                ) : null}
-                              </div>
-
-                              {/* Bottom meta row */}
                               <div style={{ marginTop: 10, fontSize: 12, color: "#777" }}>
-                                Billable: <strong>{String(entry.billable)}</strong> &nbsp;&nbsp; Status:{" "}
+                                Billable: <strong>{String(entry.billable)}</strong> &nbsp;&nbsp;•&nbsp;&nbsp; Status:{" "}
                                 <strong>{formatStatus(entry.entryStatus)}</strong>
                               </div>
 
