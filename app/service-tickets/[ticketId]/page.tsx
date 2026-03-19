@@ -156,6 +156,92 @@ type TicketStatus =
 // -----------------------------
 // Helpers
 // -----------------------------
+function safeText(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function oneLine(x: unknown) {
+  return safeText(x).replace(/\s+/g, " ");
+}
+
+function buildTicketAddressLine(ticket: {
+  serviceAddressLine1?: string;
+  serviceAddressLine2?: string;
+  serviceCity?: string;
+  serviceState?: string;
+  servicePostalCode?: string;
+}) {
+  const line1 = oneLine(ticket.serviceAddressLine1);
+  const line2 = oneLine(ticket.serviceAddressLine2);
+  const city = oneLine(ticket.serviceCity);
+  const state = oneLine(ticket.serviceState);
+  const zip = oneLine(ticket.servicePostalCode);
+
+  const street = [line1, line2].filter(Boolean).join(" ");
+  const csz = [city, state, zip].filter(Boolean).join(" ");
+  return [street, csz].filter(Boolean).join(", ");
+}
+
+function buildRichTripTimeEntryNotes(args: {
+  trip: TripDoc;
+
+  // ticket context (optional, but usually available from page state)
+  ticket?: {
+    customerDisplayName?: string;
+    serviceAddressLine1?: string;
+    serviceAddressLine2?: string;
+    serviceCity?: string;
+    serviceState?: string;
+    servicePostalCode?: string;
+    issueSummary?: string;
+  } | null;
+
+  outcomeLabel: "Resolved" | "Follow Up";
+  workNotes?: string | null;
+  resolutionNotes?: string | null;
+  followUpNotes?: string | null;
+}) {
+  const { trip, ticket, outcomeLabel } = args;
+
+  const lines: string[] = [];
+
+  // Always keep a machine-friendly anchor
+  lines.push(`AUTO_TIME_FROM_TRIP:${trip.id}`);
+
+  // Human-friendly context
+  const cust = oneLine(ticket?.customerDisplayName);
+  const addr = ticket ? buildTicketAddressLine(ticket) : "";
+  if (cust || addr) {
+    lines.push(`Customer: ${[cust, addr].filter(Boolean).join(" — ")}`);
+  }
+
+  const issue = oneLine(ticket?.issueSummary);
+  if (issue) lines.push(`Issue: ${issue}`);
+
+  const whenParts = [
+    oneLine(trip.date),
+    oneLine(trip.timeWindow),
+    [oneLine(trip.startTime), oneLine(trip.endTime)].filter(Boolean).join("-"),
+  ].filter(Boolean);
+  if (whenParts.length) lines.push(`Trip: ${whenParts.join(" • ")}`);
+
+  lines.push(`Outcome: ${outcomeLabel}`);
+
+  const work = safeText(args.workNotes);
+  const res = safeText(args.resolutionNotes);
+  const follow = safeText(args.followUpNotes);
+
+  // Only include the relevant field as “primary”
+  if (outcomeLabel === "Resolved" && res) lines.push(`Resolution: ${oneLine(res)}`);
+  if (outcomeLabel === "Follow Up" && follow) lines.push(`Follow-up: ${oneLine(follow)}`);
+
+  // Work notes are always helpful
+  if (work) lines.push(`Work notes: ${oneLine(work)}`);
+
+  // Keep it readable (multi-line)
+  return lines.join("\n");
+}
+
 function normalizeRole(role?: string) {
   return (role || "").trim().toLowerCase();
 }
@@ -386,10 +472,38 @@ async function upsertTimeEntryFromTrip(args: {
   weekEndDate: string;
   timesheetId: string;
   createdByUid: string | null;
-  noteSuffix: string;
+
+  // ✅ NEW: richer context for notes
+  ticket?: {
+    customerDisplayName?: string;
+    serviceAddressLine1?: string;
+    serviceAddressLine2?: string;
+    serviceCity?: string;
+    serviceState?: string;
+    servicePostalCode?: string;
+    issueSummary?: string;
+  } | null;
+
+  outcomeLabel: "Resolved" | "Follow Up";
+  workNotes?: string | null;
+  resolutionNotes?: string | null;
+  followUpNotes?: string | null;
 }) {
-  const { trip, member, entryDate, hoursGenerated, weekStartDate, weekEndDate, timesheetId, createdByUid, noteSuffix } =
-    args;
+  const {
+    trip,
+    member,
+    entryDate,
+    hoursGenerated,
+    weekStartDate,
+    weekEndDate,
+    timesheetId,
+    createdByUid,
+    ticket,
+    outcomeLabel,
+    workNotes,
+    resolutionNotes,
+    followUpNotes,
+  } = args;
 
   const now = nowIso();
 
@@ -401,6 +515,15 @@ async function upsertTimeEntryFromTrip(args: {
 
   const hoursLocked = Boolean(existing?.hoursLocked);
   const hoursToWrite = hoursLocked ? Number(existing?.hours ?? hoursGenerated) : hoursGenerated;
+
+  const richNotes = buildRichTripTimeEntryNotes({
+    trip,
+    ticket: ticket ?? null,
+    outcomeLabel,
+    workNotes: workNotes ?? null,
+    resolutionNotes: resolutionNotes ?? null,
+    followUpNotes: followUpNotes ?? null,
+  });
 
   await setDoc(
     ref,
@@ -414,11 +537,10 @@ async function upsertTimeEntryFromTrip(args: {
       weekEndDate,
       timesheetId,
 
-      category: trip.type === "project" ? "project" : "service",
+category: trip.link?.serviceTicketId ? "service_ticket" : "project_stage",
       payType: "regular",
       billable: true,
-      source: "trip_completion",
-
+source: "auto_suggested",
       hours: hoursToWrite,
       hoursSource: hoursGenerated,
       hoursLocked: hoursLocked || false,
@@ -429,7 +551,9 @@ async function upsertTimeEntryFromTrip(args: {
       projectStageKey: trip.link?.projectStageKey || null,
 
       entryStatus: "draft",
-      notes: `AUTO_TIME_FROM_TRIP:${trip.id} • ${noteSuffix}`,
+
+      // ✅ Rich notes
+      notes: richNotes,
 
       createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
       createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : createdByUid || null,
@@ -1511,17 +1635,35 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           createdByUid: myUid || null,
         });
 
-        await upsertTimeEntryFromTrip({
-          trip,
-          member: m,
-          entryDate,
-          hoursGenerated: hoursToUse,
-          weekStartDate,
-          weekEndDate,
-          timesheetId,
-          createdByUid: myUid || null,
-          noteSuffix: "Resolved",
-        });
+await upsertTimeEntryFromTrip({
+  trip,
+  member: m,
+  entryDate,
+  hoursGenerated: hoursToUse,
+  weekStartDate,
+  weekEndDate,
+  timesheetId,
+  createdByUid: myUid || null,
+
+  // ✅ Ticket context
+  ticket: ticket
+    ? {
+        customerDisplayName: ticket.customerDisplayName,
+        serviceAddressLine1: ticket.serviceAddressLine1,
+        serviceAddressLine2: ticket.serviceAddressLine2,
+        serviceCity: ticket.serviceCity,
+        serviceState: ticket.serviceState,
+        servicePostalCode: ticket.servicePostalCode,
+        issueSummary: ticket.issueSummary,
+      }
+    : null,
+
+  // ✅ Outcome + notes
+  outcomeLabel: "Resolved",
+  workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
+  resolutionNotes: resolution,
+  followUpNotes: null,
+});
       }
 
       // 3) Billing Packet write (bill ONLY primary tech hours)
@@ -1689,17 +1831,35 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           createdByUid: myUid || null,
         });
 
-        await upsertTimeEntryFromTrip({
-          trip,
-          member: m,
-          entryDate,
-          hoursGenerated: hoursToUse,
-          weekStartDate,
-          weekEndDate,
-          timesheetId,
-          createdByUid: myUid || null,
-          noteSuffix: "Follow Up",
-        });
+await upsertTimeEntryFromTrip({
+  trip,
+  member: m,
+  entryDate,
+  hoursGenerated: hoursToUse,
+  weekStartDate,
+  weekEndDate,
+  timesheetId,
+  createdByUid: myUid || null,
+
+  // ✅ Ticket context
+  ticket: ticket
+    ? {
+        customerDisplayName: ticket.customerDisplayName,
+        serviceAddressLine1: ticket.serviceAddressLine1,
+        serviceAddressLine2: ticket.serviceAddressLine2,
+        serviceCity: ticket.serviceCity,
+        serviceState: ticket.serviceState,
+        servicePostalCode: ticket.servicePostalCode,
+        issueSummary: ticket.issueSummary,
+      }
+    : null,
+
+  // ✅ Outcome + notes
+  outcomeLabel: "Follow Up",
+  workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
+  resolutionNotes: null,
+  followUpNotes: follow,
+});
       }
 
       // ticket status to follow_up

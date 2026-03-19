@@ -66,6 +66,27 @@ function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
   ];
 }
 
+function firstMeaningfulLine(notes?: string) {
+  const raw = String(notes || "").trim();
+  if (!raw) return "";
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  // Prefer a human line, not the AUTO_TIME header
+  const preferred =
+    lines.find((l) => l.startsWith("Customer:")) ||
+    lines.find((l) => l.startsWith("Issue:")) ||
+    lines.find((l) => l.startsWith("Outcome:")) ||
+    lines.find((l) => !l.startsWith("AUTO_TIME_FROM_TRIP:"));
+
+  return preferred || lines[0] || "";
+}
+
+function truncateLine(s: string, max = 120) {
+  const x = (s || "").trim();
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
+}
+
 function formatCategory(category: TimeEntry["category"]) {
   switch (category) {
     case "service_ticket":
@@ -556,11 +577,11 @@ export default function TimeEntriesPage() {
                               </div>
                             ) : null}
 
-                            {entry.notes ? (
-                              <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
-                                Notes: {entry.notes}
-                              </div>
-                            ) : null}
+{entry.notes ? (
+  <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+    Notes: {truncateLine(firstMeaningfulLine(entry.notes))}
+  </div>
+) : null}
 
                             <div style={{ marginTop: "8px", fontSize: "12px", color: "#0a58ca", fontWeight: 700 }}>
                               Open Entry
