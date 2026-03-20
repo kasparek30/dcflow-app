@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
@@ -13,6 +14,10 @@ type AppUser = {
   role: string;
   active: boolean;
 };
+
+function safeTrim(x: unknown) {
+  return String(x ?? "").trim();
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -65,44 +70,247 @@ export default function LoginPage() {
     }
   }
 
+  const canSubmit = Boolean(safeTrim(email)) && Boolean(safeTrim(password)) && !loading;
+
   return (
-    <main className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-2xl border p-6 shadow-sm">
-        <h1 className="text-2xl font-bold mb-4">DCFlow Login</h1>
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        placeItems: "center",
+        padding: "24px 14px",
+        background: "#070A0F",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {/* Background glow */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(900px 520px at 50% 22%, rgba(0,140,255,0.32) 0%, rgba(0,140,255,0.06) 45%, rgba(0,0,0,0) 70%)",
+          pointerEvents: "none",
+        }}
+      />
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm mb-1">Email</label>
-            <input
-              type="email"
-              className="w-full border rounded-xl px-3 py-2"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
+      {/* Secondary glow */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          right: "-260px",
+          bottom: "-260px",
+          width: "560px",
+          height: "560px",
+          borderRadius: 9999,
+          background:
+            "radial-gradient(circle at 30% 30%, rgba(0,210,255,0.22), rgba(0,0,0,0) 62%)",
+          filter: "blur(2px)",
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* Subtle grid */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
+          backgroundSize: "56px 56px",
+          maskImage:
+            "radial-gradient(closest-side at 50% 30%, rgba(0,0,0,1), rgba(0,0,0,0))",
+          opacity: 0.55,
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* Card */}
+      <div
+        style={{
+          width: "min(520px, 100%)",
+          borderRadius: 18,
+          border: "1px solid rgba(255,255,255,0.10)",
+          background: "rgba(255,255,255,0.06)",
+          boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+          overflow: "hidden",
+        }}
+      >
+        {/* Top accent bar */}
+        <div
+          style={{
+            height: 4,
+            background:
+              "linear-gradient(90deg, rgba(0,150,255,1) 0%, rgba(120,220,255,1) 45%, rgba(255,30,40,1) 100%)",
+          }}
+        />
+
+        <div style={{ padding: 18 }}>
+          {/* Logo */}
+          <div style={{ display: "grid", placeItems: "center", paddingTop: 6 }}>
+            <Image
+              src="/brand/dcflow-logo.png"
+              alt="DCFlow"
+              width={260}
+              height={84}
+              priority
+              style={{
+                width: "min(280px, 72vw)",
+                height: "auto",
+                filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.35))",
+              }}
             />
           </div>
 
-          <div>
-            <label className="block text-sm mb-1">Password</label>
-            <input
-              type="password"
-              className="w-full border rounded-xl px-3 py-2"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
+          {/* Header */}
+          <div style={{ marginTop: 12, textAlign: "center" }}>
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 950,
+                color: "white",
+                letterSpacing: "-0.2px",
+              }}
+            >
+              Sign in to DCFlow
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 13,
+                color: "rgba(255,255,255,0.78)",
+              }}
+            >
+              Primary production candidate • secure access
+            </div>
           </div>
 
-          {error ? <p className="text-sm text-red-600">{error}</p> : null}
+          {/* Form */}
+          <form onSubmit={handleLogin} style={{ marginTop: 16, display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.78)" }}>
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoComplete="email"
+                placeholder="name@company.com"
+                style={{
+                  width: "100%",
+                  padding: "12px 12px",
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(0,0,0,0.26)",
+                  color: "white",
+                  outline: "none",
+                }}
+              />
+            </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-xl border px-4 py-2 font-medium"
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.78)" }}>
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+                placeholder="••••••••"
+                style={{
+                  width: "100%",
+                  padding: "12px 12px",
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(0,0,0,0.26)",
+                  color: "white",
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            {error ? (
+              <div
+                style={{
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,30,40,0.30)",
+                  background: "rgba(255,30,40,0.10)",
+                  padding: "10px 12px",
+                  color: "rgba(255,255,255,0.92)",
+                  fontSize: 13,
+                  fontWeight: 800,
+                }}
+              >
+                {error}
+              </div>
+            ) : null}
+
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              style={{
+                width: "100%",
+                padding: "12px 14px",
+                borderRadius: 14,
+                border: "1px solid rgba(0,150,255,0.45)",
+                background: !canSubmit
+                  ? "rgba(255,255,255,0.10)"
+                  : "linear-gradient(90deg, rgba(0,150,255,1) 0%, rgba(120,220,255,1) 55%, rgba(0,150,255,1) 100%)",
+                color: !canSubmit ? "rgba(255,255,255,0.65)" : "#061018",
+                fontWeight: 950,
+                cursor: !canSubmit ? "not-allowed" : "pointer",
+                boxShadow: !canSubmit ? "none" : "0 16px 30px rgba(0,140,255,0.18)",
+              }}
+            >
+              {loading ? "Signing in..." : "Sign In"}
+            </button>
+
+            {/* Tiny helper text */}
+            <div style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.60)" }}>
+              Need access? Ask an admin to create your DCFlow user profile.
+            </div>
+          </form>
+
+          {/* Footer */}
+          <div
+            style={{
+              marginTop: 16,
+              paddingTop: 14,
+              borderTop: "1px solid rgba(255,255,255,0.10)",
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+              flexWrap: "wrap",
+              alignItems: "center",
+              color: "rgba(255,255,255,0.62)",
+              fontSize: 12,
+            }}
           >
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-        </form>
+            <div>© {new Date().getFullYear()} Daniel Cernoch Plumbing</div>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 99,
+                  background: "rgba(255,30,40,0.95)",
+                  boxShadow: "0 0 0 4px rgba(255,30,40,0.14)",
+                }}
+              />
+              Modern Utility
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   );
