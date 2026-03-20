@@ -156,10 +156,6 @@ function pickLatestTrip(trips: TripDoc[]) {
 
 /**
  * ✅ Realtime “find my in_progress trip”.
- * We listen to 4 small queries (crew slot fields), dedupe results,
- * AND (critical) remove trips that no longer match queries.
- *
- * This fixes the “pill stays until navigation” issue.
  */
 function useRealtimeActiveTrip(uid: string) {
   const [trip, setTrip] = useState<TripDoc | null>(null);
@@ -317,6 +313,70 @@ async function buildActiveTripPill(trip: TripDoc): Promise<ActiveTripPill> {
   };
 }
 
+// -----------------------------
+// Timesheet helpers (AppShell UI notifications)
+// -----------------------------
+function toIsoDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getWeekMondayIsoForDate(d: Date) {
+  const base = new Date(d);
+  base.setHours(12, 0, 0, 0);
+  const day = base.getDay(); // Sun 0 ... Sat 6
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(base);
+  monday.setDate(base.getDate() + mondayOffset);
+  return toIsoDate(monday);
+}
+
+function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
+  return `ws_${employeeId}_${weekStartDate}`;
+}
+
+function isMondayLocalNow() {
+  const d = new Date();
+  return d.getDay() === 1;
+}
+
+function todayKeyLocal() {
+  // local day key for dismiss logic
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function Badge({ count }: { count: number }) {
+  if (!count || count <= 0) return null;
+  return (
+    <span
+      style={{
+        marginLeft: 8,
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: "#e11d48",
+        color: "white",
+        fontWeight: 900,
+        fontSize: 12,
+        lineHeight: "18px",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        minWidth: 22,
+      }}
+      aria-label={`${count} pending`}
+      title={`${count} pending`}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 export default function AppShell({
   children,
   appUser,
@@ -441,7 +501,10 @@ export default function AppShell({
     return Math.max(0, grossMins - pausedMins);
   }, [activeTrip, nowMs]);
 
-  const timerState = useMemo(() => safeTrim(activeTrip?.timerState).toLowerCase(), [activeTrip?.timerState]);
+  const timerState = useMemo(
+    () => safeTrim(activeTrip?.timerState).toLowerCase(),
+    [activeTrip?.timerState]
+  );
   const isPaused = timerState === "paused";
   const isRunning = timerState === "running" || timerState === "" || timerState === "in_progress";
 
@@ -517,14 +580,282 @@ export default function AppShell({
   }
 
   // --- iOS-style mobile dock metrics ---
-  const DOCK_HEIGHT = 66; // visual height of dock
-  const DOCK_SAFE_GAP = 12; // gap from screen bottom
+  const DOCK_HEIGHT = 66;
+  const DOCK_SAFE_GAP = 12;
   const DOCK_TOTAL = DOCK_HEIGHT + DOCK_SAFE_GAP;
 
   // padding so pill + bottom dock don’t cover content
   const bottomBarHeight = isMobile ? DOCK_TOTAL : 0;
   const pillHeight = isMobile && pill ? 66 : 0;
   const bottomPadding = bottomBarHeight + pillHeight + (isMobile ? 14 : 0);
+
+  // -----------------------------
+  // ✅ Admin/Manager badge: submitted timesheets waiting review
+  // -----------------------------
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+
+  useEffect(() => {
+    if (!showTimesheetReview) {
+      setPendingReviewCount(0);
+      return;
+    }
+
+    const q = query(collection(db, "weeklyTimesheets"), where("status", "==", "submitted"), limit(200));
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setPendingReviewCount(snap.size || 0);
+      },
+      () => {
+        // ignore
+      }
+    );
+
+    return () => unsub();
+  }, [showTimesheetReview]);
+
+  // -----------------------------
+  // ✅ Employee banner: rejected timesheets (so they know)
+  // -----------------------------
+  const [myRejectedCount, setMyRejectedCount] = useState(0);
+
+  useEffect(() => {
+    const uid = safeTrim(myUid);
+    if (!uid) {
+      setMyRejectedCount(0);
+      return;
+    }
+
+    const canReceive =
+      role === "technician" ||
+      role === "helper" ||
+      role === "apprentice" ||
+      role === "dispatcher" ||
+      role === "manager" ||
+      role === "admin";
+
+    if (!canReceive) {
+      setMyRejectedCount(0);
+      return;
+    }
+
+    const q = query(
+      collection(db, "weeklyTimesheets"),
+      where("employeeId", "==", uid),
+      where("status", "==", "rejected"),
+      limit(20)
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => setMyRejectedCount(snap.size || 0),
+      () => {}
+    );
+
+    return () => unsub();
+  }, [myUid, role]);
+
+  // -----------------------------
+  // ✅ Monday “previous week not submitted” banner
+  // -----------------------------
+  const [showMondayReminder, setShowMondayReminder] = useState(false);
+  const [prevWeekStart, setPrevWeekStart] = useState<string>("");
+  const [prevWeekStatus, setPrevWeekStatus] = useState<string>("");
+
+  useEffect(() => {
+    const uid = safeTrim(myUid);
+    if (!uid) {
+      setShowMondayReminder(false);
+      return;
+    }
+
+    // Only for roles that submit timesheets
+    const canReceive =
+      role === "technician" ||
+      role === "helper" ||
+      role === "apprentice" ||
+      role === "dispatcher" ||
+      role === "manager" ||
+      role === "admin";
+
+    if (!canReceive) {
+      setShowMondayReminder(false);
+      return;
+    }
+
+    if (!isMondayLocalNow()) {
+      setShowMondayReminder(false);
+      return;
+    }
+
+    const dismissKey = `dcflow_missingTimesheetDismissed_${todayKeyLocal()}`;
+    try {
+      if (typeof window !== "undefined" && window.localStorage.getItem(dismissKey) === "1") {
+        setShowMondayReminder(false);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Determine previous week start (Monday)
+    const now = new Date();
+    const thisMonIso = getWeekMondayIsoForDate(now);
+
+    const thisMon = new Date(`${thisMonIso}T12:00:00`);
+    const prevMon = new Date(thisMon);
+    prevMon.setDate(thisMon.getDate() - 7);
+    const prevMonIso = toIsoDate(prevMon);
+
+    setPrevWeekStart(prevMonIso);
+
+    const tsId = buildWeeklyTimesheetId(uid, prevMonIso);
+    const tsRef = doc(db, "weeklyTimesheets", tsId);
+
+    // Use a single document listener so it updates instantly after submit
+    const unsub = onSnapshot(
+      tsRef,
+      (snap) => {
+        if (!snap.exists()) {
+          setPrevWeekStatus("missing");
+          setShowMondayReminder(true);
+          return;
+        }
+        const d: any = snap.data();
+        const status = safeTrim(d.status).toLowerCase() || "draft";
+        setPrevWeekStatus(status);
+
+        // Show reminder if not submitted/approved/exported
+        const ok =
+          status === "submitted" ||
+          status === "approved" ||
+          status === "exported_to_quickbooks" ||
+          status === "exported";
+        setShowMondayReminder(!ok);
+      },
+      () => {
+        // if error, don't nag
+        setShowMondayReminder(false);
+      }
+    );
+
+    return () => unsub();
+  }, [myUid, role]);
+
+  function dismissMondayReminderForToday() {
+    const dismissKey = `dcflow_missingTimesheetDismissed_${todayKeyLocal()}`;
+    try {
+      if (typeof window !== "undefined") window.localStorage.setItem(dismissKey, "1");
+    } catch {
+      // ignore
+    }
+    setShowMondayReminder(false);
+  }
+
+  const mondayReminderBanner =
+    showMondayReminder && showWeeklyTimesheet ? (
+      <div
+        style={{
+          border: "1px solid #f59e0b",
+          background: "#fff7ed",
+          borderRadius: 14,
+          padding: 12,
+          marginBottom: 12,
+          boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 1000 }}>
+              ⏰ Last week’s timesheet isn’t submitted yet
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#7c2d12", fontWeight: 800 }}>
+              Week starting <strong>{prevWeekStart || "—"}</strong>{" "}
+              {prevWeekStatus ? `• Status: ${prevWeekStatus}` : ""}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => router.push("/weekly-timesheet?weekOffset=-1")}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid #c2410c",
+                background: "#f97316",
+                color: "white",
+                cursor: "pointer",
+                fontWeight: 1000,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Review last week
+            </button>
+
+            <button
+              type="button"
+              onClick={dismissMondayReminderForToday}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                background: "white",
+                cursor: "pointer",
+                fontWeight: 900,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Dismiss today
+            </button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 8, fontSize: 12, color: "#7c2d12" }}>
+          Tip: submit early so payroll can be approved on time.
+        </div>
+      </div>
+    ) : null;
+
+  const rejectedBanner =
+    myRejectedCount > 0 && showWeeklyTimesheet ? (
+      <div
+        style={{
+          border: "1px solid #ef4444",
+          background: "#fff1f2",
+          borderRadius: 14,
+          padding: 12,
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ fontWeight: 1000 }}>
+            ❗ Your timesheet was rejected and needs changes
+            <div style={{ marginTop: 6, fontSize: 12, color: "#7f1d1d", fontWeight: 800 }}>
+              {myRejectedCount} rejected timesheet{myRejectedCount === 1 ? "" : "s"} found.
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => router.push("/weekly-timesheet?showRejected=1")}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid #991b1b",
+              background: "#dc2626",
+              color: "white",
+              cursor: "pointer",
+              fontWeight: 1000,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Fix now
+          </button>
+        </div>
+      </div>
+    ) : null;
 
   const desktopNav = (
     <nav
@@ -545,7 +876,14 @@ export default function AppShell({
       {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
       {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
       {showPTORequests ? <Link href="/pto-requests">PTO Requests</Link> : null}
-      {showTimesheetReview ? <Link href="/timesheet-review">Timesheet Review</Link> : null}
+
+      {showTimesheetReview ? (
+        <Link href="/timesheet-review">
+          Timesheet Review
+          <Badge count={pendingReviewCount} />
+        </Link>
+      ) : null}
+
       {showAdmin ? <Link href="/admin">Admin</Link> : null}
       {showTechnician ? <Link href="/technician">Technician</Link> : null}
       <Link href="/customers">Customers</Link>
@@ -620,7 +958,14 @@ export default function AppShell({
             {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
             {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
             {showPTORequests ? <Link href="/pto-requests">PTO Requests</Link> : null}
-            {showTimesheetReview ? <Link href="/timesheet-review">Timesheet Review</Link> : null}
+
+            {showTimesheetReview ? (
+              <Link href="/timesheet-review">
+                Timesheet Review
+                <Badge count={pendingReviewCount} />
+              </Link>
+            ) : null}
+
             {showAdmin ? <Link href="/admin">Admin</Link> : null}
             {showTechnician ? <Link href="/technician">Technician</Link> : null}
             <Link href="/customers">Customers</Link>
@@ -642,12 +987,7 @@ export default function AppShell({
     return pathname?.startsWith(target + "/");
   }
 
-  function DockTab(args: {
-    label: string;
-    icon: string;
-    onClick: () => void;
-    active: boolean;
-  }) {
+  function DockTab(args: { label: string; icon: string; onClick: () => void; active: boolean }) {
     const { label, icon, onClick, active } = args;
 
     return (
@@ -710,7 +1050,7 @@ export default function AppShell({
         display: "flex",
         justifyContent: "center",
         paddingBottom: DOCK_SAFE_GAP,
-        pointerEvents: "none", // allow only the dock itself to receive clicks
+        pointerEvents: "none",
       }}
     >
       <div
@@ -748,21 +1088,15 @@ export default function AppShell({
           onClick={() => router.push("/service-tickets")}
           active={isActivePath("/service-tickets")}
         />
-        <DockTab
-          label="More"
-          icon="☰"
-          onClick={() => setDrawerOpen(true)}
-          active={drawerOpen}
-        />
+        <DockTab label="More" icon="☰" onClick={() => setDrawerOpen(true)} active={drawerOpen} />
       </div>
     </div>
   );
 
   const pillTheme = useMemo(() => {
-    // running = green, paused = orange
     if (isPaused) {
       return {
-        bg: "#d97706", // orange
+        bg: "#d97706",
         border: "#b45309",
         dot: "#ffe8c7",
         dotHalo: "rgba(255,232,199,0.25)",
@@ -771,7 +1105,7 @@ export default function AppShell({
     }
     if (isRunning) {
       return {
-        bg: "#1f8f3a", // green
+        bg: "#1f8f3a",
         border: "#177a30",
         dot: "#b7ffbf",
         dotHalo: "rgba(183,255,191,0.25)",
@@ -779,7 +1113,7 @@ export default function AppShell({
       };
     }
     return {
-      bg: "#1b4fbf", // fallback blue
+      bg: "#1b4fbf",
       border: "#153f99",
       dot: "#cfe1ff",
       dotHalo: "rgba(207,225,255,0.25)",
@@ -801,7 +1135,6 @@ export default function AppShell({
           boxShadow: "0 10px 25px rgba(0,0,0,0.18)",
         }}
       >
-        {/* Main tap target */}
         <Link
           href={pill.href}
           style={{
@@ -864,7 +1197,6 @@ export default function AppShell({
           </div>
         </Link>
 
-        {/* Quick action */}
         <div style={{ display: "flex", alignItems: "center" }}>
           {canQuickAct ? (
             isPaused ? (
@@ -931,7 +1263,7 @@ export default function AppShell({
     </div>
   ) : null;
 
-  // Desktop shell (unchanged)
+  // Desktop shell
   if (!isMobile) {
     return (
       <div style={{ minHeight: "100vh", display: "flex" }}>
@@ -954,7 +1286,11 @@ export default function AppShell({
           <LogoutButton />
         </aside>
 
-        <main style={{ flex: 1, padding: "24px" }}>{children}</main>
+        <main style={{ flex: 1, padding: "24px" }}>
+          {rejectedBanner}
+          {mondayReminderBanner}
+          {children}
+        </main>
       </div>
     );
   }
@@ -964,7 +1300,11 @@ export default function AppShell({
     <div style={{ minHeight: "100vh", background: "#fff" }}>
       {mobileMoreDrawer}
 
-      <main style={{ padding: 14, paddingBottom: bottomPadding }}>{children}</main>
+      <main style={{ padding: 14, paddingBottom: bottomPadding }}>
+        {rejectedBanner}
+        {mondayReminderBanner}
+        {children}
+      </main>
 
       {activeTripPill}
       {mobileDock}

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   setDoc,
@@ -50,71 +51,40 @@ function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
 
   return [
     { label: "Monday", isoDate: toIsoDate(monday) },
-    {
-      label: "Tuesday",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1)),
-    },
-    {
-      label: "Wednesday",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2)),
-    },
-    {
-      label: "Thursday",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3)),
-    },
-    {
-      label: "Friday",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4)),
-    },
+    { label: "Tuesday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1)) },
+    { label: "Wednesday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2)) },
+    { label: "Thursday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3)) },
+    { label: "Friday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4)) },
   ];
 }
 
 function formatDisplayDate(isoDate: string) {
   const safeDate = new Date(`${isoDate}T12:00:00`);
-  return safeDate.toLocaleDateString(undefined, {
-    month: "numeric",
-    day: "numeric",
-    year: "2-digit",
-  });
+  return safeDate.toLocaleDateString(undefined, { month: "numeric", day: "numeric", year: "2-digit" });
 }
 
 function formatCategory(category: TimeEntry["category"]) {
   switch (category) {
-    case "service_ticket":
-      return "Service Ticket";
-    case "project_stage":
-      return "Project Stage";
-    case "meeting":
-      return "Meeting";
-    case "shop":
-      return "Shop";
-    case "office":
-      return "Office";
-    case "pto":
-      return "PTO";
-    case "holiday":
-      return "Holiday";
-    case "manual_other":
-      return "Manual Other";
-    default:
-      return category;
+    case "service_ticket": return "Service Ticket";
+    case "project_stage": return "Project Stage";
+    case "meeting": return "Meeting";
+    case "shop": return "Shop";
+    case "office": return "Office";
+    case "pto": return "PTO";
+    case "holiday": return "Holiday";
+    case "manual_other": return "Manual Other";
+    default: return String(category || "");
   }
 }
 
 function formatStatus(status: WeeklyTimesheetStatus) {
   switch (status) {
-    case "draft":
-      return "Draft";
-    case "submitted":
-      return "Submitted";
-    case "approved":
-      return "Approved";
-    case "rejected":
-      return "Rejected";
-    case "exported_to_quickbooks":
-      return "Exported to QuickBooks";
-    default:
-      return status;
+    case "draft": return "Draft";
+    case "submitted": return "Submitted";
+    case "approved": return "Approved";
+    case "rejected": return "Rejected";
+    case "exported_to_quickbooks": return "Exported to QuickBooks";
+    default: return String(status || "");
   }
 }
 
@@ -127,6 +97,14 @@ function isWorkedHoursCategory(category: TimeEntry["category"]) {
     category === "office" ||
     category === "manual_other"
   );
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
+  return `ws_${employeeId}_${weekStartDate}`;
 }
 
 export default function WeeklyTimesheetPage() {
@@ -142,6 +120,7 @@ export default function WeeklyTimesheetPage() {
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
+  // Default to last week (what employees will usually submit)
   const [weekOffset, setWeekOffset] = useState(-1);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(appUser?.uid || "");
   const [employeeNote, setEmployeeNote] = useState("");
@@ -151,10 +130,10 @@ export default function WeeklyTimesheetPage() {
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
+  const isOwnTimesheet = Boolean(appUser?.uid) && selectedEmployeeId === appUser?.uid;
+
   useEffect(() => {
-    if (!selectedEmployeeId && appUser?.uid) {
-      setSelectedEmployeeId(appUser.uid);
-    }
+    if (!selectedEmployeeId && appUser?.uid) setSelectedEmployeeId(appUser.uid);
   }, [appUser?.uid, selectedEmployeeId]);
 
   useEffect(() => {
@@ -166,8 +145,7 @@ export default function WeeklyTimesheetPage() {
         ]);
 
         const timeEntryItems: TimeEntry[] = entriesSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-
+          const data: any = docSnap.data();
           return {
             id: docSnap.id,
             employeeId: data.employeeId ?? "",
@@ -203,8 +181,7 @@ export default function WeeklyTimesheetPage() {
         });
 
         const userItems: AppUser[] = usersSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-
+          const data: any = docSnap.data();
           return {
             uid: data.uid ?? docSnap.id,
             displayName: data.displayName ?? "Unnamed User",
@@ -241,35 +218,32 @@ export default function WeeklyTimesheetPage() {
     return users.find((u) => u.uid === selectedEmployeeId) ?? null;
   }, [users, selectedEmployeeId]);
 
+  // Load timesheet doc directly using standardized ID
   useEffect(() => {
     async function loadTimesheetDoc() {
-      if (!selectedEmployeeId || !weekStart || !weekEnd) {
+      setError("");
+      setSaveMsg("");
+
+      if (!selectedEmployeeId || !weekStart) {
         setTimesheet(null);
         setEmployeeNote("");
         return;
       }
 
       try {
-        const q = query(
-          collection(db, "weeklyTimesheets"),
-          where("employeeId", "==", selectedEmployeeId),
-          where("weekStartDate", "==", weekStart),
-          where("weekEndDate", "==", weekEnd)
-        );
+        const id = buildWeeklyTimesheetId(selectedEmployeeId, weekStart);
+        const snap = await getDoc(doc(db, "weeklyTimesheets", id));
 
-        const snap = await getDocs(q);
-
-        if (snap.empty) {
+        if (!snap.exists()) {
           setTimesheet(null);
           setEmployeeNote("");
           return;
         }
 
-        const docSnap = snap.docs[0];
-        const data = docSnap.data();
+        const data: any = snap.data();
 
         const item: WeeklyTimesheet = {
-          id: docSnap.id,
+          id: snap.id,
           employeeId: data.employeeId ?? "",
           employeeName: data.employeeName ?? "",
           employeeRole: data.employeeRole ?? "",
@@ -309,18 +283,12 @@ export default function WeeklyTimesheetPage() {
     }
 
     loadTimesheetDoc();
-  }, [selectedEmployeeId, weekStart, weekEnd]);
+  }, [selectedEmployeeId, weekStart]);
 
   const weekEntries = useMemo(() => {
     if (!selectedEmployeeId) return [];
-
     return entries
-      .filter(
-        (entry) =>
-          entry.employeeId === selectedEmployeeId &&
-          entry.entryDate >= weekStart &&
-          entry.entryDate <= weekEnd
-      )
+      .filter((entry) => entry.employeeId === selectedEmployeeId && entry.entryDate >= weekStart && entry.entryDate <= weekEnd)
       .sort((a, b) => {
         const byDate = a.entryDate.localeCompare(b.entryDate);
         if (byDate !== 0) return byDate;
@@ -330,29 +298,19 @@ export default function WeeklyTimesheetPage() {
 
   const entriesByDay = useMemo(() => {
     const result: Record<string, TimeEntry[]> = {};
-
-    for (const day of payrollWeekDays) {
-      result[day.isoDate] = [];
-    }
-
+    for (const day of payrollWeekDays) result[day.isoDate] = [];
     for (const entry of weekEntries) {
       if (!result[entry.entryDate]) continue;
       result[entry.entryDate].push(entry);
     }
-
     return result;
   }, [weekEntries, payrollWeekDays]);
 
   const dayTotals = useMemo(() => {
     const result: Record<string, number> = {};
-
     for (const day of payrollWeekDays) {
-      result[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce(
-        (sum, entry) => sum + entry.hours,
-        0
-      );
+      result[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce((sum, entry) => sum + entry.hours, 0);
     }
-
     return result;
   }, [entriesByDay, payrollWeekDays]);
 
@@ -364,52 +322,40 @@ export default function WeeklyTimesheetPage() {
     let nonBillableHours = 0;
 
     for (const entry of weekEntries) {
-      if (isWorkedHoursCategory(entry.category)) {
-        workedHours += entry.hours;
-      }
-
-      if (entry.category === "pto") {
-        ptoHours += entry.hours;
-      }
-
-      if (entry.category === "holiday") {
-        holidayHours += entry.hours;
-      }
-
-      if (entry.billable) {
-        billableHours += entry.hours;
-      } else {
-        nonBillableHours += entry.hours;
-      }
+      if (isWorkedHoursCategory(entry.category)) workedHours += entry.hours;
+      if (entry.category === "pto") ptoHours += entry.hours;
+      if (entry.category === "holiday") holidayHours += entry.hours;
+      if (entry.billable) billableHours += entry.hours;
+      else nonBillableHours += entry.hours;
     }
 
     const regularHours = Math.min(workedHours, 40);
     const overtimeHours = Math.max(workedHours - 40, 0);
     const totalHours = regularHours + overtimeHours + ptoHours + holidayHours;
 
-    return {
-      workedHours,
-      regularHours,
-      overtimeHours,
-      ptoHours,
-      holidayHours,
-      billableHours,
-      nonBillableHours,
-      totalHours,
-    };
+    return { workedHours, regularHours, overtimeHours, ptoHours, holidayHours, billableHours, nonBillableHours, totalHours };
   }, [weekEntries]);
 
   const currentStatus: WeeklyTimesheetStatus = timesheet?.status ?? "draft";
 
+  const isLocked =
+    currentStatus === "approved" || currentStatus === "exported_to_quickbooks";
+
+  const canSaveDraftOrNote =
+    !isLocked; // allow save draft/note even when submitted (note-only)
   const canSubmit =
-    !!selectedEmployee &&
-    currentStatus !== "approved" &&
-    currentStatus !== "exported_to_quickbooks" &&
-    currentStatus !== "submitted";
+    Boolean(selectedEmployee) &&
+    isOwnTimesheet && // employees submit their own
+    !isLocked &&
+    currentStatus !== "submitted"; // allow submit from draft/rejected
 
   async function handleSubmitTimesheet() {
-    if (!selectedEmployee || !appUser) {
+    if (!selectedEmployee || !appUser?.uid) {
       setError("Missing employee context.");
+      return;
+    }
+    if (!isOwnTimesheet) {
+      setError("You can only submit your own timesheet.");
       return;
     }
 
@@ -418,12 +364,12 @@ export default function WeeklyTimesheetPage() {
     setSaving(true);
 
     try {
-      const nowIso = new Date().toISOString();
-      const docId = `${selectedEmployee.uid}_${weekStart}`;
+      const now = nowIso();
+      const docId = buildWeeklyTimesheetId(selectedEmployee.uid, weekStart);
 
       const nextStatus: WeeklyTimesheetStatus = "submitted";
 
-      const payload = {
+      const payload: any = {
         employeeId: selectedEmployee.uid,
         employeeName: selectedEmployee.displayName,
         employeeRole: selectedEmployee.role,
@@ -443,21 +389,26 @@ export default function WeeklyTimesheetPage() {
         nonBillableHours: computedTotals.nonBillableHours,
 
         status: nextStatus,
-
-        submittedAt: nowIso,
+        submittedAt: now,
         submittedById: appUser.uid,
+
+        // clear rejection on resubmit
+        rejectedAt: null,
+        rejectedById: null,
+        rejectionReason: null,
 
         quickbooksExportStatus: "not_ready",
 
         employeeNote: employeeNote.trim() || null,
-        updatedAt: nowIso,
+        updatedAt: now,
+        updatedById: appUser.uid,
       };
 
       await setDoc(
         doc(db, "weeklyTimesheets", docId),
         {
           ...payload,
-          createdAt: timesheet?.createdAt ?? nowIso,
+          createdAt: timesheet?.createdAt ?? now,
         },
         { merge: true }
       );
@@ -470,6 +421,7 @@ export default function WeeklyTimesheetPage() {
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
         timeEntryIds: weekEntries.map((entry) => entry.id),
+
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
@@ -477,16 +429,17 @@ export default function WeeklyTimesheetPage() {
         holidayHours: computedTotals.holidayHours,
         billableHours: computedTotals.billableHours,
         nonBillableHours: computedTotals.nonBillableHours,
+
         status: nextStatus,
-        submittedAt: nowIso,
+        submittedAt: now,
         submittedById: appUser.uid,
         quickbooksExportStatus: "not_ready",
         employeeNote: employeeNote.trim() || undefined,
-        createdAt: timesheet?.createdAt ?? nowIso,
-        updatedAt: nowIso,
+        createdAt: timesheet?.createdAt ?? now,
+        updatedAt: now,
       });
 
-      setSaveMsg("Weekly timesheet submitted.");
+      setSaveMsg("✅ Weekly timesheet submitted.");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to submit weekly timesheet.");
     } finally {
@@ -494,8 +447,8 @@ export default function WeeklyTimesheetPage() {
     }
   }
 
-  async function handleSaveDraft() {
-    if (!selectedEmployee) {
+  async function handleSaveDraftOrNote() {
+    if (!selectedEmployee || !appUser?.uid) {
       setError("Missing employee context.");
       return;
     }
@@ -505,11 +458,12 @@ export default function WeeklyTimesheetPage() {
     setSaving(true);
 
     try {
-      const nowIso = new Date().toISOString();
-      const docId = `${selectedEmployee.uid}_${weekStart}`;
+      const now = nowIso();
+      const docId = buildWeeklyTimesheetId(selectedEmployee.uid, weekStart);
 
+      // If it's already submitted, keep it submitted (notes-only)
       const nextStatus: WeeklyTimesheetStatus =
-        timesheet?.status === "submitted" ? "submitted" : "draft";
+        currentStatus === "submitted" ? "submitted" : "draft";
 
       await setDoc(
         doc(db, "weeklyTimesheets", docId),
@@ -528,7 +482,6 @@ export default function WeeklyTimesheetPage() {
           overtimeHours: computedTotals.overtimeHours,
           ptoHours: computedTotals.ptoHours,
           holidayHours: computedTotals.holidayHours,
-
           billableHours: computedTotals.billableHours,
           nonBillableHours: computedTotals.nonBillableHours,
 
@@ -537,13 +490,14 @@ export default function WeeklyTimesheetPage() {
           quickbooksExportStatus: timesheet?.quickbooksExportStatus ?? "not_ready",
 
           employeeNote: employeeNote.trim() || null,
-          createdAt: timesheet?.createdAt ?? nowIso,
-          updatedAt: nowIso,
+          createdAt: timesheet?.createdAt ?? now,
+          updatedAt: now,
+          updatedById: appUser.uid,
         },
         { merge: true }
       );
 
-      setTimesheet({
+      setTimesheet((prev) => ({
         id: docId,
         employeeId: selectedEmployee.uid,
         employeeName: selectedEmployee.displayName,
@@ -559,15 +513,15 @@ export default function WeeklyTimesheetPage() {
         billableHours: computedTotals.billableHours,
         nonBillableHours: computedTotals.nonBillableHours,
         status: nextStatus,
-        submittedAt: timesheet?.submittedAt,
-        submittedById: timesheet?.submittedById,
-        quickbooksExportStatus: timesheet?.quickbooksExportStatus ?? "not_ready",
+        submittedAt: prev?.submittedAt,
+        submittedById: prev?.submittedById,
+        quickbooksExportStatus: prev?.quickbooksExportStatus ?? "not_ready",
         employeeNote: employeeNote.trim() || undefined,
-        createdAt: timesheet?.createdAt ?? nowIso,
-        updatedAt: nowIso,
-      });
+        createdAt: prev?.createdAt ?? now,
+        updatedAt: now,
+      }));
 
-      setSaveMsg(nextStatus === "submitted" ? "Note saved." : "Draft saved.");
+      setSaveMsg(nextStatus === "submitted" ? "✅ Note saved (timesheet already submitted)." : "✅ Draft saved.");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save draft.");
     } finally {
@@ -578,82 +532,28 @@ export default function WeeklyTimesheetPage() {
   return (
     <ProtectedPage fallbackTitle="Weekly Timesheet">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "12px",
-            marginBottom: "16px",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
           <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 800, margin: 0 }}>
-              Weekly Timesheet
-            </h1>
-            <p style={{ marginTop: "4px", color: "#666", fontSize: "13px" }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>Weekly Timesheet</h1>
+            <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
               Review, total, and submit one payroll week at a time.
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button
-              type="button"
-              onClick={() => setWeekOffset((prev) => prev - 1)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: "10px",
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => setWeekOffset((p) => p - 1)} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer" }}>
               Previous Week
             </button>
-
-            <button
-              type="button"
-              onClick={() => setWeekOffset(0)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: "10px",
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
+            <button type="button" onClick={() => setWeekOffset(0)} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer" }}>
               This Week
             </button>
-
-            <button
-              type="button"
-              onClick={() => setWeekOffset((prev) => prev + 1)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: "10px",
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
+            <button type="button" onClick={() => setWeekOffset((p) => p + 1)} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer" }}>
               Next Week
             </button>
           </div>
         </div>
 
-        <div
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: "12px",
-            padding: "16px",
-            marginBottom: "16px",
-            background: "#fafafa",
-            display: "grid",
-            gap: "12px",
-            maxWidth: "760px",
-          }}
-        >
+        <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fafafa", display: "grid", gap: 12, maxWidth: 760 }}>
           <div style={{ fontWeight: 700 }}>
             Week of {weekStart} through {weekEnd}
           </div>
@@ -664,37 +564,34 @@ export default function WeeklyTimesheetPage() {
               <select
                 value={selectedEmployeeId}
                 onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: "4px",
-                  padding: "10px",
-                  borderRadius: "10px",
-                  border: "1px solid #ccc",
-                }}
+                style={{ display: "block", width: "100%", marginTop: 4, padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
               >
                 <option value="">Select employee</option>
-                {users.map((user) => (
-                  <option key={user.uid} value={user.uid}>
-                    {user.displayName} ({user.role})
+                {users.map((u) => (
+                  <option key={u.uid} value={u.uid}>
+                    {u.displayName} ({u.role})
                   </option>
                 ))}
               </select>
             </div>
           ) : (
-            <div style={{ fontSize: "13px", color: "#555" }}>
+            <div style={{ fontSize: 13, color: "#555" }}>
               Employee: <strong>{selectedEmployee?.displayName || "—"}</strong>
             </div>
           )}
 
-          <div style={{ fontSize: "13px", color: "#555" }}>
+          <div style={{ fontSize: 13, color: "#555" }}>
             Current Status: <strong>{formatStatus(currentStatus)}</strong>
           </div>
 
-          {timesheet?.submittedAt ? (
-            <div style={{ fontSize: "12px", color: "#666" }}>
-              Submitted At: {timesheet.submittedAt}
+          {currentStatus === "rejected" && timesheet?.rejectionReason ? (
+            <div style={{ fontSize: 12, color: "#8a5a00", border: "1px solid #f2d9a6", background: "#fff7e6", padding: 10, borderRadius: 10 }}>
+              <strong>Rejected:</strong> {timesheet.rejectionReason}
             </div>
+          ) : null}
+
+          {timesheet?.submittedAt ? (
+            <div style={{ fontSize: 12, color: "#666" }}>Submitted At: {timesheet.submittedAt}</div>
           ) : null}
         </div>
 
@@ -704,106 +601,37 @@ export default function WeeklyTimesheetPage() {
 
         {!loading && selectedEmployee ? (
           <>
-            <div style={{ display: "grid", gap: "16px" }}>
+            <div style={{ display: "grid", gap: 16 }}>
               {payrollWeekDays.map((day) => {
                 const dayEntries = entriesByDay[day.isoDate] ?? [];
                 const dayTotal = dayTotals[day.isoDate] ?? 0;
 
                 return (
-                  <div
-                    key={day.isoDate}
-                    style={{
-                      border: "1px solid #ddd",
-                      borderRadius: "12px",
-                      padding: "16px",
-                      background: "#fafafa",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: "12px",
-                        flexWrap: "wrap",
-                        marginBottom: "12px",
-                      }}
-                    >
+                  <div key={day.isoDate} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
                       <div>
-                        <div style={{ fontWeight: 800, fontSize: "18px" }}>
+                        <div style={{ fontWeight: 800, fontSize: 18 }}>
                           {day.label} {formatDisplayDate(day.isoDate)}
                         </div>
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#666" }}>
-                          {day.isoDate}
-                        </div>
+                        <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>{day.isoDate}</div>
                       </div>
 
-                      <div style={{ fontSize: "13px", color: "#666", fontWeight: 700 }}>
+                      <div style={{ fontSize: 13, color: "#666", fontWeight: 700 }}>
                         Daily Total: {dayTotal.toFixed(2)} hr
                       </div>
                     </div>
 
                     {dayEntries.length === 0 ? (
-                      <div
-                        style={{
-                          border: "1px dashed #ccc",
-                          borderRadius: "10px",
-                          padding: "10px",
-                          background: "white",
-                          color: "#666",
-                          fontSize: "13px",
-                        }}
-                      >
+                      <div style={{ border: "1px dashed #ccc", borderRadius: 10, padding: 10, background: "white", color: "#666", fontSize: 13 }}>
                         No entries for this day.
                       </div>
                     ) : (
-                      <div style={{ display: "grid", gap: "10px" }}>
+                      <div style={{ display: "grid", gap: 10 }}>
                         {dayEntries.map((entry) => (
-                          <div
-                            key={entry.id}
-                            style={{
-                              border: "1px solid #ddd",
-                              borderRadius: "10px",
-                              padding: "10px",
-                              background: "white",
-                            }}
-                          >
-                            <div style={{ fontWeight: 800 }}>
-                              {formatCategory(entry.category)}
-                            </div>
-
-                            <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                              {entry.hours} hr
-                            </div>
-
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                              Billable: {String(entry.billable)}
-                            </div>
-
-                            {entry.linkedTechnicianName ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                Linked Technician: {entry.linkedTechnicianName}
-                              </div>
-                            ) : null}
-
-                            {entry.serviceTicketId ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                Service Ticket ID: {entry.serviceTicketId}
-                              </div>
-                            ) : null}
-
-                            {entry.projectId ? (
-                              <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                                Project ID: {entry.projectId}
-                                {entry.projectStageKey ? ` • Stage: ${entry.projectStageKey}` : ""}
-                              </div>
-                            ) : null}
-
-                            {entry.notes ? (
-                              <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
-                                Notes: {entry.notes}
-                              </div>
-                            ) : null}
+                          <div key={entry.id} style={{ border: "1px solid #ddd", borderRadius: 10, padding: 10, background: "white" }}>
+                            <div style={{ fontWeight: 800 }}>{formatCategory(entry.category)}</div>
+                            <div style={{ marginTop: 4, fontSize: 13, color: "#555" }}>{entry.hours} hr</div>
+                            <div style={{ marginTop: 4, fontSize: 12, color: "#777" }}>Billable: {String(entry.billable)}</div>
                           </div>
                         ))}
                       </div>
@@ -813,114 +641,51 @@ export default function WeeklyTimesheetPage() {
               })}
             </div>
 
-            <div
-              style={{
-                marginTop: "18px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "760px",
-                display: "grid",
-                gap: "10px",
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>Weekly Summary</div>
+            <div style={{ marginTop: 18, border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa", maxWidth: 760, display: "grid", gap: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>Weekly Summary</div>
 
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                Worked Hours: {computedTotals.workedHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                Regular Hours: {computedTotals.regularHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                Overtime Hours: {computedTotals.overtimeHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                PTO Hours: {computedTotals.ptoHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                Holiday Hours: {computedTotals.holidayHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                Billable Hours: {computedTotals.billableHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: "14px", color: "#444" }}>
-                Non-Billable Hours: {computedTotals.nonBillableHours.toFixed(2)}
-              </div>
+              <div style={{ fontSize: 14, color: "#444" }}>Worked Hours: {computedTotals.workedHours.toFixed(2)}</div>
+              <div style={{ fontSize: 14, color: "#444" }}>Regular Hours: {computedTotals.regularHours.toFixed(2)}</div>
+              <div style={{ fontSize: 14, color: "#444" }}>Overtime Hours: {computedTotals.overtimeHours.toFixed(2)}</div>
+              <div style={{ fontSize: 14, color: "#444" }}>PTO Hours: {computedTotals.ptoHours.toFixed(2)}</div>
+              <div style={{ fontSize: 14, color: "#444" }}>Holiday Hours: {computedTotals.holidayHours.toFixed(2)}</div>
 
-              <div
-                style={{
-                  marginTop: "4px",
-                  paddingTop: "8px",
-                  borderTop: "1px solid #e3e3e3",
-                  fontSize: "15px",
-                  fontWeight: 800,
-                }}
-              >
+              <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid #e3e3e3", fontSize: 15, fontWeight: 800 }}>
                 Total Paid Hours: {computedTotals.totalHours.toFixed(2)}
               </div>
 
-              <div style={{ fontSize: "12px", color: "#666" }}>
+              <div style={{ fontSize: 12, color: "#666" }}>
                 Overtime is calculated only from worked-hour categories above 40. PTO and holiday do not count toward the 40-hour threshold.
               </div>
             </div>
 
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "760px",
-                display: "grid",
-                gap: "12px",
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>
-                Employee Note
-              </div>
+            <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa", maxWidth: 760, display: "grid", gap: 12 }}>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>Employee Note</div>
 
               <textarea
                 value={employeeNote}
                 onChange={(e) => setEmployeeNote(e.target.value)}
                 rows={4}
-                disabled={
-                  currentStatus === "approved" ||
-                  currentStatus === "exported_to_quickbooks"
-                }
+                disabled={isLocked}
                 style={{
                   display: "block",
                   width: "100%",
-                  padding: "10px",
-                  borderRadius: "10px",
+                  padding: 10,
+                  borderRadius: 10,
                   border: "1px solid #ccc",
-                  background:
-                    currentStatus === "approved" ||
-                    currentStatus === "exported_to_quickbooks"
-                      ? "#f7f7f7"
-                      : "white",
+                  background: isLocked ? "#f7f7f7" : "white",
                 }}
               />
 
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                {currentStatus !== "approved" &&
-                currentStatus !== "exported_to_quickbooks" ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {canSaveDraftOrNote ? (
                   <button
                     type="button"
-                    onClick={handleSaveDraft}
+                    onClick={handleSaveDraftOrNote}
                     disabled={saving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                    }}
+                    style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #ccc", background: "white", cursor: "pointer", fontWeight: 800 }}
                   >
-                    {saving ? "Saving..." : "Save Draft"}
+                    {saving ? "Saving..." : currentStatus === "submitted" ? "Save Note" : "Save Draft"}
                   </button>
                 ) : null}
 
@@ -929,35 +694,21 @@ export default function WeeklyTimesheetPage() {
                     type="button"
                     onClick={handleSubmitTimesheet}
                     disabled={saving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                    }}
+                    style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #1f6b1f", background: "#1f8f3a", color: "white", cursor: "pointer", fontWeight: 900 }}
                   >
                     {saving ? "Submitting..." : "Submit Timesheet"}
                   </button>
                 ) : (
-                  <span
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      border: "1px solid #ddd",
-                      background: "#f7f7f7",
-                      color: "#777",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {currentStatus === "submitted"
-                      ? "Already Submitted"
-                      : currentStatus === "approved"
-                      ? "Approved"
-                      : currentStatus === "exported_to_quickbooks"
-                      ? "Exported"
-                      : "Submission Unavailable"}
+                  <span style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #ddd", background: "#f7f7f7", color: "#777", fontWeight: 700 }}>
+                    {isOwnTimesheet
+                      ? currentStatus === "submitted"
+                        ? "Already Submitted"
+                        : currentStatus === "approved"
+                        ? "Approved"
+                        : currentStatus === "exported_to_quickbooks"
+                        ? "Exported"
+                        : "Submission Unavailable"
+                      : "View Only"}
                   </span>
                 )}
               </div>
