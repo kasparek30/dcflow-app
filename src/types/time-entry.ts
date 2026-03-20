@@ -1,35 +1,29 @@
 // src/types/time-entry.ts
 
 export type TimeEntryCategory =
-  // ✅ legacy categories (still exist in older docs)
-  | "service_ticket"
-  | "project_stage"
-
-  // ✅ current categories (what you said you're using now)
+  // ✅ current Firestore categories
   | "service"
   | "project"
   | "meeting"
-
-  // ✅ other system/manual categories
   | "shop"
   | "office"
   | "pto"
   | "holiday"
-  | "manual_other";
+  | "manual_other"
+  // ✅ legacy categories that may still exist in older docs
+  | "service_ticket"
+  | "project_stage";
 
 export type TimeEntryPayType = "regular" | "overtime" | "pto" | "holiday";
 
 export type TimeEntrySource =
-  // manual / default
   | "auto_suggested"
   | "manual_entry"
   | "system_generated_holiday"
   | "system_generated_pto"
-
-  // ✅ trip-driven sources you are actually writing
+  // ✅ newer sources you’re using in Firestore
   | "trip_completion"
-  | "trip_daily_confirm"
-  | "trip_completion_confirmed";
+  | "trip_daily_confirm";
 
 export type TimeEntryStatus =
   | "draft"
@@ -58,23 +52,23 @@ export type TimeEntry = {
   billable: boolean;
   source: TimeEntrySource;
 
-  serviceTicketId?: string;
-  projectId?: string;
-  projectStageKey?: ProjectStageKey;
+  serviceTicketId?: string | null;
+  projectId?: string | null;
+  projectStageKey?: ProjectStageKey | null;
 
-  linkedTechnicianId?: string;
-  linkedTechnicianName?: string;
+  linkedTechnicianId?: string | null;
+  linkedTechnicianName?: string | null;
 
-  notes?: string;
-  timesheetId?: string;
-
-  // ✅ optional “card display” fields (future-proof)
-  displayTitle?: string;
-  displaySubtitle?: string;
-  outcome?: "resolved" | "follow_up" | "unknown";
+  notes?: string | null;
+  timesheetId?: string | null;
 
   entryStatus: TimeEntryStatus;
 
   createdAt?: string;
   updatedAt?: string;
+
+  // ✅ optional fields you already have in Firestore sometimes
+  hoursLocked?: boolean;
+  hoursSource?: number;
+  tripId?: string;
 };

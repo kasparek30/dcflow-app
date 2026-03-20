@@ -89,13 +89,19 @@ function formatStatus(status: WeeklyTimesheetStatus) {
 }
 
 function isWorkedHoursCategory(category: TimeEntry["category"]) {
+  const c = String(category || "").toLowerCase();
+
+  // ✅ counts as worked time (eligible for OT calc)
   return (
-    category === "service_ticket" ||
-    category === "project_stage" ||
-    category === "meeting" ||
-    category === "shop" ||
-    category === "office" ||
-    category === "manual_other"
+    c === "service" ||
+    c === "project" ||
+    c === "meeting" ||
+    c === "shop" ||
+    c === "office" ||
+    c === "manual_other" ||
+    // legacy support
+    c === "service_ticket" ||
+    c === "project_stage"
   );
 }
 
