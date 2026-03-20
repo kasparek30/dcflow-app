@@ -1,3 +1,5 @@
+// app/login/page.tsx
+
 "use client";
 
 import Image from "next/image";
@@ -17,6 +19,79 @@ type AppUser = {
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
+}
+
+function WaterLoading() {
+  // Droplet + subtle wave line
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+      {/* Droplet */}
+      <span
+        aria-hidden
+        style={{
+          width: 16,
+          height: 16,
+          borderRadius: "999px",
+          position: "relative",
+          display: "inline-block",
+          background: "rgba(255,255,255,0.14)",
+          border: "1px solid rgba(255,255,255,0.22)",
+          overflow: "hidden",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            width: 10,
+            height: 10,
+            transform: "translate(-50%, -50%) rotate(45deg)",
+            borderRadius: 3,
+            background:
+              "linear-gradient(180deg, rgba(120,220,255,1) 0%, rgba(0,150,255,1) 70%)",
+            boxShadow: "0 10px 18px rgba(0,140,255,0.25)",
+            animation: "dcflow_drop 900ms ease-in-out infinite",
+          }}
+        />
+        <span
+          style={{
+            position: "absolute",
+            inset: -18,
+            background:
+              "radial-gradient(circle at 50% 35%, rgba(255,255,255,0.40), rgba(255,255,255,0) 55%)",
+            opacity: 0.55,
+            animation: "dcflow_glint 1200ms ease-in-out infinite",
+          }}
+        />
+      </span>
+
+      {/* Wave line */}
+      <span
+        aria-hidden
+        style={{
+          width: 44,
+          height: 10,
+          borderRadius: 999,
+          position: "relative",
+          overflow: "hidden",
+          border: "1px solid rgba(255,255,255,0.18)",
+          background: "rgba(0,0,0,0.18)",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            inset: 0,
+            background:
+              "linear-gradient(90deg, rgba(0,150,255,0) 0%, rgba(120,220,255,0.75) 40%, rgba(0,150,255,0) 80%)",
+            transform: "translateX(-70%)",
+            animation: "dcflow_wave 900ms ease-in-out infinite",
+          }}
+        />
+      </span>
+    </span>
+  );
 }
 
 export default function LoginPage() {
@@ -78,12 +153,31 @@ export default function LoginPage() {
         minHeight: "100vh",
         display: "grid",
         placeItems: "center",
-        padding: "24px 14px",
+padding: "calc(env(safe-area-inset-top) + 24px) 14px 24px",
         background: "#070A0F",
         position: "relative",
         overflow: "hidden",
       }}
     >
+      {/* Keyframes */}
+      <style>{`
+        @keyframes dcflow_wave {
+          0% { transform: translateX(-80%); opacity: 0.35; }
+          50% { opacity: 1; }
+          100% { transform: translateX(120%); opacity: 0.35; }
+        }
+        @keyframes dcflow_drop {
+          0% { transform: translate(-50%, -50%) rotate(45deg) scale(0.92); }
+          50% { transform: translate(-50%, -52%) rotate(45deg) scale(1.05); }
+          100% { transform: translate(-50%, -50%) rotate(45deg) scale(0.92); }
+        }
+        @keyframes dcflow_glint {
+          0% { opacity: 0.25; transform: translateY(0px); }
+          50% { opacity: 0.6; transform: translateY(-1px); }
+          100% { opacity: 0.25; transform: translateY(0px); }
+        }
+      `}</style>
+
       {/* Background glow */}
       <div
         aria-hidden
@@ -270,12 +364,32 @@ export default function LoginPage() {
                 fontWeight: 950,
                 cursor: !canSubmit ? "not-allowed" : "pointer",
                 boxShadow: !canSubmit ? "none" : "0 16px 30px rgba(0,140,255,0.18)",
+                position: "relative",
+                overflow: "hidden",
               }}
             >
-              {loading ? "Signing in..." : "Sign In"}
+              {/* subtle animated shimmer while loading */}
+              {loading ? (
+                <span
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    background:
+                      "linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.25) 45%, rgba(255,255,255,0) 80%)",
+                    transform: "translateX(-90%)",
+                    animation: "dcflow_wave 900ms ease-in-out infinite",
+                    opacity: 0.55,
+                  }}
+                />
+              ) : null}
+
+              <span style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                {loading ? <WaterLoading /> : null}
+                {loading ? "Signing in..." : "Sign In"}
+              </span>
             </button>
 
-            {/* Tiny helper text */}
             <div style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.60)" }}>
               Need access? Ask an admin to create your DCFlow user profile.
             </div>

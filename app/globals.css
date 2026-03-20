@@ -12,11 +12,12 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ✅ Remove auto-dark inversion for now (it breaks AppShell contrast).
+   If you want a true dark-mode later, we’ll do a controlled theme toggle. */
+
+html,
+body {
+  height: 100%;
 }
 
 body {

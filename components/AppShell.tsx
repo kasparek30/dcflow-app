@@ -1,3 +1,5 @@
+// components/AppShell.tsx
+
 "use client";
 
 import Link from "next/link";
@@ -615,6 +617,43 @@ export default function AppShell({
     return () => unsub();
   }, [showTimesheetReview]);
 
+    // ✅ Pending PTO Requests badge (admins/managers/dispatchers)
+  const [pendingPtoCount, setPendingPtoCount] = useState(0);
+
+  useEffect(() => {
+    if (!showPTORequests) {
+      setPendingPtoCount(0);
+      return;
+    }
+
+    // Only reviewers need the badge
+    const canReviewPto =
+      role === "admin" || role === "manager" || role === "dispatcher";
+
+    if (!canReviewPto) {
+      setPendingPtoCount(0);
+      return;
+    }
+
+    const q = query(
+      collection(db, "ptoRequests"),
+      where("status", "==", "pending"),
+      limit(50) // if you ever exceed 50 pending, we can switch to an aggregate counter doc
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setPendingPtoCount(snap.size || 0);
+      },
+      () => {
+        setPendingPtoCount(0);
+      }
+    );
+
+    return () => unsub();
+  }, [showPTORequests, role]);
+
   // -----------------------------
   // ✅ Employee banner: rejected timesheets (so they know)
   // -----------------------------
@@ -875,14 +914,18 @@ export default function AppShell({
       {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
       {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
       {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
-      {showPTORequests ? <Link href="/pto-requests">PTO Requests</Link> : null}
-
-      {showTimesheetReview ? (
-        <Link href="/timesheet-review">
-          Timesheet Review
-          <Badge count={pendingReviewCount} />
+      {showPTORequests ? (
+        <Link href="/pto-requests" style={{ display: "inline-flex", alignItems: "center" }}>
+          PTO Requests
+          <Badge count={pendingPtoCount} />
         </Link>
       ) : null}
+{showTimesheetReview ? (
+  <Link href="/timesheet-review" style={{ display: "inline-flex", alignItems: "center" }}>
+    Timesheet Review
+    <Badge count={pendingReviewCount} />
+  </Link>
+) : null}
 
       {showAdmin ? <Link href="/admin">Admin</Link> : null}
       {showTechnician ? <Link href="/technician">Technician</Link> : null}
@@ -957,14 +1000,18 @@ export default function AppShell({
             {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
             {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
             {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
-            {showPTORequests ? <Link href="/pto-requests">PTO Requests</Link> : null}
-
-            {showTimesheetReview ? (
-              <Link href="/timesheet-review">
-                Timesheet Review
-                <Badge count={pendingReviewCount} />
+            {showPTORequests ? (
+              <Link href="/pto-requests" style={{ display: "inline-flex", alignItems: "center" }}>
+                PTO Requests
+                <Badge count={pendingPtoCount} />
               </Link>
             ) : null}
+{showTimesheetReview ? (
+  <Link href="/timesheet-review" style={{ display: "inline-flex", alignItems: "center" }}>
+    Timesheet Review
+    <Badge count={pendingReviewCount} />
+  </Link>
+) : null}
 
             {showAdmin ? <Link href="/admin">Admin</Link> : null}
             {showTechnician ? <Link href="/technician">Technician</Link> : null}
