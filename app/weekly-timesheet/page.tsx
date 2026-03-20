@@ -17,7 +17,10 @@ import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
 import type { AppUser } from "../../src/types/app-user";
 import type { TimeEntry } from "../../src/types/time-entry";
-import type { WeeklyTimesheet, WeeklyTimesheetStatus } from "../../src/types/weekly-timesheet";
+import type {
+  WeeklyTimesheet,
+  WeeklyTimesheetStatus,
+} from "../../src/types/weekly-timesheet";
 
 type PayrollDay = {
   label: string;
@@ -51,47 +54,61 @@ function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
 
   return [
     { label: "Monday", isoDate: toIsoDate(monday) },
-    { label: "Tuesday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1)) },
-    { label: "Wednesday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2)) },
-    { label: "Thursday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3)) },
-    { label: "Friday", isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4)) },
+    {
+      label: "Tuesday",
+      isoDate: toIsoDate(
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1)
+      ),
+    },
+    {
+      label: "Wednesday",
+      isoDate: toIsoDate(
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2)
+      ),
+    },
+    {
+      label: "Thursday",
+      isoDate: toIsoDate(
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3)
+      ),
+    },
+    {
+      label: "Friday",
+      isoDate: toIsoDate(
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4)
+      ),
+    },
   ];
 }
 
 function formatDisplayDate(isoDate: string) {
   const safeDate = new Date(`${isoDate}T12:00:00`);
-  return safeDate.toLocaleDateString(undefined, { month: "numeric", day: "numeric", year: "2-digit" });
-}
-
-function formatCategory(category: TimeEntry["category"]) {
-  switch (category) {
-    case "service_ticket": return "Service Ticket";
-    case "project_stage": return "Project Stage";
-    case "meeting": return "Meeting";
-    case "shop": return "Shop";
-    case "office": return "Office";
-    case "pto": return "PTO";
-    case "holiday": return "Holiday";
-    case "manual_other": return "Manual Other";
-    default: return String(category || "");
-  }
+  return safeDate.toLocaleDateString(undefined, {
+    month: "numeric",
+    day: "numeric",
+    year: "2-digit",
+  });
 }
 
 function formatStatus(status: WeeklyTimesheetStatus) {
   switch (status) {
-    case "draft": return "Draft";
-    case "submitted": return "Submitted";
-    case "approved": return "Approved";
-    case "rejected": return "Rejected";
-    case "exported_to_quickbooks": return "Exported to QuickBooks";
-    default: return String(status || "");
+    case "draft":
+      return "Draft";
+    case "submitted":
+      return "Submitted";
+    case "approved":
+      return "Approved";
+    case "rejected":
+      return "Rejected";
+    case "exported_to_quickbooks":
+      return "Exported to QuickBooks";
+    default:
+      return String(status || "");
   }
 }
 
 function isWorkedHoursCategory(category: TimeEntry["category"]) {
   const c = String(category || "").toLowerCase();
-
-  // ✅ counts as worked time (eligible for OT calc)
   return (
     c === "service" ||
     c === "project" ||
@@ -112,6 +129,70 @@ function nowIso() {
 function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
+
+// ---------------------------
+// Display helpers (NEW)
+// ---------------------------
+function safeTrim(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function truncateLine(s: string, max = 70) {
+  const x = safeTrim(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
+}
+
+function firstMeaningfulLine(notes?: string) {
+  const raw = safeTrim(notes);
+  if (!raw) return "";
+  const lines = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // Prefer a human line, not the AUTO_TIME header
+  const preferred =
+    lines.find((l) => l.startsWith("Customer:")) ||
+    lines.find((l) => l.startsWith("Issue:")) ||
+    lines.find((l) => l.startsWith("Outcome:")) ||
+    lines.find((l) => !l.startsWith("AUTO_TIME_FROM_TRIP:"));
+
+  return preferred || lines[0] || "";
+}
+
+function categoryPillLabel(cat: unknown) {
+  const c = safeTrim(cat).toLowerCase();
+  if (c === "service" || c === "service_ticket") return "service";
+  if (c === "project" || c === "project_stage") return "project";
+  if (c === "meeting") return "meeting";
+  if (c === "shop") return "shop";
+  if (c === "office") return "office";
+  if (c === "pto") return "pto";
+  if (c === "holiday") return "holiday";
+  if (c === "manual_other") return "other";
+  return c || "other";
+}
+
+function stageLabel(stage?: unknown) {
+  const s = safeTrim(stage);
+  if (!s) return "";
+  if (s === "roughIn") return "Rough-In";
+  if (s === "topOutVent") return "Top-Out / Vent";
+  if (s === "trimFinish") return "Trim / Finish";
+  return s;
+}
+
+type ServiceTicketMini = {
+  id: string;
+  customerDisplayName: string;
+  issueSummary: string;
+};
+
+type ProjectMini = {
+  id: string;
+  projectName: string;
+};
 
 export default function WeeklyTimesheetPage() {
   const { appUser } = useAuthContext();
@@ -136,7 +217,16 @@ export default function WeeklyTimesheetPage() {
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
-  const isOwnTimesheet = Boolean(appUser?.uid) && selectedEmployeeId === appUser?.uid;
+  const isOwnTimesheet =
+    Boolean(appUser?.uid) && selectedEmployeeId === appUser?.uid;
+
+  // ✅ lookup caches (id -> display)
+  const [ticketMiniById, setTicketMiniById] = useState<
+    Record<string, ServiceTicketMini>
+  >({});
+  const [projectMiniById, setProjectMiniById] = useState<
+    Record<string, ProjectMini>
+  >({});
 
   useEffect(() => {
     if (!selectedEmployeeId && appUser?.uid) setSelectedEmployeeId(appUser.uid);
@@ -207,7 +297,9 @@ export default function WeeklyTimesheetPage() {
         setEntries(timeEntryItems);
         setUsers(userItems);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load weekly timesheet data.");
+        setError(
+          err instanceof Error ? err.message : "Failed to load weekly timesheet data."
+        );
       } finally {
         setLoading(false);
       }
@@ -284,7 +376,9 @@ export default function WeeklyTimesheetPage() {
         setTimesheet(item);
         setEmployeeNote(item.employeeNote ?? "");
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load weekly timesheet record.");
+        setError(
+          err instanceof Error ? err.message : "Failed to load weekly timesheet record."
+        );
       }
     }
 
@@ -294,13 +388,125 @@ export default function WeeklyTimesheetPage() {
   const weekEntries = useMemo(() => {
     if (!selectedEmployeeId) return [];
     return entries
-      .filter((entry) => entry.employeeId === selectedEmployeeId && entry.entryDate >= weekStart && entry.entryDate <= weekEnd)
+      .filter(
+        (entry) =>
+          entry.employeeId === selectedEmployeeId &&
+          entry.entryDate >= weekStart &&
+          entry.entryDate <= weekEnd
+      )
       .sort((a, b) => {
         const byDate = a.entryDate.localeCompare(b.entryDate);
         if (byDate !== 0) return byDate;
         return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
       });
   }, [entries, selectedEmployeeId, weekStart, weekEnd]);
+
+  // ✅ Hydrate ticket/project display info for this week
+  useEffect(() => {
+    async function hydrate() {
+      const needTicketIds = new Set<string>();
+      const needProjectIds = new Set<string>();
+
+      for (const e of weekEntries) {
+        const cat = safeTrim((e as any).category).toLowerCase();
+
+        if (cat === "service" || cat === "service_ticket") {
+          const tid = safeTrim((e as any).serviceTicketId);
+          if (tid && !ticketMiniById[tid]) needTicketIds.add(tid);
+        }
+
+        if (cat === "project" || cat === "project_stage") {
+          const pid = safeTrim((e as any).projectId);
+          if (pid && !projectMiniById[pid]) needProjectIds.add(pid);
+        }
+      }
+
+      if (needTicketIds.size === 0 && needProjectIds.size === 0) return;
+
+      const ticketFetches = Array.from(needTicketIds).map(async (id) => {
+        try {
+          const snap = await getDoc(doc(db, "serviceTickets", id));
+          if (!snap.exists()) return null;
+          const d: any = snap.data();
+          return {
+            id,
+            customerDisplayName: safeTrim(d.customerDisplayName) || "Customer",
+            issueSummary: safeTrim(d.issueSummary) || "Service Ticket",
+          } as ServiceTicketMini;
+        } catch {
+          return null;
+        }
+      });
+
+      const projectFetches = Array.from(needProjectIds).map(async (id) => {
+        try {
+          const snap = await getDoc(doc(db, "projects", id));
+          if (!snap.exists()) return null;
+          const d: any = snap.data();
+          return {
+            id,
+            projectName: safeTrim(d.projectName) || "Project",
+          } as ProjectMini;
+        } catch {
+          return null;
+        }
+      });
+
+      const [ticketResults, projectResults] = await Promise.all([
+        Promise.all(ticketFetches),
+        Promise.all(projectFetches),
+      ]);
+
+      const nextTickets: Record<string, ServiceTicketMini> = {};
+      for (const t of ticketResults) if (t?.id) nextTickets[t.id] = t;
+
+      const nextProjects: Record<string, ProjectMini> = {};
+      for (const p of projectResults) if (p?.id) nextProjects[p.id] = p;
+
+      if (Object.keys(nextTickets).length) {
+        setTicketMiniById((prev) => ({ ...prev, ...nextTickets }));
+      }
+      if (Object.keys(nextProjects).length) {
+        setProjectMiniById((prev) => ({ ...prev, ...nextProjects }));
+      }
+    }
+
+    hydrate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekEntries]);
+
+  function renderTitleAndSubtitle(entry: TimeEntry) {
+    const cat = safeTrim((entry as any).category).toLowerCase();
+
+    if (cat === "service" || cat === "service_ticket") {
+      const tid = safeTrim((entry as any).serviceTicketId);
+      const mini = tid ? ticketMiniById[tid] : null;
+      const title = mini?.customerDisplayName || "Service";
+      const subtitle = mini?.issueSummary || "";
+      return { title, subtitle };
+    }
+
+    if (cat === "project" || cat === "project_stage") {
+      const pid = safeTrim((entry as any).projectId);
+      const mini = pid ? projectMiniById[pid] : null;
+      const title = mini?.projectName || "Project";
+      const stage = stageLabel((entry as any).projectStageKey);
+      const subtitle = stage ? `Stage: ${stage}` : "";
+      return { title, subtitle };
+    }
+
+    if (cat === "meeting") {
+      const title = "Meeting";
+      const subtitle = truncateLine(firstMeaningfulLine((entry as any).notes), 60);
+      return { title, subtitle };
+    }
+
+    // everything else (office/shop/pto/holiday/etc)
+    return {
+      title: safeTrim((entry as any).category) || "Entry",
+      subtitle: "",
+    };
+  }
 
   const entriesByDay = useMemo(() => {
     const result: Record<string, TimeEntry[]> = {};
@@ -315,7 +521,10 @@ export default function WeeklyTimesheetPage() {
   const dayTotals = useMemo(() => {
     const result: Record<string, number> = {};
     for (const day of payrollWeekDays) {
-      result[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce((sum, entry) => sum + entry.hours, 0);
+      result[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce(
+        (sum, entry) => sum + entry.hours,
+        0
+      );
     }
     return result;
   }, [entriesByDay, payrollWeekDays]);
@@ -328,9 +537,10 @@ export default function WeeklyTimesheetPage() {
     let nonBillableHours = 0;
 
     for (const entry of weekEntries) {
+      const cat = String(entry.category || "").toLowerCase();
       if (isWorkedHoursCategory(entry.category)) workedHours += entry.hours;
-      if (entry.category === "pto") ptoHours += entry.hours;
-      if (entry.category === "holiday") holidayHours += entry.hours;
+      if (cat === "pto") ptoHours += entry.hours;
+      if (cat === "holiday") holidayHours += entry.hours;
       if (entry.billable) billableHours += entry.hours;
       else nonBillableHours += entry.hours;
     }
@@ -339,7 +549,16 @@ export default function WeeklyTimesheetPage() {
     const overtimeHours = Math.max(workedHours - 40, 0);
     const totalHours = regularHours + overtimeHours + ptoHours + holidayHours;
 
-    return { workedHours, regularHours, overtimeHours, ptoHours, holidayHours, billableHours, nonBillableHours, totalHours };
+    return {
+      workedHours,
+      regularHours,
+      overtimeHours,
+      ptoHours,
+      holidayHours,
+      billableHours,
+      nonBillableHours,
+      totalHours,
+    };
   }, [weekEntries]);
 
   const currentStatus: WeeklyTimesheetStatus = timesheet?.status ?? "draft";
@@ -347,11 +566,10 @@ export default function WeeklyTimesheetPage() {
   const isLocked =
     currentStatus === "approved" || currentStatus === "exported_to_quickbooks";
 
-  const canSaveDraftOrNote =
-    !isLocked; // allow save draft/note even when submitted (note-only)
+  const canSaveDraftOrNote = !isLocked; // allow save draft/note even when submitted (note-only)
   const canSubmit =
     Boolean(selectedEmployee) &&
-    isOwnTimesheet && // employees submit their own
+    isOwnTimesheet &&
     !isLocked &&
     currentStatus !== "submitted"; // allow submit from draft/rejected
 
@@ -527,7 +745,11 @@ export default function WeeklyTimesheetPage() {
         updatedAt: now,
       }));
 
-      setSaveMsg(nextStatus === "submitted" ? "✅ Note saved (timesheet already submitted)." : "✅ Draft saved.");
+      setSaveMsg(
+        nextStatus === "submitted"
+          ? "✅ Note saved (timesheet already submitted)."
+          : "✅ Draft saved."
+      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save draft.");
     } finally {
@@ -538,28 +760,80 @@ export default function WeeklyTimesheetPage() {
   return (
     <ProtectedPage fallbackTitle="Weekly Timesheet">
       <AppShell appUser={appUser}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 16,
+            flexWrap: "wrap",
+          }}
+        >
           <div>
-            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>Weekly Timesheet</h1>
+            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
+              Weekly Timesheet
+            </h1>
             <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
               Review, total, and submit one payroll week at a time.
             </p>
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" onClick={() => setWeekOffset((p) => p - 1)} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer" }}>
+            <button
+              type="button"
+              onClick={() => setWeekOffset((p) => p - 1)}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid #ccc",
+                borderRadius: 10,
+                background: "white",
+                cursor: "pointer",
+              }}
+            >
               Previous Week
             </button>
-            <button type="button" onClick={() => setWeekOffset(0)} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer" }}>
+            <button
+              type="button"
+              onClick={() => setWeekOffset(0)}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid #ccc",
+                borderRadius: 10,
+                background: "white",
+                cursor: "pointer",
+              }}
+            >
               This Week
             </button>
-            <button type="button" onClick={() => setWeekOffset((p) => p + 1)} style={{ padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer" }}>
+            <button
+              type="button"
+              onClick={() => setWeekOffset((p) => p + 1)}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid #ccc",
+                borderRadius: 10,
+                background: "white",
+                cursor: "pointer",
+              }}
+            >
               Next Week
             </button>
           </div>
         </div>
 
-        <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fafafa", display: "grid", gap: 12, maxWidth: 760 }}>
+        <div
+          style={{
+            border: "1px solid #ddd",
+            borderRadius: 12,
+            padding: 16,
+            marginBottom: 16,
+            background: "#fafafa",
+            display: "grid",
+            gap: 12,
+            maxWidth: 760,
+          }}
+        >
           <div style={{ fontWeight: 700 }}>
             Week of {weekStart} through {weekEnd}
           </div>
@@ -570,7 +844,14 @@ export default function WeeklyTimesheetPage() {
               <select
                 value={selectedEmployeeId}
                 onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                style={{ display: "block", width: "100%", marginTop: 4, padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: 4,
+                  padding: 10,
+                  borderRadius: 10,
+                  border: "1px solid #ccc",
+                }}
               >
                 <option value="">Select employee</option>
                 {users.map((u) => (
@@ -591,13 +872,24 @@ export default function WeeklyTimesheetPage() {
           </div>
 
           {currentStatus === "rejected" && timesheet?.rejectionReason ? (
-            <div style={{ fontSize: 12, color: "#8a5a00", border: "1px solid #f2d9a6", background: "#fff7e6", padding: 10, borderRadius: 10 }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: "#8a5a00",
+                border: "1px solid #f2d9a6",
+                background: "#fff7e6",
+                padding: 10,
+                borderRadius: 10,
+              }}
+            >
               <strong>Rejected:</strong> {timesheet.rejectionReason}
             </div>
           ) : null}
 
           {timesheet?.submittedAt ? (
-            <div style={{ fontSize: 12, color: "#666" }}>Submitted At: {timesheet.submittedAt}</div>
+            <div style={{ fontSize: 12, color: "#666" }}>
+              Submitted At: {timesheet.submittedAt}
+            </div>
           ) : null}
         </div>
 
@@ -613,13 +905,32 @@ export default function WeeklyTimesheetPage() {
                 const dayTotal = dayTotals[day.isoDate] ?? 0;
 
                 return (
-                  <div key={day.isoDate} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                  <div
+                    key={day.isoDate}
+                    style={{
+                      border: "1px solid #ddd",
+                      borderRadius: 12,
+                      padding: 16,
+                      background: "#fafafa",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 12,
+                        flexWrap: "wrap",
+                        marginBottom: 12,
+                      }}
+                    >
                       <div>
                         <div style={{ fontWeight: 800, fontSize: 18 }}>
                           {day.label} {formatDisplayDate(day.isoDate)}
                         </div>
-                        <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>{day.isoDate}</div>
+                        <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
+                          {day.isoDate}
+                        </div>
                       </div>
 
                       <div style={{ fontSize: 13, color: "#666", fontWeight: 700 }}>
@@ -628,18 +939,105 @@ export default function WeeklyTimesheetPage() {
                     </div>
 
                     {dayEntries.length === 0 ? (
-                      <div style={{ border: "1px dashed #ccc", borderRadius: 10, padding: 10, background: "white", color: "#666", fontSize: 13 }}>
+                      <div
+                        style={{
+                          border: "1px dashed #ccc",
+                          borderRadius: 10,
+                          padding: 10,
+                          background: "white",
+                          color: "#666",
+                          fontSize: 13,
+                        }}
+                      >
                         No entries for this day.
                       </div>
                     ) : (
                       <div style={{ display: "grid", gap: 10 }}>
-                        {dayEntries.map((entry) => (
-                          <div key={entry.id} style={{ border: "1px solid #ddd", borderRadius: 10, padding: 10, background: "white" }}>
-                            <div style={{ fontWeight: 800 }}>{formatCategory(entry.category)}</div>
-                            <div style={{ marginTop: 4, fontSize: 13, color: "#555" }}>{entry.hours} hr</div>
-                            <div style={{ marginTop: 4, fontSize: 12, color: "#777" }}>Billable: {String(entry.billable)}</div>
-                          </div>
-                        ))}
+                        {dayEntries.map((entry) => {
+                          const { title, subtitle } = renderTitleAndSubtitle(entry);
+                          const pill = categoryPillLabel((entry as any).category);
+
+                          return (
+                            <div
+                              key={entry.id}
+                              style={{
+                                border: "1px solid #ddd",
+                                borderRadius: 12,
+                                padding: 12,
+                                background: "white",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  gap: 12,
+                                  alignItems: "flex-start",
+                                }}
+                              >
+                                <div style={{ minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontWeight: 950,
+                                      fontSize: 16,
+                                      lineHeight: 1.15,
+                                    }}
+                                  >
+                                    {title}
+                                  </div>
+
+                                  <div
+                                    style={{
+                                      marginTop: 8,
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 8,
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        padding: "4px 10px",
+                                        borderRadius: 999,
+                                        border: "1px solid #e6e6e6",
+                                        background: "#fafafa",
+                                        fontSize: 12,
+                                        fontWeight: 900,
+                                        textTransform: "lowercase",
+                                      }}
+                                    >
+                                      {pill}
+                                    </span>
+                                  </div>
+
+                                  {subtitle ? (
+                                    <div
+                                      style={{
+                                        marginTop: 8,
+                                        fontSize: 13,
+                                        color: "#555",
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      {subtitle}
+                                    </div>
+                                  ) : null}
+                                </div>
+
+                                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                                  <div style={{ fontWeight: 1000, fontSize: 16 }}>
+                                    {Number(entry.hours).toFixed(2)} hr
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ marginTop: 10, fontSize: 12, color: "#777" }}>
+                                Billable: <strong>{String(entry.billable)}</strong>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -647,25 +1045,66 @@ export default function WeeklyTimesheetPage() {
               })}
             </div>
 
-            <div style={{ marginTop: 18, border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa", maxWidth: 760, display: "grid", gap: 10 }}>
+            <div
+              style={{
+                marginTop: 18,
+                border: "1px solid #ddd",
+                borderRadius: 12,
+                padding: 16,
+                background: "#fafafa",
+                maxWidth: 760,
+                display: "grid",
+                gap: 10,
+              }}
+            >
               <div style={{ fontWeight: 800, fontSize: 18 }}>Weekly Summary</div>
 
-              <div style={{ fontSize: 14, color: "#444" }}>Worked Hours: {computedTotals.workedHours.toFixed(2)}</div>
-              <div style={{ fontSize: 14, color: "#444" }}>Regular Hours: {computedTotals.regularHours.toFixed(2)}</div>
-              <div style={{ fontSize: 14, color: "#444" }}>Overtime Hours: {computedTotals.overtimeHours.toFixed(2)}</div>
-              <div style={{ fontSize: 14, color: "#444" }}>PTO Hours: {computedTotals.ptoHours.toFixed(2)}</div>
-              <div style={{ fontSize: 14, color: "#444" }}>Holiday Hours: {computedTotals.holidayHours.toFixed(2)}</div>
+              <div style={{ fontSize: 14, color: "#444" }}>
+                Worked Hours: {computedTotals.workedHours.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 14, color: "#444" }}>
+                Regular Hours: {computedTotals.regularHours.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 14, color: "#444" }}>
+                Overtime Hours: {computedTotals.overtimeHours.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 14, color: "#444" }}>
+                PTO Hours: {computedTotals.ptoHours.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 14, color: "#444" }}>
+                Holiday Hours: {computedTotals.holidayHours.toFixed(2)}
+              </div>
 
-              <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid #e3e3e3", fontSize: 15, fontWeight: 800 }}>
+              <div
+                style={{
+                  marginTop: 4,
+                  paddingTop: 8,
+                  borderTop: "1px solid #e3e3e3",
+                  fontSize: 15,
+                  fontWeight: 800,
+                }}
+              >
                 Total Paid Hours: {computedTotals.totalHours.toFixed(2)}
               </div>
 
               <div style={{ fontSize: 12, color: "#666" }}>
-                Overtime is calculated only from worked-hour categories above 40. PTO and holiday do not count toward the 40-hour threshold.
+                Overtime is calculated only from worked-hour categories above 40.
+                PTO and holiday do not count toward the 40-hour threshold.
               </div>
             </div>
 
-            <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa", maxWidth: 760, display: "grid", gap: 12 }}>
+            <div
+              style={{
+                marginTop: 16,
+                border: "1px solid #ddd",
+                borderRadius: 12,
+                padding: 16,
+                background: "#fafafa",
+                maxWidth: 760,
+                display: "grid",
+                gap: 12,
+              }}
+            >
               <div style={{ fontWeight: 800, fontSize: 18 }}>Employee Note</div>
 
               <textarea
@@ -689,9 +1128,20 @@ export default function WeeklyTimesheetPage() {
                     type="button"
                     onClick={handleSaveDraftOrNote}
                     disabled={saving}
-                    style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #ccc", background: "white", cursor: "pointer", fontWeight: 800 }}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid #ccc",
+                      background: "white",
+                      cursor: "pointer",
+                      fontWeight: 800,
+                    }}
                   >
-                    {saving ? "Saving..." : currentStatus === "submitted" ? "Save Note" : "Save Draft"}
+                    {saving
+                      ? "Saving..."
+                      : currentStatus === "submitted"
+                      ? "Save Note"
+                      : "Save Draft"}
                   </button>
                 ) : null}
 
@@ -700,12 +1150,29 @@ export default function WeeklyTimesheetPage() {
                     type="button"
                     onClick={handleSubmitTimesheet}
                     disabled={saving}
-                    style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #1f6b1f", background: "#1f8f3a", color: "white", cursor: "pointer", fontWeight: 900 }}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid #1f6b1f",
+                      background: "#1f8f3a",
+                      color: "white",
+                      cursor: "pointer",
+                      fontWeight: 900,
+                    }}
                   >
                     {saving ? "Submitting..." : "Submit Timesheet"}
                   </button>
                 ) : (
-                  <span style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #ddd", background: "#f7f7f7", color: "#777", fontWeight: 700 }}>
+                  <span
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid #ddd",
+                      background: "#f7f7f7",
+                      color: "#777",
+                      fontWeight: 700,
+                    }}
+                  >
                     {isOwnTimesheet
                       ? currentStatus === "submitted"
                         ? "Already Submitted"
