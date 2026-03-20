@@ -473,21 +473,11 @@ async function upsertTimeEntryFromTrip(args: {
   timesheetId: string;
   createdByUid: string | null;
 
-  // ✅ NEW: richer context for notes
-  ticket?: {
-    customerDisplayName?: string;
-    serviceAddressLine1?: string;
-    serviceAddressLine2?: string;
-    serviceCity?: string;
-    serviceState?: string;
-    servicePostalCode?: string;
-    issueSummary?: string;
-  } | null;
-
-  outcomeLabel: "Resolved" | "Follow Up";
-  workNotes?: string | null;
-  resolutionNotes?: string | null;
-  followUpNotes?: string | null;
+  // ✅ NEW: display context
+  displayTitle: string;     // customer name OR project name
+  displaySubtitle: string;  // issue summary OR stage
+  outcomeLabel: string;     // "Resolved" | "Follow Up" | ""
+  addressShort?: string;    // optional for service
 }) {
   const {
     trip,
@@ -498,11 +488,10 @@ async function upsertTimeEntryFromTrip(args: {
     weekEndDate,
     timesheetId,
     createdByUid,
-    ticket,
+    displayTitle,
+    displaySubtitle,
     outcomeLabel,
-    workNotes,
-    resolutionNotes,
-    followUpNotes,
+    addressShort,
   } = args;
 
   const now = nowIso();
@@ -516,14 +505,14 @@ async function upsertTimeEntryFromTrip(args: {
   const hoursLocked = Boolean(existing?.hoursLocked);
   const hoursToWrite = hoursLocked ? Number(existing?.hours ?? hoursGenerated) : hoursGenerated;
 
-  const richNotes = buildRichTripTimeEntryNotes({
-    trip,
-    ticket: ticket ?? null,
-    outcomeLabel,
-    workNotes: workNotes ?? null,
-    resolutionNotes: resolutionNotes ?? null,
-    followUpNotes: followUpNotes ?? null,
-  });
+  // ✅ human readable notes (tech can understand)
+  const noteLines: string[] = [];
+  if (displayTitle) noteLines.push(`Title: ${displayTitle}`);
+  if (displaySubtitle) noteLines.push(`Detail: ${displaySubtitle}`);
+  if (addressShort) noteLines.push(`Address: ${addressShort}`);
+  if (outcomeLabel) noteLines.push(`Outcome: ${outcomeLabel}`);
+  noteLines.push(`Trip: ${trip.id}`);
+  const notes = noteLines.join("\n");
 
   await setDoc(
     ref,
@@ -537,10 +526,16 @@ async function upsertTimeEntryFromTrip(args: {
       weekEndDate,
       timesheetId,
 
-category: trip.link?.serviceTicketId ? "service_ticket" : "project_stage",
+      // ✅ Keep whatever category scheme you’re using right now.
+      // If your UI is showing "service_ticket", use that.
+      category: trip.type === "project" ? "project_stage" : "service_ticket",
+
       payType: "regular",
       billable: true,
-source: "auto_suggested",
+
+      // If your system uses these values already, keep them.
+      source: "trip_completion",
+
       hours: hoursToWrite,
       hoursSource: hoursGenerated,
       hoursLocked: hoursLocked || false,
@@ -550,10 +545,15 @@ source: "auto_suggested",
       projectId: trip.link?.projectId || null,
       projectStageKey: trip.link?.projectStageKey || null,
 
+      // ✅ NEW: summary fields for the list cards
+      displayTitle: displayTitle || null,
+      displaySubtitle: displaySubtitle || null,
+      outcome: outcomeLabel ? outcomeLabel.toLowerCase().replaceAll(" ", "_") : null,
+
       entryStatus: "draft",
 
-      // ✅ Rich notes
-      notes: richNotes,
+      // ✅ Notes for the detail page (not the list card)
+      notes: notes || null,
 
       createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
       createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : createdByUid || null,
@@ -1635,6 +1635,13 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           createdByUid: myUid || null,
         });
 
+const addressShort = [
+  ticket?.serviceAddressLine1 || "",
+  ticket?.serviceCity || "",
+  ticket?.serviceState || "",
+  ticket?.servicePostalCode || "",
+].filter(Boolean).join(", ");
+
 await upsertTimeEntryFromTrip({
   trip,
   member: m,
@@ -1645,24 +1652,10 @@ await upsertTimeEntryFromTrip({
   timesheetId,
   createdByUid: myUid || null,
 
-  // ✅ Ticket context
-  ticket: ticket
-    ? {
-        customerDisplayName: ticket.customerDisplayName,
-        serviceAddressLine1: ticket.serviceAddressLine1,
-        serviceAddressLine2: ticket.serviceAddressLine2,
-        serviceCity: ticket.serviceCity,
-        serviceState: ticket.serviceState,
-        servicePostalCode: ticket.servicePostalCode,
-        issueSummary: ticket.issueSummary,
-      }
-    : null,
-
-  // ✅ Outcome + notes
+  displayTitle: ticket?.customerDisplayName || "Customer",
+  displaySubtitle: ticket?.issueSummary || "Service Ticket",
   outcomeLabel: "Resolved",
-  workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-  resolutionNotes: resolution,
-  followUpNotes: null,
+  addressShort,
 });
       }
 
@@ -1831,6 +1824,13 @@ await upsertTimeEntryFromTrip({
           createdByUid: myUid || null,
         });
 
+const addressShort = [
+  ticket?.serviceAddressLine1 || "",
+  ticket?.serviceCity || "",
+  ticket?.serviceState || "",
+  ticket?.servicePostalCode || "",
+].filter(Boolean).join(", ");
+
 await upsertTimeEntryFromTrip({
   trip,
   member: m,
@@ -1841,24 +1841,10 @@ await upsertTimeEntryFromTrip({
   timesheetId,
   createdByUid: myUid || null,
 
-  // ✅ Ticket context
-  ticket: ticket
-    ? {
-        customerDisplayName: ticket.customerDisplayName,
-        serviceAddressLine1: ticket.serviceAddressLine1,
-        serviceAddressLine2: ticket.serviceAddressLine2,
-        serviceCity: ticket.serviceCity,
-        serviceState: ticket.serviceState,
-        servicePostalCode: ticket.servicePostalCode,
-        issueSummary: ticket.issueSummary,
-      }
-    : null,
-
-  // ✅ Outcome + notes
-  outcomeLabel: "Follow Up",
-  workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-  resolutionNotes: null,
-  followUpNotes: follow,
+  displayTitle: ticket?.customerDisplayName || "Customer",
+  displaySubtitle: ticket?.issueSummary || "Service Ticket",
+outcomeLabel: "Follow Up",
+  addressShort,
 });
       }
 

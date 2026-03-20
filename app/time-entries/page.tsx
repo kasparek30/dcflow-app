@@ -129,13 +129,28 @@ function truncateLine(s: string, max = 80) {
   return x.slice(0, max - 1) + "…";
 }
 
+function normalizeCategory(raw: unknown) {
+  const c = safeTrim(raw).toLowerCase();
+
+  // ✅ normalize legacy -> new
+  if (c === "service_ticket") return "service";
+  if (c === "project_stage") return "project";
+
+  // ✅ new
+  if (c === "service") return "service";
+  if (c === "project") return "project";
+  if (c === "meeting") return "meeting";
+
+  return c || "other";
+}
+
 /**
  * ✅ Because your Firestore stores category as:
  * service | project | meeting
  * we treat those as the primary display categories.
  */
 function categoryPillLabel(cat: string) {
-  const c = safeTrim(cat).toLowerCase();
+  const c = normalizeCategory(cat);
   if (c === "service") return "service";
   if (c === "project") return "project";
   if (c === "meeting") return "meeting";
@@ -269,7 +284,7 @@ export default function TimeEntriesPage() {
       const needProjectIds = new Set<string>();
 
       for (const e of visibleEntries) {
-        const cat = safeTrim((e as any).category).toLowerCase();
+const cat = normalizeCategory((e as any).category);
         if (cat === "service") {
           const tid = safeTrim((e as any).serviceTicketId);
           if (tid && !ticketMiniById[tid]) needTicketIds.add(tid);
@@ -359,7 +374,7 @@ export default function TimeEntriesPage() {
   const weekTotal = useMemo(() => visibleEntries.reduce((sum, entry) => sum + entry.hours, 0), [visibleEntries]);
 
   function renderTitleAndSubtitle(entry: TimeEntry) {
-    const cat = safeTrim((entry as any).category).toLowerCase();
+const cat = normalizeCategory((entry as any).category);
 
     if (cat === "service") {
       const tid = safeTrim((entry as any).serviceTicketId);
