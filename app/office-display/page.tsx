@@ -1,3 +1,4 @@
+// app/office-display/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -29,10 +30,14 @@ type DisplayItem = {
   sortTime: string;
 };
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
 function formatDateToIsoLocal(date: Date) {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const month = pad2(date.getMonth() + 1);
+  const day = pad2(date.getDate());
   return `${year}-${month}-${day}`;
 }
 
@@ -119,6 +124,41 @@ function formatProjectStageStatus(status: Project["roughIn"]["status"]) {
   }
 }
 
+function safeOneLine(x: unknown) {
+  return String(x ?? "").replace(/\s+/g, " ").trim();
+}
+
+function nowClock() {
+  const d = new Date();
+  const hh = d.getHours();
+  const mm = d.getMinutes();
+  const ampm = hh >= 12 ? "PM" : "AM";
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  return `${h12}:${pad2(mm)} ${ampm}`;
+}
+
+// ---------- UI helpers (TV palette) ----------
+function pillStyle(kind: "good" | "warn" | "info" | "neutral" | "bad") {
+  // Deep navy baseline with soft “glass” — emerald accent
+  if (kind === "good") return { bg: "rgba(16,185,129,0.16)", br: "rgba(16,185,129,0.35)", fg: "#a7f3d0" };
+  if (kind === "warn") return { bg: "rgba(245,158,11,0.16)", br: "rgba(245,158,11,0.35)", fg: "#fde68a" };
+  if (kind === "bad") return { bg: "rgba(239,68,68,0.16)", br: "rgba(239,68,68,0.35)", fg: "#fecaca" };
+  if (kind === "info") return { bg: "rgba(96,165,250,0.16)", br: "rgba(96,165,250,0.35)", fg: "#bfdbfe" };
+  return { bg: "rgba(148,163,184,0.14)", br: "rgba(148,163,184,0.30)", fg: "#e2e8f0" };
+}
+
+function statusToPillKind(label: string) {
+  const s = String(label || "").toLowerCase();
+  if (s.includes("in progress")) return "info";
+  if (s.includes("scheduled")) return "warn";
+  if (s.includes("follow up")) return "warn";
+  if (s.includes("completed") || s.includes("complete")) return "neutral";
+  if (s.includes("cancel")) return "bad";
+  if (s.includes("won")) return "good";
+  if (s.includes("new")) return "neutral";
+  return "neutral";
+}
+
 export default function OfficeDisplayPage() {
   const { appUser } = useAuthContext();
 
@@ -127,12 +167,20 @@ export default function OfficeDisplayPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
+  const [clock, setClock] = useState(() => nowClock());
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [showWeekends, setShowWeekends] = useState(false);
 
   const isAdmin = appUser?.role === "admin";
 
+  // Live clock (TV feels “alive”)
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(nowClock()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // Data load + refresh
   useEffect(() => {
     let isMounted = true;
 
@@ -144,8 +192,7 @@ export default function OfficeDisplayPage() {
         ]);
 
         const ticketItems: ServiceTicket[] = ticketSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-
+          const data = docSnap.data() as any;
           return {
             id: docSnap.id,
             customerId: data.customerId ?? "",
@@ -174,8 +221,7 @@ export default function OfficeDisplayPage() {
         });
 
         const projectItems: Project[] = projectSnap.docs.map((docSnap) => {
-          const data = docSnap.data();
-
+          const data = docSnap.data() as any;
           return {
             id: docSnap.id,
             customerId: data.customerId ?? "",
@@ -192,21 +238,9 @@ export default function OfficeDisplayPage() {
             description: data.description ?? undefined,
             bidStatus: data.bidStatus ?? "draft",
             totalBidAmount: data.totalBidAmount ?? 0,
-            roughIn: data.roughIn ?? {
-              status: "not_started",
-              billed: false,
-              billedAmount: 0,
-            },
-            topOutVent: data.topOutVent ?? {
-              status: "not_started",
-              billed: false,
-              billedAmount: 0,
-            },
-            trimFinish: data.trimFinish ?? {
-              status: "not_started",
-              billed: false,
-              billedAmount: 0,
-            },
+            roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
+            topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
+            trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
             internalNotes: data.internalNotes ?? undefined,
@@ -224,16 +258,9 @@ export default function OfficeDisplayPage() {
         setLastUpdated(new Date().toLocaleTimeString());
       } catch (err: unknown) {
         if (!isMounted) return;
-
-        if (err instanceof Error) {
-          setError(err.message);
-        } else {
-          setError("Failed to load office display.");
-        }
+        setError(err instanceof Error ? err.message : "Failed to load office display.");
       } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
+        if (isMounted) setLoading(false);
       }
     }
 
@@ -263,67 +290,68 @@ export default function OfficeDisplayPage() {
     return allWeekDays.filter((day) => day.dayIndex >= 1 && day.dayIndex <= 5);
   }, [allWeekDays, showWeekends]);
 
+  const todayIso = useMemo(() => formatDateToIsoLocal(new Date()), []);
+
   const weekStart = allWeekDays[0]?.isoDate ?? "";
   const weekEnd = allWeekDays[6]?.isoDate ?? "";
 
   const itemsByDay = useMemo(() => {
     const result: Record<string, DisplayItem[]> = {};
-
-    for (const day of allWeekDays) {
-      result[day.isoDate] = [];
-    }
+    for (const day of allWeekDays) result[day.isoDate] = [];
 
     for (const ticket of tickets) {
+      if (!ticket.active) continue;
       if (!ticket.scheduledDate || !result[ticket.scheduledDate]) continue;
+
+      const title = safeOneLine(ticket.issueSummary) || "Service Ticket";
+      const subtitle = safeOneLine(ticket.customerDisplayName);
+      const location = safeOneLine(ticket.serviceAddressLine1);
+      const tech = safeOneLine(ticket.assignedTechnicianName) || "Unassigned";
+
+      const start = safeOneLine(ticket.scheduledStartTime) || "—";
+      const end = safeOneLine(ticket.scheduledEndTime) || "—";
 
       result[ticket.scheduledDate].push({
         kind: "service_ticket",
         id: ticket.id,
-        title: ticket.issueSummary,
-        subtitle: ticket.customerDisplayName,
-        location: ticket.serviceAddressLine1,
-        tech: ticket.assignedTechnicianName || "Unassigned",
+        title,
+        subtitle,
+        location,
+        tech,
         status: formatStatusLabel(ticket.status),
-        timeText: `${ticket.scheduledStartTime || "—"} - ${ticket.scheduledEndTime || "—"}`,
+        timeText: `${start}–${end}`,
         date: ticket.scheduledDate,
-        sortTime: ticket.scheduledStartTime || "99:99",
+        sortTime: start || "99:99",
       });
     }
 
     for (const project of projects) {
+      if (!project.active) continue;
+
       const stageEntries = [
-        {
-          stageKey: "roughIn",
-          label: "Rough-In",
-          stage: project.roughIn,
-        },
-        {
-          stageKey: "topOutVent",
-          label: "Top-Out / Vent",
-          stage: project.topOutVent,
-        },
-        {
-          stageKey: "trimFinish",
-          label: "Trim / Finish",
-          stage: project.trimFinish,
-        },
+        { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
+        { stageKey: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
+        { stageKey: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
       ] as const;
 
       for (const entry of stageEntries) {
-        const date = entry.stage.scheduledDate;
+        const date = (entry.stage as any)?.scheduledDate;
         if (!date || !result[date]) continue;
+
+        const title = `${safeOneLine(project.projectName) || "Project"} • ${entry.label}`;
+        const subtitle = safeOneLine(project.customerDisplayName);
+        const location = safeOneLine(project.serviceAddressLine1);
+        const tech = safeOneLine(project.assignedTechnicianName) || "Unassigned";
 
         result[date].push({
           kind: "project_stage",
           id: `${project.id}-${entry.stageKey}`,
-          title: `${project.projectName} • ${entry.label}`,
-          subtitle: project.customerDisplayName,
-          location: project.serviceAddressLine1,
-          tech: project.assignedTechnicianName || "Unassigned",
-          status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
-            project.bidStatus
-          )}`,
-          timeText: "Project Stage",
+          title,
+          subtitle,
+          location,
+          tech,
+          status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(project.bidStatus)}`,
+          timeText: "Stage",
           date,
           sortTime: "12:00",
         });
@@ -343,14 +371,14 @@ export default function OfficeDisplayPage() {
 
   const unscheduledItems = useMemo(() => {
     const ticketItems: DisplayItem[] = tickets
-      .filter((ticket) => !ticket.scheduledDate)
+      .filter((ticket) => ticket.active && !ticket.scheduledDate && String(ticket.status || "").toLowerCase() !== "completed")
       .map((ticket) => ({
         kind: "service_ticket",
         id: ticket.id,
-        title: ticket.issueSummary,
-        subtitle: ticket.customerDisplayName,
-        location: ticket.serviceAddressLine1,
-        tech: ticket.assignedTechnicianName || "Unassigned",
+        title: safeOneLine(ticket.issueSummary) || "Service Ticket",
+        subtitle: safeOneLine(ticket.customerDisplayName),
+        location: safeOneLine(ticket.serviceAddressLine1),
+        tech: safeOneLine(ticket.assignedTechnicianName) || "Unassigned",
         status: formatStatusLabel(ticket.status),
         timeText: "Unscheduled",
         date: "",
@@ -360,109 +388,134 @@ export default function OfficeDisplayPage() {
     const projectItems: DisplayItem[] = [];
 
     for (const project of projects) {
+      if (!project.active) continue;
+
       const stageEntries = [
-        {
-          stageKey: "roughIn",
-          label: "Rough-In",
-          stage: project.roughIn,
-        },
-        {
-          stageKey: "topOutVent",
-          label: "Top-Out / Vent",
-          stage: project.topOutVent,
-        },
-        {
-          stageKey: "trimFinish",
-          label: "Trim / Finish",
-          stage: project.trimFinish,
-        },
+        { stageKey: "roughIn", label: "Rough-In", stage: project.roughIn },
+        { stageKey: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
+        { stageKey: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
       ] as const;
 
       for (const entry of stageEntries) {
-        if (entry.stage.scheduledDate) continue;
-        if (entry.stage.status === "complete") continue;
+        const stage: any = entry.stage;
+        if (stage?.scheduledDate) continue;
+        if (stage?.status === "complete") continue;
 
         projectItems.push({
           kind: "project_stage",
           id: `${project.id}-${entry.stageKey}-unscheduled`,
-          title: `${project.projectName} • ${entry.label}`,
-          subtitle: project.customerDisplayName,
-          location: project.serviceAddressLine1,
-          tech: project.assignedTechnicianName || "Unassigned",
-          status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(
-            project.bidStatus
-          )}`,
-          timeText: "Project Stage Unscheduled",
+          title: `${safeOneLine(project.projectName) || "Project"} • ${entry.label}`,
+          subtitle: safeOneLine(project.customerDisplayName),
+          location: safeOneLine(project.serviceAddressLine1),
+          tech: safeOneLine(project.assignedTechnicianName) || "Unassigned",
+          status: `${formatProjectStageStatus(entry.stage.status)} • ${formatProjectBidStatus(project.bidStatus)}`,
+          timeText: "Unscheduled Stage",
           date: "",
           sortTime: "99:99",
         });
       }
     }
 
-    return [...ticketItems, ...projectItems];
+    const out = [...ticketItems, ...projectItems];
+    out.sort((a, b) => {
+      const byKind = a.kind.localeCompare(b.kind);
+      if (byKind !== 0) return byKind;
+      return a.title.localeCompare(b.title);
+    });
+    return out;
   }, [tickets, projects]);
+
+  const headerSubtle = "rgba(226,232,240,0.75)";
+  const headerMuted = "rgba(148,163,184,0.85)";
 
   return (
     <ProtectedPage fallbackTitle="Office Display">
       <main
         style={{
           minHeight: "100vh",
-          background: "#0f172a",
           color: "white",
-          padding: "20px",
+          padding: 22,
+          // “Login screen” vibe: deep navy + subtle gradient glow
+          background:
+            "radial-gradient(1200px 800px at 20% 10%, rgba(16,185,129,0.18) 0%, rgba(16,185,129,0.00) 55%), radial-gradient(900px 700px at 85% 20%, rgba(96,165,250,0.18) 0%, rgba(96,165,250,0.00) 55%), linear-gradient(180deg, #0b1220 0%, #0f172a 60%, #0b1220 100%)",
         }}
       >
+        {/* Top bar */}
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "flex-start",
-            gap: "16px",
-            marginBottom: "18px",
+            gap: 18,
+            marginBottom: 18,
             flexWrap: "wrap",
           }}
         >
-          <div>
-            <h1 style={{ fontSize: "32px", fontWeight: 800, margin: 0 }}>
-              DCFlow Office Display
-            </h1>
-            <p style={{ marginTop: "8px", fontSize: "14px", color: "#cbd5e1" }}>
-              Week of {weekStart} through {weekEnd}
-            </p>
-            <p style={{ marginTop: "6px", fontSize: "13px", color: "#94a3b8" }}>
-              View: {showWeekends ? "Monday–Sunday" : "Monday–Friday"} • Auto-refresh every 30 seconds
-            </p>
-            <p style={{ marginTop: "6px", fontSize: "13px", color: "#94a3b8" }}>
-              Last updated: {lastUpdated || "—"}
-            </p>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 34, fontWeight: 950, letterSpacing: 0.2 }}>
+                DCFlow • Office Display
+              </div>
+
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 900,
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(16,185,129,0.35)",
+                  background: "rgba(16,185,129,0.14)",
+                  color: "#a7f3d0",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ⏱ {clock}
+              </div>
+
+              <div style={{ fontSize: 14, color: headerMuted, fontWeight: 800 }}>
+                Auto-refresh: 30s • Updated: {lastUpdated || "—"}
+              </div>
+            </div>
+
+            <div style={{ fontSize: 15, color: headerSubtle, fontWeight: 800 }}>
+              Week of <span style={{ color: "white", fontWeight: 900 }}>{weekStart}</span> –{" "}
+              <span style={{ color: "white", fontWeight: 900 }}>{weekEnd}</span> • View:{" "}
+              <span style={{ color: "white", fontWeight: 900 }}>
+                {showWeekends ? "Mon–Sun" : "Mon–Fri"}
+              </span>
+            </div>
           </div>
 
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <button
               type="button"
               onClick={() => setWeekOffset((prev) => prev - 1)}
               style={{
-                padding: "10px 14px",
-                border: "1px solid #334155",
-                borderRadius: "10px",
-                background: "#111827",
+                padding: "12px 14px",
+                border: "1px solid rgba(148,163,184,0.35)",
+                borderRadius: 14,
+                background: "rgba(15,23,42,0.55)",
                 color: "white",
                 cursor: "pointer",
+                fontWeight: 900,
+                backdropFilter: "blur(10px)",
               }}
             >
-              Previous Week
+              ← Previous
             </button>
 
             <button
               type="button"
               onClick={() => setWeekOffset(0)}
               style={{
-                padding: "10px 14px",
-                border: "1px solid #334155",
-                borderRadius: "10px",
-                background: "#111827",
+                padding: "12px 14px",
+                border: "1px solid rgba(16,185,129,0.35)",
+                borderRadius: 14,
+                background: "rgba(16,185,129,0.14)",
                 color: "white",
                 cursor: "pointer",
+                fontWeight: 950,
+                backdropFilter: "blur(10px)",
               }}
             >
               This Week
@@ -472,15 +525,17 @@ export default function OfficeDisplayPage() {
               type="button"
               onClick={() => setWeekOffset((prev) => prev + 1)}
               style={{
-                padding: "10px 14px",
-                border: "1px solid #334155",
-                borderRadius: "10px",
-                background: "#111827",
+                padding: "12px 14px",
+                border: "1px solid rgba(148,163,184,0.35)",
+                borderRadius: 14,
+                background: "rgba(15,23,42,0.55)",
                 color: "white",
                 cursor: "pointer",
+                fontWeight: 900,
+                backdropFilter: "blur(10px)",
               }}
             >
-              Next Week
+              Next →
             </button>
 
             {isAdmin ? (
@@ -488,12 +543,14 @@ export default function OfficeDisplayPage() {
                 type="button"
                 onClick={() => setShowWeekends((prev) => !prev)}
                 style={{
-                  padding: "10px 14px",
-                  border: "1px solid #334155",
-                  borderRadius: "10px",
-                  background: "#111827",
+                  padding: "12px 14px",
+                  border: "1px solid rgba(96,165,250,0.35)",
+                  borderRadius: 14,
+                  background: "rgba(96,165,250,0.14)",
                   color: "white",
                   cursor: "pointer",
+                  fontWeight: 900,
+                  backdropFilter: "blur(10px)",
                 }}
               >
                 {showWeekends ? "Hide Weekends" : "Show Weekends"}
@@ -502,93 +559,180 @@ export default function OfficeDisplayPage() {
           </div>
         </div>
 
-        {loading ? <p style={{ color: "#cbd5e1" }}>Loading office display...</p> : null}
-        {error ? <p style={{ color: "#fca5a5" }}>{error}</p> : null}
+        {/* Loading / Error */}
+        {loading ? (
+          <div
+            style={{
+              border: "1px solid rgba(148,163,184,0.28)",
+              borderRadius: 18,
+              background: "rgba(15,23,42,0.55)",
+              padding: 16,
+              color: "rgba(226,232,240,0.9)",
+              fontWeight: 850,
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            Loading office display…
+          </div>
+        ) : null}
+
+        {error ? (
+          <div
+            style={{
+              border: "1px solid rgba(239,68,68,0.35)",
+              borderRadius: 18,
+              background: "rgba(239,68,68,0.10)",
+              padding: 16,
+              color: "#fecaca",
+              fontWeight: 900,
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            {error}
+          </div>
+        ) : null}
 
         {!loading && !error ? (
           <>
+            {/* Week grid */}
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: `repeat(${visibleWeekDays.length}, minmax(260px, 1fr))`,
-                gap: "12px",
+                gridTemplateColumns: `repeat(${visibleWeekDays.length}, minmax(290px, 1fr))`,
+                gap: 14,
                 alignItems: "start",
                 overflowX: "auto",
+                paddingBottom: 6,
               }}
             >
               {visibleWeekDays.map((day) => {
                 const dayItems = itemsByDay[day.isoDate] ?? [];
+                const isToday = day.isoDate === todayIso;
 
                 return (
                   <div
                     key={day.isoDate}
                     style={{
-                      border: "1px solid #334155",
-                      borderRadius: "14px",
-                      padding: "12px",
-                      background: "#111827",
-                      minHeight: "320px",
+                      borderRadius: 18,
+                      border: isToday
+                        ? "1px solid rgba(16,185,129,0.55)"
+                        : "1px solid rgba(148,163,184,0.22)",
+                      background: isToday
+                        ? "linear-gradient(180deg, rgba(16,185,129,0.12) 0%, rgba(15,23,42,0.62) 45%, rgba(15,23,42,0.55) 100%)"
+                        : "rgba(15,23,42,0.55)",
+                      padding: 14,
+                      minHeight: 360,
+                      backdropFilter: "blur(12px)",
                     }}
                   >
-                    <div style={{ fontWeight: 800, fontSize: "18px", marginBottom: "4px" }}>
-                      {day.label}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                      <div style={{ fontWeight: 950, fontSize: 22, letterSpacing: 0.2 }}>
+                        {day.shortLabel}
+                        {isToday ? <span style={{ marginLeft: 10, fontSize: 14, color: "#a7f3d0", fontWeight: 950 }}>• TODAY</span> : null}
+                      </div>
+                      <div style={{ fontSize: 13, color: headerMuted, fontWeight: 850 }}>{day.isoDate}</div>
                     </div>
 
-                    <div style={{ fontSize: "13px", color: "#94a3b8", marginBottom: "12px" }}>
-                      {day.isoDate}
-                    </div>
-
-                    <div style={{ display: "grid", gap: "10px" }}>
+                    <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
                       {dayItems.length === 0 ? (
                         <div
                           style={{
-                            border: "1px dashed #334155",
-                            borderRadius: "10px",
-                            padding: "12px",
-                            fontSize: "14px",
-                            color: "#94a3b8",
-                            background: "#0b1220",
+                            border: "1px dashed rgba(148,163,184,0.28)",
+                            borderRadius: 14,
+                            padding: 14,
+                            fontSize: 16,
+                            color: "rgba(148,163,184,0.95)",
+                            background: "rgba(2,6,23,0.25)",
+                            fontWeight: 900,
                           }}
                         >
                           No scheduled work
                         </div>
                       ) : (
-                        dayItems.map((item) => (
-                          <div
-                            key={item.id}
-                            style={{
-                              border: "1px solid #334155",
-                              borderRadius: "12px",
-                              padding: "12px",
-                              background: "#0b1220",
-                            }}
-                          >
-                            <div style={{ fontWeight: 800, fontSize: "15px" }}>
-                              {item.kind === "project_stage" ? "📐 " : "🔧 "}
-                              {item.title}
-                            </div>
+                        dayItems.map((item) => {
+                          const kindIcon = item.kind === "project_stage" ? "📐" : "🔧";
+                          const statusKind = statusToPillKind(item.status);
+                          const statusPill = pillStyle(statusKind);
 
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#cbd5e1" }}>
-                              {item.timeText}
-                            </div>
+                          const techPill = pillStyle(item.tech === "Unassigned" ? "warn" : "good");
 
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#cbd5e1" }}>
-                              {item.subtitle}
-                            </div>
+                          return (
+                            <div
+                              key={item.id}
+                              style={{
+                                borderRadius: 16,
+                                border: "1px solid rgba(148,163,184,0.18)",
+                                background: "rgba(2,6,23,0.30)",
+                                padding: 14,
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                                <div style={{ fontSize: 18, fontWeight: 950, lineHeight: 1.2 }}>
+                                  {kindIcon} {item.title}
+                                </div>
 
-                            <div style={{ marginTop: "6px", fontSize: "13px", color: "#cbd5e1" }}>
-                              {item.location}
-                            </div>
+                                <div
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    border: `1px solid ${statusPill.br}`,
+                                    background: statusPill.bg,
+                                    color: statusPill.fg,
+                                    fontWeight: 950,
+                                    fontSize: 13,
+                                    whiteSpace: "nowrap",
+                                    alignSelf: "flex-start",
+                                  }}
+                                >
+                                  {item.status}
+                                </div>
+                              </div>
 
-                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#94a3b8" }}>
-                              Tech: {item.tech}
-                            </div>
+                              <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                                <div
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    border: "1px solid rgba(96,165,250,0.35)",
+                                    background: "rgba(96,165,250,0.12)",
+                                    color: "#bfdbfe",
+                                    fontWeight: 950,
+                                    fontSize: 13,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  ⏰ {item.timeText}
+                                </div>
 
-                            <div style={{ marginTop: "4px", fontSize: "12px", color: "#94a3b8" }}>
-                              Status: {item.status}
+                                <div
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    border: `1px solid ${techPill.br}`,
+                                    background: techPill.bg,
+                                    color: techPill.fg,
+                                    fontWeight: 950,
+                                    fontSize: 13,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  👤 {item.tech}
+                                </div>
+                              </div>
+
+                              {/* Keep these lines calmer + readable (TV-friendly) */}
+                              <div style={{ marginTop: 10, fontSize: 15, color: "rgba(226,232,240,0.92)", fontWeight: 850 }}>
+                                {item.subtitle}
+                              </div>
+
+                              {item.location ? (
+                                <div style={{ marginTop: 6, fontSize: 14, color: "rgba(148,163,184,0.95)", fontWeight: 800 }}>
+                                  📍 {item.location}
+                                </div>
+                              ) : null}
                             </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   </div>
@@ -596,62 +740,146 @@ export default function OfficeDisplayPage() {
               })}
             </div>
 
+            {/* Unscheduled section */}
             <div
               style={{
-                marginTop: "18px",
-                border: "1px solid #334155",
-                borderRadius: "14px",
-                padding: "16px",
-                background: "#111827",
+                marginTop: 18,
+                borderRadius: 18,
+                border: "1px solid rgba(148,163,184,0.22)",
+                background: "rgba(15,23,42,0.55)",
+                padding: 16,
+                backdropFilter: "blur(12px)",
               }}
             >
-              <h2
-                style={{
-                  fontSize: "20px",
-                  fontWeight: 800,
-                  margin: 0,
-                  marginBottom: "12px",
-                }}
-              >
-                Unscheduled Work
-              </h2>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                <div style={{ fontSize: 22, fontWeight: 950 }}>Unscheduled Work</div>
+                <div style={{ fontSize: 14, color: headerMuted, fontWeight: 850 }}>
+                  Count: <span style={{ color: "white", fontWeight: 950 }}>{unscheduledItems.length}</span>
+                </div>
+              </div>
 
               {unscheduledItems.length === 0 ? (
-                <p style={{ color: "#94a3b8", margin: 0 }}>No unscheduled work.</p>
+                <div
+                  style={{
+                    marginTop: 12,
+                    border: "1px dashed rgba(148,163,184,0.28)",
+                    borderRadius: 14,
+                    padding: 14,
+                    fontSize: 16,
+                    color: "rgba(148,163,184,0.95)",
+                    background: "rgba(2,6,23,0.25)",
+                    fontWeight: 900,
+                  }}
+                >
+                  No unscheduled work.
+                </div>
               ) : (
-                <div style={{ display: "grid", gap: "10px" }}>
-                  {unscheduledItems.map((item) => (
+                <div
+                  style={{
+                    marginTop: 12,
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, minmax(320px, 1fr))",
+                    gap: 12,
+                  }}
+                >
+                  {unscheduledItems.slice(0, 30).map((item) => {
+                    const kindIcon = item.kind === "project_stage" ? "📐" : "🔧";
+                    const statusPill = pillStyle(statusToPillKind(item.status));
+                    const techPill = pillStyle(item.tech === "Unassigned" ? "warn" : "good");
+
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          borderRadius: 16,
+                          border: "1px solid rgba(148,163,184,0.18)",
+                          background: "rgba(2,6,23,0.30)",
+                          padding: 14,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ fontSize: 18, fontWeight: 950, lineHeight: 1.2 }}>
+                            {kindIcon} {item.title}
+                          </div>
+                          <div
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: `1px solid ${statusPill.br}`,
+                              background: statusPill.bg,
+                              color: statusPill.fg,
+                              fontWeight: 950,
+                              fontSize: 13,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {item.status}
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                          <div
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(245,158,11,0.35)",
+                              background: "rgba(245,158,11,0.12)",
+                              color: "#fde68a",
+                              fontWeight: 950,
+                              fontSize: 13,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⏳ {item.timeText}
+                          </div>
+
+                          <div
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: `1px solid ${techPill.br}`,
+                              background: techPill.bg,
+                              color: techPill.fg,
+                              fontWeight: 950,
+                              fontSize: 13,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            👤 {item.tech}
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: 10, fontSize: 15, color: "rgba(226,232,240,0.92)", fontWeight: 850 }}>
+                          {item.subtitle}
+                        </div>
+
+                        {item.location ? (
+                          <div style={{ marginTop: 6, fontSize: 14, color: "rgba(148,163,184,0.95)", fontWeight: 800 }}>
+                            📍 {item.location}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+
+                  {unscheduledItems.length > 30 ? (
                     <div
-                      key={item.id}
                       style={{
-                        border: "1px solid #334155",
-                        borderRadius: "12px",
-                        padding: "12px",
-                        background: "#0b1220",
+                        borderRadius: 16,
+                        border: "1px dashed rgba(148,163,184,0.28)",
+                        background: "rgba(2,6,23,0.22)",
+                        padding: 14,
+                        color: "rgba(226,232,240,0.85)",
+                        fontWeight: 900,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        minHeight: 120,
                       }}
                     >
-                      <div style={{ fontWeight: 800, fontSize: "15px" }}>
-                        {item.kind === "project_stage" ? "📐 " : "🔧 "}
-                        {item.title}
-                      </div>
-
-                      <div style={{ marginTop: "6px", fontSize: "13px", color: "#cbd5e1" }}>
-                        {item.subtitle}
-                      </div>
-
-                      <div style={{ marginTop: "6px", fontSize: "13px", color: "#cbd5e1" }}>
-                        {item.location}
-                      </div>
-
-                      <div style={{ marginTop: "6px", fontSize: "12px", color: "#94a3b8" }}>
-                        Tech: {item.tech}
-                      </div>
-
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#94a3b8" }}>
-                        Status: {item.status}
-                      </div>
+                      +{unscheduledItems.length - 30} more…
                     </div>
-                  ))}
+                  ) : null}
                 </div>
               )}
             </div>
