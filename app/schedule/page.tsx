@@ -1,3 +1,4 @@
+// app/schedule/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -12,6 +13,8 @@ import {
   getDoc,
   addDoc,
   writeBatch,
+  updateDoc,
+  deleteDoc,
 } from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -129,6 +132,18 @@ type CompanyEvent = {
   createdByUid?: string | null;
   updatedAt?: string;
   updatedByUid?: string | null;
+};
+
+type MeetingTimeEntryLite = {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  employeeRole: string;
+  entryDate: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  timesheetId?: string | null;
+  entryStatus?: string;
 };
 
 function pad2(n: number) {
@@ -323,6 +338,11 @@ function defaultMeetingHours(window: string, startTime?: string | null, endTime?
     return Math.round(((eMin - sMin) / 60) * 4) / 4;
   }
   return 1;
+}
+
+function isLockedWeeklyTimesheetStatus(status?: string) {
+  const s = String(status || "").toLowerCase().trim();
+  return s === "submitted" || s === "approved" || s === "exported_to_quickbooks" || s === "exported";
 }
 
 async function createPaidMeetingEntries(args: {
@@ -641,8 +661,11 @@ export default function SchedulePage() {
   const [addSaving, setAddSaving] = useState(false);
   const [addErr, setAddErr] = useState("");
 
-  // Add Meeting modal
+  // Meeting modal (Create + Edit)
   const [meetOpen, setMeetOpen] = useState(false);
+  const [editingMeetId, setEditingMeetId] = useState<string | null>(null);
+  const [editingMeetOriginalDate, setEditingMeetOriginalDate] = useState<string>("");
+
   const [meetDateIso, setMeetDateIso] = useState("");
   const [meetTitle, setMeetTitle] = useState("");
   const [meetWindow, setMeetWindow] = useState<"all_day" | "am" | "pm" | "custom">("am");
@@ -653,6 +676,7 @@ export default function SchedulePage() {
   const [meetBlocks, setMeetBlocks] = useState(true);
   const [meetSaving, setMeetSaving] = useState(false);
   const [meetErr, setMeetErr] = useState("");
+  const [meetMsg, setMeetMsg] = useState("");
 
   function findTechName(uid: string) {
     const t = techs.find((x) => x.uid === uid);
@@ -765,10 +789,13 @@ export default function SchedulePage() {
     }
   }
 
-  // Meeting modal
-  function openMeetingModal(defaultDateIso: string) {
-    setMeetErr("");
-    setMeetDateIso(defaultDateIso);
+  // ----------------------------
+  // ✅ Meeting Create / Edit / Delete
+  // ----------------------------
+  function resetMeetingForm() {
+    setEditingMeetId(null);
+    setEditingMeetOriginalDate("");
+    setMeetDateIso("");
     setMeetTitle("");
     setMeetWindow("am");
     setMeetStart("08:00");
@@ -776,14 +803,255 @@ export default function SchedulePage() {
     setMeetLocation("");
     setMeetNotes("");
     setMeetBlocks(true);
+    setMeetErr("");
+    setMeetMsg("");
+  }
+
+  function openMeetingModal(defaultDateIso: string) {
+    resetMeetingForm();
+    setMeetDateIso(defaultDateIso);
+    setMeetOpen(true);
+  }
+
+  function openEditMeetingModal(e: CompanyEvent) {
+    resetMeetingForm();
+    setEditingMeetId(e.id);
+    setEditingMeetOriginalDate(e.date);
+
+    setMeetDateIso(e.date);
+    setMeetTitle(String(e.title || ""));
+    const w = String(e.timeWindow || "am").toLowerCase();
+    setMeetWindow(w === "all_day" ? "all_day" : w === "pm" ? "pm" : w === "custom" ? "custom" : "am");
+
+    // if custom, use stored times, else set defaults for display
+    if (w === "custom") {
+      setMeetStart(String(e.startTime || "08:00"));
+      setMeetEnd(String(e.endTime || "09:00"));
+    } else if (w === "pm") {
+      setMeetStart("13:00");
+      setMeetEnd("14:00");
+    } else if (w === "all_day") {
+      setMeetStart("08:00");
+      setMeetEnd("17:00");
+    } else {
+      setMeetStart("08:00");
+      setMeetEnd("09:00");
+    }
+
+    setMeetLocation(String(e.location || ""));
+    setMeetNotes(String(e.notes || ""));
+    setMeetBlocks(Boolean(e.blocksSchedule ?? true));
+
     setMeetOpen(true);
   }
 
   function closeMeetingModal() {
     if (meetSaving) return;
     setMeetOpen(false);
-    setMeetErr("");
     setMeetSaving(false);
+    setMeetErr("");
+    setMeetMsg("");
+  }
+
+  async function getMeetingTimeEntries(eventId: string): Promise<MeetingTimeEntryLite[]> {
+    const snap = await getDocs(query(collection(db, "timeEntries"), where("companyEventId", "==", eventId)));
+    return snap.docs.map((ds) => {
+      const d = ds.data() as any;
+      return {
+        id: ds.id,
+        employeeId: String(d.employeeId ?? ""),
+        employeeName: String(d.employeeName ?? ""),
+        employeeRole: String(d.employeeRole ?? ""),
+        entryDate: String(d.entryDate ?? ""),
+        weekStartDate: String(d.weekStartDate ?? ""),
+        weekEndDate: String(d.weekEndDate ?? ""),
+        timesheetId: d.timesheetId ?? null,
+        entryStatus: d.entryStatus ?? "draft",
+      };
+    });
+  }
+
+  async function assertMeetingEntriesNotLocked(entries: MeetingTimeEntryLite[]) {
+    const locked: Array<{ employeeName: string; weekStartDate: string; status: string }> = [];
+
+    await Promise.all(
+      entries.map(async (e) => {
+        const wsId = buildWeeklyTimesheetId(e.employeeId, e.weekStartDate);
+        try {
+          const tsSnap = await getDoc(doc(db, "weeklyTimesheets", wsId));
+          if (!tsSnap.exists()) return;
+          const d = tsSnap.data() as any;
+          const status = String(d.status ?? "").toLowerCase().trim();
+          if (isLockedWeeklyTimesheetStatus(status)) {
+            locked.push({ employeeName: e.employeeName || e.employeeId, weekStartDate: e.weekStartDate, status });
+          }
+        } catch {
+          // ignore
+        }
+      })
+    );
+
+    if (locked.length) {
+      const first = locked[0];
+      const more = locked.length > 1 ? ` (+${locked.length - 1} more)` : "";
+      throw new Error(
+        `This meeting cannot be changed because it has time entries in a locked weekly timesheet. Example: ${first.employeeName} • week ${first.weekStartDate} • status ${first.status}${more}`
+      );
+    }
+  }
+
+  async function updateMeetingAndEntries(args: {
+    eventId: string;
+    originalDateIso: string;
+    payload: any;
+  }) {
+    const { eventId, originalDateIso, payload } = args;
+
+    const entries = await getMeetingTimeEntries(eventId);
+    // Safety: if any affected employee's weekly timesheet is locked, abort.
+    await assertMeetingEntriesNotLocked(entries);
+
+    const now = nowIso();
+
+    // Update the company event itself
+    await updateDoc(doc(db, "companyEvents", eventId), {
+      ...payload,
+      updatedAt: now,
+      updatedByUid: appUser?.uid || null,
+    });
+
+    // Recompute hours + payroll week for the new date
+    const hours = defaultMeetingHours(payload.timeWindow, payload.startTime, payload.endTime);
+    const { weekStartDate, weekEndDate } = getPayrollWeekBounds(payload.date);
+
+    // Batch update time entries + ensure weeklyTimesheet exists for each employee/week
+    const batch = writeBatch(db);
+
+    for (const te of entries) {
+      const timesheetId = buildWeeklyTimesheetId(te.employeeId, weekStartDate);
+
+      // Ensure weekly timesheet doc exists (draft)
+      batch.set(
+        doc(db, "weeklyTimesheets", timesheetId),
+        {
+          employeeId: te.employeeId,
+          employeeName: te.employeeName,
+          employeeRole: te.employeeRole || "employee",
+          weekStartDate,
+          weekEndDate,
+
+          status: "draft",
+          submittedAt: null,
+          submittedByUid: null,
+
+          updatedAt: now,
+          updatedByUid: appUser?.uid || null,
+        },
+        { merge: true }
+      );
+
+      // Move/update the meeting time entry
+      batch.set(
+        doc(db, "timeEntries", te.id),
+        {
+          employeeId: te.employeeId,
+          employeeName: te.employeeName,
+          employeeRole: te.employeeRole || "employee",
+
+          entryDate: payload.date,
+          weekStartDate,
+          weekEndDate,
+          timesheetId,
+
+          category: "meeting",
+          payType: "regular",
+          billable: false,
+          source: "company_meeting",
+
+          hours,
+          hoursSource: hours,
+          hoursLocked: true,
+
+          companyEventId: eventId,
+          title: payload.title,
+          location: payload.location || null,
+
+          entryStatus: "draft",
+          notes: null,
+
+          updatedAt: now,
+          updatedByUid: appUser?.uid || null,
+        },
+        { merge: true }
+      );
+    }
+
+    await batch.commit();
+
+    // Update local UI cache
+    const updatedEvent: CompanyEvent = {
+      id: eventId,
+      active: true,
+      type: "meeting",
+      title: String(payload.title || "Meeting"),
+      date: String(payload.date || ""),
+      timeWindow: payload.timeWindow ?? "am",
+      startTime: payload.startTime ?? null,
+      endTime: payload.endTime ?? null,
+      location: payload.location ?? null,
+      notes: payload.notes ?? null,
+      appliesToRoles: payload.appliesToRoles ?? null,
+      appliesToUids: payload.appliesToUids ?? null,
+      blocksSchedule: Boolean(payload.blocksSchedule),
+      updatedAt: now,
+      updatedByUid: appUser?.uid || null,
+    };
+
+    setEventsByDate((prev) => {
+      const next = { ...prev };
+
+      // remove from old date bucket
+      const oldList = [...(next[originalDateIso] || [])].filter((x) => x.id !== eventId);
+      if (oldList.length) next[originalDateIso] = oldList;
+      else delete next[originalDateIso];
+
+      // add to new date bucket
+      const newList = [...(next[updatedEvent.date] || [])].filter((x) => x.id !== eventId);
+      newList.push(updatedEvent);
+      next[updatedEvent.date] = newList;
+
+      return next;
+    });
+  }
+
+  async function deleteMeetingAndEntries(eventId: string, dateIso: string) {
+    const entries = await getMeetingTimeEntries(eventId);
+    await assertMeetingEntriesNotLocked(entries);
+
+    const now = nowIso();
+
+    // Mark event inactive
+    await updateDoc(doc(db, "companyEvents", eventId), {
+      active: false,
+      updatedAt: now,
+      updatedByUid: appUser?.uid || null,
+    });
+
+    // Delete meeting time entries
+    const batch = writeBatch(db);
+    for (const te of entries) {
+      batch.delete(doc(db, "timeEntries", te.id));
+    }
+    await batch.commit();
+
+    // Update UI cache
+    setEventsByDate((prev) => {
+      const next = { ...prev };
+      const list = [...(next[dateIso] || [])].filter((x) => x.id !== eventId);
+      if (list.length) next[dateIso] = list;
+      else delete next[dateIso];
+      return next;
+    });
   }
 
   async function submitMeeting() {
@@ -791,6 +1059,9 @@ export default function SchedulePage() {
       setMeetErr("Only Admin/Dispatcher/Manager can schedule meetings.");
       return;
     }
+
+    setMeetErr("");
+    setMeetMsg("");
 
     const dateIso = String(meetDateIso || "").trim();
     const title = String(meetTitle || "").trim();
@@ -809,7 +1080,6 @@ export default function SchedulePage() {
     }
 
     setMeetSaving(true);
-    setMeetErr("");
 
     try {
       const now = nowIso();
@@ -831,28 +1101,46 @@ export default function SchedulePage() {
         appliesToUids: [],
         blocksSchedule: Boolean(meetBlocks),
 
-        createdAt: now,
-        createdByUid: appUser?.uid || null,
         updatedAt: now,
         updatedByUid: appUser?.uid || null,
       };
 
-      const created = await addDoc(collection(db, "companyEvents"), payload);
+      // ✅ EDIT existing meeting
+      if (editingMeetId) {
+        await updateMeetingAndEntries({
+          eventId: editingMeetId,
+          originalDateIso: editingMeetOriginalDate || dateIso,
+          payload,
+        });
+
+        setMeetMsg("✅ Meeting updated (and meeting time entries moved).");
+        closeMeetingModal();
+        return;
+      }
+
+      // ✅ CREATE new meeting (existing behavior)
+      const createPayload: any = {
+        ...payload,
+        createdAt: now,
+        createdByUid: appUser?.uid || null,
+      };
+
+      const created = await addDoc(collection(db, "companyEvents"), createPayload);
 
       await createPaidMeetingEntries({
         eventId: created.id,
-        dateIso: payload.date,
-        title: payload.title,
-        timeWindow: payload.timeWindow,
-        startTime: payload.startTime,
-        endTime: payload.endTime,
-        location: payload.location,
-        appliesToRoles: payload.appliesToRoles || [],
-        appliesToUids: payload.appliesToUids || [],
+        dateIso: createPayload.date,
+        title: createPayload.title,
+        timeWindow: createPayload.timeWindow,
+        startTime: createPayload.startTime,
+        endTime: createPayload.endTime,
+        location: createPayload.location,
+        appliesToRoles: createPayload.appliesToRoles || [],
+        appliesToUids: createPayload.appliesToUids || [],
         createdByUid: appUser?.uid || null,
       });
 
-      const newEvent: CompanyEvent = { id: created.id, ...(payload as any) };
+      const newEvent: CompanyEvent = { id: created.id, ...(createPayload as any) };
       setEventsByDate((prev) => {
         const next = { ...prev };
         const list = [...(next[dateIso] || [])];
@@ -863,7 +1151,29 @@ export default function SchedulePage() {
 
       closeMeetingModal();
     } catch (e: any) {
-      setMeetErr(e?.message || "Failed to schedule meeting.");
+      setMeetErr(e?.message || "Failed to schedule/update meeting.");
+    } finally {
+      setMeetSaving(false);
+    }
+  }
+
+  async function handleDeleteMeeting() {
+    if (!canEditSchedule) return;
+    if (!editingMeetId) return;
+
+    const ok = window.confirm("Delete this meeting? This will remove the schedule block and delete the meeting time entries.");
+    if (!ok) return;
+
+    setMeetSaving(true);
+    setMeetErr("");
+    setMeetMsg("");
+
+    try {
+      await deleteMeetingAndEntries(editingMeetId, editingMeetOriginalDate || meetDateIso);
+      setMeetMsg("✅ Meeting deleted.");
+      closeMeetingModal();
+    } catch (e: any) {
+      setMeetErr(e?.message || "Failed to delete meeting.");
     } finally {
       setMeetSaving(false);
     }
@@ -968,22 +1278,17 @@ export default function SchedulePage() {
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
 
-  // ✅ FIXED: Load holidays in range (supports date OR holidayDate)
+  // ✅ Load holidays in range (supports date OR holidayDate)
   useEffect(() => {
     async function loadHolidays() {
       setHolidaysLoading(true);
       setHolidaysError("");
 
       try {
-        // NOTE:
-        // Your holiday docs use holidayDate (screenshot), not date.
-        // Firestore can't "OR" fields in one query easily.
-        // So: fetch active holidays, then normalize + filter in memory.
         let snap;
         try {
           snap = await getDocs(query(collection(db, "companyHolidays"), where("active", "==", true)));
         } catch {
-          // fallback: all docs
           snap = await getDocs(collection(db, "companyHolidays"));
         }
 
@@ -1359,18 +1664,6 @@ export default function SchedulePage() {
     return out;
   }, [techs, filteredTrips, techFilter]);
 
-  const tripsByDate = useMemo(() => {
-    const map: Record<string, TripDoc[]> = {};
-    for (const t of filteredTrips) {
-      const d = String(t.date || "").trim();
-      if (!d) continue;
-      if (!map[d]) map[d] = [];
-      map[d].push(t);
-    }
-    for (const k of Object.keys(map)) map[k].sort(compareTripTime);
-    return map;
-  }, [filteredTrips]);
-
   const grid = useMemo(() => {
     const out = new Map<string, Map<string, TripDoc[]>>();
 
@@ -1565,17 +1858,29 @@ export default function SchedulePage() {
               ? `${formatTime12h(String(e.startTime))}–${formatTime12h(String(e.endTime))}`
               : "Custom";
 
+    const clickable = canEditSchedule;
+
     return (
       <div
         key={e.id}
+        onClick={() => {
+          if (!clickable) return;
+          openEditMeetingModal(e);
+        }}
         style={{
           border: "1px solid #d1fae5",
           background: "#ecfdf5",
           borderRadius: 12,
           padding: 10,
+          cursor: clickable ? "pointer" : "default",
+          boxShadow: clickable ? "0 10px 22px rgba(0,0,0,0.06)" : "none",
         }}
+        title={clickable ? "Click to edit / delete" : undefined}
       >
-        <div style={{ fontWeight: 950, color: "#065f46" }}>📣 {e.title}</div>
+        <div style={{ fontWeight: 950, color: "#065f46", display: "flex", justifyContent: "space-between", gap: 10 }}>
+          <span>📣 {e.title}</span>
+          {clickable ? <span style={{ fontSize: 12, fontWeight: 900, color: "#065f46" }}>Edit →</span> : null}
+        </div>
         <div style={{ marginTop: 4, fontSize: 12, color: "#065f46" }}>
           {timeLabel}
           {e.location ? ` • ${e.location}` : ""}
@@ -1666,11 +1971,9 @@ export default function SchedulePage() {
   }
 
   function computeCellAvailability(rowKey: string, iso: string, cellTrips: TripDoc[]) {
-    // base busy from trips
     const amBusyTrips = cellTrips.some((t) => tripBlocksSlot(t, "am"));
     const pmBusyTrips = cellTrips.some((t) => tripBlocksSlot(t, "pm"));
 
-    // meetings for that day (we treat rows as technicians here)
     const meetings = (eventsByDate[iso] || []).filter((e) => eventAppliesToRoleOrAll(e, "technician"));
     const amBusyMeet = meetings.some((e) => eventBlocksSlot(e, "am"));
     const pmBusyMeet = meetings.some((e) => eventBlocksSlot(e, "pm"));
@@ -1692,7 +1995,9 @@ export default function SchedulePage() {
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0 }}>{titleText}</h1>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>Week/Day = Technician rows. Month = Calendar grid (Mon–Fri).</div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+              Week/Day = Technician rows. Month = Calendar grid (Mon–Fri).
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -1889,7 +2194,6 @@ export default function SchedulePage() {
         {/* WEEK + DAY VIEWS */}
         {!loading && view !== "month" ? (
           <>
-            {/* ✅ Mobile-friendly agenda layout */}
             {isMobile ? (
               <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
                 {daysForWeekOrDay.map((d) => {
@@ -1918,8 +2222,6 @@ export default function SchedulePage() {
                       <div style={{ padding: 12, display: "grid", gap: 12 }}>
                         {rows.map((r) => {
                           const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
-
-                          // On mobile/day view, respect tech filter naturally because rows already reflect it.
                           const cellTrips = grid.get(rowKey)?.get(iso) || [];
                           const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
 
@@ -2023,7 +2325,6 @@ export default function SchedulePage() {
                 })}
               </div>
             ) : (
-              // ✅ Desktop table layout (unchanged)
               <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, overflow: "auto", background: "white" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
                   <thead>
@@ -2207,7 +2508,9 @@ export default function SchedulePage() {
         ) : null}
 
         {!canSeeAll ? (
-          <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>Note: We can restrict visibility later if you want role-based schedule access.</div>
+          <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>
+            Note: We can restrict visibility later if you want role-based schedule access.
+          </div>
         ) : null}
 
         {/* Add Trip Modal */}
@@ -2368,10 +2671,23 @@ export default function SchedulePage() {
                 padding: 14,
               }}
             >
-              <div style={{ fontWeight: 950, fontSize: 16 }}>📣 Schedule Company Meeting</div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                This will appear on <strong>Schedule</strong> and everyone’s <strong>My Day</strong>.
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+                <div style={{ fontWeight: 950, fontSize: 16 }}>
+                  {editingMeetId ? "✏️ Edit Company Meeting" : "📣 Schedule Company Meeting"}
+                </div>
+                {editingMeetId ? (
+                  <div style={{ fontSize: 12, color: "#666", fontWeight: 800 }}>
+                    ID: {editingMeetId}
+                  </div>
+                ) : null}
               </div>
+
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                This will appear on <strong>Schedule</strong> and everyone’s <strong>My Day</strong>. Click any meeting card to edit.
+              </div>
+
+              {meetErr ? <div style={{ marginTop: 10, fontSize: 12, color: "red", fontWeight: 800 }}>{meetErr}</div> : null}
+              {meetMsg ? <div style={{ marginTop: 10, fontSize: 12, color: "green", fontWeight: 800 }}>{meetMsg}</div> : null}
 
               <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
                 <div>
@@ -2475,7 +2791,7 @@ export default function SchedulePage() {
                     value={meetLocation}
                     onChange={(e) => setMeetLocation(e.target.value)}
                     disabled={meetSaving}
-                    placeholder="e.g. Shop"
+                    placeholder="e.g. Office"
                     style={{
                       display: "block",
                       width: "100%",
@@ -2511,41 +2827,68 @@ export default function SchedulePage() {
                   <span style={{ fontSize: 13, fontWeight: 900 }}>Block schedule during this meeting</span>
                 </label>
 
-                {meetErr ? <div style={{ fontSize: 12, color: "red" }}>{meetErr}</div> : null}
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
+                  {editingMeetId ? (
+                    <button
+                      type="button"
+                      onClick={handleDeleteMeeting}
+                      disabled={meetSaving}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #991b1b",
+                        background: "#fee2e2",
+                        cursor: "pointer",
+                        fontWeight: 950,
+                        color: "#991b1b",
+                      }}
+                    >
+                      🗑️ Delete Meeting
+                    </button>
+                  ) : (
+                    <div />
+                  )}
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  <button
-                    type="button"
-                    onClick={() => closeMeetingModal()}
-                    disabled={meetSaving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 12,
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
-                    Cancel
-                  </button>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => closeMeetingModal()}
+                      disabled={meetSaving}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #ccc",
+                        background: "white",
+                        cursor: "pointer",
+                        fontWeight: 900,
+                      }}
+                    >
+                      Cancel
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={() => submitMeeting()}
-                    disabled={meetSaving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 12,
-                      border: "1px solid #065f46",
-                      background: "#ecfdf5",
-                      cursor: "pointer",
-                      fontWeight: 950,
-                    }}
-                  >
-                    {meetSaving ? "Saving..." : "Schedule Meeting"}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => submitMeeting()}
+                      disabled={meetSaving}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #065f46",
+                        background: "#ecfdf5",
+                        cursor: "pointer",
+                        fontWeight: 950,
+                      }}
+                    >
+                      {meetSaving ? "Saving..." : editingMeetId ? "Save Changes" : "Schedule Meeting"}
+                    </button>
+                  </div>
                 </div>
+
+                {editingMeetId ? (
+                  <div style={{ fontSize: 12, color: "#666" }}>
+                    Note: edits are blocked if any linked weekly timesheet is submitted/approved/exported.
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

@@ -28,6 +28,7 @@ type LocalTimeEntry = TimeEntry & {
   companyEventId?: string;
   title?: string | null;
   location?: string | null;
+  hoursLocked?: boolean | null;
 };
 
 type TripCrew = {
@@ -98,27 +99,6 @@ type CompanyEventLite = {
   type?: string;
 };
 
-function toIsoDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function getCurrentWeekMondayIso() {
-  const today = new Date();
-  const base = new Date(today);
-  base.setHours(12, 0, 0, 0);
-
-  const day = base.getDay(); // Sun 0 ... Sat 6
-  const mondayOffset = day === 0 ? -6 : 1 - day;
-
-  const monday = new Date(base);
-  monday.setDate(base.getDate() + mondayOffset);
-
-  return toIsoDate(monday);
-}
-
 function safeStr(x: unknown) {
   return typeof x === "string" ? x : "";
 }
@@ -146,13 +126,16 @@ function formatCategory(category: TimeEntry["category"]) {
     case "manual_other":
       return "Manual Other";
     default:
-      return category;
+      return String(category || "");
   }
 }
 
 function formatStage(stageKey?: string) {
   const s = (stageKey || "").toLowerCase();
   if (s === "roughin") return "Rough-In";
+  if (s === "topoutvent") return "Top-Out / Vent";
+  if (s === "trimfinish") return "Trim / Finish";
+  if (s === "roughin" || s === "roughin") return "Rough-In";
   if (s === "topoutvent") return "Top-Out / Vent";
   if (s === "trimfinish") return "Trim / Finish";
   return stageKey || "—";
@@ -344,11 +327,12 @@ export default function TimeEntryDetailPage({ params }: Props) {
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
 
-          // ✅ extra linkage fields (safe)
+          // ✅ extra linkage fields
           tripId: data.tripId ?? undefined,
           companyEventId: data.companyEventId ?? undefined,
           title: data.title ?? null,
           location: data.location ?? null,
+          hoursLocked: typeof data.hoursLocked === "boolean" ? data.hoursLocked : null,
         };
 
         setEntry(item);
@@ -411,6 +395,8 @@ export default function TimeEntryDetailPage({ params }: Props) {
           };
 
           setMatchingTimesheet(ts);
+        } else {
+          setMatchingTimesheet(null);
         }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to load time entry.");
@@ -422,7 +408,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
     loadEntry();
   }, [params]);
 
-  // ✅ Load auto context (trip/ticket/project/event) when entry changes
+  // ✅ Load auto context (trip/ticket/project/event)
   useEffect(() => {
     async function loadAutoContext() {
       if (!entry) return;
@@ -434,7 +420,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
       setEvent(null);
 
       try {
-        // Meeting: companyEventId optional, but if present fetch it
         if (entry.category === "meeting") {
           const ceid = normalize(entry.companyEventId);
           if (ceid) {
@@ -457,7 +442,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
           return;
         }
 
-        // Trip
         const tid = normalize(entry.tripId);
         if (tid) {
           const ts = await getDoc(doc(db, "trips", tid));
@@ -484,7 +468,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
           }
         }
 
-        // Service ticket
         const stid = normalize(entry.serviceTicketId);
         if (stid) {
           const ss = await getDoc(doc(db, "serviceTickets", stid));
@@ -503,7 +486,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
           }
         }
 
-        // Project
         const pid = normalize(entry.projectId);
         if (pid) {
           const ps = await getDoc(doc(db, "projects", pid));
@@ -518,7 +500,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
           }
         }
       } catch {
-        // best-effort only
+        // best-effort
       } finally {
         setAutoLoading(false);
       }
@@ -532,14 +514,8 @@ export default function TimeEntryDetailPage({ params }: Props) {
     return entry.employeeId === appUser.uid;
   }, [entry, appUser?.uid]);
 
-  const isHistoricalWeek = useMemo(() => {
-    if (!entry) return true;
-    return entry.weekStartDate < getCurrentWeekMondayIso();
-  }, [entry]);
-
   const isTimesheetLocked = useMemo(() => {
     if (!matchingTimesheet) return false;
-
     return (
       matchingTimesheet.status === "submitted" ||
       matchingTimesheet.status === "approved" ||
@@ -547,13 +523,17 @@ export default function TimeEntryDetailPage({ params }: Props) {
     );
   }, [matchingTimesheet]);
 
+  const isEntryHoursLocked = useMemo(() => {
+    return Boolean(entry?.hoursLocked);
+  }, [entry?.hoursLocked]);
+
   const canEdit = useMemo(() => {
     if (!entry || !appUser) return false;
     if (!isOwnEntry && !canEditOtherUsers) return false;
-    if (isHistoricalWeek) return false;
     if (isTimesheetLocked) return false;
+    if (isEntryHoursLocked) return false;
     return true;
-  }, [entry, appUser, isOwnEntry, canEditOtherUsers, isHistoricalWeek, isTimesheetLocked]);
+  }, [entry, appUser, isOwnEntry, canEditOtherUsers, isTimesheetLocked, isEntryHoursLocked]);
 
   const suggestedAutoNotes = useMemo(() => {
     if (!entry) return "";
@@ -570,9 +550,8 @@ export default function TimeEntryDetailPage({ params }: Props) {
       return;
     }
 
-    // Avoid double-append if already present
     if (cur.includes("AUTO •")) {
-      setNotes(cur); // keep as-is
+      setNotes(cur);
       return;
     }
 
@@ -679,7 +658,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
               Edit Time Entry
             </h1>
             <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-              Open-week entries can be adjusted before payroll is finalized.
+              Entries remain editable until the weekly timesheet is submitted/approved/exported (or an entry is explicitly locked).
             </p>
           </div>
 
@@ -733,180 +712,11 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 Source: {entry.source === "auto_suggested" ? "Auto-Suggested" : entry.source || "Manual"}
               </div>
               <div style={{ fontSize: "13px", color: "#555" }}>
-                Pay Type: {entry.payType}
+                Hours Locked: <strong>{String(Boolean(entry.hoursLocked))}</strong>
               </div>
               <div style={{ fontSize: "12px", color: "#666" }}>
                 Time Entry ID: {timeEntryId}
               </div>
-            </div>
-
-            {/* ✅ Auto Details */}
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#ffffff",
-                maxWidth: "900px",
-                display: "grid",
-                gap: "10px",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
-                <div style={{ fontWeight: 950, fontSize: 16 }}>Auto Details</div>
-                {autoLoading ? <div style={{ fontSize: 12, color: "#777" }}>Loading details…</div> : null}
-              </div>
-
-              {/* Service ticket context */}
-              {ticket ? (
-                <div style={{ fontSize: 13, color: "#333" }}>
-                  <div style={{ fontWeight: 900 }}>Customer</div>
-                  <div style={{ marginTop: 4 }}>
-                    {normalize(ticket.customerDisplayName) || "—"}
-                    {buildAddressLine(ticket) ? ` — ${buildAddressLine(ticket)}` : ""}
-                  </div>
-
-                  {normalize(ticket.issueSummary) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Issue</div>
-                      <div style={{ marginTop: 4 }}>{normalize(ticket.issueSummary)}</div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* Project context */}
-              {project ? (
-                <div style={{ fontSize: 13, color: "#333" }}>
-                  <div style={{ fontWeight: 900 }}>Project</div>
-                  <div style={{ marginTop: 4 }}>
-                    {normalize(project.name) || normalize(project.projectName) || normalize(project.title) || project.id}
-                    {entry.projectStageKey ? ` • ${formatStage(entry.projectStageKey)}` : ""}
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Trip context */}
-              {trip ? (
-                <div style={{ fontSize: 13, color: "#333" }}>
-                  <div style={{ fontWeight: 900 }}>Trip</div>
-                  <div style={{ marginTop: 4 }}>
-                    {trip.date || "—"}
-                    {trip.timeWindow ? ` • ${trip.timeWindow}` : ""}
-                    {trip.startTime && trip.endTime ? ` • ${trip.startTime}-${trip.endTime}` : ""}
-                  </div>
-
-                  {normalize(trip.outcome) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Outcome</div>
-                      <div style={{ marginTop: 4 }}>{normalize(trip.outcome)}</div>
-                    </div>
-                  ) : null}
-
-                  {normalize(trip.followUpNotes) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Follow-up notes</div>
-                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(trip.followUpNotes)}</div>
-                    </div>
-                  ) : null}
-
-                  {normalize(trip.resolutionNotes) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Resolution notes</div>
-                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(trip.resolutionNotes)}</div>
-                    </div>
-                  ) : null}
-
-                  {normalize(trip.workNotes) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Work notes</div>
-                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(trip.workNotes)}</div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* Meeting context */}
-              {entry.category === "meeting" ? (
-                <div style={{ fontSize: 13, color: "#333" }}>
-                  <div style={{ fontWeight: 900 }}>Meeting</div>
-                  <div style={{ marginTop: 4 }}>
-                    📣 {normalize(entry.title) || normalize(event?.title) || "Meeting"}
-                    {normalize(entry.location) || normalize(event?.location)
-                      ? ` • ${normalize(entry.location) || normalize(event?.location)}`
-                      : ""}
-                  </div>
-                  {normalize(event?.notes) ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontWeight: 900 }}>Notes</div>
-                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{normalize(event?.notes)}</div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* Suggested notes */}
-              {suggestedAutoNotes ? (
-                <div style={{ marginTop: 6 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Suggested Notes (auto)</div>
-                  <textarea
-                    value={suggestedAutoNotes}
-                    readOnly
-                    rows={6}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ddd",
-                      background: "#fafafa",
-                      fontSize: 12,
-                      whiteSpace: "pre-wrap",
-                    }}
-                  />
-                  {canEdit ? (
-                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      <button
-                        type="button"
-                        onClick={appendAutoToNotes}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 10,
-                          border: "1px solid #c6dbff",
-                          background: "#eaf2ff",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        ➕ Append Auto Details to Notes
-                      </button>
-                      <button
-                        type="button"
-                        onClick={replaceNotesWithAuto}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 10,
-                          border: "1px solid #ddd",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        ♻ Replace Notes with Auto Details
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: 8, fontSize: 12, color: "#777" }}>
-                      (Read-only week/timesheet — cannot write notes.)
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ fontSize: 12, color: "#777" }}>
-                  No auto-linked details found for this entry.
-                </div>
-              )}
             </div>
 
             <div
@@ -921,23 +731,21 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 gap: "8px",
               }}
             >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>
-                Edit Rules
-              </div>
+              <div style={{ fontWeight: 800, fontSize: "18px" }}>Edit Rules</div>
 
               <div style={{ fontSize: "13px", color: "#555" }}>
                 Your entry is {canEdit ? "currently editable." : "currently read-only."}
               </div>
 
-              {isHistoricalWeek ? (
+              {isTimesheetLocked ? (
                 <div style={{ fontSize: "12px", color: "#8a5a00" }}>
-                  This entry belongs to a historical week, so it is locked in v1.
+                  The matching weekly timesheet is <strong>{matchingTimesheet?.status}</strong>, so this entry is locked.
                 </div>
               ) : null}
 
-              {isTimesheetLocked ? (
+              {isEntryHoursLocked ? (
                 <div style={{ fontSize: "12px", color: "#8a5a00" }}>
-                  The matching weekly timesheet is already {matchingTimesheet?.status}, so this entry is locked.
+                  This entry has <strong>hoursLocked = true</strong> (used for meetings and other system-controlled entries).
                 </div>
               ) : null}
 
@@ -961,9 +769,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 gap: "12px",
               }}
             >
-              <div style={{ fontWeight: 900, fontSize: "18px" }}>
-                Entry Details
-              </div>
+              <div style={{ fontWeight: 900, fontSize: "18px" }}>Entry Details</div>
 
               <div
                 style={{
@@ -1006,143 +812,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 </div>
               </div>
 
-              {entry.category === "service_ticket" ? (
-                <div>
-                  <label style={{ fontWeight: 700 }}>Service Ticket ID</label>
-                  <input
-                    value={serviceTicketId}
-                    onChange={(e) => setServiceTicketId(e.target.value)}
-                    disabled={!canEdit}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      marginTop: "4px",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                      background: canEdit ? "white" : "#f1f1f1",
-                    }}
-                  />
-                </div>
-              ) : null}
-
-              {entry.category === "project_stage" ? (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
-                    gap: "12px",
-                  }}
-                >
-                  <div>
-                    <label style={{ fontWeight: 700 }}>Project ID</label>
-                    <input
-                      value={projectId}
-                      onChange={(e) => setProjectId(e.target.value)}
-                      disabled={!canEdit}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        marginTop: "4px",
-                        padding: "10px",
-                        borderRadius: "10px",
-                        border: "1px solid #ccc",
-                        background: canEdit ? "white" : "#f1f1f1",
-                      }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontWeight: 700 }}>Project Stage</label>
-                    <select
-                      value={projectStageKey}
-                      onChange={(e) =>
-                        setProjectStageKey(
-                          e.target.value as "" | "roughIn" | "topOutVent" | "trimFinish"
-                        )
-                      }
-                      disabled={!canEdit}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        marginTop: "4px",
-                        padding: "10px",
-                        borderRadius: "10px",
-                        border: "1px solid #ccc",
-                        background: canEdit ? "white" : "#f1f1f1",
-                      }}
-                    >
-                      <option value="">Select stage</option>
-                      <option value="roughIn">Rough-In</option>
-                      <option value="topOutVent">Top-Out / Vent</option>
-                      <option value="trimFinish">Trim / Finish</option>
-                    </select>
-                  </div>
-                </div>
-              ) : null}
-
-              {(entry.linkedTechnicianId ||
-                entry.linkedTechnicianName ||
-                entry.employeeRole === "helper" ||
-                entry.employeeRole === "apprentice") ? (
-                <div
-                  style={{
-                    border: "1px solid #e6e6e6",
-                    borderRadius: "12px",
-                    padding: "12px",
-                    background: canEdit ? "white" : "#f1f1f1",
-                    display: "grid",
-                    gap: "10px",
-                  }}
-                >
-                  <div style={{ fontWeight: 800 }}>Support Labor Link</div>
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
-                      gap: "12px",
-                    }}
-                  >
-                    <div>
-                      <label style={{ fontWeight: 700 }}>Linked Technician ID</label>
-                      <input
-                        value={linkedTechnicianId}
-                        onChange={(e) => setLinkedTechnicianId(e.target.value)}
-                        disabled={!canEdit}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          marginTop: "4px",
-                          padding: "10px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: canEdit ? "white" : "#f1f1f1",
-                        }}
-                      />
-                    </div>
-
-                    <div>
-                      <label style={{ fontWeight: 700 }}>Linked Technician Name</label>
-                      <input
-                        value={linkedTechnicianName}
-                        onChange={(e) => setLinkedTechnicianName(e.target.value)}
-                        disabled={!canEdit}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          marginTop: "4px",
-                          padding: "10px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: canEdit ? "white" : "#f1f1f1",
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
               <div>
                 <label style={{ fontWeight: 700 }}>Notes</label>
                 <textarea
@@ -1160,22 +829,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
                     background: canEdit ? "white" : "#f1f1f1",
                   }}
                 />
-              </div>
-
-              <div
-                style={{
-                  border: "1px solid #e6e6e6",
-                  borderRadius: "12px",
-                  padding: "12px",
-                  background: canEdit ? "white" : "#f1f1f1",
-                }}
-              >
-                <div style={{ fontWeight: 800, marginBottom: "6px" }}>
-                  Good to know
-                </div>
-                <div style={{ fontSize: "12px", color: "#666" }}>
-                  This is what lets an employee adjust an auto-suggested project-stage entry from a default 8.0 hours down to the real worked time for that day.
-                </div>
               </div>
 
               {canEdit ? (

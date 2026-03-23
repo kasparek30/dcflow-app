@@ -3,7 +3,17 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs, orderBy, query, doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  orderBy,
+  query,
+  doc,
+  getDoc,
+  where,
+  onSnapshot,
+  limit,
+} from "firebase/firestore";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -132,11 +142,10 @@ function truncateLine(s: string, max = 80) {
 function normalizeCategory(raw: unknown) {
   const c = safeTrim(raw).toLowerCase();
 
-  // ✅ normalize legacy -> new
+  // legacy -> new
   if (c === "service_ticket") return "service";
   if (c === "project_stage") return "project";
 
-  // ✅ new
   if (c === "service") return "service";
   if (c === "project") return "project";
   if (c === "meeting") return "meeting";
@@ -144,11 +153,6 @@ function normalizeCategory(raw: unknown) {
   return c || "other";
 }
 
-/**
- * ✅ Because your Firestore stores category as:
- * service | project | meeting
- * we treat those as the primary display categories.
- */
 function categoryPillLabel(cat: string) {
   const c = normalizeCategory(cat);
   if (c === "service") return "service";
@@ -177,6 +181,11 @@ type ProjectMini = {
   projectName: string;
 };
 
+function isTimesheetLockedStatus(status: unknown) {
+  const s = safeTrim(status).toLowerCase();
+  return s === "submitted" || s === "approved" || s === "exported_to_quickbooks";
+}
+
 export default function TimeEntriesPage() {
   const { appUser } = useAuthContext();
 
@@ -193,7 +202,7 @@ export default function TimeEntriesPage() {
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
-  // ✅ lookup caches (id -> display)
+  // lookup caches (id -> display)
   const [ticketMiniById, setTicketMiniById] = useState<Record<string, ServiceTicketMini>>({});
   const [projectMiniById, setProjectMiniById] = useState<Record<string, ProjectMini>>({});
 
@@ -216,7 +225,6 @@ export default function TimeEntriesPage() {
             weekStartDate: data.weekStartDate ?? "",
             weekEndDate: data.weekEndDate ?? "",
 
-            // IMPORTANT: Firestore uses "service" | "project" | "meeting"
             category: data.category ?? "manual_other",
             hours: typeof data.hours === "number" ? data.hours : 0,
             payType: data.payType ?? "regular",
@@ -254,8 +262,50 @@ export default function TimeEntriesPage() {
   const payrollWeekDays = useMemo(() => buildPayrollWeekDays(weekOffset), [weekOffset]);
   const weekStart = payrollWeekDays[0]?.isoDate ?? "";
   const weekEnd = payrollWeekDays[4]?.isoDate ?? "";
-  const isHistoricalWeek = weekOffset < 0;
   const isCurrentWeek = weekOffset === 0;
+
+  // ✅ Determine if THIS user’s weekly timesheet for this week is locked.
+  // (We only enforce "Read-only week" behavior for non-admin view.)
+  const [myWeekLocked, setMyWeekLocked] = useState(false);
+
+  useEffect(() => {
+    // Only meaningful for a single employee view (non-admin)
+    if (canSeeAll) {
+      setMyWeekLocked(false);
+      return;
+    }
+    const uid = safeTrim(appUser?.uid);
+    if (!uid || !weekStart || !weekEnd) {
+      setMyWeekLocked(false);
+      return;
+    }
+
+    const qTs = query(
+      collection(db, "weeklyTimesheets"),
+      where("employeeId", "==", uid),
+      where("weekStartDate", "==", weekStart),
+      where("weekEndDate", "==", weekEnd),
+      limit(1)
+    );
+
+    const unsub = onSnapshot(
+      qTs,
+      (snap) => {
+        if (snap.empty) {
+          setMyWeekLocked(false);
+          return;
+        }
+        const d: any = snap.docs[0].data();
+        setMyWeekLocked(isTimesheetLockedStatus(d.status));
+      },
+      () => {
+        // If listener fails, don't block UX
+        setMyWeekLocked(false);
+      }
+    );
+
+    return () => unsub();
+  }, [canSeeAll, appUser?.uid, weekStart, weekEnd]);
 
   const visibleEntries = useMemo(() => {
     let items = entries;
@@ -271,20 +321,23 @@ export default function TimeEntriesPage() {
     }
 
     if (categoryFilter !== "all") {
-      items = items.filter((entry) => safeTrim(entry.category).toLowerCase() === safeTrim(categoryFilter).toLowerCase());
+      items = items.filter(
+        (entry) =>
+          safeTrim(entry.category).toLowerCase() === safeTrim(categoryFilter).toLowerCase()
+      );
     }
 
     return items;
   }, [entries, canSeeAll, appUser?.uid, weekStart, weekEnd, statusFilter, categoryFilter]);
 
-  // ✅ After visible entries change, hydrate needed display info (serviceTicket + project)
+  // hydrate needed display info (serviceTicket + project)
   useEffect(() => {
     async function hydrate() {
       const needTicketIds = new Set<string>();
       const needProjectIds = new Set<string>();
 
       for (const e of visibleEntries) {
-const cat = normalizeCategory((e as any).category);
+        const cat = normalizeCategory((e as any).category);
         if (cat === "service") {
           const tid = safeTrim((e as any).serviceTicketId);
           if (tid && !ticketMiniById[tid]) needTicketIds.add(tid);
@@ -297,7 +350,6 @@ const cat = normalizeCategory((e as any).category);
 
       if (needTicketIds.size === 0 && needProjectIds.size === 0) return;
 
-      // Fetch in parallel
       const ticketFetches = Array.from(needTicketIds).map(async (id) => {
         try {
           const snap = await getDoc(doc(db, "serviceTickets", id));
@@ -320,7 +372,7 @@ const cat = normalizeCategory((e as any).category);
           const d: any = snap.data();
           return {
             id,
-            projectName: safeTrim(d.projectName) || "Project",
+            projectName: safeTrim(d.projectName) || safeTrim(d.name) || "Project",
           } as ProjectMini;
         } catch {
           return null;
@@ -338,12 +390,8 @@ const cat = normalizeCategory((e as any).category);
       const nextProjects: Record<string, ProjectMini> = {};
       for (const p of projectResults) if (p?.id) nextProjects[p.id] = p;
 
-      if (Object.keys(nextTickets).length) {
-        setTicketMiniById((prev) => ({ ...prev, ...nextTickets }));
-      }
-      if (Object.keys(nextProjects).length) {
-        setProjectMiniById((prev) => ({ ...prev, ...nextProjects }));
-      }
+      if (Object.keys(nextTickets).length) setTicketMiniById((prev) => ({ ...prev, ...nextTickets }));
+      if (Object.keys(nextProjects).length) setProjectMiniById((prev) => ({ ...prev, ...nextProjects }));
     }
 
     hydrate();
@@ -371,10 +419,13 @@ const cat = normalizeCategory((e as any).category);
     return totals;
   }, [entriesByDay, payrollWeekDays]);
 
-  const weekTotal = useMemo(() => visibleEntries.reduce((sum, entry) => sum + entry.hours, 0), [visibleEntries]);
+  const weekTotal = useMemo(
+    () => visibleEntries.reduce((sum, entry) => sum + entry.hours, 0),
+    [visibleEntries]
+  );
 
   function renderTitleAndSubtitle(entry: TimeEntry) {
-const cat = normalizeCategory((entry as any).category);
+    const cat = normalizeCategory((entry as any).category);
 
     if (cat === "service") {
       const tid = safeTrim((entry as any).serviceTicketId);
@@ -410,36 +461,38 @@ const cat = normalizeCategory((entry as any).category);
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            gap: "12px",
-            marginBottom: "16px",
+            gap: 12,
+            marginBottom: 16,
             flexWrap: "wrap",
           }}
         >
           <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 800, margin: 0 }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
               {isCurrentWeek ? "This Week’s Time Entries" : "Weekly Time Entries"}
             </h1>
-            <p style={{ marginTop: "4px", color: "#666", fontSize: "13px" }}>
+            <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
               Week of {weekStart} through {weekEnd}
             </p>
-            <p style={{ marginTop: "4px", color: "#666", fontSize: "13px" }}>
+            <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
               {canSeeAll ? "Viewing all employees for this week." : "Viewing your week day by day."}
             </p>
-            {isHistoricalWeek ? (
-              <p style={{ marginTop: "4px", color: "#8a5a00", fontSize: "13px" }}>
-                This is a historical week and is currently read-only.
+
+            {/* ✅ Only show lock message for single-user view */}
+            {!canSeeAll && myWeekLocked ? (
+              <p style={{ marginTop: 6, color: "#8a5a00", fontSize: 13, fontWeight: 700 }}>
+                This payroll week is locked because your weekly timesheet has been submitted.
               </p>
             ) : null}
           </div>
 
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={() => setWeekOffset((prev) => prev - 1)}
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
-                borderRadius: "10px",
+                borderRadius: 10,
                 background: "white",
                 cursor: "pointer",
               }}
@@ -453,7 +506,7 @@ const cat = normalizeCategory((entry as any).category);
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
-                borderRadius: "10px",
+                borderRadius: 10,
                 background: "white",
                 cursor: "pointer",
               }}
@@ -467,7 +520,7 @@ const cat = normalizeCategory((entry as any).category);
               style={{
                 padding: "8px 12px",
                 border: "1px solid #ccc",
-                borderRadius: "10px",
+                borderRadius: 10,
                 background: "white",
                 cursor: "pointer",
               }}
@@ -475,13 +528,28 @@ const cat = normalizeCategory((entry as any).category);
               Next Week
             </button>
 
-            {!isHistoricalWeek ? (
+            {/* ✅ Add Time Entry allowed unless the current user's week is locked */}
+            {!canSeeAll && myWeekLocked ? (
+              <span
+                style={{
+                  padding: "8px 12px",
+                  border: "1px solid #ddd",
+                  borderRadius: 10,
+                  color: "#999",
+                  background: "#f7f7f7",
+                  fontWeight: 700,
+                }}
+                title="Locked after submission"
+              >
+                Week Locked
+              </span>
+            ) : (
               <Link
                 href="/time-entries/new"
                 style={{
                   padding: "8px 12px",
                   border: "1px solid #ccc",
-                  borderRadius: "10px",
+                  borderRadius: 10,
                   textDecoration: "none",
                   color: "inherit",
                   background: "white",
@@ -490,19 +558,6 @@ const cat = normalizeCategory((entry as any).category);
               >
                 Add Time Entry
               </Link>
-            ) : (
-              <span
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #ddd",
-                  borderRadius: "10px",
-                  color: "#999",
-                  background: "#f7f7f7",
-                  fontWeight: 700,
-                }}
-              >
-                Read-Only Week
-              </span>
             )}
           </div>
         </div>
@@ -510,20 +565,20 @@ const cat = normalizeCategory((entry as any).category);
         <div
           style={{
             border: "1px solid #ddd",
-            borderRadius: "12px",
-            padding: "16px",
-            marginBottom: "16px",
+            borderRadius: 12,
+            padding: 16,
+            marginBottom: 16,
             background: "#fafafa",
             display: "grid",
-            gap: "12px",
-            maxWidth: "720px",
+            gap: 12,
+            maxWidth: 720,
           }}
         >
           <div
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-              gap: "12px",
+              gap: 12,
             }}
           >
             <div>
@@ -534,9 +589,9 @@ const cat = normalizeCategory((entry as any).category);
                 style={{
                   display: "block",
                   width: "100%",
-                  marginTop: "4px",
-                  padding: "10px",
-                  borderRadius: "10px",
+                  marginTop: 4,
+                  padding: 10,
+                  borderRadius: 10,
                   border: "1px solid #ccc",
                 }}
               >
@@ -557,9 +612,9 @@ const cat = normalizeCategory((entry as any).category);
                 style={{
                   display: "block",
                   width: "100%",
-                  marginTop: "4px",
-                  padding: "10px",
-                  borderRadius: "10px",
+                  marginTop: 4,
+                  padding: 10,
+                  borderRadius: 10,
                   border: "1px solid #ccc",
                 }}
               >
@@ -571,7 +626,7 @@ const cat = normalizeCategory((entry as any).category);
             </div>
           </div>
 
-          <div style={{ fontSize: "12px", color: "#666" }}>
+          <div style={{ fontSize: 12, color: "#666" }}>
             Showing {visibleEntries.length} entr{visibleEntries.length === 1 ? "y" : "ies"} for this week.
           </div>
         </div>
@@ -581,7 +636,7 @@ const cat = normalizeCategory((entry as any).category);
 
         {!loading && !error ? (
           <>
-            <div style={{ display: "grid", gap: "16px" }}>
+            <div style={{ display: "grid", gap: 16 }}>
               {payrollWeekDays.map((day) => {
                 const dayEntries = entriesByDay[day.isoDate] ?? [];
                 const total = dayTotals[day.isoDate] ?? 0;
@@ -591,8 +646,8 @@ const cat = normalizeCategory((entry as any).category);
                     key={day.isoDate}
                     style={{
                       border: "1px solid #ddd",
-                      borderRadius: "12px",
-                      padding: "16px",
+                      borderRadius: 12,
+                      padding: 16,
                       background: "#fafafa",
                     }}
                   >
@@ -601,21 +656,21 @@ const cat = normalizeCategory((entry as any).category);
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
-                        gap: "12px",
+                        gap: 12,
                         flexWrap: "wrap",
-                        marginBottom: "12px",
+                        marginBottom: 12,
                       }}
                     >
                       <div>
-                        <div style={{ fontWeight: 800, fontSize: "18px" }}>
+                        <div style={{ fontWeight: 800, fontSize: 18 }}>
                           {day.label} {formatDisplayDate(day.isoDate)}
                         </div>
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#666" }}>
+                        <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
                           {day.isoDate}
                         </div>
                       </div>
 
-                      <div style={{ fontSize: "13px", color: "#666", fontWeight: 700 }}>
+                      <div style={{ fontSize: 13, color: "#666", fontWeight: 700 }}>
                         Daily Total: {total.toFixed(2)} hr
                       </div>
                     </div>
@@ -624,17 +679,17 @@ const cat = normalizeCategory((entry as any).category);
                       <div
                         style={{
                           border: "1px dashed #ccc",
-                          borderRadius: "10px",
-                          padding: "10px",
+                          borderRadius: 10,
+                          padding: 10,
                           background: "white",
                           color: "#666",
-                          fontSize: "13px",
+                          fontSize: 13,
                         }}
                       >
                         No entries for this day.
                       </div>
                     ) : (
-                      <div style={{ display: "grid", gap: "10px" }}>
+                      <div style={{ display: "grid", gap: 10 }}>
                         {dayEntries.map((entry) => {
                           const { title, subtitle } = renderTitleAndSubtitle(entry);
                           const pill = categoryPillLabel(String((entry as any).category || ""));
@@ -646,8 +701,8 @@ const cat = normalizeCategory((entry as any).category);
                               style={{
                                 display: "block",
                                 border: "1px solid #ddd",
-                                borderRadius: "14px",
-                                padding: "12px",
+                                borderRadius: 14,
+                                padding: 12,
                                 background: "white",
                                 textDecoration: "none",
                                 color: "inherit",
@@ -660,14 +715,7 @@ const cat = normalizeCategory((entry as any).category);
                                     {title}
                                   </div>
 
-                                  <div
-                                    style={{
-                                      marginTop: 8,
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      gap: 8,
-                                    }}
-                                  >
+                                  <div style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 8 }}>
                                     <span
                                       style={{
                                         display: "inline-flex",
@@ -693,8 +741,12 @@ const cat = normalizeCategory((entry as any).category);
                                 </div>
 
                                 <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                                  <div style={{ fontWeight: 1000, fontSize: 18 }}>{Number(entry.hours).toFixed(2)} hr</div>
-                                  <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>{formatPayType(entry.payType)}</div>
+                                  <div style={{ fontWeight: 1000, fontSize: 18 }}>
+                                    {Number(entry.hours).toFixed(2)} hr
+                                  </div>
+                                  <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>
+                                    {formatPayType(entry.payType)}
+                                  </div>
                                 </div>
                               </div>
 
@@ -718,19 +770,19 @@ const cat = normalizeCategory((entry as any).category);
 
             <div
               style={{
-                marginTop: "18px",
+                marginTop: 18,
                 border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
+                borderRadius: 12,
+                padding: 16,
                 background: "#fafafa",
-                maxWidth: "720px",
+                maxWidth: 720,
               }}
             >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>Weekly Total</div>
-              <div style={{ marginTop: "6px", fontSize: "14px", color: "#444" }}>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>Weekly Total</div>
+              <div style={{ marginTop: 6, fontSize: 14, color: "#444" }}>
                 {weekTotal.toFixed(2)} hr
               </div>
-              <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
+              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
                 Overtime, PTO, and holiday treatment will be finalized in timesheet processing.
               </div>
             </div>
