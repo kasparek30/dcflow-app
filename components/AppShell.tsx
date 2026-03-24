@@ -1,5 +1,5 @@
 // components/AppShell.tsx
-
+// components/AppShell.tsx
 "use client";
 
 import Link from "next/link";
@@ -345,7 +345,6 @@ function isMondayLocalNow() {
 }
 
 function todayKeyLocal() {
-  // local day key for dismiss logic
   const d = new Date();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -426,7 +425,9 @@ export default function AppShell({
     role === "office_display";
 
   const showProjects = role === "admin" || role === "dispatcher" || role === "manager";
-  const showWorkload = role === "admin" || role === "dispatcher" || role === "manager";
+
+  // ✅ Remove Technician Workload for admins (unnecessary right now)
+  const showWorkload = false;
 
   const showTimeEntries =
     role === "admin" ||
@@ -503,10 +504,7 @@ export default function AppShell({
     return Math.max(0, grossMins - pausedMins);
   }, [activeTrip, nowMs]);
 
-  const timerState = useMemo(
-    () => safeTrim(activeTrip?.timerState).toLowerCase(),
-    [activeTrip?.timerState]
-  );
+  const timerState = useMemo(() => safeTrim(activeTrip?.timerState).toLowerCase(), [activeTrip?.timerState]);
   const isPaused = timerState === "paused";
   const isRunning = timerState === "running" || timerState === "" || timerState === "in_progress";
 
@@ -531,9 +529,7 @@ export default function AppShell({
       const tripRef = doc(db, "trips", activeTrip.id);
       const now = new Date().toISOString();
 
-      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
-        ? [...activeTrip.pauseBlocks]
-        : [];
+      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks) ? [...activeTrip.pauseBlocks] : [];
 
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx !== -1) return;
@@ -561,9 +557,7 @@ export default function AppShell({
       const tripRef = doc(db, "trips", activeTrip.id);
       const now = new Date().toISOString();
 
-      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
-        ? [...activeTrip.pauseBlocks]
-        : [];
+      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks) ? [...activeTrip.pauseBlocks] : [];
 
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx === -1) return;
@@ -617,7 +611,7 @@ export default function AppShell({
     return () => unsub();
   }, [showTimesheetReview]);
 
-    // ✅ Pending PTO Requests badge (admins/managers/dispatchers)
+  // ✅ Pending PTO Requests badge (admins/managers/dispatchers)
   const [pendingPtoCount, setPendingPtoCount] = useState(0);
 
   useEffect(() => {
@@ -626,20 +620,13 @@ export default function AppShell({
       return;
     }
 
-    // Only reviewers need the badge
-    const canReviewPto =
-      role === "admin" || role === "manager" || role === "dispatcher";
-
+    const canReviewPto = role === "admin" || role === "manager" || role === "dispatcher";
     if (!canReviewPto) {
       setPendingPtoCount(0);
       return;
     }
 
-    const q = query(
-      collection(db, "ptoRequests"),
-      where("status", "==", "pending"),
-      limit(50) // if you ever exceed 50 pending, we can switch to an aggregate counter doc
-    );
+    const q = query(collection(db, "ptoRequests"), where("status", "==", "pending"), limit(50));
 
     const unsub = onSnapshot(
       q,
@@ -679,18 +666,9 @@ export default function AppShell({
       return;
     }
 
-    const q = query(
-      collection(db, "weeklyTimesheets"),
-      where("employeeId", "==", uid),
-      where("status", "==", "rejected"),
-      limit(20)
-    );
+    const q = query(collection(db, "weeklyTimesheets"), where("employeeId", "==", uid), where("status", "==", "rejected"), limit(20));
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => setMyRejectedCount(snap.size || 0),
-      () => {}
-    );
+    const unsub = onSnapshot(q, (snap) => setMyRejectedCount(snap.size || 0), () => {});
 
     return () => unsub();
   }, [myUid, role]);
@@ -709,7 +687,6 @@ export default function AppShell({
       return;
     }
 
-    // Only for roles that submit timesheets
     const canReceive =
       role === "technician" ||
       role === "helper" ||
@@ -738,7 +715,6 @@ export default function AppShell({
       // ignore
     }
 
-    // Determine previous week start (Monday)
     const now = new Date();
     const thisMonIso = getWeekMondayIsoForDate(now);
 
@@ -752,7 +728,6 @@ export default function AppShell({
     const tsId = buildWeeklyTimesheetId(uid, prevMonIso);
     const tsRef = doc(db, "weeklyTimesheets", tsId);
 
-    // Use a single document listener so it updates instantly after submit
     const unsub = onSnapshot(
       tsRef,
       (snap) => {
@@ -765,7 +740,6 @@ export default function AppShell({
         const status = safeTrim(d.status).toLowerCase() || "draft";
         setPrevWeekStatus(status);
 
-        // Show reminder if not submitted/approved/exported
         const ok =
           status === "submitted" ||
           status === "approved" ||
@@ -774,7 +748,6 @@ export default function AppShell({
         setShowMondayReminder(!ok);
       },
       () => {
-        // if error, don't nag
         setShowMondayReminder(false);
       }
     );
@@ -806,12 +779,9 @@ export default function AppShell({
       >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 1000 }}>
-              ⏰ Last week’s timesheet isn’t submitted yet
-            </div>
+            <div style={{ fontWeight: 1000 }}>⏰ Last week’s timesheet isn’t submitted yet</div>
             <div style={{ marginTop: 6, fontSize: 12, color: "#7c2d12", fontWeight: 800 }}>
-              Week starting <strong>{prevWeekStart || "—"}</strong>{" "}
-              {prevWeekStatus ? `• Status: ${prevWeekStatus}` : ""}
+              Week starting <strong>{prevWeekStart || "—"}</strong> {prevWeekStatus ? `• Status: ${prevWeekStatus}` : ""}
             </div>
           </div>
 
@@ -851,9 +821,7 @@ export default function AppShell({
           </div>
         </div>
 
-        <div style={{ marginTop: 8, fontSize: 12, color: "#7c2d12" }}>
-          Tip: submit early so payroll can be approved on time.
-        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "#7c2d12" }}>Tip: submit early so payroll can be approved on time.</div>
       </div>
     ) : null;
 
@@ -896,41 +864,111 @@ export default function AppShell({
       </div>
     ) : null;
 
-  const desktopNav = (
-    <nav
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: "10px",
-        marginBottom: "20px",
-      }}
-    >
-      {showDashboard ? <Link href="/dashboard">Dashboard</Link> : null}
-      {showDispatch ? <Link href="/dispatch">Dispatcher Board</Link> : null}
-      {showMyDay ? <Link href="/technician/my-day">My Day</Link> : null}
-      {showSchedule ? <Link href="/schedule">Schedule</Link> : null}
-      {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
-      {showProjects ? <Link href="/projects">Projects</Link> : null}
-      {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
-      {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
-      {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
-      {showPTORequests ? (
-        <Link href="/pto-requests" style={{ display: "inline-flex", alignItems: "center" }}>
-          PTO Requests
-          <Badge count={pendingPtoCount} />
-        </Link>
-      ) : null}
-{showTimesheetReview ? (
-  <Link href="/timesheet-review" style={{ display: "inline-flex", alignItems: "center" }}>
-    Timesheet Review
-    <Badge count={pendingReviewCount} />
-  </Link>
-) : null}
+  // -----------------------------
+  // ✅ Desktop nav: branded + ordered + Admin at bottom
+  // -----------------------------
+  function isActivePath(target: string) {
+    if (!target) return false;
+    if (target === "/") return pathname === "/";
+    if (pathname === target) return true;
+    return pathname?.startsWith(target + "/");
+  }
 
-      {showAdmin ? <Link href="/admin">Admin</Link> : null}
-      {showTechnician ? <Link href="/technician">Technician</Link> : null}
-      <Link href="/customers">Customers</Link>
-      <Link href="/service-tickets">Service Tickets</Link>
+  function NavLink({
+    href,
+    label,
+    right,
+    subtle,
+  }: {
+    href: string;
+    label: string;
+    right?: ReactNode;
+    subtle?: boolean;
+  }) {
+    const active = isActivePath(href);
+
+    const baseBg = subtle ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.04)";
+    const hoverBg = subtle ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.08)";
+    const activeBg = "rgba(0,112,208,0.18)";
+
+    return (
+      <Link
+        href={href}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "10px 12px",
+          borderRadius: 14,
+          textDecoration: "none",
+          color: active ? "white" : "rgba(255,255,255,0.92)",
+          background: active ? activeBg : baseBg,
+          border: active ? "1px solid rgba(0,112,208,0.45)" : "1px solid rgba(255,255,255,0.08)",
+          boxShadow: active ? "0 10px 26px rgba(0,112,208,0.18)" : "none",
+          fontWeight: active ? 1000 : 850,
+          letterSpacing: "-0.2px",
+          transition: "transform 120ms ease, background 120ms ease, border 120ms ease, box-shadow 120ms ease",
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLAnchorElement).style.background = active ? activeBg : hoverBg;
+          (e.currentTarget as HTMLAnchorElement).style.transform = "translateY(-1px)";
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLAnchorElement).style.background = active ? activeBg : baseBg;
+          (e.currentTarget as HTMLAnchorElement).style.transform = "translateY(0px)";
+        }}
+      >
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+        {right ? <span style={{ flex: "none" }}>{right}</span> : null}
+      </Link>
+    );
+  }
+
+  const desktopNav = (
+    <nav style={{ display: "grid", gap: 10 }}>
+      {/* Primary ops (most used) */}
+      <NavLink href="/service-tickets" label="Service Tickets" />
+      <NavLink href="/customers" label="Customers" />
+
+      {/* Planning */}
+      {showDispatch ? <NavLink href="/dispatch" label="Dispatcher Board" /> : null}
+      {showSchedule ? <NavLink href="/schedule" label="Schedule" /> : null}
+      {showOfficeDisplay ? <NavLink href="/office-display" label="Office Display" /> : null}
+
+      {/* Personal */}
+      {showMyDay ? <NavLink href="/technician/my-day" label="My Day" subtle /> : null}
+
+      {/* Projects */}
+      {showProjects ? <NavLink href="/projects" label="Projects" subtle /> : null}
+
+      {/* Time */}
+      {showTimeEntries ? <NavLink href="/time-entries" label="Time Entries" subtle /> : null}
+      {showWeeklyTimesheet ? <NavLink href="/weekly-timesheet" label="Weekly Timesheet" subtle /> : null}
+
+      {showPTORequests ? (
+        <NavLink href="/pto-requests" label="PTO Requests" right={<Badge count={pendingPtoCount} />} />
+      ) : null}
+
+      {showTimesheetReview ? (
+        <NavLink href="/timesheet-review" label="Timesheet Review" right={<Badge count={pendingReviewCount} />} />
+      ) : null}
+
+      {/* Technician area (kept) */}
+      {showTechnician ? <NavLink href="/technician" label="Technician" subtle /> : null}
+
+      {/* Removed Technician Workload */}
+      {showWorkload ? <NavLink href="/technician-workload" label="Technician Workload" subtle /> : null}
+
+      {/* Admin ALWAYS bottom */}
+      {showAdmin ? (
+        <>
+          <div style={{ height: 6 }} />
+          <div style={{ height: 1, background: "rgba(255,255,255,0.08)" }} />
+          <div style={{ height: 6 }} />
+          <NavLink href="/admin" label="Admin" subtle />
+        </>
+      ) : null}
     </nav>
   );
 
@@ -997,26 +1035,38 @@ export default function AppShell({
             {showSchedule ? <Link href="/schedule">Schedule</Link> : null}
             {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
             {showProjects ? <Link href="/projects">Projects</Link> : null}
-            {showWorkload ? <Link href="/technician-workload">Technician Workload</Link> : null}
+
+            {/* removed workload */}
             {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
             {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
+
             {showPTORequests ? (
               <Link href="/pto-requests" style={{ display: "inline-flex", alignItems: "center" }}>
                 PTO Requests
                 <Badge count={pendingPtoCount} />
               </Link>
             ) : null}
-{showTimesheetReview ? (
-  <Link href="/timesheet-review" style={{ display: "inline-flex", alignItems: "center" }}>
-    Timesheet Review
-    <Badge count={pendingReviewCount} />
-  </Link>
-) : null}
 
-            {showAdmin ? <Link href="/admin">Admin</Link> : null}
+            {showTimesheetReview ? (
+              <Link href="/timesheet-review" style={{ display: "inline-flex", alignItems: "center" }}>
+                Timesheet Review
+                <Badge count={pendingReviewCount} />
+              </Link>
+            ) : null}
+
             {showTechnician ? <Link href="/technician">Technician</Link> : null}
             <Link href="/customers">Customers</Link>
             <Link href="/service-tickets">Service Tickets</Link>
+
+            {/* admin at bottom */}
+            {showAdmin ? (
+              <>
+                <div style={{ height: 6 }} />
+                <div style={{ height: 1, background: "#eee" }} />
+                <div style={{ height: 6 }} />
+                <Link href="/admin">Admin</Link>
+              </>
+            ) : null}
 
             <div style={{ height: 10 }} />
             <LogoutButton />
@@ -1027,13 +1077,6 @@ export default function AppShell({
   );
 
   // --- iOS-style dock tab helpers ---
-  function isActivePath(target: string) {
-    if (!target) return false;
-    if (target === "/") return pathname === "/";
-    if (pathname === target) return true;
-    return pathname?.startsWith(target + "/");
-  }
-
   function DockTab(args: { label: string; icon: string; onClick: () => void; active: boolean }) {
     const { label, icon, onClick, active } = args;
 
@@ -1123,18 +1166,8 @@ export default function AppShell({
           onClick={() => router.push("/technician/my-day")}
           active={isActivePath("/technician/my-day")}
         />
-        <DockTab
-          label="Schedule"
-          icon="🗓️"
-          onClick={() => router.push("/schedule")}
-          active={isActivePath("/schedule")}
-        />
-        <DockTab
-          label="Tickets"
-          icon="🧾"
-          onClick={() => router.push("/service-tickets")}
-          active={isActivePath("/service-tickets")}
-        />
+        <DockTab label="Schedule" icon="🗓️" onClick={() => router.push("/schedule")} active={isActivePath("/schedule")} />
+        <DockTab label="Tickets" icon="🧾" onClick={() => router.push("/service-tickets")} active={isActivePath("/service-tickets")} />
         <DockTab label="More" icon="☰" onClick={() => setDrawerOpen(true)} active={drawerOpen} />
       </div>
     </div>
@@ -1310,30 +1343,80 @@ export default function AppShell({
     </div>
   ) : null;
 
-  // Desktop shell
+  // Desktop shell (branded sidebar)
   if (!isMobile) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex" }}>
+      <div style={{ minHeight: "100vh", display: "flex", background: "#000" }}>
         <aside
           style={{
-            width: "260px",
-            borderRight: "1px solid #ddd",
-            padding: "16px",
-            background: "#fafafa",
+            width: 320,
+            padding: 16,
+            color: "white",
+            borderRight: "1px solid rgba(255,255,255,0.08)",
+            background:
+              "radial-gradient(900px 600px at 20% 0%, rgba(0,112,208,0.24), transparent 60%), linear-gradient(180deg, #05070d 0%, #000 40%, #000 100%)",
           }}
         >
-          <h1 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "24px" }}>DCFlow</h1>
+          {/* Brand header */}
+          <div
+            style={{
+              borderRadius: 18,
+              padding: 14,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              boxShadow: "0 14px 38px rgba(0,0,0,0.35)",
+            }}
+          >
+            {/* ✅ Use your real file path here. Recommended: put your logo in /public as /dcflow-logo.png */}
+            <img
+              src="/dcflow-logo.png"
+              alt="DCFlow"
+              style={{
+                width: "100%",
+                maxWidth: 260,
+                height: "auto",
+                display: "block",
+                filter: "drop-shadow(0 10px 20px rgba(0,0,0,0.35))",
+              }}
+            />
 
-          <div style={{ marginBottom: "20px", fontSize: "14px" }}>
-            <div style={{ fontWeight: 600 }}>{appUser?.displayName || "Unknown User"}</div>
-            <div style={{ color: "#666", marginTop: "4px" }}>{appUser?.role || "No Role"}</div>
+            <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 950, fontSize: 14, letterSpacing: "-0.2px" }}>
+                {appUser?.displayName || "Unknown User"}
+              </div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.70)" }}>
+                {appUser?.role || "No Role"}
+              </div>
+            </div>
           </div>
 
-          {desktopNav}
-          <LogoutButton />
+          {/* Nav */}
+          <div style={{ marginTop: 14 }}>{desktopNav}</div>
+
+          {/* Footer actions */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ height: 1, background: "rgba(255,255,255,0.08)" }} />
+            <div style={{ height: 12 }} />
+            <div
+              style={{
+                borderRadius: 14,
+                padding: 12,
+                background: "rgba(255,255,255,0.03)",
+                border: "1px solid rgba(255,255,255,0.08)",
+              }}
+            >
+              <LogoutButton />
+            </div>
+          </div>
         </aside>
 
-        <main style={{ flex: 1, padding: "24px" }}>
+        <main
+          style={{
+            flex: 1,
+            padding: 24,
+            background: "#fff",
+          }}
+        >
           {rejectedBanner}
           {mondayReminderBanner}
           {children}
