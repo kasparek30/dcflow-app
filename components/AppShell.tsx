@@ -1,9 +1,7 @@
-// components/AppShell.tsx
-// components/AppShell.tsx
 "use client";
 
 import Link from "next/link";
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import React, { ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import LogoutButton from "./LogoutButton";
 import type { AppUser } from "../src/types/app-user";
@@ -57,7 +55,6 @@ type TripDoc = {
   crewConfirmed?: TripCrew | null;
   link?: TripLink | null;
 
-  // timer bits
   timerState?: string | null; // not_started | running | paused | complete
   actualStartAt?: string | null;
   actualEndAt?: string | null;
@@ -69,9 +66,9 @@ type TripDoc = {
 type ActiveTripPill = {
   tripId: string;
   href: string;
-  statusLabel: string; // "Running" | "Paused"
-  primaryLine: string; // customer
-  secondaryLine: string; // issue summary
+  statusLabel: string;
+  primaryLine: string;
+  secondaryLine: string;
 };
 
 function useIsMobile(breakpointPx = 900) {
@@ -156,9 +153,6 @@ function pickLatestTrip(trips: TripDoc[]) {
   return scored[0]?.t ?? null;
 }
 
-/**
- * ✅ Realtime “find my in_progress trip”.
- */
 function useRealtimeActiveTrip(uid: string) {
   const [trip, setTrip] = useState<TripDoc | null>(null);
 
@@ -172,34 +166,10 @@ function useRealtimeActiveTrip(uid: string) {
     const base = collection(db, "trips");
 
     const qs = [
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.primaryTechUid", "==", u),
-        limit(10)
-      ),
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.helperUid", "==", u),
-        limit(10)
-      ),
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.secondaryTechUid", "==", u),
-        limit(10)
-      ),
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.secondaryHelperUid", "==", u),
-        limit(10)
-      ),
+      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.primaryTechUid", "==", u), limit(10)),
+      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.helperUid", "==", u), limit(10)),
+      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.secondaryTechUid", "==", u), limit(10)),
+      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.secondaryHelperUid", "==", u), limit(10)),
     ];
 
     const map = new Map<string, TripDoc>();
@@ -253,9 +223,7 @@ function useRealtimeActiveTrip(uid: string) {
           idsByQuery[idx] = idsThisSnap;
           recompute();
         },
-        () => {
-          recompute();
-        }
+        () => recompute()
       );
       unsubs.push(unsub);
     });
@@ -280,7 +248,6 @@ async function buildActiveTripPill(trip: TripDoc): Promise<ActiveTripPill> {
 
   if (serviceTicketId) {
     href = `/service-tickets/${serviceTicketId}`;
-
     try {
       const ticketSnap = await getDoc(doc(db, "serviceTickets", serviceTicketId));
       if (ticketSnap.exists()) {
@@ -306,18 +273,9 @@ async function buildActiveTripPill(trip: TripDoc): Promise<ActiveTripPill> {
   const ts = safeTrim(trip.timerState).toLowerCase();
   const statusLabel = ts === "paused" ? "Paused" : "Running";
 
-  return {
-    tripId,
-    href,
-    statusLabel,
-    primaryLine,
-    secondaryLine,
-  };
+  return { tripId, href, statusLabel, primaryLine, secondaryLine };
 }
 
-// -----------------------------
-// Timesheet helpers (AppShell UI notifications)
-// -----------------------------
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -328,7 +286,7 @@ function toIsoDate(date: Date) {
 function getWeekMondayIsoForDate(d: Date) {
   const base = new Date(d);
   base.setHours(12, 0, 0, 0);
-  const day = base.getDay(); // Sun 0 ... Sat 6
+  const day = base.getDay();
   const mondayOffset = day === 0 ? -6 : 1 - day;
   const monday = new Date(base);
   monday.setDate(base.getDate() + mondayOffset);
@@ -378,93 +336,59 @@ function Badge({ count }: { count: number }) {
   );
 }
 
-export default function AppShell({
-  children,
-  appUser,
-}: {
-  children: ReactNode;
-  appUser: AppUser | null;
-}) {
+export default function AppShell({ children, appUser }: { children: ReactNode; appUser: AppUser | null }) {
   const router = useRouter();
   const pathname = usePathname();
   const isMobile = useIsMobile(900);
 
+  const BRAND = useMemo(
+    () => ({
+      sidebarBg: "#070A10",
+      sidebarBg2: "#0B1220",
+      sidebarBorder: "rgba(255,255,255,0.08)",
+      text: "rgba(255,255,255,0.92)",
+      subtext: "rgba(255,255,255,0.60)",
+
+      blue: "#1e90ff",
+      blueSoft: "rgba(30,144,255,0.18)",
+      blueBorder: "rgba(30,144,255,0.30)",
+
+      itemBg: "rgba(255,255,255,0.04)",
+      itemHover: "rgba(255,255,255,0.07)",
+      itemBorder: "rgba(255,255,255,0.08)",
+      activeGlow: "0 10px 30px rgba(30,144,255,0.12)",
+    }),
+    []
+  );
+
   const role = appUser?.role;
   const myUid = safeTrim(appUser?.uid);
 
-  const showDashboard =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager" ||
-    role === "billing" ||
-    role === "office_display";
-
+  const showDashboard = role === "admin" || role === "dispatcher" || role === "manager" || role === "billing" || role === "office_display";
   const showAdmin = role === "admin";
-
   const showMyDay =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager" ||
-    role === "technician" ||
-    role === "helper" ||
-    role === "apprentice";
-
+    role === "admin" || role === "dispatcher" || role === "manager" || role === "technician" || role === "helper" || role === "apprentice";
   const showTechnician = role === "technician" || role === "admin";
   const showDispatch = role === "admin" || role === "dispatcher" || role === "manager";
-
-  const showSchedule =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager" ||
-    role === "office_display";
-
-  const showOfficeDisplay =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager" ||
-    role === "office_display";
-
+  const showSchedule = role === "admin" || role === "dispatcher" || role === "manager" || role === "office_display";
+  const showOfficeDisplay = role === "admin" || role === "dispatcher" || role === "manager" || role === "office_display";
   const showProjects = role === "admin" || role === "dispatcher" || role === "manager";
 
-  // ✅ Remove Technician Workload for admins (unnecessary right now)
+  // ✅ removed per your request
   const showWorkload = false;
 
   const showTimeEntries =
-    role === "admin" ||
-    role === "manager" ||
-    role === "dispatcher" ||
-    role === "technician" ||
-    role === "helper" ||
-    role === "apprentice";
-
+    role === "admin" || role === "manager" || role === "dispatcher" || role === "technician" || role === "helper" || role === "apprentice";
   const showWeeklyTimesheet =
-    role === "admin" ||
-    role === "manager" ||
-    role === "dispatcher" ||
-    role === "technician" ||
-    role === "helper" ||
-    role === "apprentice";
-
+    role === "admin" || role === "manager" || role === "dispatcher" || role === "technician" || role === "helper" || role === "apprentice";
   const showTimesheetReview = role === "admin" || role === "manager" || role === "dispatcher";
-
   const showPTORequests =
-    role === "admin" ||
-    role === "manager" ||
-    role === "dispatcher" ||
-    role === "technician" ||
-    role === "helper" ||
-    role === "apprentice";
+    role === "admin" || role === "manager" || role === "dispatcher" || role === "technician" || role === "helper" || role === "apprentice";
 
-  // Mobile “More” drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
-  useEffect(() => {
-    setDrawerOpen(false);
-  }, [pathname]);
+  useEffect(() => setDrawerOpen(false), [pathname]);
 
-  // ✅ Realtime active trip (instant)
   const activeTrip = useRealtimeActiveTrip(myUid);
-
-  // pill data
   const [pill, setPill] = useState<ActiveTripPill | null>(null);
 
   useEffect(() => {
@@ -475,8 +399,7 @@ export default function AppShell({
         return;
       }
       const p = await buildActiveTripPill(activeTrip);
-      if (cancelled) return;
-      setPill(p);
+      if (!cancelled) setPill(p);
     }
     run();
     return () => {
@@ -484,7 +407,6 @@ export default function AppShell({
     };
   }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId]);
 
-  // ✅ local “live minutes” ticker (every 1s) – does NOT affect status, just the display
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   useEffect(() => {
     if (!activeTrip) return;
@@ -494,13 +416,10 @@ export default function AppShell({
 
   const liveMinutes = useMemo(() => {
     if (!activeTrip) return 0;
-
     const startMs = parseIsoMs(activeTrip.actualStartAt || null);
     if (!Number.isFinite(startMs)) return 0;
-
     const pausedMins = sumPausedMinutes(activeTrip.pauseBlocks || null);
     const grossMins = minutesBetweenMs(startMs, nowMs);
-
     return Math.max(0, grossMins - pausedMins);
   }, [activeTrip, nowMs]);
 
@@ -508,7 +427,6 @@ export default function AppShell({
   const isPaused = timerState === "paused";
   const isRunning = timerState === "running" || timerState === "" || timerState === "in_progress";
 
-  // Can act? (tech on crew OR admin/manager/dispatcher)
   const canQuickAct = useMemo(() => {
     if (!activeTrip) return false;
     const c = activeTrip.crewConfirmed || activeTrip.crew || null;
@@ -520,162 +438,92 @@ export default function AppShell({
   const [pillActionBusy, setPillActionBusy] = useState(false);
 
   async function handleQuickPause() {
-    if (!activeTrip) return;
-    if (!canQuickAct) return;
-    if (pillActionBusy) return;
-
+    if (!activeTrip || !canQuickAct || pillActionBusy) return;
     setPillActionBusy(true);
     try {
       const tripRef = doc(db, "trips", activeTrip.id);
       const now = new Date().toISOString();
-
       const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks) ? [...activeTrip.pauseBlocks] : [];
-
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx !== -1) return;
-
       curBlocks.push({ startAt: now, endAt: null });
 
-      await updateDoc(tripRef, {
-        timerState: "paused",
-        pauseBlocks: curBlocks,
-        updatedAt: now,
-        updatedByUid: myUid || null,
-      } as any);
+      await updateDoc(tripRef, { timerState: "paused", pauseBlocks: curBlocks, updatedAt: now, updatedByUid: myUid || null } as any);
     } finally {
       setPillActionBusy(false);
     }
   }
 
   async function handleQuickResume() {
-    if (!activeTrip) return;
-    if (!canQuickAct) return;
-    if (pillActionBusy) return;
-
+    if (!activeTrip || !canQuickAct || pillActionBusy) return;
     setPillActionBusy(true);
     try {
       const tripRef = doc(db, "trips", activeTrip.id);
       const now = new Date().toISOString();
-
       const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks) ? [...activeTrip.pauseBlocks] : [];
-
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx === -1) return;
-
       curBlocks[openIdx] = { ...curBlocks[openIdx], endAt: now };
 
-      await updateDoc(tripRef, {
-        timerState: "running",
-        pauseBlocks: curBlocks,
-        updatedAt: now,
-        updatedByUid: myUid || null,
-      } as any);
+      await updateDoc(tripRef, { timerState: "running", pauseBlocks: curBlocks, updatedAt: now, updatedByUid: myUid || null } as any);
     } finally {
       setPillActionBusy(false);
     }
   }
 
-  // --- iOS-style mobile dock metrics ---
   const DOCK_HEIGHT = 66;
   const DOCK_SAFE_GAP = 12;
   const DOCK_TOTAL = DOCK_HEIGHT + DOCK_SAFE_GAP;
 
-  // padding so pill + bottom dock don’t cover content
   const bottomBarHeight = isMobile ? DOCK_TOTAL : 0;
   const pillHeight = isMobile && pill ? 66 : 0;
   const bottomPadding = bottomBarHeight + pillHeight + (isMobile ? 14 : 0);
 
-  // -----------------------------
-  // ✅ Admin/Manager badge: submitted timesheets waiting review
-  // -----------------------------
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
-
   useEffect(() => {
     if (!showTimesheetReview) {
       setPendingReviewCount(0);
       return;
     }
-
     const q = query(collection(db, "weeklyTimesheets"), where("status", "==", "submitted"), limit(200));
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        setPendingReviewCount(snap.size || 0);
-      },
-      () => {
-        // ignore
-      }
-    );
-
+    const unsub = onSnapshot(q, (snap) => setPendingReviewCount(snap.size || 0), () => {});
     return () => unsub();
   }, [showTimesheetReview]);
 
-  // ✅ Pending PTO Requests badge (admins/managers/dispatchers)
   const [pendingPtoCount, setPendingPtoCount] = useState(0);
-
   useEffect(() => {
     if (!showPTORequests) {
       setPendingPtoCount(0);
       return;
     }
-
     const canReviewPto = role === "admin" || role === "manager" || role === "dispatcher";
     if (!canReviewPto) {
       setPendingPtoCount(0);
       return;
     }
-
     const q = query(collection(db, "ptoRequests"), where("status", "==", "pending"), limit(50));
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        setPendingPtoCount(snap.size || 0);
-      },
-      () => {
-        setPendingPtoCount(0);
-      }
-    );
-
+    const unsub = onSnapshot(q, (snap) => setPendingPtoCount(snap.size || 0), () => setPendingPtoCount(0));
     return () => unsub();
   }, [showPTORequests, role]);
 
-  // -----------------------------
-  // ✅ Employee banner: rejected timesheets (so they know)
-  // -----------------------------
   const [myRejectedCount, setMyRejectedCount] = useState(0);
-
   useEffect(() => {
     const uid = safeTrim(myUid);
     if (!uid) {
       setMyRejectedCount(0);
       return;
     }
-
     const canReceive =
-      role === "technician" ||
-      role === "helper" ||
-      role === "apprentice" ||
-      role === "dispatcher" ||
-      role === "manager" ||
-      role === "admin";
-
+      role === "technician" || role === "helper" || role === "apprentice" || role === "dispatcher" || role === "manager" || role === "admin";
     if (!canReceive) {
       setMyRejectedCount(0);
       return;
     }
-
     const q = query(collection(db, "weeklyTimesheets"), where("employeeId", "==", uid), where("status", "==", "rejected"), limit(20));
-
     const unsub = onSnapshot(q, (snap) => setMyRejectedCount(snap.size || 0), () => {});
-
     return () => unsub();
   }, [myUid, role]);
 
-  // -----------------------------
-  // ✅ Monday “previous week not submitted” banner
-  // -----------------------------
   const [showMondayReminder, setShowMondayReminder] = useState(false);
   const [prevWeekStart, setPrevWeekStart] = useState<string>("");
   const [prevWeekStatus, setPrevWeekStatus] = useState<string>("");
@@ -688,12 +536,7 @@ export default function AppShell({
     }
 
     const canReceive =
-      role === "technician" ||
-      role === "helper" ||
-      role === "apprentice" ||
-      role === "dispatcher" ||
-      role === "manager" ||
-      role === "admin";
+      role === "technician" || role === "helper" || role === "apprentice" || role === "dispatcher" || role === "manager" || role === "admin";
 
     if (!canReceive) {
       setShowMondayReminder(false);
@@ -711,13 +554,10 @@ export default function AppShell({
         setShowMondayReminder(false);
         return;
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
 
     const now = new Date();
     const thisMonIso = getWeekMondayIsoForDate(now);
-
     const thisMon = new Date(`${thisMonIso}T12:00:00`);
     const prevMon = new Date(thisMon);
     prevMon.setDate(thisMon.getDate() - 7);
@@ -740,16 +580,10 @@ export default function AppShell({
         const status = safeTrim(d.status).toLowerCase() || "draft";
         setPrevWeekStatus(status);
 
-        const ok =
-          status === "submitted" ||
-          status === "approved" ||
-          status === "exported_to_quickbooks" ||
-          status === "exported";
+        const ok = status === "submitted" || status === "approved" || status === "exported_to_quickbooks" || status === "exported";
         setShowMondayReminder(!ok);
       },
-      () => {
-        setShowMondayReminder(false);
-      }
+      () => setShowMondayReminder(false)
     );
 
     return () => unsub();
@@ -759,24 +593,13 @@ export default function AppShell({
     const dismissKey = `dcflow_missingTimesheetDismissed_${todayKeyLocal()}`;
     try {
       if (typeof window !== "undefined") window.localStorage.setItem(dismissKey, "1");
-    } catch {
-      // ignore
-    }
+    } catch {}
     setShowMondayReminder(false);
   }
 
   const mondayReminderBanner =
     showMondayReminder && showWeeklyTimesheet ? (
-      <div
-        style={{
-          border: "1px solid #f59e0b",
-          background: "#fff7ed",
-          borderRadius: 14,
-          padding: 12,
-          marginBottom: 12,
-          boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-        }}
-      >
+      <div style={{ border: "1px solid #f59e0b", background: "#fff7ed", borderRadius: 14, padding: 12, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 1000 }}>⏰ Last week’s timesheet isn’t submitted yet</div>
@@ -789,16 +612,7 @@ export default function AppShell({
             <button
               type="button"
               onClick={() => router.push("/weekly-timesheet?weekOffset=-1")}
-              style={{
-                padding: "10px 12px",
-                borderRadius: 12,
-                border: "1px solid #c2410c",
-                background: "#f97316",
-                color: "white",
-                cursor: "pointer",
-                fontWeight: 1000,
-                whiteSpace: "nowrap",
-              }}
+              style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #c2410c", background: "#f97316", color: "white", cursor: "pointer", fontWeight: 1000 }}
             >
               Review last week
             </button>
@@ -806,36 +620,18 @@ export default function AppShell({
             <button
               type="button"
               onClick={dismissMondayReminderForToday}
-              style={{
-                padding: "10px 12px",
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                background: "white",
-                cursor: "pointer",
-                fontWeight: 900,
-                whiteSpace: "nowrap",
-              }}
+              style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}
             >
               Dismiss today
             </button>
           </div>
         </div>
-
-        <div style={{ marginTop: 8, fontSize: 12, color: "#7c2d12" }}>Tip: submit early so payroll can be approved on time.</div>
       </div>
     ) : null;
 
   const rejectedBanner =
     myRejectedCount > 0 && showWeeklyTimesheet ? (
-      <div
-        style={{
-          border: "1px solid #ef4444",
-          background: "#fff1f2",
-          borderRadius: 14,
-          padding: 12,
-          marginBottom: 12,
-        }}
-      >
+      <div style={{ border: "1px solid #ef4444", background: "#fff1f2", borderRadius: 14, padding: 12, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ fontWeight: 1000 }}>
             ❗ Your timesheet was rejected and needs changes
@@ -847,16 +643,7 @@ export default function AppShell({
           <button
             type="button"
             onClick={() => router.push("/weekly-timesheet?showRejected=1")}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid #991b1b",
-              background: "#dc2626",
-              color: "white",
-              cursor: "pointer",
-              fontWeight: 1000,
-              whiteSpace: "nowrap",
-            }}
+            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #991b1b", background: "#dc2626", color: "white", cursor: "pointer", fontWeight: 1000 }}
           >
             Fix now
           </button>
@@ -864,9 +651,6 @@ export default function AppShell({
       </div>
     ) : null;
 
-  // -----------------------------
-  // ✅ Desktop nav: branded + ordered + Admin at bottom
-  // -----------------------------
   function isActivePath(target: string) {
     if (!target) return false;
     if (target === "/") return pathname === "/";
@@ -874,117 +658,101 @@ export default function AppShell({
     return pathname?.startsWith(target + "/");
   }
 
-  function NavLink({
-    href,
-    label,
-    right,
-    subtle,
-  }: {
-    href: string;
-    label: string;
-    right?: ReactNode;
-    subtle?: boolean;
-  }) {
+  function NavItem(props: { href: string; label: string; icon: string; right?: ReactNode }) {
+    const { href, label, icon, right } = props;
     const active = isActivePath(href);
+    const [hover, setHover] = useState(false);
 
-    const baseBg = subtle ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.04)";
-    const hoverBg = subtle ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.08)";
-    const activeBg = "rgba(0,112,208,0.18)";
+    // slightly tighter sizing to ensure no-scroll sidebar fits top-to-bottom
+    const bg = active ? BRAND.blueSoft : hover ? BRAND.itemHover : BRAND.itemBg;
+    const border = active ? BRAND.blueBorder : BRAND.itemBorder;
 
     return (
       <Link
         href={href}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         style={{
+          textDecoration: "none",
+          color: BRAND.text,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 10,
-          padding: "10px 12px",
+          gap: 8,
+          padding: "9px 10px",
           borderRadius: 14,
-          textDecoration: "none",
-          color: active ? "white" : "rgba(255,255,255,0.92)",
-          background: active ? activeBg : baseBg,
-          border: active ? "1px solid rgba(0,112,208,0.45)" : "1px solid rgba(255,255,255,0.08)",
-          boxShadow: active ? "0 10px 26px rgba(0,112,208,0.18)" : "none",
-          fontWeight: active ? 1000 : 850,
-          letterSpacing: "-0.2px",
-          transition: "transform 120ms ease, background 120ms ease, border 120ms ease, box-shadow 120ms ease",
+          border: `1px solid ${border}`,
+          background: bg,
+          boxShadow: active ? BRAND.activeGlow : "none",
+          position: "relative",
+          overflow: "hidden",
         }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLAnchorElement).style.background = active ? activeBg : hoverBg;
-          (e.currentTarget as HTMLAnchorElement).style.transform = "translateY(-1px)";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLAnchorElement).style.background = active ? activeBg : baseBg;
-          (e.currentTarget as HTMLAnchorElement).style.transform = "translateY(0px)";
-        }}
+        aria-current={active ? "page" : undefined}
       >
-        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-        {right ? <span style={{ flex: "none" }}>{right}</span> : null}
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 9,
+            bottom: 9,
+            width: 3,
+            borderRadius: 99,
+            background: active ? BRAND.blue : "transparent",
+            boxShadow: active ? "0 0 0 4px rgba(30,144,255,0.10)" : "none",
+          }}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, paddingLeft: 6 }}>
+          <div style={{ width: 20, textAlign: "center", fontSize: 15, opacity: active ? 1 : 0.9 }}>{icon}</div>
+          <div style={{ fontWeight: active ? 950 : 850, fontSize: 12.5, letterSpacing: "-0.1px" }}>{label}</div>
+        </div>
+
+        {right ? <div style={{ display: "flex", alignItems: "center" }}>{right}</div> : null}
       </Link>
     );
   }
 
-  const desktopNav = (
-    <nav style={{ display: "grid", gap: 10 }}>
-      {/* Primary ops (most used) */}
-      <NavLink href="/service-tickets" label="Service Tickets" />
-      <NavLink href="/customers" label="Customers" />
+  const desktopNavTop = (
+    <div style={{ display: "grid", gap: 8 }}>
+      {showDashboard ? <NavItem href="/dashboard" label="Dashboard" icon="🏠" /> : null}
+      {showDispatch ? <NavItem href="/dispatch" label="Dispatcher Board" icon="🧭" /> : null}
+      {showMyDay ? <NavItem href="/technician/my-day" label="My Day" icon="📅" /> : null}
+      {showSchedule ? <NavItem href="/schedule" label="Schedule" icon="🗓️" /> : null}
+      {showOfficeDisplay ? <NavItem href="/office-display" label="Office Display" icon="📺" /> : null}
+      {showProjects ? <NavItem href="/projects" label="Projects" icon="🏗️" /> : null}
+      {showWorkload ? <NavItem href="/technician-workload" label="Technician Workload" icon="📊" /> : null}
 
-      {/* Planning */}
-      {showDispatch ? <NavLink href="/dispatch" label="Dispatcher Board" /> : null}
-      {showSchedule ? <NavLink href="/schedule" label="Schedule" /> : null}
-      {showOfficeDisplay ? <NavLink href="/office-display" label="Office Display" /> : null}
+      <div style={{ height: 2 }} />
 
-      {/* Personal */}
-      {showMyDay ? <NavLink href="/technician/my-day" label="My Day" subtle /> : null}
+      <NavItem href="/customers" label="Customers" icon="👥" />
+      <NavItem href="/service-tickets" label="Service Tickets" icon="🧾" />
 
-      {/* Projects */}
-      {showProjects ? <NavLink href="/projects" label="Projects" subtle /> : null}
+      <div style={{ height: 2 }} />
 
-      {/* Time */}
-      {showTimeEntries ? <NavLink href="/time-entries" label="Time Entries" subtle /> : null}
-      {showWeeklyTimesheet ? <NavLink href="/weekly-timesheet" label="Weekly Timesheet" subtle /> : null}
+      {showTimeEntries ? <NavItem href="/time-entries" label="Time Entries" icon="⏱️" /> : null}
+      {showWeeklyTimesheet ? <NavItem href="/weekly-timesheet" label="Weekly Timesheet" icon="🗂️" /> : null}
 
-      {showPTORequests ? (
-        <NavLink href="/pto-requests" label="PTO Requests" right={<Badge count={pendingPtoCount} />} />
-      ) : null}
+      {showPTORequests ? <NavItem href="/pto-requests" label="PTO Requests" icon="🌴" right={<Badge count={pendingPtoCount} />} /> : null}
 
       {showTimesheetReview ? (
-        <NavLink href="/timesheet-review" label="Timesheet Review" right={<Badge count={pendingReviewCount} />} />
+        <NavItem href="/timesheet-review" label="Timesheet Review" icon="✅" right={<Badge count={pendingReviewCount} />} />
       ) : null}
 
-      {/* Technician area (kept) */}
-      {showTechnician ? <NavLink href="/technician" label="Technician" subtle /> : null}
-
-      {/* Removed Technician Workload */}
-      {showWorkload ? <NavLink href="/technician-workload" label="Technician Workload" subtle /> : null}
-
-      {/* Admin ALWAYS bottom */}
-      {showAdmin ? (
-        <>
-          <div style={{ height: 6 }} />
-          <div style={{ height: 1, background: "rgba(255,255,255,0.08)" }} />
-          <div style={{ height: 6 }} />
-          <NavLink href="/admin" label="Admin" subtle />
-        </>
-      ) : null}
-    </nav>
+      {showTechnician ? <NavItem href="/technician" label="Technician" icon="🧰" /> : null}
+    </div>
   );
 
+  const desktopNavBottom = (
+    <div style={{ display: "grid", gap: 8 }}>
+      {showAdmin ? <NavItem href="/admin" label="Admin" icon="⚙️" /> : null}
+      <LogoutButton />
+    </div>
+  );
+
+  // Mobile drawer left as-is from your previous version (not the focus here)
   const mobileMoreDrawer = (
     <>
-      {drawerOpen ? (
-        <div
-          onClick={() => setDrawerOpen(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.25)",
-            zIndex: 9998,
-          }}
-        />
-      ) : null}
+      {drawerOpen ? <div onClick={() => setDrawerOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 9998 }} /> : null}
 
       <div
         style={{
@@ -1013,16 +781,7 @@ export default function AppShell({
           <button
             type="button"
             onClick={() => setDrawerOpen(false)}
-            style={{
-              marginTop: 10,
-              padding: "8px 12px",
-              border: "1px solid #ccc",
-              borderRadius: 10,
-              background: "white",
-              cursor: "pointer",
-              fontWeight: 800,
-              width: "fit-content",
-            }}
+            style={{ marginTop: 10, padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer", fontWeight: 800, width: "fit-content" }}
           >
             Close
           </button>
@@ -1035,8 +794,6 @@ export default function AppShell({
             {showSchedule ? <Link href="/schedule">Schedule</Link> : null}
             {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
             {showProjects ? <Link href="/projects">Projects</Link> : null}
-
-            {/* removed workload */}
             {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
             {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
 
@@ -1058,12 +815,9 @@ export default function AppShell({
             <Link href="/customers">Customers</Link>
             <Link href="/service-tickets">Service Tickets</Link>
 
-            {/* admin at bottom */}
             {showAdmin ? (
               <>
-                <div style={{ height: 6 }} />
-                <div style={{ height: 1, background: "#eee" }} />
-                <div style={{ height: 6 }} />
+                <div style={{ height: 10 }} />
                 <Link href="/admin">Admin</Link>
               </>
             ) : null}
@@ -1076,73 +830,26 @@ export default function AppShell({
     </>
   );
 
-  // --- iOS-style dock tab helpers ---
+  // Minimal mobile dock kept (unchanged)
   function DockTab(args: { label: string; icon: string; onClick: () => void; active: boolean }) {
     const { label, icon, onClick, active } = args;
-
     return (
       <button
         type="button"
         onClick={onClick}
-        style={{
-          border: "none",
-          background: "transparent",
-          padding: 0,
-          cursor: "pointer",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 4,
-          height: DOCK_HEIGHT,
-          userSelect: "none",
-          WebkitTapHighlightColor: "transparent",
-        }}
+        style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, height: DOCK_HEIGHT, userSelect: "none", WebkitTapHighlightColor: "transparent" }}
         aria-current={active ? "page" : undefined}
       >
-        <div
-          style={{
-            width: 40,
-            height: 32,
-            borderRadius: 14,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: active ? "rgba(0,0,0,0.06)" : "transparent",
-            border: active ? "1px solid rgba(0,0,0,0.08)" : "1px solid transparent",
-          }}
-        >
+        <div style={{ width: 40, height: 32, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", background: active ? "rgba(0,0,0,0.06)" : "transparent", border: active ? "1px solid rgba(0,0,0,0.08)" : "1px solid transparent" }}>
           <div style={{ fontSize: 19, lineHeight: "19px" }}>{icon}</div>
         </div>
-
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: active ? 950 : 800,
-            color: active ? "#111" : "#555",
-            letterSpacing: "-0.1px",
-          }}
-        >
-          {label}
-        </div>
+        <div style={{ fontSize: 11, fontWeight: active ? 950 : 800, color: active ? "#111" : "#555", letterSpacing: "-0.1px" }}>{label}</div>
       </button>
     );
   }
 
   const mobileDock = (
-    <div
-      style={{
-        position: "fixed",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 9997,
-        display: "flex",
-        justifyContent: "center",
-        paddingBottom: DOCK_SAFE_GAP,
-        pointerEvents: "none",
-      }}
-    >
+    <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 9997, display: "flex", justifyContent: "center", paddingBottom: DOCK_SAFE_GAP, pointerEvents: "none" }}>
       <div
         style={{
           pointerEvents: "auto",
@@ -1160,12 +867,7 @@ export default function AppShell({
           WebkitBackdropFilter: "blur(14px)",
         }}
       >
-        <DockTab
-          label="My Day"
-          icon="📅"
-          onClick={() => router.push("/technician/my-day")}
-          active={isActivePath("/technician/my-day")}
-        />
+        <DockTab label="My Day" icon="📅" onClick={() => router.push("/technician/my-day")} active={isActivePath("/technician/my-day")} />
         <DockTab label="Schedule" icon="🗓️" onClick={() => router.push("/schedule")} active={isActivePath("/schedule")} />
         <DockTab label="Tickets" icon="🧾" onClick={() => router.push("/service-tickets")} active={isActivePath("/service-tickets")} />
         <DockTab label="More" icon="☰" onClick={() => setDrawerOpen(true)} active={drawerOpen} />
@@ -1173,105 +875,22 @@ export default function AppShell({
     </div>
   );
 
-  const pillTheme = useMemo(() => {
-    if (isPaused) {
-      return {
-        bg: "#d97706",
-        border: "#b45309",
-        dot: "#ffe8c7",
-        dotHalo: "rgba(255,232,199,0.25)",
-        actionBg: "rgba(255,255,255,0.18)",
-      };
-    }
-    if (isRunning) {
-      return {
-        bg: "#1f8f3a",
-        border: "#177a30",
-        dot: "#b7ffbf",
-        dotHalo: "rgba(183,255,191,0.25)",
-        actionBg: "rgba(255,255,255,0.18)",
-      };
-    }
-    return {
-      bg: "#1b4fbf",
-      border: "#153f99",
-      dot: "#cfe1ff",
-      dotHalo: "rgba(207,225,255,0.25)",
-      actionBg: "rgba(255,255,255,0.18)",
-    };
-  }, [isPaused, isRunning]);
-
   const activeTripPill = isMobile && pill ? (
     <div style={{ position: "fixed", left: 12, right: 12, bottom: DOCK_TOTAL + 10, zIndex: 9996 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          alignItems: "stretch",
-          background: pillTheme.bg,
-          border: `1px solid ${pillTheme.border}`,
-          borderRadius: 14,
-          padding: "10px 10px",
-          boxShadow: "0 10px 25px rgba(0,0,0,0.18)",
-        }}
-      >
-        <Link
-          href={pill.href}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            gap: 10,
-            alignItems: "center",
-            textDecoration: "none",
-            color: "inherit",
-          }}
-        >
-          <div
-            style={{
-              width: 10,
-              height: 10,
-              borderRadius: 999,
-              background: pillTheme.dot,
-              boxShadow: `0 0 0 4px ${pillTheme.dotHalo}`,
-              marginLeft: 2,
-            }}
-          />
-
+      <div style={{ display: "flex", gap: 10, alignItems: "stretch", background: isPaused ? "#d97706" : "#1f8f3a", border: `1px solid ${isPaused ? "#b45309" : "#177a30"}`, borderRadius: 14, padding: "10px 10px", boxShadow: "0 10px 25px rgba(0,0,0,0.18)" }}>
+        <Link href={pill.href} style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, alignItems: "center", textDecoration: "none", color: "inherit" }}>
+          <div style={{ width: 10, height: 10, borderRadius: 999, background: "rgba(255,255,255,0.92)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
               <div style={{ fontWeight: 1000, color: "white", fontSize: 13 }}>
                 {pill.statusLabel} • {liveMinutes} min
               </div>
-              <div style={{ fontWeight: 900, color: "rgba(255,255,255,0.92)", fontSize: 11, whiteSpace: "nowrap" }}>
-                Tap to return
-              </div>
+              <div style={{ fontWeight: 900, color: "rgba(255,255,255,0.92)", fontSize: 11, whiteSpace: "nowrap" }}>Tap to return</div>
             </div>
-
-            <div
-              style={{
-                marginTop: 2,
-                color: "white",
-                fontWeight: 900,
-                fontSize: 14,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
+            <div style={{ marginTop: 2, color: "white", fontWeight: 900, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {pill.primaryLine}
             </div>
-
-            <div
-              style={{
-                marginTop: 2,
-                color: "rgba(255,255,255,0.92)",
-                fontSize: 12,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
+            <div style={{ marginTop: 2, color: "rgba(255,255,255,0.92)", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {pill.secondaryLine}
             </div>
           </div>
@@ -1280,61 +899,16 @@ export default function AppShell({
         <div style={{ display: "flex", alignItems: "center" }}>
           {canQuickAct ? (
             isPaused ? (
-              <button
-                type="button"
-                onClick={handleQuickResume}
-                disabled={pillActionBusy}
-                style={{
-                  width: 46,
-                  height: 46,
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.28)",
-                  background: pillTheme.actionBg,
-                  color: "white",
-                  fontWeight: 1000,
-                  cursor: pillActionBusy ? "not-allowed" : "pointer",
-                }}
-                title="Resume"
-              >
+              <button type="button" onClick={handleQuickResume} disabled={pillActionBusy} style={{ width: 46, height: 46, borderRadius: 12, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(255,255,255,0.18)", color: "white", fontWeight: 1000, cursor: pillActionBusy ? "not-allowed" : "pointer" }} title="Resume">
                 ▶
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={handleQuickPause}
-                disabled={pillActionBusy}
-                style={{
-                  width: 46,
-                  height: 46,
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.28)",
-                  background: pillTheme.actionBg,
-                  color: "white",
-                  fontWeight: 1000,
-                  cursor: pillActionBusy ? "not-allowed" : "pointer",
-                }}
-                title="Pause"
-              >
+              <button type="button" onClick={handleQuickPause} disabled={pillActionBusy} style={{ width: 46, height: 46, borderRadius: 12, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(255,255,255,0.18)", color: "white", fontWeight: 1000, cursor: pillActionBusy ? "not-allowed" : "pointer" }} title="Pause">
                 ❚❚
               </button>
             )
           ) : (
-            <div
-              style={{
-                width: 46,
-                height: 46,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "rgba(255,255,255,0.10)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "rgba(255,255,255,0.9)",
-                fontSize: 12,
-                fontWeight: 900,
-              }}
-              title="Not assigned to this trip"
-            >
+            <div style={{ width: 46, height: 46, borderRadius: 12, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.10)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.9)", fontSize: 12, fontWeight: 900 }} title="Not assigned to this trip">
               —
             </div>
           )}
@@ -1343,80 +917,63 @@ export default function AppShell({
     </div>
   ) : null;
 
-  // Desktop shell (branded sidebar)
+  // ✅ Desktop shell: NO sidebar scroll, main content scrolls
   if (!isMobile) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", background: "#000" }}>
+      <div style={{ height: "100vh", display: "flex", background: "#fff", overflow: "hidden" }}>
+        {/* Sidebar fixed height, NO scrolling */}
         <aside
           style={{
-            width: 320,
-            padding: 16,
-            color: "white",
-            borderRight: "1px solid rgba(255,255,255,0.08)",
-            background:
-              "radial-gradient(900px 600px at 20% 0%, rgba(0,112,208,0.24), transparent 60%), linear-gradient(180deg, #05070d 0%, #000 40%, #000 100%)",
+            width: 280,
+            height: "100vh",
+            overflow: "hidden",
+            padding: 14,
+            color: BRAND.text,
+            background: `radial-gradient(1200px 400px at 10% 0%, rgba(30,144,255,0.10), transparent 45%), linear-gradient(180deg, ${BRAND.sidebarBg}, ${BRAND.sidebarBg2})`,
+            borderRight: `1px solid ${BRAND.sidebarBorder}`,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
           }}
         >
-          {/* Brand header */}
+          {/* ✅ Logo header */}
           <div
             style={{
               borderRadius: 18,
-              padding: 14,
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              boxShadow: "0 14px 38px rgba(0,0,0,0.35)",
+              border: `1px solid ${BRAND.itemBorder}`,
+              background: "rgba(255,255,255,0.03)",
+              padding: 12,
             }}
           >
-            {/* ✅ Use your real file path here. Recommended: put your logo in /public as /dcflow-logo.png */}
             <img
-              src="/dcflow-logo.png"
+              src="/brand/dcflow-logo.png"
               alt="DCFlow"
               style={{
                 width: "100%",
-                maxWidth: 260,
-                height: "auto",
+                height: 56,
+                objectFit: "contain",
                 display: "block",
-                filter: "drop-shadow(0 10px 20px rgba(0,0,0,0.35))",
               }}
             />
-
-            <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
-              <div style={{ fontWeight: 950, fontSize: 14, letterSpacing: "-0.2px" }}>
-                {appUser?.displayName || "Unknown User"}
-              </div>
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.70)" }}>
-                {appUser?.role || "No Role"}
-              </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: BRAND.subtext, fontWeight: 800 }}>
+              {appUser?.displayName || "Unknown User"} • {appUser?.role || "No Role"}
             </div>
           </div>
 
-          {/* Nav */}
-          <div style={{ marginTop: 14 }}>{desktopNav}</div>
+          {/* Nav + bottom section, sized to fit */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div style={{ display: "grid", gap: 8 }}>{desktopNavTop}</div>
 
-          {/* Footer actions */}
-          <div style={{ marginTop: 14 }}>
-            <div style={{ height: 1, background: "rgba(255,255,255,0.08)" }} />
-            <div style={{ height: 12 }} />
-            <div
-              style={{
-                borderRadius: 14,
-                padding: 12,
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid rgba(255,255,255,0.08)",
-              }}
-            >
-              <LogoutButton />
+            <div style={{ flex: 1 }} />
+
+            <div style={{ borderTop: `1px solid ${BRAND.itemBorder}`, paddingTop: 10, display: "grid", gap: 8 }}>
+              {desktopNavBottom}
             </div>
           </div>
         </aside>
 
-        <main
-          style={{
-            flex: 1,
-            padding: 24,
-            background: "#fff",
-          }}
-        >
+        {/* Main area scrolls independently */}
+        <main style={{ flex: 1, height: "100vh", overflowY: "auto", padding: 24 }}>
           {rejectedBanner}
           {mondayReminderBanner}
           {children}
@@ -1429,13 +986,11 @@ export default function AppShell({
   return (
     <div style={{ minHeight: "100vh", background: "#fff" }}>
       {mobileMoreDrawer}
-
       <main style={{ padding: 14, paddingBottom: bottomPadding }}>
         {rejectedBanner}
         {mondayReminderBanner}
         {children}
       </main>
-
       {activeTripPill}
       {mobileDock}
     </div>
