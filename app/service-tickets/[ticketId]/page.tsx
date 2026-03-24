@@ -153,6 +153,8 @@ type TicketStatus =
   | "completed"
   | "cancelled";
 
+type FinishMode = "none" | "follow_up" | "resolved";
+
 // -----------------------------
 // Helpers
 // -----------------------------
@@ -162,78 +164,6 @@ function safeText(x: unknown) {
 
 function oneLine(x: unknown) {
   return safeText(x).replace(/\s+/g, " ");
-}
-
-function buildTicketAddressLine(ticket: {
-  serviceAddressLine1?: string;
-  serviceAddressLine2?: string;
-  serviceCity?: string;
-  serviceState?: string;
-  servicePostalCode?: string;
-}) {
-  const line1 = oneLine(ticket.serviceAddressLine1);
-  const line2 = oneLine(ticket.serviceAddressLine2);
-  const city = oneLine(ticket.serviceCity);
-  const state = oneLine(ticket.serviceState);
-  const zip = oneLine(ticket.servicePostalCode);
-
-  const street = [line1, line2].filter(Boolean).join(" ");
-  const csz = [city, state, zip].filter(Boolean).join(" ");
-  return [street, csz].filter(Boolean).join(", ");
-}
-
-function buildRichTripTimeEntryNotes(args: {
-  trip: TripDoc;
-
-  ticket?: {
-    customerDisplayName?: string;
-    serviceAddressLine1?: string;
-    serviceAddressLine2?: string;
-    serviceCity?: string;
-    serviceState?: string;
-    servicePostalCode?: string;
-    issueSummary?: string;
-  } | null;
-
-  outcomeLabel: "Resolved" | "Follow Up";
-  workNotes?: string | null;
-  resolutionNotes?: string | null;
-  followUpNotes?: string | null;
-}) {
-  const { trip, ticket, outcomeLabel } = args;
-
-  const lines: string[] = [];
-
-  lines.push(`AUTO_TIME_FROM_TRIP:${trip.id}`);
-
-  const cust = oneLine(ticket?.customerDisplayName);
-  const addr = ticket ? buildTicketAddressLine(ticket) : "";
-  if (cust || addr) {
-    lines.push(`Customer: ${[cust, addr].filter(Boolean).join(" — ")}`);
-  }
-
-  const issue = oneLine(ticket?.issueSummary);
-  if (issue) lines.push(`Issue: ${issue}`);
-
-  const whenParts = [
-    oneLine(trip.date),
-    oneLine(trip.timeWindow),
-    [oneLine(trip.startTime), oneLine(trip.endTime)].filter(Boolean).join("-"),
-  ].filter(Boolean);
-  if (whenParts.length) lines.push(`Trip: ${whenParts.join(" • ")}`);
-
-  lines.push(`Outcome: ${outcomeLabel}`);
-
-  const work = safeText(args.workNotes);
-  const res = safeText(args.resolutionNotes);
-  const follow = safeText(args.followUpNotes);
-
-  if (outcomeLabel === "Resolved" && res) lines.push(`Resolution: ${oneLine(res)}`);
-  if (outcomeLabel === "Follow Up" && follow) lines.push(`Follow-up: ${oneLine(follow)}`);
-
-  if (work) lines.push(`Work notes: ${oneLine(work)}`);
-
-  return lines.join("\n");
 }
 
 function normalizeRole(role?: string) {
@@ -248,23 +178,8 @@ function isoTodayLocal() {
   return `${y}-${m}-${day}`;
 }
 
-function formatTicketStatus(value: ServiceTicket["status"]) {
-  switch (value) {
-    case "new":
-      return "New";
-    case "scheduled":
-      return "Scheduled";
-    case "in_progress":
-      return "In Progress";
-    case "follow_up":
-      return "Follow Up";
-    case "completed":
-      return "Completed";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return value;
-  }
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function roundToHalf(hours: number) {
@@ -303,10 +218,6 @@ function windowToTimes(window: TripTimeWindow) {
   if (window === "pm") return { start: "13:00", end: "17:00" };
   if (window === "all_day") return { start: "08:00", end: "17:00" };
   return { start: "09:00", end: "10:00" };
-}
-
-function nowIso() {
-  return new Date().toISOString();
 }
 
 function minutesBetweenIso(aIso: string, bIso: string) {
@@ -407,6 +318,12 @@ function buildMapsUrl(address: string) {
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 
+// Google maps embed (no API key)
+function buildMapsEmbedUrl(address: string) {
+  const q = encodeURIComponent(address);
+  return `https://www.google.com/maps?q=${q}&output=embed`;
+}
+
 function isTerminalTicketStatus(s?: string) {
   const x = String(s || "").toLowerCase().trim();
   return x === "completed" || x === "cancelled";
@@ -415,6 +332,39 @@ function isTerminalTicketStatus(s?: string) {
 function isAlreadyInProgressOrBeyond(s?: string) {
   const x = String(s || "").toLowerCase().trim();
   return x === "in_progress" || x === "follow_up" || x === "completed" || x === "cancelled";
+}
+
+function formatTicketStatus(value: ServiceTicket["status"]) {
+  switch (value) {
+    case "new":
+      return "New";
+    case "scheduled":
+      return "Scheduled";
+    case "in_progress":
+      return "In Progress";
+    case "follow_up":
+      return "Follow Up";
+    case "completed":
+      return "Completed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return value;
+  }
+}
+
+// Mobile helper
+function useIsMobile(breakpointPx = 900) {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    function onResize() {
+      setIsMobile(window.innerWidth < breakpointPx);
+    }
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpointPx]);
+  return isMobile;
 }
 
 // ---- Weekly Timesheets + TimeEntries helpers ----
@@ -583,21 +533,117 @@ function validateMaterialsForResolved(
   return { ok: true, cleaned };
 }
 
-// Mobile helper
-function useIsMobile(breakpointPx = 900) {
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    function onResize() {
-      setIsMobile(window.innerWidth < breakpointPx);
-    }
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [breakpointPx]);
-  return isMobile;
+// -----------------------------
+// Lightweight UI atoms (inline styles only)
+// -----------------------------
+function Pill(props: { text: string; tone?: "neutral" | "green" | "yellow" | "red" | "blue" }) {
+  const tone = props.tone || "neutral";
+  const map: Record<string, { bg: string; border: string; text: string }> = {
+    neutral: { bg: "#f3f4f6", border: "#e5e7eb", text: "#111827" },
+    green: { bg: "#eaffea", border: "#b7e3c2", text: "#14532d" },
+    yellow: { bg: "#fff7ed", border: "#fed7aa", text: "#7c2d12" },
+    red: { bg: "#fff1f2", border: "#fecdd3", text: "#7f1d1d" },
+    blue: { bg: "#eff6ff", border: "#bfdbfe", text: "#1e3a8a" },
+  };
+  const c = map[tone] || map.neutral;
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 10px",
+        borderRadius: 999,
+        background: c.bg,
+        border: `1px solid ${c.border}`,
+        color: c.text,
+        fontWeight: 900,
+        fontSize: 12,
+        lineHeight: "12px",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {props.text}
+    </span>
+  );
 }
 
-type FinishMode = "none" | "follow_up" | "resolved";
+function Card(props: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 16,
+        background: "white",
+        boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "14px 16px",
+          borderBottom: "1px solid #f1f5f9",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 1000 }}>{props.title}</div>
+        {props.right ? <div>{props.right}</div> : null}
+      </div>
+      <div style={{ padding: 16 }}>{props.children}</div>
+    </div>
+  );
+}
+
+function Divider() {
+  return <div style={{ height: 1, background: "#f1f5f9", margin: "12px 0" }} />;
+}
+
+function PrimaryButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "green" | "blue" | "gray" }) {
+  const tone = props.tone || "gray";
+  const colors =
+    tone === "green"
+      ? { bg: "#1f8f3a", border: "#166534", text: "white" }
+      : tone === "blue"
+        ? { bg: "#2563eb", border: "#1e40af", text: "white" }
+        : { bg: "white", border: "#d1d5db", text: "#111827" };
+
+  return (
+    <button
+      {...props}
+      style={{
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: `1px solid ${colors.border}`,
+        background: colors.bg,
+        color: colors.text,
+        cursor: props.disabled ? "not-allowed" : "pointer",
+        fontWeight: 1000,
+        ...props.style,
+      }}
+    />
+  );
+}
+
+function GhostButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      {...props}
+      style={{
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        background: "#f8fafc",
+        cursor: props.disabled ? "not-allowed" : "pointer",
+        fontWeight: 900,
+        ...props.style,
+      }}
+    />
+  );
+}
 
 // -----------------------------
 // Page
@@ -607,9 +653,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const isMobile = useIsMobile(900);
 
   const canDispatch =
-    appUser?.role === "admin" ||
-    appUser?.role === "dispatcher" ||
-    appUser?.role === "manager";
+    appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
 
   const canWorkTrip =
     appUser?.role === "admin" ||
@@ -617,6 +661,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     appUser?.role === "helper" ||
     appUser?.role === "apprentice";
 
+  // Start Trip should be admin + dispatcher + manager + technician (NOT helper/apprentice)
   const canStartTripRole =
     appUser?.role === "admin" ||
     appUser?.role === "dispatcher" ||
@@ -636,11 +681,11 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
 
-  // ✅ customer contact (from /customers/{customerId})
+  // customer contact (from /customers/{customerId})
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
 
-  // ✅ editable ticket overview fields (admin/dispatch/manager)
+  // editable ticket overview fields (admin/dispatch/manager)
   const [ticketEditSaving, setTicketEditSaving] = useState(false);
   const [ticketEditErr, setTicketEditErr] = useState("");
   const [ticketEditOk, setTicketEditOk] = useState("");
@@ -662,6 +707,8 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [trips, setTrips] = useState<TripDoc[]>([]);
 
   // Schedule Trip form (create)
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+
   const [tripDate, setTripDate] = useState(isoTodayLocal());
   const [tripTimeWindow, setTripTimeWindow] = useState<TripTimeWindow>("am");
   const [tripStartTime, setTripStartTime] = useState("08:00");
@@ -690,15 +737,15 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>({});
   const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>({});
 
-  // ✅ Finish UX state
+  // Finish UX state
   const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>({});
   const [hoursOverrideByTrip, setHoursOverrideByTrip] = useState<Record<string, number>>({});
   const [helperConfirmedByTrip, setHelperConfirmedByTrip] = useState<Record<string, boolean>>({});
 
-  // ✅ Mobile slide-up finish panel state
+  // Mobile slide-up finish panel state
   const [mobileFinishOpen, setMobileFinishOpen] = useState(false);
 
-  // ✅ Trip edit/reschedule state (admin/dispatch/manager)
+  // Trip edit modal
   const [editTripId, setEditTripId] = useState<string | null>(null);
   const [editTripSaving, setEditTripSaving] = useState(false);
   const [editTripErr, setEditTripErr] = useState("");
@@ -715,9 +762,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [billingErr, setBillingErr] = useState("");
   const [billingOk, setBillingOk] = useState("");
 
-  // -----------------------------
   // Ensure ticket in_progress helper (always in scope)
-  // -----------------------------
   async function ensureTicketInProgressIfNeeded(args: { now: string; reason?: string }) {
     if (!ticket?.id) return;
     if (isTerminalTicketStatus(ticket.status)) return;
@@ -800,7 +845,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         setTicket(item);
 
-        // seed editable fields
         setTicketStatusEdit((item.status || "new") as TicketStatus);
         setTicketEstimatedMinutesEdit(String(item.estimatedDurationMinutes || 60));
         setTicketIssueDetailsEdit(String(item.issueDetails || ""));
@@ -814,9 +858,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadTicket();
   }, [params]);
 
-  // -----------------------------
-  // ✅ Load Customer Contact (phone/email) from /customers
-  // -----------------------------
+  // Load Customer Contact (phone/email) from /customers
   useEffect(() => {
     async function loadCustomerContact() {
       const customerId = String(ticket?.customerId || "").trim();
@@ -846,9 +888,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadCustomerContact();
   }, [ticket?.customerId]);
 
-  // -----------------------------
   // Load Technicians
-  // -----------------------------
   useEffect(() => {
     async function loadTechnicians() {
       try {
@@ -878,9 +918,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadTechnicians();
   }, []);
 
-  // -----------------------------
   // Load Employee Profiles (for helpers)
-  // -----------------------------
   useEffect(() => {
     async function loadProfiles() {
       setProfilesLoading(true);
@@ -945,9 +983,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     return h?.name || "";
   }
 
-  // -----------------------------
   // Load Trips for this Ticket
-  // -----------------------------
   useEffect(() => {
     async function loadTrips() {
       if (!ticketId) return;
@@ -1007,7 +1043,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         setTrips(items);
 
-        // Seed UI state from loaded trips
+        // Seed UI state
         const nextWork: Record<string, string> = {};
         const nextRes: Record<string, string> = {};
         const nextFollow: Record<string, string> = {};
@@ -1050,9 +1086,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadTrips();
   }, [ticketId]);
 
-  // -----------------------------
   // Auto times from timeWindow
-  // -----------------------------
   useEffect(() => {
     const { start, end } = windowToTimes(tripTimeWindow);
     if (tripTimeWindow !== "custom") {
@@ -1061,9 +1095,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }, [tripTimeWindow]);
 
-  // -----------------------------
   // Auto default helper pairing
-  // -----------------------------
   const defaultHelperForPrimary = useMemo(() => {
     const techUid = tripPrimaryTechUid.trim();
     if (!techUid) return "";
@@ -1081,9 +1113,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     setTripHelperUid(defaultHelperForPrimary);
   }, [tripUseDefaultHelper, tripPrimaryTechUid, defaultHelperForPrimary]);
 
-  // -----------------------------
-  // Ticket Overview Save (admin/dispatch/manager)
-  // -----------------------------
+  // Ticket Overview Save
   async function handleSaveTicketOverview() {
     if (!canDispatch) return;
     if (!ticket?.id) return;
@@ -1131,9 +1161,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // -----------------------------
   // Create Trip (Dispatch)
-  // -----------------------------
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!ticket) return;
@@ -1240,6 +1268,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       const createdTripRef = await addDoc(collection(db, "trips"), tripPayload as any);
 
+      // Update ticket staffing pointers
       const helperIds = helperUid ? [helperUid] : [];
       const helperNames = helperName ? [helperName] : [];
 
@@ -1311,8 +1340,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
 
-      setTripSaveSuccess(`✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}). Trip ID: ${createdTripRef.id}`);
+      setTripSaveSuccess(`✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}).`);
       setTripNotes("");
+      setScheduleOpen(false);
     } catch (err: unknown) {
       setTripSaveError(err instanceof Error ? err.message : "Failed to create trip.");
     } finally {
@@ -1320,9 +1350,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // -----------------------------
-  // Trip Actions
-  // -----------------------------
+  // Trip Actions helpers
   function setTripSavingFlag(tripId: string, value: boolean) {
     setTripActionSaving((prev) => ({ ...prev, [tripId]: value }));
   }
@@ -1359,6 +1387,36 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     });
   }
 
+  function applyHelperConfirmation(crew: TripCrew | null, tripId: string): TripCrew | null {
+    if (!crew) return crew;
+    const helperConfirmed = helperConfirmedByTrip[tripId];
+    if (typeof helperConfirmed === "boolean" && helperConfirmed === false) {
+      return {
+        ...crew,
+        helperUid: null,
+        helperName: null,
+        secondaryHelperUid: null,
+        secondaryHelperName: null,
+      };
+    }
+    return crew;
+  }
+
+  function getHoursToUse(tripId: string, computedMinutes: number) {
+    const computed = roundToHalf(computedMinutes / 60);
+    const override = hoursOverrideByTrip[tripId];
+    if (typeof override === "number" && Number.isFinite(override) && override >= 0) return roundToHalf(override);
+    return computed;
+  }
+
+  // UI helpers
+  function canCurrentUserActOnTrip(trip: TripDoc) {
+    if (!myUid) return false;
+    if (appUser?.role === "admin") return true;
+    return isUidOnTripCrew(myUid, trip.crew || null);
+  }
+
+  // Trip: Start
   async function handleStartTrip(trip: TripDoc) {
     if (!canStartTripRole) return;
     if (!myUid) return;
@@ -1409,7 +1467,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
 
-      // ✅ Always ensure ticket goes to in_progress (unless follow_up/completed/cancelled)
+      // Always ensure ticket goes to in_progress (unless follow_up/completed/cancelled)
       if (ticket?.id && !isTerminalTicketStatus(ticket.status) && !isAlreadyInProgressOrBeyond(ticket.status)) {
         await ensureTicketInProgressIfNeeded({ now, reason: "start_trip" });
       }
@@ -1422,6 +1480,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
+  // Trip: Pause
   async function handlePauseTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1460,6 +1519,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
+  // Trip: Resume
   async function handleResumeTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1506,6 +1566,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
+  // Trip: Save Work Notes
   async function handleSaveWorkNotes(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1534,28 +1595,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  function applyHelperConfirmation(crew: TripCrew | null, tripId: string): TripCrew | null {
-    if (!crew) return crew;
-    const helperConfirmed = helperConfirmedByTrip[tripId];
-    if (typeof helperConfirmed === "boolean" && helperConfirmed === false) {
-      return {
-        ...crew,
-        helperUid: null,
-        helperName: null,
-        secondaryHelperUid: null,
-        secondaryHelperName: null,
-      };
-    }
-    return crew;
-  }
-
-  function getHoursToUse(tripId: string, computedMinutes: number) {
-    const computed = roundToHalf(computedMinutes / 60);
-    const override = hoursOverrideByTrip[tripId];
-    if (typeof override === "number" && Number.isFinite(override) && override >= 0) return roundToHalf(override);
-    return computed;
-  }
-
+  // Trip: Resolve
   async function handleResolveTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1676,6 +1716,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         });
       }
 
+      // Billing packet write (bill ONLY primary tech hours)
       if (ticket?.id) {
         const primaryUid = crewConfirmed?.primaryTechUid || crewFallback?.primaryTechUid || "";
         const primaryName =
@@ -1755,6 +1796,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
+  // Trip: Follow Up
   async function handleFollowUpTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1772,6 +1814,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         return;
       }
 
+      // close open pause if exists
       let pauseBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
       for (let i = pauseBlocks.length - 1; i >= 0; i--) {
         const b = pauseBlocks[i];
@@ -1863,6 +1906,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         });
       }
 
+      // ticket status to follow_up
       if (ticket?.id) {
         await updateDoc(doc(db, "serviceTickets", ticket.id), {
           status: "follow_up",
@@ -1905,9 +1949,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // -----------------------------
-  // ✅ Trip Edit/Reschedule/Cancel (admin/dispatch/manager)
-  // -----------------------------
+  // Trip Edit Modal
   function openEditTrip(t: TripDoc) {
     setEditTripErr("");
     setEditTripOk("");
@@ -1985,7 +2027,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       );
 
       setEditTripOk("✅ Trip updated.");
-      setTimeout(() => closeEditTrip(), 600);
+      setTimeout(() => closeEditTrip(), 650);
     } catch (err: unknown) {
       setEditTripErr(err instanceof Error ? err.message : "Failed to update trip.");
     } finally {
@@ -1993,18 +2035,70 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
+  // NEW: Soft delete trip (safe)
+  async function handleSoftDeleteTrip(t: TripDoc) {
+    if (!canDispatch) return;
+
+    const status = String(t.status || "").toLowerCase();
+    if (status === "in_progress" || status === "complete") {
+      alert("You can’t delete a trip that is in progress or complete.");
+      return;
+    }
+
+    const confirm = window.prompt(
+      `Type DELETE to remove this trip from the schedule.\n\nTrip: ${t.date} ${t.startTime}-${t.endTime}`,
+      ""
+    );
+    if (confirm !== "DELETE") return;
+
+    setTripErr(t.id, "");
+    setTripOk(t.id, "");
+    setTripSavingFlag(t.id, true);
+
+    try {
+      const now = nowIso();
+
+      await updateDoc(doc(db, "trips", t.id), {
+        status: "cancelled",
+        timerState: "complete",
+        active: false,
+        cancelReason: "deleted",
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      });
+
+      setTrips((prev) =>
+        prev.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                status: "cancelled",
+                timerState: "complete",
+                active: false,
+                cancelReason: "deleted",
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : x
+        )
+      );
+
+      setTripOk(t.id, "🗑 Trip removed (soft delete).");
+    } catch (err: unknown) {
+      setTripErr(t.id, err instanceof Error ? err.message : "Failed to delete trip.");
+    } finally {
+      setTripSavingFlag(t.id, false);
+    }
+  }
+
+  // Claim & Start (unchanged logic)
   async function handleClaimAndStartTrip() {
     if (!ticket?.id) return;
     if (!myUid) return;
 
     const role = String(appUser?.role || "");
     const canSelfDispatch =
-      role === "technician" ||
-      role === "helper" ||
-      role === "apprentice" ||
-      role === "admin" ||
-      role === "dispatcher" ||
-      role === "manager";
+      role === "technician" || role === "helper" || role === "apprentice" || role === "admin" || role === "dispatcher" || role === "manager";
 
     if (!canSelfDispatch) {
       alert("You do not have permission to claim tickets.");
@@ -2028,8 +2122,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     const startTime = hhmmLocal(now);
     const endTime = hhmmLocal(addMinutes(now, 60));
 
-    const defaultHelperUid =
-      helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
+    const defaultHelperUid = helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
     const helperUid = defaultHelperUid || "";
     const helperName = helperUid ? (helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper") : null;
 
@@ -2044,14 +2137,10 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         const live = ticketSnap.data() as any;
 
-        if (live.assignedTechnicianId) {
-          throw new Error("Already claimed by another user.");
-        }
+        if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
 
         const liveStatus = String(live.status || "").toLowerCase();
-        if (liveStatus === "completed" || liveStatus === "cancelled") {
-          throw new Error("Ticket is not claimable.");
-        }
+        if (liveStatus === "completed" || liveStatus === "cancelled") throw new Error("Ticket is not claimable.");
 
         tx.set(newTripRef, {
           active: true,
@@ -2141,60 +2230,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  async function handleCancelTrip(t: TripDoc) {
-    if (!canDispatch) return;
-
-    const reason = window.prompt("Cancel this trip? Enter a cancel reason (required):", "");
-    if (reason == null) return;
-    const trimmed = reason.trim();
-    if (!trimmed) {
-      alert("Cancel reason is required.");
-      return;
-    }
-
-    setTripErr(t.id, "");
-    setTripOk(t.id, "");
-    setTripSavingFlag(t.id, true);
-
-    try {
-      const now = nowIso();
-
-      await updateDoc(doc(db, "trips", t.id), {
-        status: "cancelled",
-        timerState: "complete",
-        active: false,
-        cancelReason: trimmed,
-        updatedAt: now,
-        updatedByUid: myUid || null,
-      });
-
-      setTrips((prev) =>
-        prev.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                status: "cancelled",
-                timerState: "complete",
-                active: false,
-                cancelReason: trimmed,
-                updatedAt: now,
-                updatedByUid: myUid || null,
-              }
-            : x
-        )
-      );
-
-      setTripOk(t.id, "🚫 Trip cancelled.");
-    } catch (err: unknown) {
-      setTripErr(t.id, err instanceof Error ? err.message : "Failed to cancel trip.");
-    } finally {
-      setTripSavingFlag(t.id, false);
-    }
-  }
-
-  // -----------------------------
   // Billing Panel Actions
-  // -----------------------------
   const billing = ticket?.billing ?? null;
 
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
@@ -2247,29 +2283,28 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // -----------------------------
-  // UI helpers
-  // -----------------------------
-  function canCurrentUserActOnTrip(trip: TripDoc) {
-    if (!myUid) return false;
-    if (appUser?.role === "admin") return true;
-    return isUidOnTripCrew(myUid, trip.crew || null);
-  }
-
-  // -----------------------------
-  // Render
-  // -----------------------------
+  // Render helpers
   const addressFull = `${ticket?.serviceAddressLine1 || ""} ${ticket?.serviceAddressLine2 || ""}, ${
     ticket?.serviceCity || ""
   }, ${ticket?.serviceState || ""} ${ticket?.servicePostalCode || ""}`.trim();
 
   const mapsUrl = addressFull ? buildMapsUrl(addressFull) : "";
+  const mapsEmbedUrl = addressFull ? buildMapsEmbedUrl(addressFull) : "";
+
+  const statusTone: "neutral" | "green" | "yellow" | "red" | "blue" = useMemo(() => {
+    const s = String(ticket?.status || "").toLowerCase();
+    if (s === "completed") return "green";
+    if (s === "in_progress") return "blue";
+    if (s === "scheduled") return "yellow";
+    if (s === "cancelled") return "red";
+    return "neutral";
+  }, [ticket?.status]);
 
   const inProgressTrip = useMemo(() => {
     return trips.find((t) => String(t.status || "") === "in_progress") || null;
   }, [trips]);
 
-  // ✅ Safety net: if any trip is in_progress, force ticket status to in_progress (unless follow_up/completed/cancelled)
+  // Safety net: if any trip is in_progress, force ticket status to in_progress (unless follow_up/completed/cancelled)
   useEffect(() => {
     async function syncTicketStatusFromTrips() {
       if (!ticket?.id) return;
@@ -2316,6 +2351,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     return todayPick || candidates[0] || null;
   }, [trips, canStartTripRole, myUid, appUser?.role]);
 
+  // Sticky start CTA (mobile only)
   const stickyStartCta =
     isMobile && startableTrip ? (
       <div
@@ -2338,30 +2374,14 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => handleStartTrip(startableTrip)}
-            style={{
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: "1px solid #1f6b1f",
-              background: "#1f8f3a",
-              color: "white",
-              cursor: "pointer",
-              fontWeight: 1000,
-              whiteSpace: "nowrap",
-            }}
-          >
+          <PrimaryButton type="button" onClick={() => handleStartTrip(startableTrip)} tone="green">
             Start Trip
-          </button>
-        </div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "#1f6b1f" }}>
-          This button stays visible so you don’t have to hunt for it while scrolling.
+          </PrimaryButton>
         </div>
       </div>
     ) : null;
 
-  // ✅ Mobile sticky in-progress bar with slide-up finish fields
+  // Mobile sticky in-progress bar (unchanged concept)
   const stickyInProgressBar =
     isMobile && inProgressTrip ? (
       (() => {
@@ -2423,113 +2443,57 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {isPaused ? (
-                  <button
-                    type="button"
-                    onClick={() => handleResumeTrip(trip)}
-                    disabled={!canAct || savingThis}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: canAct ? "pointer" : "not-allowed",
-                      fontWeight: 950,
-                    }}
-                  >
+                  <GhostButton type="button" onClick={() => handleResumeTrip(trip)} disabled={!canAct || savingThis}>
                     ▶ Resume
-                  </button>
+                  </GhostButton>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => handlePauseTrip(trip)}
-                    disabled={!canAct || savingThis}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: canAct ? "pointer" : "not-allowed",
-                      fontWeight: 950,
-                    }}
-                  >
+                  <GhostButton type="button" onClick={() => handlePauseTrip(trip)} disabled={!canAct || savingThis}>
                     ❚❚ Pause
-                  </button>
+                  </GhostButton>
                 )}
 
-                <button
+                <GhostButton
                   type="button"
                   onClick={() => {
                     setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "follow_up" }));
                     setMobileFinishOpen(true);
                   }}
                   disabled={!canAct || savingThis}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #d7b6ff",
-                    background: "#f3e8ff",
-                    cursor: canAct ? "pointer" : "not-allowed",
-                    fontWeight: 950,
-                  }}
                 >
                   🟡 Follow-Up
-                </button>
+                </GhostButton>
 
-                <button
+                <GhostButton
                   type="button"
                   onClick={() => {
                     setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "resolved" }));
                     setMobileFinishOpen(true);
                   }}
                   disabled={!canAct || savingThis}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #b7e3c2",
-                    background: "#eaffea",
-                    cursor: canAct ? "pointer" : "not-allowed",
-                    fontWeight: 950,
-                  }}
                 >
                   ✅ Resolved
-                </button>
+                </GhostButton>
 
                 {finishMode !== "none" ? (
                   <>
-                    <button
+                    <GhostButton
                       type="button"
                       onClick={() => setMobileFinishOpen((v) => !v)}
                       disabled={!canAct || savingThis}
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 12,
-                        border: "1px solid #ddd",
-                        background: showPanel ? "#f7f7f7" : "white",
-                        cursor: canAct ? "pointer" : "not-allowed",
-                        fontWeight: 900,
-                      }}
                     >
                       {showPanel ? "Hide" : "Show"} Fields
-                    </button>
+                    </GhostButton>
 
-                    <button
+                    <GhostButton
                       type="button"
                       onClick={() => {
                         setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
                         setMobileFinishOpen(false);
                       }}
                       disabled={!canAct || savingThis}
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 12,
-                        border: "1px solid #ddd",
-                        background: "white",
-                        cursor: canAct ? "pointer" : "not-allowed",
-                        fontWeight: 900,
-                      }}
                     >
                       Clear
-                    </button>
+                    </GhostButton>
                   </>
                 ) : null}
               </div>
@@ -2614,7 +2578,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                           onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
                           rows={4}
                           disabled={!canAct || savingThis}
-                          placeholder="What needs to happen next? Parts? Return visit? Notes for dispatch?"
                           style={{
                             display: "block",
                             width: "100%",
@@ -2623,24 +2586,15 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                             border: "1px solid #ccc",
                           }}
                         />
-                        <button
+                        <PrimaryButton
                           type="button"
                           onClick={() => handleFollowUpTrip(trip)}
                           disabled={!canAct || savingThis}
-                          style={{
-                            marginTop: 10,
-                            padding: "12px 14px",
-                            border: "1px solid #5b21b6",
-                            borderRadius: 12,
-                            background: "#7c3aed",
-                            color: "white",
-                            cursor: canAct ? "pointer" : "not-allowed",
-                            fontWeight: 1000,
-                            width: "100%",
-                          }}
+                          style={{ width: "100%", marginTop: 10 }}
+                          tone="blue"
                         >
                           🟡 Complete as Follow-Up
-                        </button>
+                        </PrimaryButton>
                       </div>
                     ) : null}
 
@@ -2650,12 +2604,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                           <div style={{ fontWeight: 950, marginBottom: 6, color: "#1f6b1f" }}>Resolution Notes (required)</div>
                           <textarea
                             value={tripResolutionNotes[trip.id] ?? ""}
-                            onChange={(e) =>
-                              setTripResolutionNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))
-                            }
+                            onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
                             rows={4}
                             disabled={!canAct || savingThis}
-                            placeholder="What did you do to resolve the issue? What was fixed? Verification?"
                             style={{
                               display: "block",
                               width: "100%",
@@ -2735,78 +2686,51 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                     </div>
                                   </div>
 
-                                  <button
+                                  <GhostButton
                                     type="button"
                                     onClick={() => removeMaterialRow(trip.id, idx)}
                                     disabled={!canAct || savingThis}
-                                    style={{
-                                      padding: "10px 12px",
-                                      border: "1px solid #ccc",
-                                      borderRadius: 12,
-                                      background: "white",
-                                      cursor: canAct ? "pointer" : "not-allowed",
-                                      fontWeight: 900,
-                                      width: "fit-content",
-                                    }}
+                                    style={{ width: "fit-content" }}
                                   >
                                     Remove
-                                  </button>
+                                  </GhostButton>
                                 </div>
                               ))}
                             </div>
                           )}
 
-                          <button
+                          <GhostButton
                             type="button"
                             onClick={() => addMaterialRow(trip.id)}
                             disabled={!canAct || savingThis}
-                            style={{
-                              marginTop: 10,
-                              padding: "10px 12px",
-                              border: "1px solid #ccc",
-                              borderRadius: 12,
-                              background: "white",
-                              cursor: canAct ? "pointer" : "not-allowed",
-                              fontWeight: 950,
-                              width: "100%",
-                            }}
+                            style={{ width: "100%", marginTop: 10 }}
                           >
                             + Add Material
-                          </button>
+                          </GhostButton>
                         </div>
 
-                        <button
+                        <PrimaryButton
                           type="button"
                           onClick={() => handleResolveTrip(trip)}
                           disabled={!canAct || savingThis}
-                          style={{
-                            marginTop: 6,
-                            padding: "12px 14px",
-                            border: "1px solid #1f6b1f",
-                            borderRadius: 12,
-                            background: "#1f8f3a",
-                            color: "white",
-                            cursor: canAct ? "pointer" : "not-allowed",
-                            fontWeight: 1000,
-                            width: "100%",
-                          }}
+                          style={{ width: "100%", marginTop: 10 }}
+                          tone="green"
                         >
                           ✅ Complete as Resolved — Ready to Bill
-                        </button>
+                        </PrimaryButton>
                       </>
                     ) : null}
                   </div>
                 </div>
               ) : null}
             </div>
-
-            <div style={{ marginTop: 8, fontSize: 12, color: "#777" }}>
-              Pick <strong>Follow-Up</strong> or <strong>Resolved</strong> to open the required fields here.
-            </div>
           </div>
         );
       })()
     ) : null;
+
+  // Billing rendering: only show the “big” billing UI when billing exists
+  const showFullBillingPanel = Boolean(billing);
 
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
@@ -2815,42 +2739,60 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         {error ? <p style={{ color: "red" }}>{error}</p> : null}
 
         {!loading && !error && ticket ? (
-          <div style={{ display: "grid", gap: "18px" }}>
+          <div style={{ display: "grid", gap: 16 }}>
             {stickyStartCta}
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-              <div>
-                <h1 style={{ fontSize: "24px", fontWeight: 800 }}>{ticket.issueSummary}</h1>
-                <p style={{ marginTop: "6px", color: "#666" }}>Ticket ID: {ticketId}</p>
+            {/* Header */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <h1 style={{ fontSize: 26, fontWeight: 1000, margin: 0 }}>{ticket.issueSummary}</h1>
+                  <Pill text={formatTicketStatus(ticket.status)} tone={statusTone} />
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280" }}>
+                  <span style={{ fontSize: 13, fontWeight: 900 }}>Ticket ID:</span>
+                  <span style={{ fontSize: 13 }}>{ticketId}</span>
+                  <GhostButton
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(ticketId);
+                      } catch {}
+                    }}
+                    style={{ padding: "6px 10px", borderRadius: 10, fontSize: 12 }}
+                  >
+                    Copy
+                  </GhostButton>
+                </div>
               </div>
 
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 {!ticket.assignedTechnicianId ? (
-                  <button
-                    type="button"
-                    onClick={handleClaimAndStartTrip}
-                    style={{
-                      padding: "10px 14px",
-                      border: "1px solid #2e7d32",
-                      borderRadius: 12,
-                      background: "#eaffea",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
+                  <PrimaryButton type="button" onClick={handleClaimAndStartTrip} tone="green">
                     ✅ Claim & Start Trip
-                  </button>
+                  </PrimaryButton>
                 ) : null}
 
                 <Link
                   href="/service-tickets"
                   style={{
-                    padding: "8px 14px",
-                    border: "1px solid #ccc",
-                    borderRadius: "10px",
+                    padding: "10px 12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: 12,
                     textDecoration: "none",
                     color: "inherit",
                     whiteSpace: "nowrap",
+                    fontWeight: 900,
+                    background: "white",
                   }}
                 >
                   Back to Tickets
@@ -2858,796 +2800,1191 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
               </div>
             </div>
 
-            {/* Customer + Service Address */}
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>Customer & Service Address</h2>
-
-              <div style={{ display: "grid", gap: "10px" }}>
-                <div>
-                  <div style={{ fontWeight: 900, marginBottom: "6px" }}>Customer</div>
-                  <div style={{ fontSize: "14px" }}>
-                    <strong>Name:</strong> {ticket.customerDisplayName || "—"}
-                  </div>
-                  <div style={{ fontSize: "14px", marginTop: "4px" }}>
-                    <strong>Phone:</strong>{" "}
-                    {customerPhone ? (
-                      <a href={`tel:${customerPhone}`} style={{ color: "inherit" }}>
-                        {customerPhone}
-                      </a>
-                    ) : (
-                      "—"
-                    )}
-                  </div>
-                  <div style={{ fontSize: "14px", marginTop: "4px" }}>
-                    <strong>Email:</strong>{" "}
-                    {customerEmail ? (
-                      <a href={`mailto:${customerEmail}`} style={{ color: "inherit" }}>
-                        {customerEmail}
-                      </a>
-                    ) : (
-                      "—"
-                    )}
-                  </div>
-                </div>
-
-                <div style={{ borderTop: "1px solid #eee", paddingTop: "10px" }}>
-                  <div style={{ fontWeight: 900, marginBottom: "6px" }}>Service Address</div>
-
-                  <div style={{ fontSize: "14px" }}>
-                    <strong>Label:</strong> {ticket.serviceAddressLabel || "—"}
-                  </div>
-
-                  <div style={{ fontSize: "14px", marginTop: "6px" }}>{ticket.serviceAddressLine1 || "—"}</div>
-
-                  {ticket.serviceAddressLine2 ? <div style={{ fontSize: "14px" }}>{ticket.serviceAddressLine2}</div> : null}
-
-                  <div style={{ fontSize: "14px", marginTop: "4px" }}>
-                    {ticket.serviceCity || "—"}, {ticket.serviceState || "—"} {ticket.servicePostalCode || ""}
-                  </div>
-
-                  {mapsUrl ? (
-                    <a
-                      href={mapsUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{
-                        display: "inline-block",
-                        marginTop: "10px",
-                        padding: "8px 12px",
-                        border: "1px solid #ccc",
-                        borderRadius: "10px",
-                        textDecoration: "none",
-                        color: "inherit",
-                        background: "white",
-                        fontWeight: 900,
-                      }}
-                    >
-                      📍 Open in Maps
-                    </a>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-
-            {/* Ticket Overview */}
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>Ticket Overview</h2>
-
-              {canDispatch ? (
-                <div style={{ display: "grid", gap: "12px", maxWidth: "900px" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(220px, 1fr))", gap: "12px" }}>
-                    <div>
-                      <label style={{ fontWeight: 900, fontSize: "13px" }}>Status</label>
-                      <select
-                        value={ticketStatusEdit}
-                        onChange={(e) => setTicketStatusEdit(e.target.value as TicketStatus)}
-                        disabled={ticketEditSaving}
-                        style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+            {/* Main layout */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr" : "1.15fr 0.85fr",
+                gap: 16,
+                alignItems: "start",
+              }}
+            >
+              {/* LEFT COLUMN */}
+              <div style={{ display: "grid", gap: 16 }}>
+                {/* Customer + Address + Map */}
+                <Card
+                  title="Customer & Service Address"
+                  right={
+                    mapsUrl ? (
+                      <a
+                        href={mapsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          textDecoration: "none",
+                        }}
                       >
-                        <option value="new">New</option>
-                        <option value="scheduled">Scheduled</option>
-                        <option value="in_progress">In Progress</option>
-                        <option value="follow_up">Follow Up</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                      </select>
-                      <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-                        Current: <strong>{formatTicketStatus(ticket.status)}</strong>
+                        <Pill text="📍 Open in Maps" tone="blue" />
+                      </a>
+                    ) : null
+                  }
+                >
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1.15fr", gap: 14 }}>
+                    <div style={{ display: "grid", gap: 12 }}>
+                      <div>
+                        <div style={{ fontWeight: 1000, marginBottom: 8 }}>Customer</div>
+                        <div style={{ fontSize: 14 }}>
+                          <strong>Name:</strong> {ticket.customerDisplayName || "—"}
+                        </div>
+                        <div style={{ fontSize: 14, marginTop: 6 }}>
+                          <strong>Phone:</strong>{" "}
+                          {customerPhone ? (
+                            <a href={`tel:${customerPhone}`} style={{ color: "inherit" }}>
+                              {customerPhone}
+                            </a>
+                          ) : (
+                            "—"
+                          )}
+                        </div>
+                        <div style={{ fontSize: 14, marginTop: 6 }}>
+                          <strong>Email:</strong>{" "}
+                          {customerEmail ? (
+                            <a href={`mailto:${customerEmail}`} style={{ color: "inherit" }}>
+                              {customerEmail}
+                            </a>
+                          ) : (
+                            "—"
+                          )}
+                        </div>
+                      </div>
+
+                      <Divider />
+
+                      <div>
+                        <div style={{ fontWeight: 1000, marginBottom: 8 }}>Service Address</div>
+                        <div style={{ fontSize: 14 }}>
+                          <strong>Label:</strong> {ticket.serviceAddressLabel || "—"}
+                        </div>
+
+                        <div style={{ marginTop: 8, fontSize: 14 }}>{ticket.serviceAddressLine1 || "—"}</div>
+                        {ticket.serviceAddressLine2 ? <div style={{ fontSize: 14 }}>{ticket.serviceAddressLine2}</div> : null}
+                        <div style={{ marginTop: 6, fontSize: 14 }}>
+                          {ticket.serviceCity || "—"}, {ticket.serviceState || "—"} {ticket.servicePostalCode || ""}
+                        </div>
+
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                          <GhostButton
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(addressFull);
+                              } catch {}
+                            }}
+                          >
+                            Copy Address
+                          </GhostButton>
+
+                          {mapsUrl ? (
+                            <a
+                              href={mapsUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                display: "inline-block",
+                                textDecoration: "none",
+                              }}
+                            >
+                              <GhostButton type="button">Open Maps</GhostButton>
+                            </a>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
-                    <div>
-                      <label style={{ fontWeight: 900, fontSize: "13px" }}>Estimated Duration (minutes)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={ticketEstimatedMinutesEdit}
-                        onChange={(e) => setTicketEstimatedMinutesEdit(e.target.value)}
-                        disabled={ticketEditSaving}
-                        style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label style={{ fontWeight: 900, fontSize: "13px" }}>Issue Details</label>
-                    <textarea
-                      value={ticketIssueDetailsEdit}
-                      onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
-                      rows={4}
-                      disabled={ticketEditSaving}
-                      placeholder="Add or update issue details for the tech..."
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        padding: "8px",
-                        marginTop: "4px",
-                        borderRadius: "10px",
-                        border: "1px solid #ccc",
-                      }}
-                    />
-                  </div>
-
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={handleSaveTicketOverview}
-                      disabled={ticketEditSaving}
-                      style={{
-                        padding: "10px 16px",
-                        border: "1px solid #ccc",
-                        borderRadius: "10px",
-                        background: "white",
-                        cursor: "pointer",
-                        fontWeight: 900,
-                        width: "fit-content",
-                      }}
-                    >
-                      {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
-                    </button>
-
-                    {ticketEditErr ? <span style={{ color: "red", fontSize: "13px" }}>{ticketEditErr}</span> : null}
-                    {ticketEditOk ? <span style={{ color: "green", fontSize: "13px" }}>{ticketEditOk}</span> : null}
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <p>
-                    <strong>Current Status:</strong> {formatTicketStatus(ticket.status)}
-                  </p>
-                  <p>
-                    <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
-                  </p>
-                  <p style={{ marginTop: "10px" }}>
-                    <strong>Issue Details:</strong>
-                  </p>
-                  <p>{ticket.issueDetails || "No additional issue details."}</p>
-                </>
-              )}
-            </div>
-
-            {/* Trips Panel */}
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>Trips (Scheduling + Time)</h2>
-
-              {tripsLoading ? <p>Loading trips...</p> : null}
-              {tripsError ? <p style={{ color: "red" }}>{tripsError}</p> : null}
-
-              {!tripsLoading && !tripsError ? (
-                <>
-                  {trips.length === 0 ? (
+                    {/* Map */}
                     <div
                       style={{
-                        border: "1px dashed #ccc",
-                        borderRadius: "10px",
-                        padding: "10px",
-                        background: "white",
-                        color: "#666",
-                        fontSize: "13px",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 14,
+                        overflow: "hidden",
+                        background: "#f8fafc",
+                        minHeight: isMobile ? 220 : 320,
                       }}
                     >
-                      No trips scheduled yet for this ticket.
+                      {mapsEmbedUrl ? (
+                        <iframe
+                          title="Map"
+                          src={mapsEmbedUrl}
+                          style={{ width: "100%", height: isMobile ? 220 : 320, border: "none" }}
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                        />
+                      ) : (
+                        <div style={{ padding: 14, color: "#6b7280", fontSize: 13 }}>
+                          No address available to show a map.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Ticket Overview */}
+                <Card title="Ticket Overview">
+                  {canDispatch ? (
+                    <div style={{ display: "grid", gap: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+                        <div>
+                          <label style={{ fontWeight: 900, fontSize: 13 }}>Status</label>
+                          <select
+                            value={ticketStatusEdit}
+                            onChange={(e) => setTicketStatusEdit(e.target.value as TicketStatus)}
+                            disabled={ticketEditSaving}
+                            style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
+                          >
+                            <option value="new">New</option>
+                            <option value="scheduled">Scheduled</option>
+                            <option value="in_progress">In Progress</option>
+                            <option value="follow_up">Follow Up</option>
+                            <option value="completed">Completed</option>
+                            <option value="cancelled">Cancelled</option>
+                          </select>
+                          <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+                            Current: <strong>{formatTicketStatus(ticket.status)}</strong>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label style={{ fontWeight: 900, fontSize: 13 }}>Estimated Duration (minutes)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={ticketEstimatedMinutesEdit}
+                            onChange={(e) => setTicketEstimatedMinutesEdit(e.target.value)}
+                            disabled={ticketEditSaving}
+                            style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12, border: "1px solid #d1d5db" }}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label style={{ fontWeight: 900, fontSize: 13 }}>Issue Details</label>
+                        <textarea
+                          value={ticketIssueDetailsEdit}
+                          onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+                          rows={4}
+                          disabled={ticketEditSaving}
+                          placeholder="Add or update issue details for the tech..."
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: 10,
+                            marginTop: 6,
+                            borderRadius: 12,
+                            border: "1px solid #d1d5db",
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <PrimaryButton type="button" onClick={handleSaveTicketOverview} disabled={ticketEditSaving} tone="blue">
+                          {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
+                        </PrimaryButton>
+
+                        {ticketEditErr ? <span style={{ color: "#b91c1c", fontSize: 13 }}>{ticketEditErr}</span> : null}
+                        {ticketEditOk ? <span style={{ color: "#166534", fontSize: 13 }}>{ticketEditOk}</span> : null}
+                      </div>
                     </div>
                   ) : (
-                    <div style={{ display: "grid", gap: "10px" }}>
-                      {trips.map((t) => {
-                        const crew = t.crew || {};
-                        const primary = crew.primaryTechName || "Unassigned";
-                        const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
-                        const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
-                        const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
+                    <div style={{ color: "#111827" }}>
+                      <div>
+                        <strong>Current Status:</strong> {formatTicketStatus(ticket.status)}
+                      </div>
+                      <div style={{ marginTop: 6 }}>
+                        <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
+                      </div>
+                      <div style={{ marginTop: 10 }}>
+                        <strong>Issue Details:</strong>
+                      </div>
+                      <div style={{ marginTop: 6 }}>{ticket.issueDetails || "No additional issue details."}</div>
+                    </div>
+                  )}
+                </Card>
+              </div>
 
-                        const canAct = canCurrentUserActOnTrip(t);
-                        const savingThis = Boolean(tripActionSaving[t.id]);
-                        const errMsg = tripActionError[t.id] || "";
-                        const okMsg = tripActionSuccess[t.id] || "";
+              {/* RIGHT COLUMN */}
+              <div style={{ display: "grid", gap: 16 }}>
+                {/* Trips */}
+                <Card
+                  title="Trips"
+                  right={
+                    canDispatch ? (
+                      <PrimaryButton type="button" onClick={() => setScheduleOpen((v) => !v)} tone="blue">
+                        {scheduleOpen ? "Close" : "+ Schedule New Trip"}
+                      </PrimaryButton>
+                    ) : null
+                  }
+                >
+                  {tripsLoading ? <p style={{ color: "#6b7280" }}>Loading trips...</p> : null}
+                  {tripsError ? <p style={{ color: "#b91c1c" }}>{tripsError}</p> : null}
 
-                        const timerState = (t.timerState || (t.status === "in_progress" ? "running" : "not_started")) as string;
-                        const isRunning = timerState === "running";
-                        const isPaused = timerState === "paused";
-                        const isComplete = timerState === "complete" || t.status === "complete";
-                        const isInProgress = t.status === "in_progress";
-                        const isCancelled = t.status === "cancelled";
+                  {!tripsLoading && !tripsError ? (
+                    <div style={{ display: "grid", gap: 12 }}>
+                      {trips.length === 0 ? (
+                        <div
+                          style={{
+                            border: "1px dashed #d1d5db",
+                            borderRadius: 12,
+                            padding: 12,
+                            background: "#f8fafc",
+                            color: "#6b7280",
+                            fontSize: 13,
+                            fontWeight: 800,
+                          }}
+                        >
+                          No trips scheduled yet.
+                        </div>
+                      ) : (
+                        trips.map((t) => {
+                          const crew = t.crew || {};
+                          const primary = crew.primaryTechName || "Unassigned";
+                          const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
+                          const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
+                          const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
 
-                        const pausedMins = sumPausedMinutes(t.pauseBlocks);
-                        const liveGrossMins =
-                          t.actualStartAt && !t.actualEndAt
-                            ? minutesBetweenIso(t.actualStartAt, nowIso())
-                            : t.actualStartAt && t.actualEndAt
-                              ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
-                              : 0;
+                          const canAct = canCurrentUserActOnTrip(t);
+                          const savingThis = Boolean(tripActionSaving[t.id]);
+                          const errMsg = tripActionError[t.id] || "";
+                          const okMsg = tripActionSuccess[t.id] || "";
 
-                        const computedBillable = Math.max(0, liveGrossMins - pausedMins);
-                        const computedHours = roundToHalf(computedBillable / 60);
+                          const timerState = (t.timerState || (t.status === "in_progress" ? "running" : "not_started")) as string;
+                          const isRunning = timerState === "running";
+                          const isPaused = timerState === "paused";
+                          const isComplete = timerState === "complete" || t.status === "complete";
+                          const isInProgress = t.status === "in_progress";
+                          const isCancelled = t.status === "cancelled";
 
-                        const hoursToUse =
-                          typeof hoursOverrideByTrip[t.id] === "number"
-                            ? roundToHalf(hoursOverrideByTrip[t.id])
-                            : computedHours;
+                          const pausedMins = sumPausedMinutes(t.pauseBlocks);
+                          const liveGrossMins =
+                            t.actualStartAt && !t.actualEndAt
+                              ? minutesBetweenIso(t.actualStartAt, nowIso())
+                              : t.actualStartAt && t.actualEndAt
+                                ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
+                                : 0;
 
-                        const mats = Array.isArray(tripMaterials[t.id]) ? tripMaterials[t.id] : [];
+                          const computedBillable = Math.max(0, liveGrossMins - pausedMins);
+                          const computedHours = roundToHalf(computedBillable / 60);
 
-                        const finishMode = finishModeByTrip[t.id] || "none";
-                        const showFinishPanel = isInProgress && finishMode !== "none";
-                        const showFollowUpField = showFinishPanel && finishMode === "follow_up";
-                        const showResolvedFields = showFinishPanel && finishMode === "resolved";
+                          const hoursToUse =
+                            typeof hoursOverrideByTrip[t.id] === "number"
+                              ? roundToHalf(hoursOverrideByTrip[t.id])
+                              : computedHours;
 
-                        const hideInlineFinishPanelOnMobile = isMobile && inProgressTrip?.id === t.id;
+                          const mats = Array.isArray(tripMaterials[t.id]) ? tripMaterials[t.id] : [];
 
-                        return (
-                          <div
-                            key={t.id}
-                            style={{
-                              border: "1px solid #eee",
-                              borderRadius: "12px",
-                              padding: "12px",
-                              background: "white",
-                            }}
-                          >
-                            <div style={{ fontWeight: 950 }}>
-                              🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
-                            </div>
+                          const finishMode = finishModeByTrip[t.id] || "none";
+                          const showFinishPanel = isInProgress && finishMode !== "none";
+                          const showFollowUpField = showFinishPanel && finishMode === "follow_up";
+                          const showResolvedFields = showFinishPanel && finishMode === "resolved";
+                          const hideInlineFinishPanelOnMobile = isMobile && inProgressTrip?.id === t.id;
 
-                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#555" }}>
-                              Status: <strong>{t.status}</strong>{" "}
-                              <span style={{ color: "#777" }}>
-                                • Timer: {timerState}
-                                {t.actualMinutes != null ? ` • Minutes: ${t.actualMinutes}` : ""}
-                              </span>
-                            </div>
+                          return (
+                            <div
+                              key={t.id}
+                              style={{
+                                border: "1px solid #e5e7eb",
+                                borderRadius: 14,
+                                padding: 12,
+                                background: "white",
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                                <div style={{ display: "grid", gap: 6 }}>
+                                  <div style={{ fontWeight: 1000 }}>
+                                    🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
+                                  </div>
 
-                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-                              Tech: {primary}
-                              {helper ? <div style={{ marginTop: "4px" }}>{helper}</div> : null}
-                              {secondary ? <div style={{ marginTop: "4px" }}>{secondary}</div> : null}
-                              {secondaryHelper ? <div style={{ marginTop: "4px" }}>{secondaryHelper}</div> : null}
-                            </div>
+                                  <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                    Status: <strong>{t.status}</strong> • Timer: <strong>{timerState}</strong>
+                                    {t.actualMinutes != null ? ` • Minutes: ${t.actualMinutes}` : ""}
+                                  </div>
 
-                            <div style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
-                              Timer minutes: <strong>{computedBillable}</strong>{" "}
-                              <span style={{ color: "#999" }}>(gross {liveGrossMins} - paused {pausedMins})</span>
-                            </div>
+                                  <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                    Tech: <strong>{primary}</strong>
+                                    {helper ? <div style={{ marginTop: 4 }}>{helper}</div> : null}
+                                    {secondary ? <div style={{ marginTop: 4 }}>{secondary}</div> : null}
+                                    {secondaryHelper ? <div style={{ marginTop: 4 }}>{secondaryHelper}</div> : null}
+                                  </div>
 
-                            {canDispatch ? (
-                              <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                <button
-                                  type="button"
-                                  onClick={() => openEditTrip(t)}
-                                  disabled={savingThis || isCancelled}
-                                  style={{
-                                    padding: "8px 12px",
-                                    border: "1px solid #ccc",
-                                    borderRadius: "10px",
-                                    background: "white",
-                                    cursor: "pointer",
-                                    fontWeight: 900,
-                                  }}
-                                >
-                                  Edit / Reschedule
-                                </button>
+                                  <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                    Timer minutes: <strong>{computedBillable}</strong>{" "}
+                                    <span style={{ color: "#9ca3af" }}>(gross {liveGrossMins} - paused {pausedMins})</span>
+                                  </div>
+                                </div>
 
-                                <button
-                                  type="button"
-                                  onClick={() => handleCancelTrip(t)}
-                                  disabled={savingThis || isCancelled || isInProgress}
-                                  style={{
-                                    padding: "8px 12px",
-                                    border: "1px solid #ccc",
-                                    borderRadius: "10px",
-                                    background: "white",
-                                    cursor: "pointer",
-                                    fontWeight: 900,
-                                  }}
-                                >
-                                  Cancel Trip
-                                </button>
+                                {canDispatch ? (
+                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                                    <GhostButton type="button" onClick={() => openEditTrip(t)} disabled={savingThis || isCancelled}>
+                                      Edit
+                                    </GhostButton>
 
-                                {isInProgress ? (
-                                  <div style={{ fontSize: "12px", color: "#777", alignSelf: "center" }}>
-                                    (Trip in progress — cancel disabled)
+                                    <GhostButton
+                                      type="button"
+                                      onClick={() => handleSoftDeleteTrip(t)}
+                                      disabled={savingThis || isCancelled || isInProgress || isComplete}
+                                      style={{ borderColor: "#fecdd3", background: "#fff1f2" }}
+                                    >
+                                      Delete
+                                    </GhostButton>
                                   </div>
                                 ) : null}
                               </div>
-                            ) : null}
 
-                            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                              {!isComplete && !isCancelled ? (
-                                <>
-                                  {!isInProgress ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleStartTrip(t)}
-                                      disabled={!canAct || savingThis || !canStartTripRole}
-                                      style={{
-                                        padding: "12px 14px",
-                                        border: "1px solid #1f6b1f",
-                                        borderRadius: "12px",
-                                        background: canAct && canStartTripRole ? "#1f8f3a" : "#f5f5f5",
-                                        color: canAct && canStartTripRole ? "white" : "#666",
-                                        cursor: canAct && canStartTripRole ? "pointer" : "not-allowed",
-                                        fontWeight: 1000,
-                                      }}
-                                    >
-                                      {savingThis ? "Working..." : "🚀 Start Trip"}
-                                    </button>
-                                  ) : null}
+                              <Divider />
 
-                                  {isInProgress && isRunning ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => handlePauseTrip(t)}
-                                      disabled={!canAct || savingThis}
-                                      style={{
-                                        padding: "10px 12px",
-                                        border: "1px solid #ccc",
-                                        borderRadius: "10px",
-                                        background: "white",
-                                        cursor: canAct ? "pointer" : "not-allowed",
-                                        fontWeight: 900,
-                                      }}
-                                    >
-                                      ❚❚ Pause
-                                    </button>
-                                  ) : null}
+                              {/* Actions */}
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                {!isComplete && !isCancelled ? (
+                                  <>
+                                    {!isInProgress ? (
+                                      <PrimaryButton
+                                        type="button"
+                                        onClick={() => handleStartTrip(t)}
+                                        disabled={!canAct || savingThis || !canStartTripRole}
+                                        tone="green"
+                                      >
+                                        {savingThis ? "Working..." : "🚀 Start Trip"}
+                                      </PrimaryButton>
+                                    ) : null}
 
-                                  {isInProgress && isPaused ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleResumeTrip(t)}
-                                      disabled={!canAct || savingThis}
-                                      style={{
-                                        padding: "10px 12px",
-                                        border: "1px solid #ccc",
-                                        borderRadius: "10px",
-                                        background: "white",
-                                        cursor: canAct ? "pointer" : "not-allowed",
-                                        fontWeight: 900,
-                                      }}
-                                    >
-                                      ▶ Resume
-                                    </button>
-                                  ) : null}
+                                    {isInProgress && isRunning ? (
+                                      <GhostButton type="button" onClick={() => handlePauseTrip(t)} disabled={!canAct || savingThis}>
+                                        ❚❚ Pause
+                                      </GhostButton>
+                                    ) : null}
 
-                                  {isInProgress ? (
-                                    <div style={{ width: "100%", marginTop: 6, display: "grid", gap: 8 }}>
-                                      <div style={{ fontSize: 12, color: "#666", fontWeight: 900 }}>Finish mode:</div>
+                                    {isInProgress && isPaused ? (
+                                      <GhostButton type="button" onClick={() => handleResumeTrip(t)} disabled={!canAct || savingThis}>
+                                        ▶ Resume
+                                      </GhostButton>
+                                    ) : null}
 
-                                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "follow_up" }));
-                                            if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(true);
-                                          }}
-                                          disabled={!canAct || savingThis}
-                                          style={{
-                                            padding: "10px 12px",
-                                            borderRadius: 12,
-                                            border: "1px solid #d7b6ff",
-                                            background: finishMode === "follow_up" ? "#e9d5ff" : "#f3e8ff",
-                                            cursor: canAct ? "pointer" : "not-allowed",
-                                            fontWeight: 950,
-                                          }}
-                                        >
-                                          🟡 Follow-Up
-                                        </button>
-
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "resolved" }));
-                                            if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(true);
-                                          }}
-                                          disabled={!canAct || savingThis}
-                                          style={{
-                                            padding: "10px 12px",
-                                            borderRadius: 12,
-                                            border: "1px solid #b7e3c2",
-                                            background: finishMode === "resolved" ? "#bff7c9" : "#eaffea",
-                                            cursor: canAct ? "pointer" : "not-allowed",
-                                            fontWeight: 950,
-                                          }}
-                                        >
-                                          ✅ Resolved
-                                        </button>
-
-                                        {finishMode !== "none" ? (
-                                          <button
+                                    {isInProgress ? (
+                                      <div style={{ width: "100%", marginTop: 8, display: "grid", gap: 8 }}>
+                                        <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 900 }}>Finish mode</div>
+                                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                          <GhostButton
                                             type="button"
                                             onClick={() => {
-                                              setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "none" }));
-                                              if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(false);
+                                              setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "follow_up" }));
+                                              if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(true);
                                             }}
                                             disabled={!canAct || savingThis}
-                                            style={{
-                                              padding: "10px 12px",
-                                              borderRadius: 12,
-                                              border: "1px solid #ddd",
-                                              background: "white",
-                                              cursor: "pointer",
-                                              fontWeight: 900,
-                                            }}
+                                            style={{ borderColor: "#d7b6ff", background: "#fbf5ff" }}
                                           >
-                                            Clear
-                                          </button>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  ) : null}
-                                </>
-                              ) : (
-                                <div style={{ color: "#777", fontSize: "12px" }}>
-                                  {isCancelled
-                                    ? `🚫 This trip is cancelled. (${t.cancelReason || "No reason"})`
-                                    : "✅ This trip is complete."}
-                                </div>
-                              )}
-                            </div>
+                                            🟡 Follow-Up
+                                          </GhostButton>
 
-                            {!canAct ? (
-                              <div style={{ marginTop: "8px", fontSize: "12px", color: "#999" }}>
-                                You can only act on trips where you are on the assigned crew. (Admin can act on any trip.)
-                              </div>
-                            ) : null}
+                                          <GhostButton
+                                            type="button"
+                                            onClick={() => {
+                                              setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "resolved" }));
+                                              if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(true);
+                                            }}
+                                            disabled={!canAct || savingThis}
+                                            style={{ borderColor: "#b7e3c2", background: "#f2fff6" }}
+                                          >
+                                            ✅ Resolved
+                                          </GhostButton>
 
-                            {!canStartTripRole ? (
-                              <div style={{ marginTop: "6px", fontSize: "12px", color: "#999" }}>
-                                Start Trip is limited to Admin/Dispatcher/Manager/Technician.
-                              </div>
-                            ) : null}
-
-                            <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
-                              <div style={{ fontWeight: 900, marginBottom: "6px" }}>Work Notes</div>
-                              <textarea
-                                value={tripWorkNotes[t.id] ?? ""}
-                                onChange={(e) => setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                rows={3}
-                                disabled={!canAct || savingThis || isCancelled}
-                                placeholder="What did you work on during this trip?"
-                                style={{
-                                  display: "block",
-                                  width: "100%",
-                                  padding: "10px",
-                                  borderRadius: "12px",
-                                  border: "1px solid #ccc",
-                                }}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => handleSaveWorkNotes(t)}
-                                disabled={!canAct || savingThis || isCancelled}
-                                style={{
-                                  marginTop: "8px",
-                                  padding: "10px 12px",
-                                  border: "1px solid #ccc",
-                                  borderRadius: "12px",
-                                  background: "white",
-                                  cursor: canAct ? "pointer" : "not-allowed",
-                                  fontWeight: 900,
-                                }}
-                              >
-                                💾 Save Notes
-                              </button>
-                            </div>
-
-                            {/* ✅ Finish Panel (desktop + non-mobile in-progress trip only) */}
-                            {showFinishPanel && !hideInlineFinishPanelOnMobile ? (
-                              <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 14, borderRadius: 12 }}>
-                                <div
-                                  style={{
-                                    border: finishMode === "resolved" ? "1px solid #b7e3c2" : "1px solid #d7b6ff",
-                                    background: finishMode === "resolved" ? "#f2fff6" : "#fbf5ff",
-                                    borderRadius: 12,
-                                    padding: 12,
-                                  }}
-                                >
-                                  <div style={{ fontWeight: 1000 }}>
-                                    {finishMode === "resolved" ? "✅ Finish Trip: Resolved" : "🟡 Finish Trip: Follow-Up"}
-                                  </div>
-
-                                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10 }}>
-                                      <div>
-                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Hours (override)</label>
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          step="0.5"
-                                          value={hoursToUse}
-                                          onChange={(e) =>
-                                            setHoursOverrideByTrip((prev) => ({
-                                              ...prev,
-                                              [t.id]: Number(e.target.value),
-                                            }))
-                                          }
-                                          disabled={!canAct || savingThis}
-                                          style={{
-                                            display: "block",
-                                            width: "100%",
-                                            padding: "10px 12px",
-                                            borderRadius: 12,
-                                            border: "1px solid #ccc",
-                                            marginTop: 6,
-                                          }}
-                                        />
-                                        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                                          Timer default: <strong>{computedHours}</strong> hr
+                                          {finishMode !== "none" ? (
+                                            <GhostButton
+                                              type="button"
+                                              onClick={() => {
+                                                setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "none" }));
+                                                if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(false);
+                                              }}
+                                              disabled={!canAct || savingThis}
+                                            >
+                                              Clear
+                                            </GhostButton>
+                                          ) : null}
                                         </div>
                                       </div>
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  <div style={{ color: "#6b7280", fontSize: 12, fontWeight: 900 }}>
+                                    {isCancelled ? `🚫 Cancelled (${t.cancelReason || "No reason"})` : "✅ Complete"}
+                                  </div>
+                                )}
+                              </div>
 
-                                      <div>
-                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Helper confirmed?</label>
-                                        <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+                              {/* Work Notes */}
+                              <div style={{ marginTop: 12 }}>
+                                <div style={{ fontWeight: 900, marginBottom: 6 }}>Work Notes</div>
+                                <textarea
+                                  value={tripWorkNotes[t.id] ?? ""}
+                                  onChange={(e) => setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                                  rows={3}
+                                  disabled={!canAct || savingThis || isCancelled}
+                                  style={{
+                                    display: "block",
+                                    width: "100%",
+                                    padding: 10,
+                                    borderRadius: 12,
+                                    border: "1px solid #d1d5db",
+                                  }}
+                                />
+                                <div style={{ marginTop: 8 }}>
+                                  <GhostButton type="button" onClick={() => handleSaveWorkNotes(t)} disabled={!canAct || savingThis || isCancelled}>
+                                    💾 Save Notes
+                                  </GhostButton>
+                                </div>
+                              </div>
+
+                              {/* Finish Panel (desktop + non-mobile in-progress trip only) */}
+                              {showFinishPanel && !hideInlineFinishPanelOnMobile ? (
+                                <div style={{ marginTop: 14 }}>
+                                  <div
+                                    style={{
+                                      border: finishMode === "resolved" ? "1px solid #b7e3c2" : "1px solid #d7b6ff",
+                                      background: finishMode === "resolved" ? "#f2fff6" : "#fbf5ff",
+                                      borderRadius: 14,
+                                      padding: 12,
+                                    }}
+                                  >
+                                    <div style={{ fontWeight: 1000 }}>
+                                      {finishMode === "resolved" ? "✅ Finish Trip: Resolved" : "🟡 Finish Trip: Follow-Up"}
+                                    </div>
+
+                                    <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10 }}>
+                                        <div>
+                                          <label style={{ fontSize: 12, fontWeight: 900 }}>Hours (override)</label>
                                           <input
-                                            type="checkbox"
-                                            checked={helperConfirmedByTrip[t.id] ?? true}
+                                            type="number"
+                                            min="0"
+                                            step="0.5"
+                                            value={hoursToUse}
                                             onChange={(e) =>
-                                              setHelperConfirmedByTrip((prev) => ({
+                                              setHoursOverrideByTrip((prev) => ({
                                                 ...prev,
-                                                [t.id]: e.target.checked,
+                                                [t.id]: Number(e.target.value),
                                               }))
                                             }
                                             disabled={!canAct || savingThis}
+                                            style={{
+                                              display: "block",
+                                              width: "100%",
+                                              padding: "10px 12px",
+                                              borderRadius: 12,
+                                              border: "1px solid #ccc",
+                                              marginTop: 6,
+                                            }}
                                           />
-                                          <span style={{ fontSize: 13, fontWeight: 900 }}>
-                                            Helper was on this trip (include helper in payroll)
-                                          </span>
-                                        </label>
-                                      </div>
-                                    </div>
-
-                                    {showFollowUpField ? (
-                                      <div>
-                                        <div style={{ fontWeight: 950, marginBottom: "6px", color: "#5b21b6" }}>
-                                          Follow-Up Notes (required)
-                                        </div>
-                                        <textarea
-                                          value={tripFollowUpNotes[t.id] ?? ""}
-                                          onChange={(e) =>
-                                            setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
-                                          }
-                                          rows={4}
-                                          disabled={!canAct || savingThis}
-                                          style={{
-                                            display: "block",
-                                            width: "100%",
-                                            padding: "10px",
-                                            borderRadius: "12px",
-                                            border: "1px solid #ccc",
-                                          }}
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={() => handleFollowUpTrip(t)}
-                                          disabled={!canAct || savingThis}
-                                          style={{
-                                            marginTop: 10,
-                                            padding: "12px 14px",
-                                            border: "1px solid #5b21b6",
-                                            borderRadius: 12,
-                                            background: "#7c3aed",
-                                            color: "white",
-                                            cursor: canAct ? "pointer" : "not-allowed",
-                                            fontWeight: 1000,
-                                          }}
-                                        >
-                                          🟡 Complete as Follow-Up
-                                        </button>
-                                      </div>
-                                    ) : null}
-
-                                    {showResolvedFields ? (
-                                      <>
-                                        <div>
-                                          <div style={{ fontWeight: 950, marginBottom: "6px", color: "#1f6b1f" }}>
-                                            Resolution Notes (required)
+                                          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                                            Timer default: <strong>{computedHours}</strong> hr
                                           </div>
+                                        </div>
+
+                                        <div>
+                                          <label style={{ fontSize: 12, fontWeight: 900 }}>Helper confirmed?</label>
+                                          <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+                                            <input
+                                              type="checkbox"
+                                              checked={helperConfirmedByTrip[t.id] ?? true}
+                                              onChange={(e) =>
+                                                setHelperConfirmedByTrip((prev) => ({
+                                                  ...prev,
+                                                  [t.id]: e.target.checked,
+                                                }))
+                                              }
+                                              disabled={!canAct || savingThis}
+                                            />
+                                            <span style={{ fontSize: 13, fontWeight: 900 }}>Include helper in payroll</span>
+                                          </label>
+                                        </div>
+                                      </div>
+
+                                      {showFollowUpField ? (
+                                        <div>
+                                          <div style={{ fontWeight: 950, marginBottom: 6, color: "#5b21b6" }}>Follow-Up Notes (required)</div>
                                           <textarea
-                                            value={tripResolutionNotes[t.id] ?? ""}
-                                            onChange={(e) =>
-                                              setTripResolutionNotes((prev) => ({ ...prev, [t.id]: e.target.value }))
-                                            }
+                                            value={tripFollowUpNotes[t.id] ?? ""}
+                                            onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
                                             rows={4}
                                             disabled={!canAct || savingThis}
                                             style={{
                                               display: "block",
                                               width: "100%",
-                                              padding: "10px",
-                                              borderRadius: "12px",
-                                              border: "1px solid #ccc",
+                                              padding: 10,
+                                              borderRadius: 12,
+                                              border: "1px solid #d1d5db",
                                             }}
                                           />
+                                          <PrimaryButton
+                                            type="button"
+                                            onClick={() => handleFollowUpTrip(t)}
+                                            disabled={!canAct || savingThis}
+                                            tone="blue"
+                                            style={{ marginTop: 10 }}
+                                          >
+                                            🟡 Complete as Follow-Up
+                                          </PrimaryButton>
                                         </div>
+                                      ) : null}
 
-                                        <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 12 }}>
-                                          <div style={{ fontWeight: 950 }}>Materials (required)</div>
-
-                                          {mats.length === 0 ? (
-                                            <div
+                                      {showResolvedFields ? (
+                                        <>
+                                          <div>
+                                            <div style={{ fontWeight: 950, marginBottom: 6, color: "#14532d" }}>Resolution Notes (required)</div>
+                                            <textarea
+                                              value={tripResolutionNotes[t.id] ?? ""}
+                                              onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                                              rows={4}
+                                              disabled={!canAct || savingThis}
                                               style={{
-                                                marginTop: 10,
-                                                border: "1px dashed #ccc",
-                                                borderRadius: 12,
+                                                display: "block",
+                                                width: "100%",
                                                 padding: 10,
-                                                background: "white",
-                                                color: "#666",
-                                                fontSize: 13,
+                                                borderRadius: 12,
+                                                border: "1px solid #d1d5db",
                                               }}
-                                            >
-                                              No materials added yet.
-                                            </div>
-                                          ) : (
-                                            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                                              {mats.map((m, idx) => (
-                                                <div
-                                                  key={`${t.id}-mat-${idx}`}
-                                                  style={{
-                                                    border: "1px solid #eee",
-                                                    borderRadius: 12,
-                                                    padding: 10,
-                                                    background: "white",
-                                                    display: "grid",
-                                                    gap: 8,
-                                                  }}
-                                                >
-                                                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
-                                                    <div>
-                                                      <label style={{ fontSize: 12, fontWeight: 900 }}>Name</label>
-                                                      <input
-                                                        value={m.name}
-                                                        onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
-                                                        disabled={!canAct || savingThis}
-                                                        style={{
-                                                          display: "block",
-                                                          width: "100%",
-                                                          padding: "10px 12px",
-                                                          borderRadius: 12,
-                                                          border: "1px solid #ccc",
-                                                          marginTop: 6,
-                                                        }}
-                                                      />
-                                                    </div>
-                                                    <div>
-                                                      <label style={{ fontSize: 12, fontWeight: 900 }}>Qty</label>
-                                                      <input
-                                                        type="number"
-                                                        min="0.01"
-                                                        step="0.01"
-                                                        value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                                        onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
-                                                        disabled={!canAct || savingThis}
-                                                        style={{
-                                                          display: "block",
-                                                          width: "100%",
-                                                          padding: "10px 12px",
-                                                          borderRadius: 12,
-                                                          border: "1px solid #ccc",
-                                                          marginTop: 6,
-                                                        }}
-                                                      />
-                                                    </div>
-                                                  </div>
+                                            />
+                                          </div>
 
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => removeMaterialRow(t.id, idx)}
-                                                    disabled={!canAct || savingThis}
+                                          <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 12 }}>
+                                            <div style={{ fontWeight: 950 }}>Materials (required)</div>
+
+                                            {mats.length === 0 ? (
+                                              <div
+                                                style={{
+                                                  marginTop: 10,
+                                                  border: "1px dashed #d1d5db",
+                                                  borderRadius: 12,
+                                                  padding: 10,
+                                                  background: "white",
+                                                  color: "#6b7280",
+                                                  fontSize: 13,
+                                                }}
+                                              >
+                                                No materials added yet.
+                                              </div>
+                                            ) : (
+                                              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                                                {mats.map((m, idx) => (
+                                                  <div
+                                                    key={`${t.id}-mat-${idx}`}
                                                     style={{
-                                                      padding: "10px 12px",
-                                                      border: "1px solid #ccc",
+                                                      border: "1px solid #e5e7eb",
                                                       borderRadius: 12,
+                                                      padding: 10,
                                                       background: "white",
-                                                      cursor: canAct ? "pointer" : "not-allowed",
-                                                      fontWeight: 900,
-                                                      width: "fit-content",
+                                                      display: "grid",
+                                                      gap: 8,
                                                     }}
                                                   >
-                                                    Remove
-                                                  </button>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          )}
+                                                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
+                                                      <div>
+                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Name</label>
+                                                        <input
+                                                          value={m.name}
+                                                          onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
+                                                          disabled={!canAct || savingThis}
+                                                          style={{
+                                                            display: "block",
+                                                            width: "100%",
+                                                            padding: "10px 12px",
+                                                            borderRadius: 12,
+                                                            border: "1px solid #ccc",
+                                                            marginTop: 6,
+                                                          }}
+                                                        />
+                                                      </div>
+                                                      <div>
+                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Qty</label>
+                                                        <input
+                                                          type="number"
+                                                          min="0.01"
+                                                          step="0.01"
+                                                          value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
+                                                          onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
+                                                          disabled={!canAct || savingThis}
+                                                          style={{
+                                                            display: "block",
+                                                            width: "100%",
+                                                            padding: "10px 12px",
+                                                            borderRadius: 12,
+                                                            border: "1px solid #ccc",
+                                                            marginTop: 6,
+                                                          }}
+                                                        />
+                                                      </div>
+                                                    </div>
 
-                                          <button
+                                                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                                      <div>
+                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Unit (opt)</label>
+                                                        <input
+                                                          value={m.unit || ""}
+                                                          onChange={(e) => updateMaterialRow(t.id, idx, { unit: e.target.value })}
+                                                          disabled={!canAct || savingThis}
+                                                          style={{
+                                                            display: "block",
+                                                            width: "100%",
+                                                            padding: "10px 12px",
+                                                            borderRadius: 12,
+                                                            border: "1px solid #ccc",
+                                                            marginTop: 6,
+                                                          }}
+                                                        />
+                                                      </div>
+                                                      <div>
+                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Notes (opt)</label>
+                                                        <input
+                                                          value={m.notes || ""}
+                                                          onChange={(e) => updateMaterialRow(t.id, idx, { notes: e.target.value })}
+                                                          disabled={!canAct || savingThis}
+                                                          style={{
+                                                            display: "block",
+                                                            width: "100%",
+                                                            padding: "10px 12px",
+                                                            borderRadius: 12,
+                                                            border: "1px solid #ccc",
+                                                            marginTop: 6,
+                                                          }}
+                                                        />
+                                                      </div>
+                                                    </div>
+
+                                                    <GhostButton
+                                                      type="button"
+                                                      onClick={() => removeMaterialRow(t.id, idx)}
+                                                      disabled={!canAct || savingThis}
+                                                      style={{ width: "fit-content" }}
+                                                    >
+                                                      Remove
+                                                    </GhostButton>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
+
+                                            <GhostButton
+                                              type="button"
+                                              onClick={() => addMaterialRow(t.id)}
+                                              disabled={!canAct || savingThis}
+                                              style={{ marginTop: 10 }}
+                                            >
+                                              + Add Material
+                                            </GhostButton>
+                                          </div>
+
+                                          <PrimaryButton
                                             type="button"
-                                            onClick={() => addMaterialRow(t.id)}
+                                            onClick={() => handleResolveTrip(t)}
                                             disabled={!canAct || savingThis}
-                                            style={{
-                                              marginTop: 10,
-                                              padding: "10px 12px",
-                                              border: "1px solid #ccc",
-                                              borderRadius: 12,
-                                              background: "white",
-                                              cursor: canAct ? "pointer" : "not-allowed",
-                                              fontWeight: 950,
-                                            }}
+                                            tone="green"
+                                            style={{ marginTop: 6 }}
                                           >
-                                            + Add Material
-                                          </button>
-                                        </div>
-
-                                        <button
-                                          type="button"
-                                          onClick={() => handleResolveTrip(t)}
-                                          disabled={!canAct || savingThis}
-                                          style={{
-                                            marginTop: 6,
-                                            padding: "12px 14px",
-                                            border: "1px solid #1f6b1f",
-                                            borderRadius: 12,
-                                            background: "#1f8f3a",
-                                            color: "white",
-                                            cursor: canAct ? "pointer" : "not-allowed",
-                                            fontWeight: 1000,
-                                          }}
-                                        >
-                                          ✅ Complete as Resolved — Ready to Bill
-                                        </button>
-                                      </>
-                                    ) : null}
+                                            ✅ Complete as Resolved — Ready to Bill
+                                          </PrimaryButton>
+                                        </>
+                                      ) : null}
+                                    </div>
                                   </div>
+                                </div>
+                              ) : null}
+
+                              {errMsg ? <p style={{ marginTop: 10, color: "#b91c1c", fontWeight: 900 }}>{errMsg}</p> : null}
+                              {okMsg ? <p style={{ marginTop: 10, color: "#166534", fontWeight: 900 }}>{okMsg}</p> : null}
+
+                              <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>Trip ID: {t.id}</div>
+                            </div>
+                          );
+                        })
+                      )}
+
+                      {/* Schedule panel */}
+                      {canDispatch && scheduleOpen ? (
+                        <div
+                          style={{
+                            borderTop: "1px solid #f1f5f9",
+                            paddingTop: 12,
+                            marginTop: 6,
+                          }}
+                        >
+                          <div style={{ fontWeight: 1000, marginBottom: 10 }}>Schedule a Trip</div>
+
+                          <form onSubmit={handleCreateTrip} style={{ display: "grid", gap: 12 }}>
+                            <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
+                              <div>
+                                <label style={{ fontWeight: 900, fontSize: 13 }}>Date</label>
+                                <input
+                                  type="date"
+                                  value={tripDate}
+                                  onChange={(e) => setTripDate(e.target.value)}
+                                  disabled={tripSaving}
+                                  style={{
+                                    display: "block",
+                                    width: "100%",
+                                    padding: 10,
+                                    marginTop: 6,
+                                    borderRadius: 12,
+                                    border: "1px solid #d1d5db",
+                                  }}
+                                />
+                              </div>
+
+                              <div>
+                                <label style={{ fontWeight: 900, fontSize: 13 }}>Time Window</label>
+                                <select
+                                  value={tripTimeWindow}
+                                  onChange={(e) => setTripTimeWindow(e.target.value as TripTimeWindow)}
+                                  disabled={tripSaving}
+                                  style={{
+                                    display: "block",
+                                    width: "100%",
+                                    padding: 10,
+                                    marginTop: 6,
+                                    borderRadius: 12,
+                                  }}
+                                >
+                                  <option value="am">Morning (8:00–12:00)</option>
+                                  <option value="pm">Afternoon (1:00–5:00)</option>
+                                  <option value="all_day">All Day (8:00–5:00)</option>
+                                  <option value="custom">Custom</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            {tripTimeWindow === "custom" ? (
+                              <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
+                                <div>
+                                  <label style={{ fontWeight: 900, fontSize: 13 }}>Start Time</label>
+                                  <input
+                                    type="time"
+                                    value={tripStartTime}
+                                    onChange={(e) => setTripStartTime(e.target.value)}
+                                    disabled={tripSaving}
+                                    style={{
+                                      display: "block",
+                                      width: "100%",
+                                      padding: 10,
+                                      marginTop: 6,
+                                      borderRadius: 12,
+                                      border: "1px solid #d1d5db",
+                                    }}
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ fontWeight: 900, fontSize: 13 }}>End Time</label>
+                                  <input
+                                    type="time"
+                                    value={tripEndTime}
+                                    onChange={(e) => setTripEndTime(e.target.value)}
+                                    disabled={tripSaving}
+                                    style={{
+                                      display: "block",
+                                      width: "100%",
+                                      padding: 10,
+                                      marginTop: 6,
+                                      borderRadius: 12,
+                                      border: "1px solid #d1d5db",
+                                    }}
+                                  />
                                 </div>
                               </div>
                             ) : null}
 
-                            {errMsg ? <p style={{ marginTop: "10px", color: "red" }}>{errMsg}</p> : null}
-                            {okMsg ? <p style={{ marginTop: "10px", color: "green" }}>{okMsg}</p> : null}
+                            {techniciansLoading ? <p style={{ color: "#6b7280" }}>Loading technicians...</p> : null}
+                            {techniciansError ? <p style={{ color: "#b91c1c" }}>{techniciansError}</p> : null}
 
-                            <div style={{ marginTop: "10px", fontSize: "11px", color: "#999" }}>Trip ID: {t.id}</div>
+                            <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#f8fafc" }}>
+                              <div style={{ fontWeight: 1000, marginBottom: 10 }}>Crew</div>
+
+                              <div>
+                                <label style={{ fontWeight: 900, fontSize: 13 }}>Primary Technician</label>
+                                <select
+                                  value={tripPrimaryTechUid}
+                                  onChange={(e) => setTripPrimaryTechUid(e.target.value)}
+                                  disabled={tripSaving || techniciansLoading}
+                                  style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
+                                >
+                                  <option value="">Select a technician...</option>
+                                  {technicians.map((t) => (
+                                    <option key={t.uid} value={t.uid}>
+                                      {t.displayName}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div style={{ marginTop: 10 }}>
+                                <label style={{ fontWeight: 900, fontSize: 13 }}>Secondary Technician (Optional)</label>
+                                <select
+                                  value={tripSecondaryTechUid}
+                                  onChange={(e) => setTripSecondaryTechUid(e.target.value)}
+                                  disabled={tripSaving || !tripPrimaryTechUid}
+                                  style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
+                                >
+                                  <option value="">— None —</option>
+                                  {technicians
+                                    .filter((t) => t.uid !== tripPrimaryTechUid)
+                                    .map((t) => (
+                                      <option key={t.uid} value={t.uid}>
+                                        {t.displayName}
+                                      </option>
+                                    ))}
+                                </select>
+                                <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                                  Only use this for two true technicians. Helpers/apprentices go below.
+                                </div>
+                              </div>
+
+                              <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
+                                <div style={{ fontWeight: 1000, marginBottom: 8 }}>Helper / Apprentice</div>
+
+                                {profilesLoading ? <p style={{ color: "#6b7280" }}>Loading employee profiles...</p> : null}
+                                {profilesError ? <p style={{ color: "#b91c1c" }}>{profilesError}</p> : null}
+
+                                <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={tripUseDefaultHelper}
+                                    onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
+                                    disabled={tripSaving}
+                                  />
+                                  Use default helper pairing (recommended)
+                                </label>
+
+                                <div style={{ marginTop: 10 }}>
+                                  <label style={{ fontWeight: 900, fontSize: 13 }}>Helper / Apprentice (Optional)</label>
+                                  <select
+                                    value={tripHelperUid}
+                                    onChange={(e) => {
+                                      setTripUseDefaultHelper(false);
+                                      setTripHelperUid(e.target.value);
+                                    }}
+                                    disabled={tripSaving || profilesLoading || !tripPrimaryTechUid}
+                                    style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
+                                  >
+                                    <option value="">— None —</option>
+                                    {helperCandidates.map((h) => (
+                                      <option key={h.uid} value={h.uid}>
+                                        {h.name} ({h.laborRole})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div style={{ marginTop: 10 }}>
+                                  <label style={{ fontWeight: 900, fontSize: 13 }}>Secondary Helper (Optional)</label>
+                                  <select
+                                    value={tripSecondaryHelperUid}
+                                    onChange={(e) => setTripSecondaryHelperUid(e.target.value)}
+                                    disabled={tripSaving || profilesLoading}
+                                    style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
+                                  >
+                                    <option value="">— None —</option>
+                                    {helperCandidates.map((h) => (
+                                      <option key={h.uid} value={h.uid}>
+                                        {h.name} ({h.laborRole})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label style={{ fontWeight: 900, fontSize: 13 }}>Trip Notes (optional)</label>
+                              <textarea
+                                value={tripNotes}
+                                onChange={(e) => setTripNotes(e.target.value)}
+                                rows={3}
+                                disabled={tripSaving}
+                                style={{
+                                  display: "block",
+                                  width: "100%",
+                                  padding: 10,
+                                  marginTop: 6,
+                                  borderRadius: 12,
+                                  border: "1px solid #d1d5db",
+                                }}
+                              />
+                            </div>
+
+                            <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+                              <input
+                                type="checkbox"
+                                checked={tripSetTicketScheduled}
+                                onChange={(e) => setTripSetTicketScheduled(e.target.checked)}
+                                disabled={tripSaving}
+                              />
+                              If ticket is NEW, change status to SCHEDULED when this trip is created
+                            </label>
+
+                            {tripSaveError ? <p style={{ color: "#b91c1c", fontWeight: 900 }}>{tripSaveError}</p> : null}
+                            {tripSaveSuccess ? <p style={{ color: "#166534", fontWeight: 900 }}>{tripSaveSuccess}</p> : null}
+
+                            <PrimaryButton type="submit" disabled={tripSaving || !canDispatch} tone="blue" style={{ width: "fit-content" }}>
+                              {tripSaving ? "Scheduling..." : "Schedule Trip"}
+                            </PrimaryButton>
+                          </form>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </Card>
+
+                {/* Billing (clean) */}
+                <Card title="Billing Packet">
+                  {!showFullBillingPanel ? (
+                    <div
+                      style={{
+                        border: "1px dashed #d1d5db",
+                        borderRadius: 12,
+                        padding: 12,
+                        background: "#f8fafc",
+                        color: "#6b7280",
+                        fontSize: 13,
+                        fontWeight: 800,
+                      }}
+                    >
+                      No billing packet yet. It will appear after a trip is completed as <strong>Resolved — Ready to Bill</strong>.
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <div style={{ fontSize: 13, color: "#374151" }}>
+                        Status: <strong>{billing?.status}</strong>
+                        {billing?.readyToBillAt ? <span style={{ color: "#6b7280" }}> • Ready: {billing.readyToBillAt}</span> : null}
+                      </div>
+
+                      <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "white" }}>
+                        <div style={{ fontWeight: 1000, marginBottom: 6 }}>Labor (Customer Billing)</div>
+                        <div style={{ fontSize: 13, color: "#374151" }}>
+                          Total billed hours: <strong>{Number(billing?.labor?.totalHours ?? 0).toFixed(2)}</strong>
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                          Billing rule: labor hours belong to the <strong>Primary Tech only</strong>.
+                        </div>
+
+                        {Array.isArray(billing?.labor?.byCrew) && billing!.labor.byCrew.length ? (
+                          <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                            {billing!.labor.byCrew.map((c) => (
+                              <div key={c.uid} style={{ fontSize: 13, color: "#374151" }}>
+                                {c.name} • {c.hours.toFixed(2)} hr
+                              </div>
+                            ))}
                           </div>
-                        );
-                      })}
+                        ) : (
+                          <div style={{ marginTop: 10, fontSize: 13, color: "#6b7280" }}>No primary tech labor line captured yet.</div>
+                        )}
+                      </div>
+
+                      <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "white" }}>
+                        <div style={{ fontWeight: 1000, marginBottom: 6 }}>Materials</div>
+
+                        {!Array.isArray(billing?.materials) || billing!.materials.length === 0 ? (
+                          <div style={{ fontSize: 13, color: "#6b7280" }}>No materials captured.</div>
+                        ) : (
+                          <div style={{ display: "grid", gap: 8 }}>
+                            {billing!.materials.map((m, idx) => (
+                              <div
+                                key={`bill-mat-${idx}`}
+                                style={{
+                                  border: "1px solid #f1f5f9",
+                                  borderRadius: 12,
+                                  padding: 10,
+                                }}
+                              >
+                                <div style={{ fontWeight: 900, fontSize: 13 }}>
+                                  {m.name} • {Number(m.qty).toFixed(2)} {m.unit || ""}
+                                </div>
+                                {m.notes ? <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>{m.notes}</div> : null}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "white" }}>
+                        <div style={{ fontWeight: 1000, marginBottom: 6 }}>Resolution Notes</div>
+                        <div style={{ fontSize: 13, color: "#374151", whiteSpace: "pre-wrap" }}>
+                          {billing?.resolutionNotes || "—"}
+                        </div>
+
+                        <div style={{ marginTop: 12, fontWeight: 1000, marginBottom: 6 }}>Work Notes</div>
+                        <div style={{ fontSize: 13, color: "#374151", whiteSpace: "pre-wrap" }}>
+                          {billing?.workNotes || "—"}
+                        </div>
+                      </div>
+
+                      {canBill ? (
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <GhostButton type="button" onClick={() => markBillingStatus("invoiced")} disabled={billingSaving}>
+                            {billingSaving ? "Working..." : "Mark Invoiced"}
+                          </GhostButton>
+
+                          <GhostButton type="button" onClick={() => markBillingStatus("ready_to_bill")} disabled={billingSaving}>
+                            Set Ready to Bill
+                          </GhostButton>
+
+                          <GhostButton type="button" onClick={() => markBillingStatus("not_ready")} disabled={billingSaving}>
+                            Set Not Ready
+                          </GhostButton>
+
+                          <GhostButton
+                            type="button"
+                            onClick={async () => {
+                              if (!ticket?.id) return;
+
+                              const win = window.open("about:blank", "_blank");
+
+                              try {
+                                const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ serviceTicketId: ticket.id }),
+                                });
+
+                                const data = await res.json();
+
+                                if (!res.ok) {
+                                  if (win) win.close();
+                                  alert(data?.error || "Failed to create QBO invoice.");
+                                  return;
+                                }
+
+                                alert(
+                                  `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
+                                    data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
+                                  }`
+                                );
+
+                                const url: string | null = data?.qboInvoiceUrl || null;
+
+                                if (win && url) {
+                                  win.location.href = url;
+                                  win.focus();
+                                  return;
+                                }
+
+                                if (!win) {
+                                  alert("Popup blocked. Please allow popups for dcflow.app, then try again.");
+                                } else {
+                                  alert("Could not auto-open QBO invoice URL.");
+                                }
+
+                                if (url) window.open(url, "_blank");
+                              } catch (e: any) {
+                                if (win) win.close();
+                                alert(e?.message || "Failed to create QBO invoice.");
+                              }
+                            }}
+                          >
+                            Create QBO Invoice Draft
+                          </GhostButton>
+
+                          {billingErr ? <span style={{ color: "#b91c1c", fontSize: 13 }}>{billingErr}</span> : null}
+                          {billingOk ? <span style={{ color: "#166534", fontSize: 13 }}>{billingOk}</span> : null}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 12, color: "#6b7280" }}>
+                          Billing controls are limited to Admin/Manager/Dispatcher/Billing.
+                        </div>
+                      )}
                     </div>
                   )}
-                </>
-              ) : null}
+                </Card>
 
-              {/* Trip Edit */}
-              {canDispatch && editTripId ? (
-                <div style={{ marginTop: "16px", borderTop: "1px solid #eee", paddingTop: "16px" }}>
-                  <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "12px", background: "#fafafa" }}>
-                    <div style={{ fontWeight: 900, marginBottom: "10px" }}>Edit / Reschedule Trip</div>
+                {/* System (small + quiet) */}
+                <Card title="System">
+                  <div style={{ display: "grid", gap: 6, color: "#374151", fontSize: 13 }}>
+                    <div>
+                      <strong>Active:</strong> {String(ticket.active)}
+                    </div>
+                    <div>
+                      <strong>Created At:</strong> {ticket.createdAt || "—"}
+                    </div>
+                    <div>
+                      <strong>Updated At:</strong> {ticket.updatedAt || "—"}
+                    </div>
+                  </div>
+                </Card>
+              </div>
+            </div>
 
-                    <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
+            {/* Edit Trip Modal (separate UI so it never feels like the schedule form) */}
+            {canDispatch && editTripId ? (
+              <div
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(15, 23, 42, 0.55)",
+                  zIndex: 999,
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 16,
+                }}
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) closeEditTrip();
+                }}
+              >
+                <div
+                  style={{
+                    width: "min(720px, 100%)",
+                    background: "white",
+                    borderRadius: 16,
+                    border: "1px solid #e5e7eb",
+                    boxShadow: "0 30px 80px rgba(0,0,0,0.25)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: 14,
+                      borderBottom: "1px solid #f1f5f9",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ fontWeight: 1000 }}>Edit / Reschedule Trip</div>
+                    <GhostButton type="button" onClick={closeEditTrip} disabled={editTripSaving}>
+                      Close
+                    </GhostButton>
+                  </div>
+
+                  <div style={{ padding: 16, display: "grid", gap: 12 }}>
+                    <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
                       <div>
-                        <label style={{ fontWeight: 800, fontSize: "12px" }}>Date</label>
+                        <label style={{ fontWeight: 900, fontSize: 13 }}>Date</label>
                         <input
                           type="date"
                           value={editTripDate}
                           onChange={(e) => setEditTripDate(e.target.value)}
                           disabled={editTripSaving}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: 10,
+                            marginTop: 6,
+                            borderRadius: 12,
+                            border: "1px solid #d1d5db",
+                          }}
                         />
                       </div>
 
                       <div>
-                        <label style={{ fontWeight: 800, fontSize: "12px" }}>Time Window</label>
+                        <label style={{ fontWeight: 900, fontSize: 13 }}>Time Window</label>
                         <select
                           value={editTripTimeWindow}
                           onChange={(e) => setEditTripTimeWindow(e.target.value as TripTimeWindow)}
                           disabled={editTripSaving}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                          style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
                         >
                           <option value="am">Morning (8:00–12:00)</option>
                           <option value="pm">Afternoon (1:00–5:00)</option>
@@ -3657,30 +3994,44 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                       </div>
 
                       <div>
-                        <label style={{ fontWeight: 800, fontSize: "12px" }}>Start Time</label>
+                        <label style={{ fontWeight: 900, fontSize: 13 }}>Start Time</label>
                         <input
                           type="time"
                           value={editTripStartTime}
                           onChange={(e) => setEditTripStartTime(e.target.value)}
                           disabled={editTripSaving}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: 10,
+                            marginTop: 6,
+                            borderRadius: 12,
+                            border: "1px solid #d1d5db",
+                          }}
                         />
                       </div>
 
                       <div>
-                        <label style={{ fontWeight: 800, fontSize: "12px" }}>End Time</label>
+                        <label style={{ fontWeight: 900, fontSize: 13 }}>End Time</label>
                         <input
                           type="time"
                           value={editTripEndTime}
                           onChange={(e) => setEditTripEndTime(e.target.value)}
                           disabled={editTripSaving}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: 10,
+                            marginTop: 6,
+                            borderRadius: 12,
+                            border: "1px solid #d1d5db",
+                          }}
                         />
                       </div>
                     </div>
 
-                    <div style={{ marginTop: "10px" }}>
-                      <label style={{ fontWeight: 800, fontSize: "12px" }}>Trip Notes</label>
+                    <div>
+                      <label style={{ fontWeight: 900, fontSize: 13 }}>Trip Notes</label>
                       <textarea
                         value={editTripNotes}
                         onChange={(e) => setEditTripNotes(e.target.value)}
@@ -3689,475 +4040,32 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                         style={{
                           display: "block",
                           width: "100%",
-                          padding: "8px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          marginTop: "4px",
+                          padding: 10,
+                          borderRadius: 12,
+                          border: "1px solid #d1d5db",
+                          marginTop: 6,
                         }}
                       />
                     </div>
 
-                    <div style={{ display: "flex", gap: "10px", marginTop: "12px", alignItems: "center", flexWrap: "wrap" }}>
-                      <button
-                        type="button"
-                        onClick={handleSaveTripEdits}
-                        disabled={editTripSaving}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        {editTripSaving ? "Saving..." : "Save Trip Changes"}
-                      </button>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <PrimaryButton type="button" onClick={handleSaveTripEdits} disabled={editTripSaving} tone="blue">
+                        {editTripSaving ? "Saving..." : "Save Changes"}
+                      </PrimaryButton>
 
-                      <button
-                        type="button"
-                        onClick={closeEditTrip}
-                        disabled={editTripSaving}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        Close
-                      </button>
+                      {editTripErr ? <span style={{ color: "#b91c1c", fontSize: 13 }}>{editTripErr}</span> : null}
+                      {editTripOk ? <span style={{ color: "#166534", fontSize: 13 }}>{editTripOk}</span> : null}
+                    </div>
 
-                      {editTripErr ? <span style={{ color: "red", fontSize: "13px" }}>{editTripErr}</span> : null}
-                      {editTripOk ? <span style={{ color: "green", fontSize: "13px" }}>{editTripOk}</span> : null}
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      This modal is intentionally separate from “Schedule New Trip” so rescheduling never feels like it’s using the same fields.
                     </div>
                   </div>
                 </div>
-              ) : null}
-
-              {/* Schedule Trip form */}
-              <div style={{ marginTop: "16px", borderTop: "1px solid #eee", paddingTop: "16px" }}>
-                <h3 style={{ fontSize: "16px", fontWeight: 900, margin: 0 }}>Schedule a Trip</h3>
-
-                {!canDispatch ? (
-                  <p style={{ marginTop: "8px", color: "#777", fontSize: "13px" }}>
-                    Only Admin/Dispatcher/Manager can schedule trips.
-                  </p>
-                ) : (
-                  <form onSubmit={handleCreateTrip} style={{ display: "grid", gap: "12px", maxWidth: "900px", marginTop: "10px" }}>
-                    <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
-                      <div>
-                        <label>Date</label>
-                        <input
-                          type="date"
-                          value={tripDate}
-                          onChange={(e) => setTripDate(e.target.value)}
-                          disabled={tripSaving}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                        />
-                      </div>
-
-                      <div>
-                        <label>Time Window</label>
-                        <select
-                          value={tripTimeWindow}
-                          onChange={(e) => setTripTimeWindow(e.target.value as TripTimeWindow)}
-                          disabled={tripSaving}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                        >
-                          <option value="am">Morning (8:00–12:00)</option>
-                          <option value="pm">Afternoon (1:00–5:00)</option>
-                          <option value="all_day">All Day (8:00–5:00)</option>
-                          <option value="custom">Custom</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {tripTimeWindow === "custom" ? (
-                      <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
-                        <div>
-                          <label>Start Time</label>
-                          <input
-                            type="time"
-                            value={tripStartTime}
-                            onChange={(e) => setTripStartTime(e.target.value)}
-                            disabled={tripSaving}
-                            style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                          />
-                        </div>
-                        <div>
-                          <label>End Time</label>
-                          <input
-                            type="time"
-                            value={tripEndTime}
-                            onChange={(e) => setTripEndTime(e.target.value)}
-                            disabled={tripSaving}
-                            style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {techniciansLoading ? <p>Loading technicians...</p> : null}
-                    {techniciansError ? <p style={{ color: "red" }}>{techniciansError}</p> : null}
-
-                    <div style={{ border: "1px solid #eee", borderRadius: "12px", padding: "12px", background: "#fafafa" }}>
-                      <div style={{ fontWeight: 900, marginBottom: "10px" }}>Crew</div>
-
-                      <div>
-                        <label>Primary Technician</label>
-                        <select
-                          value={tripPrimaryTechUid}
-                          onChange={(e) => setTripPrimaryTechUid(e.target.value)}
-                          disabled={tripSaving || techniciansLoading}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                        >
-                          <option value="">Select a technician...</option>
-                          {technicians.map((t) => (
-                            <option key={t.uid} value={t.uid}>
-                              {t.displayName}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div style={{ marginTop: "10px" }}>
-                        <label>Secondary Technician (Optional)</label>
-                        <select
-                          value={tripSecondaryTechUid}
-                          onChange={(e) => setTripSecondaryTechUid(e.target.value)}
-                          disabled={tripSaving || !tripPrimaryTechUid}
-                          style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                        >
-                          <option value="">— None —</option>
-                          {technicians
-                            .filter((t) => t.uid !== tripPrimaryTechUid)
-                            .map((t) => (
-                              <option key={t.uid} value={t.uid}>
-                                {t.displayName}
-                              </option>
-                            ))}
-                        </select>
-                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
-                          Only use this for two true technicians. Helpers/apprentices go below.
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
-                        <div style={{ fontWeight: 900, marginBottom: "8px" }}>Helper / Apprentice</div>
-
-                        {profilesLoading ? <p>Loading employee profiles...</p> : null}
-                        {profilesError ? <p style={{ color: "red" }}>{profilesError}</p> : null}
-
-                        <label style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                          <input
-                            type="checkbox"
-                            checked={tripUseDefaultHelper}
-                            onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
-                            disabled={tripSaving}
-                          />
-                          Use default helper pairing (recommended)
-                        </label>
-
-                        <div style={{ marginTop: "10px" }}>
-                          <label>Helper / Apprentice (Optional)</label>
-                          <select
-                            value={tripHelperUid}
-                            onChange={(e) => {
-                              setTripUseDefaultHelper(false);
-                              setTripHelperUid(e.target.value);
-                            }}
-                            disabled={tripSaving || profilesLoading || !tripPrimaryTechUid}
-                            style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                          >
-                            <option value="">— None —</option>
-                            {helperCandidates.map((h) => (
-                              <option key={h.uid} value={h.uid}>
-                                {h.name} ({h.laborRole})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div style={{ marginTop: "10px" }}>
-                          <label>Secondary Helper (Optional)</label>
-                          <select
-                            value={tripSecondaryHelperUid}
-                            onChange={(e) => setTripSecondaryHelperUid(e.target.value)}
-                            disabled={tripSaving || profilesLoading}
-                            style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                          >
-                            <option value="">— None —</option>
-                            {helperCandidates.map((h) => (
-                              <option key={h.uid} value={h.uid}>
-                                {h.name} ({h.laborRole})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label>Trip Notes (optional)</label>
-                      <textarea
-                        value={tripNotes}
-                        onChange={(e) => setTripNotes(e.target.value)}
-                        rows={3}
-                        disabled={tripSaving}
-                        style={{ display: "block", width: "100%", padding: "8px", marginTop: "4px" }}
-                      />
-                    </div>
-
-                    <label style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={tripSetTicketScheduled}
-                        onChange={(e) => setTripSetTicketScheduled(e.target.checked)}
-                        disabled={tripSaving}
-                      />
-                      If ticket is NEW, change status to SCHEDULED when this trip is created
-                    </label>
-
-                    {tripSaveError ? <p style={{ color: "red" }}>{tripSaveError}</p> : null}
-                    {tripSaveSuccess ? <p style={{ color: "green" }}>{tripSaveSuccess}</p> : null}
-
-                    <button
-                      type="submit"
-                      disabled={tripSaving || !canDispatch}
-                      style={{
-                        padding: "10px 16px",
-                        border: "1px solid #ccc",
-                        borderRadius: "10px",
-                        background: "white",
-                        cursor: "pointer",
-                        fontWeight: 900,
-                        width: "fit-content",
-                      }}
-                    >
-                      {tripSaving ? "Scheduling..." : "Schedule Trip"}
-                    </button>
-                  </form>
-                )}
               </div>
-            </div>
+            ) : null}
 
-            {/* Billing Packet Panel */}
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "#fafafa" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>Billing Packet</h2>
-
-              {!billing ? (
-                <div
-                  style={{
-                    border: "1px dashed #ccc",
-                    borderRadius: "10px",
-                    padding: "12px",
-                    background: "white",
-                    color: "#666",
-                    fontSize: "13px",
-                  }}
-                >
-                  No billing packet yet. It will appear after a trip is marked <strong>Resolved — Ready to Bill</strong>.
-                </div>
-              ) : (
-                <div style={{ display: "grid", gap: "10px" }}>
-                  <div style={{ fontSize: "13px", color: "#555" }}>
-                    Status: <strong>{billing.status}</strong>
-                    {billing.readyToBillAt ? <span style={{ color: "#777" }}> • Ready To Bill At: {billing.readyToBillAt}</span> : null}
-                  </div>
-
-                  <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "white" }}>
-                    <div style={{ fontWeight: 900, marginBottom: "6px" }}>Labor (Customer Billing)</div>
-                    <div style={{ fontSize: "13px", color: "#555" }}>
-                      Total labor hours billed: <strong>{Number(billing.labor?.totalHours ?? 0).toFixed(2)}</strong>
-                    </div>
-                    <div style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-                      Billing rule: labor hours belong to the <strong>Primary Tech only</strong>. Payroll timeEntries still go to all crew members.
-                    </div>
-
-                    {Array.isArray(billing.labor?.byCrew) && billing.labor.byCrew.length ? (
-                      <div style={{ marginTop: "10px", display: "grid", gap: "6px" }}>
-                        {billing.labor.byCrew.map((c) => (
-                          <div key={c.uid} style={{ fontSize: "13px", color: "#555" }}>
-                            {c.name} • {c.hours.toFixed(2)} hr
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div style={{ marginTop: "10px", fontSize: "13px", color: "#777" }}>No primary tech labor line captured yet.</div>
-                    )}
-                  </div>
-
-                  <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "white" }}>
-                    <div style={{ fontWeight: 900, marginBottom: "6px" }}>Materials</div>
-
-                    {!Array.isArray(billing.materials) || billing.materials.length === 0 ? (
-                      <div style={{ fontSize: "13px", color: "#777" }}>No materials captured.</div>
-                    ) : (
-                      <div style={{ display: "grid", gap: "8px" }}>
-                        {billing.materials.map((m, idx) => (
-                          <div key={`bill-mat-${idx}`} style={{ border: "1px solid #f0f0f0", borderRadius: "10px", padding: "10px" }}>
-                            <div style={{ fontWeight: 800, fontSize: "13px" }}>
-                              {m.name} • {Number(m.qty).toFixed(2)} {m.unit || ""}
-                            </div>
-                            {m.notes ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#666" }}>{m.notes}</div> : null}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ border: "1px solid #eee", borderRadius: "10px", padding: "12px", background: "white" }}>
-                    <div style={{ fontWeight: 900, marginBottom: "6px" }}>Resolution Notes</div>
-                    <div style={{ fontSize: "13px", color: "#555", whiteSpace: "pre-wrap" }}>
-                      {billing.resolutionNotes || "—"}
-                    </div>
-
-                    <div style={{ marginTop: "12px", fontWeight: 900, marginBottom: "6px" }}>Work Notes</div>
-                    <div style={{ fontSize: "13px", color: "#555", whiteSpace: "pre-wrap" }}>
-                      {billing.workNotes || "—"}
-                    </div>
-                  </div>
-
-                  {canBill ? (
-                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-                      <button
-                        type="button"
-                        onClick={() => markBillingStatus("invoiced")}
-                        disabled={billingSaving}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        {billingSaving ? "Working..." : "Mark Invoiced"}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => markBillingStatus("ready_to_bill")}
-                        disabled={billingSaving}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        Set Ready to Bill
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => markBillingStatus("not_ready")}
-                        disabled={billingSaving}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        Set Not Ready
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!ticket?.id) return;
-
-                          const win = window.open("about:blank", "_blank");
-
-                          try {
-                            const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ serviceTicketId: ticket.id }),
-                            });
-
-                            const data = await res.json();
-
-                            if (!res.ok) {
-                              if (win) win.close();
-                              alert(data?.error || "Failed to create QBO invoice.");
-                              return;
-                            }
-
-                            alert(
-                              `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
-                                data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
-                              }`
-                            );
-
-                            const url: string | null = data?.qboInvoiceUrl || null;
-
-                            if (win && url) {
-                              win.location.href = url;
-                              win.focus();
-                              return;
-                            }
-
-                            if (!win) {
-                              alert("Popup blocked. Please allow popups for dcflow.app, then try again.");
-                            } else {
-                              alert("Could not auto-open QBO invoice URL.");
-                            }
-
-                            if (url) window.open(url, "_blank");
-                          } catch (e: any) {
-                            if (win) win.close();
-                            alert(e?.message || "Failed to create QBO invoice.");
-                          }
-                        }}
-                        style={{
-                          padding: "8px 12px",
-                          border: "1px solid #ccc",
-                          borderRadius: "10px",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        Create QBO Invoice Draft
-                      </button>
-
-                      {billingErr ? <span style={{ color: "red", fontSize: "13px" }}>{billingErr}</span> : null}
-                      {billingOk ? <span style={{ color: "green", fontSize: "13px" }}>{billingOk}</span> : null}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: "12px", color: "#777" }}>
-                      Billing controls are limited to Admin/Manager/Dispatcher/Billing.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* System */}
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: 900, marginBottom: "10px" }}>System</h2>
-              <p>
-                <strong>Active:</strong> {String(ticket.active)}
-              </p>
-              <p>
-                <strong>Created At:</strong> {ticket.createdAt || "—"}
-              </p>
-              <p>
-                <strong>Updated At:</strong> {ticket.updatedAt || "—"}
-              </p>
-            </div>
-
-            {/* ✅ Mobile sticky in-progress actions bar */}
+            {/* Mobile sticky in-progress actions bar */}
             {stickyInProgressBar}
           </div>
         ) : null}
