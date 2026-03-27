@@ -50,3 +50,5 @@ export function adminDb() {
 export function adminAuth() {
   return admin.auth(adminApp());
 }
+
+export const adminFirestore = adminDb();

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   Card,
@@ -28,6 +29,9 @@ import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
 import ManageAccountsRoundedIcon from "@mui/icons-material/ManageAccountsRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
+import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -74,6 +78,7 @@ function SectionHeader({
             color: "text.secondary",
             fontSize: 13,
             fontWeight: 500,
+            maxWidth: 920,
           }}
         >
           {subtitle}
@@ -81,6 +86,16 @@ function SectionHeader({
       ) : null}
     </Box>
   );
+}
+
+function getInitials(name?: string) {
+  const text = String(name || "").trim();
+  if (!text) return "U";
+
+  const parts = text.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
+
+  return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
 }
 
 function employmentStatusTone(
@@ -220,17 +235,20 @@ export default function EmployeeProfilesPage() {
     setCreateMessage("");
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) {
-        setCreateError("Missing admin auth token. Please sign out and back in.");
+      const currentUser = auth.currentUser;
+
+      if (!currentUser) {
+        setCreateError("You must be signed in to create an employee profile.");
         return;
       }
+
+      const idToken = await currentUser.getIdToken(true);
 
       const res = await fetch("/api/employee-profiles/create-from-user", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${idToken}`,
         },
         body: JSON.stringify({ userUid }),
         cache: "no-store",
@@ -309,12 +327,12 @@ export default function EmployeeProfilesPage() {
                     color: "text.secondary",
                     fontSize: { xs: 13, md: 14 },
                     fontWeight: 500,
-                    maxWidth: 920,
+                    maxWidth: 940,
                   }}
                 >
-                  Your internal workforce roster truth for DCFlow. This is separate from
-                  QuickBooks active flags and should represent who is currently in your
-                  operating team.
+                  Your internal workforce roster truth for DCFlow. This should reflect
+                  who is actually in your operating team, independent from QuickBooks
+                  active flags and accounting sync behavior.
                 </Typography>
               </Box>
 
@@ -373,18 +391,37 @@ export default function EmployeeProfilesPage() {
               }}
             >
               <Box sx={{ p: { xs: 2, md: 2.5 } }}>
-                <Stack spacing={1.5}>
-                  <SectionHeader
-                    title="Quick create from DCFlow users"
-                    subtitle="These active users do not yet have an employee profile. Creating from here generates the profile automatically and opens it."
-                  />
+                <Stack spacing={1.75}>
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={1.5}
+                    alignItems={{ xs: "flex-start", md: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <SectionHeader
+                      title="Quick create from DCFlow users"
+                      subtitle="These active users do not yet have an employee profile. Creating from here generates the profile automatically and opens it."
+                    />
+
+                    <Chip
+                      size="small"
+                      icon={<PersonAddRoundedIcon sx={{ fontSize: 16 }} />}
+                      label={`${usersMissingProfiles.length} pending`}
+                      sx={{
+                        borderRadius: 1.5,
+                        fontWeight: 700,
+                        backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                        border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                      }}
+                    />
+                  </Stack>
 
                   {usersMissingProfiles.length === 0 ? (
                     <Paper
                       elevation={0}
                       sx={{
                         borderRadius: 2,
-                        p: 1.5,
+                        p: 1.75,
                         border: `1px solid ${alpha(theme.palette.success.main, 0.22)}`,
                         backgroundColor: alpha(theme.palette.success.main, 0.10),
                       }}
@@ -404,7 +441,7 @@ export default function EmployeeProfilesPage() {
                         display: "grid",
                         gridTemplateColumns: {
                           xs: "1fr",
-                          lg: "repeat(2, minmax(0, 1fr))",
+                          xl: "repeat(2, minmax(0, 1fr))",
                         },
                         gap: 1.5,
                       }}
@@ -426,49 +463,75 @@ export default function EmployeeProfilesPage() {
                             alignItems={{ xs: "flex-start", sm: "center" }}
                             justifyContent="space-between"
                           >
-                            <Box sx={{ minWidth: 0, flex: 1 }}>
-                              <Typography
-                                variant="subtitle1"
+                            <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, flex: 1 }}>
+                              <Avatar
                                 sx={{
+                                  width: 42,
+                                  height: 42,
+                                  borderRadius: 2,
+                                  bgcolor: alpha(theme.palette.primary.main, 0.14),
+                                  color: theme.palette.primary.light,
                                   fontWeight: 800,
-                                  lineHeight: 1.2,
-                                  letterSpacing: "-0.01em",
+                                  fontSize: 14,
                                 }}
                               >
-                                {u.displayName || "Unnamed"}
-                              </Typography>
+                                {getInitials(u.displayName)}
+                              </Avatar>
 
-                              <Typography
-                                variant="body2"
-                                sx={{
-                                  mt: 0.5,
-                                  color: "text.secondary",
-                                }}
-                              >
-                                {u.email || "no email"}
-                              </Typography>
+                              <Box sx={{ minWidth: 0, flex: 1 }}>
+                                <Typography
+                                  variant="subtitle1"
+                                  sx={{
+                                    fontWeight: 800,
+                                    lineHeight: 1.2,
+                                    letterSpacing: "-0.01em",
+                                  }}
+                                >
+                                  {u.displayName || "Unnamed"}
+                                </Typography>
 
-                              <Stack
-                                direction="row"
-                                spacing={0.75}
-                                flexWrap="wrap"
-                                useFlexGap
-                                sx={{ mt: 1 }}
-                              >
-                                <Chip
-                                  size="small"
-                                  label={`Role: ${u.role || "—"}`}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 1.5 }}
-                                />
-                                <Chip
-                                  size="small"
-                                  label={`UID: ${u.uid}`}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 1.5 }}
-                                />
-                              </Stack>
-                            </Box>
+                                <Typography
+                                  variant="body2"
+                                  sx={{
+                                    mt: 0.35,
+                                    color: "text.secondary",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {u.email || "No email"}
+                                </Typography>
+
+                                <Stack
+                                  direction="row"
+                                  spacing={0.75}
+                                  flexWrap="wrap"
+                                  useFlexGap
+                                  sx={{ mt: 1 }}
+                                >
+                                  <Chip
+                                    size="small"
+                                    label={u.role || "—"}
+                                    variant="outlined"
+                                    sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                                  />
+                                  <Chip
+                                    size="small"
+                                    label={u.uid}
+                                    variant="outlined"
+                                    sx={{
+                                      borderRadius: 1.5,
+                                      maxWidth: 220,
+                                      "& .MuiChip-label": {
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                      },
+                                    }}
+                                  />
+                                </Stack>
+                              </Box>
+                            </Stack>
 
                             <Button
                               variant="contained"
@@ -512,6 +575,17 @@ export default function EmployeeProfilesPage() {
                     if (next) setFilter(next);
                   }}
                   size="small"
+                  sx={{
+                    flexWrap: "wrap",
+                    "& .MuiToggleButton-root": {
+                      px: 1.5,
+                      minHeight: 36,
+                      borderRadius: "999px !important",
+                      textTransform: "none",
+                      fontWeight: 700,
+                      borderColor: alpha("#FFFFFF", 0.12),
+                    },
+                  }}
                 >
                   <ToggleButton value="current">Current</ToggleButton>
                   <ToggleButton value="inactive">Inactive</ToggleButton>
@@ -523,7 +597,7 @@ export default function EmployeeProfilesPage() {
                   icon={<ManageAccountsRoundedIcon sx={{ fontSize: 16 }} />}
                   label={`${filteredProfiles.length} profile(s)`}
                   variant="outlined"
-                  sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                  sx={{ borderRadius: 1.5, fontWeight: 700 }}
                 />
               </Stack>
             </Box>
@@ -609,31 +683,47 @@ export default function EmployeeProfilesPage() {
                                 justifyContent="space-between"
                                 alignItems="flex-start"
                               >
-                                <Box sx={{ minWidth: 0, flex: 1 }}>
-                                  <Typography
-                                    variant="subtitle1"
+                                <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, flex: 1 }}>
+                                  <Avatar
                                     sx={{
+                                      width: 42,
+                                      height: 42,
+                                      borderRadius: 2,
+                                      bgcolor: alpha(theme.palette.primary.main, 0.12),
+                                      color: theme.palette.primary.light,
                                       fontWeight: 800,
-                                      lineHeight: 1.2,
-                                      letterSpacing: "-0.01em",
+                                      fontSize: 14,
                                     }}
                                   >
-                                    {p.displayName}
-                                  </Typography>
+                                    {getInitials(p.displayName)}
+                                  </Avatar>
 
-                                  <Typography
-                                    variant="body2"
-                                    sx={{
-                                      mt: 0.5,
-                                      color: "text.secondary",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}
-                                  >
-                                    {p.email || "—"}
-                                  </Typography>
-                                </Box>
+                                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                                    <Typography
+                                      variant="subtitle1"
+                                      sx={{
+                                        fontWeight: 800,
+                                        lineHeight: 1.2,
+                                        letterSpacing: "-0.01em",
+                                      }}
+                                    >
+                                      {p.displayName}
+                                    </Typography>
+
+                                    <Typography
+                                      variant="body2"
+                                      sx={{
+                                        mt: 0.45,
+                                        color: "text.secondary",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      {p.email || "—"}
+                                    </Typography>
+                                  </Box>
+                                </Stack>
 
                                 <Chip
                                   size="small"
@@ -650,8 +740,8 @@ export default function EmployeeProfilesPage() {
 
                               <Stack spacing={1}>
                                 <Stack direction="row" spacing={0.75} alignItems="center">
-                                  <BadgeRoundedIcon
-                                    sx={{ fontSize: 16, color: "text.secondary" }}
+                                  <WorkRoundedIcon
+                                    sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
                                   />
                                   <Typography variant="body2" color="text.secondary">
                                     Labor Role:{" "}
@@ -667,12 +757,13 @@ export default function EmployeeProfilesPage() {
 
                                 <Stack direction="row" spacing={0.75} alignItems="center">
                                   <LinkRoundedIcon
-                                    sx={{ fontSize: 16, color: "text.secondary" }}
+                                    sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
                                   />
                                   <Typography
                                     variant="body2"
                                     color="text.secondary"
                                     sx={{
+                                      minWidth: 0,
                                       overflow: "hidden",
                                       textOverflow: "ellipsis",
                                       whiteSpace: "nowrap",
@@ -688,20 +779,54 @@ export default function EmployeeProfilesPage() {
                                     </Typography>
                                   </Typography>
                                 </Stack>
+
+                                <Stack direction="row" spacing={0.75} alignItems="center">
+                                  <PersonRoundedIcon
+                                    sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                  />
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                    sx={{
+                                      minWidth: 0,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    Paired Tech UID:{" "}
+                                    <Typography
+                                      component="span"
+                                      variant="body2"
+                                      sx={{ color: "text.primary", fontWeight: 700 }}
+                                    >
+                                      {p.defaultPairedTechUid || "—"}
+                                    </Typography>
+                                  </Typography>
+                                </Stack>
                               </Stack>
 
                               <Box sx={{ flex: 1 }} />
 
-                              <Typography
-                                variant="caption"
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                alignItems="center"
                                 sx={{
                                   color: "primary.light",
-                                  fontWeight: 700,
-                                  letterSpacing: "0.02em",
                                 }}
                               >
-                                Open profile
-                              </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    fontWeight: 700,
+                                    letterSpacing: "0.02em",
+                                  }}
+                                >
+                                  Open profile
+                                </Typography>
+                                <ArrowForwardRoundedIcon sx={{ fontSize: 14 }} />
+                              </Stack>
                             </Stack>
                           </CardContent>
                         </CardActionArea>

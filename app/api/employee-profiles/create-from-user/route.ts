@@ -112,18 +112,17 @@ export async function POST(request: NextRequest) {
       displayName,
       email: email || null,
       phone: null,
-
       employmentStatus: "current",
       laborRole: guessLaborRole(role),
-
       defaultPairedTechUid:
         role === "helper" || role === "apprentice"
           ? preferredTechnicianId || null
           : null,
-
       qboEmployeeId: null,
+      qboEmployeeDisplayName: null,
+      qboEmployeeHiredDate: null,
+      ptoEligibilityDate: null,
       notes: null,
-
       createdAt: nowIso,
       updatedAt: nowIso,
       createdByUid: requesterUid,

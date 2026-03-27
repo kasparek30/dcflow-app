@@ -1276,16 +1276,6 @@ export default function OfficeDisplayPage() {
                 Live updates: Trips + Meetings + Technicians + Approved PTO
               </Typography>
             </Stack>
-
-            <Button
-              component={Link}
-              href="/schedule"
-              variant="outlined"
-              endIcon={<LaunchRoundedIcon />}
-              sx={{ minWidth: 140, borderRadius: 1.5 }}
-            >
-              Open Schedule
-            </Button>
           </Box>
         </Paper>
 
