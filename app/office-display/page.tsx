@@ -738,15 +738,15 @@ export default function OfficeDisplayPage() {
         key={t.id}
         elevation={0}
         sx={{
-          px: 1,
-          py: isCompleted ? 0.75 : 0.9,
+          px: 0.9,
+          py: isCompleted ? 0.7 : 0.9,
           borderRadius: 1.5,
           backgroundColor: "background.paper",
           border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
           minHeight: 0,
         }}
       >
-        <Stack spacing={isCompleted ? 0.45 : 0.75}>
+        <Stack spacing={isCompleted ? 0.45 : 0.5}>
           <Stack direction="row" spacing={0.75} justifyContent="space-between" alignItems="flex-start">
             <Stack direction="row" spacing={0.75} sx={{ minWidth: 0, flex: 1 }}>
               <Box
@@ -934,11 +934,16 @@ export default function OfficeDisplayPage() {
     );
   }
 
-  const headerH = 96;
-  const outerPad = 16;
-  const dayHeaderApprox = 124;
-  const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px - 12px)`;
-  const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
+const headerH = 104;
+const outerPad = 16;
+const headerGap = 10;
+const dayHeaderApprox = 124;
+
+// Full remaining space below the flat header
+const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px - ${headerGap}px)`;
+
+// No footer subtraction anymore
+const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
 
   return (
     <ProtectedPage fallbackTitle="Office Display">
@@ -953,117 +958,121 @@ export default function OfficeDisplayPage() {
           color: "text.primary",
         }}
       >
-        <Paper
-          elevation={0}
+<Box
+  sx={{
+    height: `${headerH}px`,
+    px: 0.5,
+    pb: 1,
+    display: "flex",
+    alignItems: "center",
+  }}
+>
+  <Stack
+    direction="row"
+    alignItems="center"
+    justifyContent="space-between"
+    spacing={2}
+    sx={{ width: "100%" }}
+  >
+    <Stack direction="row" spacing={2.25} alignItems="center" minWidth={0}>
+      <Box
+        sx={{
+          position: "relative",
+          width: 300,
+          height: 82,
+          flexShrink: 0,
+        }}
+      >
+        <Image
+          src="/brand/dcflow-logo.png"
+          alt="DCFlow"
+          fill
+          priority
+          sizes="300px"
+          style={{ objectFit: "contain" }}
+        />
+      </Box>
+
+      <Stack spacing={0.5} minWidth={0}>
+        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+          <Chip
+            icon={<CalendarMonthRoundedIcon />}
+            label="Office Display"
+            size="small"
+            sx={{
+              backgroundColor: alpha(theme.palette.primary.main, 0.12),
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.20)}`,
+            }}
+          />
+          <Chip
+            icon={<RefreshRoundedIcon />}
+            label={`Live • ${lastUpdated || "—"}`}
+            size="small"
+            sx={{
+              backgroundColor: alpha("#FFFFFF", 0.04),
+              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            }}
+          />
+        </Stack>
+
+        <Typography
+          variant="h5"
           sx={{
-            height: `${headerH}px`,
-            px: 2,
-            py: 1.25,
-            borderRadius: 2,
-            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-            backgroundColor: alpha("#FFFFFF", 0.02),
-            overflow: "hidden",
+            lineHeight: 1.1,
+            fontWeight: 800,
+            letterSpacing: "-0.02em",
           }}
         >
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            spacing={2}
-            sx={{ height: "100%" }}
-          >
-            <Stack direction="row" spacing={2} alignItems="center" minWidth={0}>
-              <Box
-                sx={{
-                  position: "relative",
-                  width: 252,
-                  height: 68,
-                  flexShrink: 0,
-                }}
-              >
-                <Image
-                  src="/brand/dcflow-logo.png"
-                  alt="DCFlow"
-                  fill
-                  priority
-                  sizes="272px"
-                  style={{ objectFit: "contain" }}
-                />
-              </Box>
+          {weekLabel}
+        </Typography>
 
-              <Stack spacing={0.4} minWidth={0}>
-                <Stack direction="row" spacing={0.75} alignItems="center">
-                  <Chip
-                    icon={<CalendarMonthRoundedIcon />}
-                    label="Office Display"
-                    size="small"
-                    sx={{
-                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
-                      border: `1px solid ${alpha(theme.palette.primary.main, 0.20)}`,
-                    }}
-                  />
-                  <Chip
-                    icon={<RefreshRoundedIcon />}
-                    label={`Live • ${lastUpdated || "—"}`}
-                    size="small"
-                    sx={{
-                      backgroundColor: alpha("#FFFFFF", 0.04),
-                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                    }}
-                  />
-                </Stack>
+        <Typography variant="body2" color="text.secondary">
+          Technician schedule overview with meetings, assignments, approved PTO, and weekly visibility
+        </Typography>
+      </Stack>
+    </Stack>
 
-                <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
-                  {weekLabel}
-                </Typography>
+    {canControlWeek ? (
+      <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+        <Button
+          variant="outlined"
+          color="primary"
+          startIcon={<ChevronLeftRoundedIcon />}
+          onClick={() => setWeekOffset((p) => p - 1)}
+          sx={{ minWidth: 108, borderRadius: 999 }}
+        >
+          Prev
+        </Button>
 
-                <Typography variant="body2" color="text.secondary">
-                  Technician schedule overview with meetings, assignments, approved PTO, and weekly visibility
-                </Typography>
-              </Stack>
-            </Stack>
+        <Button
+          variant="contained"
+          onClick={() => setWeekOffset(0)}
+          sx={{ minWidth: 118, borderRadius: 999 }}
+        >
+          This Week
+        </Button>
 
-            {canControlWeek ? (
-              <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
-                <Button
-                  variant="outlined"
-                  color="primary"
-                  startIcon={<ChevronLeftRoundedIcon />}
-                  onClick={() => setWeekOffset((p) => p - 1)}
-                  sx={{ minWidth: 108, borderRadius: 1.5 }}
-                >
-                  Prev
-                </Button>
+        <Button
+          variant="outlined"
+          color="primary"
+          endIcon={<ChevronRightRoundedIcon />}
+          onClick={() => setWeekOffset((p) => p + 1)}
+          sx={{ minWidth: 108, borderRadius: 999 }}
+        >
+          Next
+        </Button>
+      </Stack>
+    ) : null}
+  </Stack>
+</Box>
 
-                <Button
-                  variant="contained"
-                  onClick={() => setWeekOffset(0)}
-                  sx={{ minWidth: 118, borderRadius: 1.5 }}
-                >
-                  This Week
-                </Button>
-
-                <Button
-                  variant="outlined"
-                  color="primary"
-                  endIcon={<ChevronRightRoundedIcon />}
-                  onClick={() => setWeekOffset((p) => p + 1)}
-                  sx={{ minWidth: 108, borderRadius: 1.5 }}
-                >
-                  Next
-                </Button>
-              </Stack>
-            ) : null}
-          </Stack>
-        </Paper>
-
-        <Paper
-          elevation={0}
-          sx={{
-            mt: 1.5,
+<Paper
+  elevation={0}
+  sx={{
+    mt: `${headerGap}px`,
             height: gridH,
             overflow: "hidden",
-            borderRadius: 2,
+            borderRadius: 1.5,
             border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
             backgroundColor: alpha("#FFFFFF", 0.02),
           }}
