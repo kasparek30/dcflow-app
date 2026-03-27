@@ -1,14 +1,16 @@
+// components/LogoutButton.tsx
 "use client";
 
 import { useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import { auth } from "../src/lib/firebase";
 import React, { useState } from "react";
+import { Button } from "@mui/material";
+import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 
 export default function LogoutButton() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [hover, setHover] = useState(false);
 
   async function handleLogout() {
     if (busy) return;
@@ -24,32 +26,35 @@ export default function LogoutButton() {
   }
 
   return (
-    <button
+    <Button
       type="button"
       onClick={handleLogout}
       disabled={busy}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        width: "100%",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: "1px solid rgba(225, 29, 72, 0.55)", // red border
-        background: hover ? "rgba(225, 29, 72, 0.16)" : "rgba(225, 29, 72, 0.10)",
-        color: "#e11d48",
-        fontWeight: 950,
-        cursor: busy ? "not-allowed" : "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 8,
-        userSelect: "none",
+      fullWidth
+      variant="outlined"
+      startIcon={<LogoutRoundedIcon />}
+      sx={{
+        justifyContent: "flex-start",
+        minHeight: 52,
+        borderRadius: 3.5,
+        px: 1.5,
+        fontWeight: 900,
+        color: "#ff6b73",
+        borderColor: "rgba(255, 107, 115, 0.34)",
+        backgroundColor: "rgba(255, 42, 54, 0.08)",
+        "&:hover": {
+          borderColor: "rgba(255, 107, 115, 0.5)",
+          backgroundColor: "rgba(255, 42, 54, 0.14)",
+        },
+        "&.Mui-disabled": {
+          color: "rgba(255,255,255,0.4)",
+          borderColor: "rgba(255,255,255,0.08)",
+          backgroundColor: "rgba(255,255,255,0.04)",
+        },
       }}
-      title="Log out"
       aria-label="Log out"
     >
-      <span style={{ fontSize: 16, lineHeight: "16px" }}>⎋</span>
       {busy ? "Logging out..." : "Log Out"}
-    </button>
+    </Button>
   );
 }

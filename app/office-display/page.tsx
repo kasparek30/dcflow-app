@@ -1,17 +1,44 @@
-// app/office-display/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
   where,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Divider,
+  Paper,
+  Stack,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
+import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
+import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
+import HandymanRoundedIcon from "@mui/icons-material/HandymanRounded";
+import LaunchRoundedIcon from "@mui/icons-material/LaunchRounded";
+import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
+import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
+import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
+import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import AssignmentLateRoundedIcon from "@mui/icons-material/AssignmentLateRounded";
+import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
@@ -40,15 +67,12 @@ type TripDoc = {
   active: boolean;
   type?: "service" | "project" | string;
   status?: string;
-
-  date?: string; // YYYY-MM-DD
+  date?: string;
   timeWindow?: "am" | "pm" | "all_day" | "custom" | string;
   startTime?: string;
   endTime?: string;
-
   crew?: TripCrew | null;
   link?: TripLink | null;
-
   timerState?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -59,7 +83,7 @@ type CompanyEvent = {
   active: boolean;
   type: "meeting" | string;
   title: string;
-  date: string; // YYYY-MM-DD
+  date: string;
   timeWindow?: "am" | "pm" | "all_day" | "custom" | string;
   startTime?: string | null;
   endTime?: string | null;
@@ -83,6 +107,15 @@ type ProjectSummary = {
   serviceCity?: string;
 };
 
+type PtoDay = {
+  uid: string;
+  employeeName: string;
+  date: string;
+  hours?: number | null;
+  requestId: string;
+  reason?: string | null;
+};
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -96,9 +129,8 @@ function fromIsoDate(iso: string) {
   return new Date(y, (m || 1) - 1, day || 1);
 }
 
-// Monday-start week (Mon–Fri)
 function startOfWorkWeek(d: Date) {
-  const wd = d.getDay(); // 0 Sun .. 6 Sat
+  const wd = d.getDay();
   const diffToMon = (wd + 6) % 7;
   const out = new Date(d);
   out.setHours(0, 0, 0, 0);
@@ -139,13 +171,51 @@ function normalizeStatus(s?: string) {
   return String(s || "").trim().toLowerCase();
 }
 
-function statusPillStyle(status?: string) {
+function statusTone(status?: string) {
   const s = normalizeStatus(status);
-  if (s === "in_progress") return { bg: "rgba(59,130,246,0.14)", bd: "rgba(59,130,246,0.35)", tx: "#dbeafe" };
-  if (s === "planned") return { bg: "rgba(99,102,241,0.14)", bd: "rgba(99,102,241,0.35)", tx: "#e0e7ff" };
-  if (s === "complete" || s === "completed") return { bg: "rgba(148,163,184,0.14)", bd: "rgba(148,163,184,0.30)", tx: "#e2e8f0" };
-  if (s === "cancelled") return { bg: "rgba(248,113,113,0.12)", bd: "rgba(248,113,113,0.28)", tx: "#fee2e2" };
-  return { bg: "rgba(251,191,36,0.14)", bd: "rgba(251,191,36,0.28)", tx: "#ffedd5" };
+
+  if (s === "in_progress") {
+    return {
+      label: "In progress",
+      bg: "rgba(71,184,255,0.12)",
+      border: "rgba(71,184,255,0.24)",
+      color: "#D8F0FF",
+    };
+  }
+
+  if (s === "planned") {
+    return {
+      label: "Planned",
+      bg: "rgba(13,126,242,0.10)",
+      border: "rgba(13,126,242,0.22)",
+      color: "#DCEBFF",
+    };
+  }
+
+  if (s === "complete" || s === "completed") {
+    return {
+      label: "Completed",
+      bg: "rgba(148,163,184,0.12)",
+      border: "rgba(148,163,184,0.20)",
+      color: "#E2E8F0",
+    };
+  }
+
+  if (s === "cancelled") {
+    return {
+      label: "Cancelled",
+      bg: "rgba(255,42,54,0.10)",
+      border: "rgba(255,42,54,0.20)",
+      color: "#FFE1E4",
+    };
+  }
+
+  return {
+    label: status ? status.replaceAll("_", " ") : "Unknown",
+    bg: "rgba(245,158,11,0.10)",
+    border: "rgba(245,158,11,0.20)",
+    color: "#FFEDD5",
+  };
 }
 
 function tripDisplayTitle(t: TripDoc, ticket?: TicketSummary, project?: ProjectSummary) {
@@ -178,7 +248,7 @@ function tripDisplayLocation(t: TripDoc, ticket?: TicketSummary, project?: Proje
 
 function tripTimeText(t: TripDoc) {
   const w = String(t.timeWindow || "").toLowerCase();
-  if (w === "all_day") return "All Day";
+  if (w === "all_day") return "All day";
   if (w === "am") return "AM";
   if (w === "pm") return "PM";
   const st = t.startTime ? formatTime12h(t.startTime) : "—";
@@ -194,21 +264,62 @@ function tripRowUids(t: TripDoc): string[] {
   return Array.from(new Set(uids));
 }
 
+function looksApprovedPto(d: any) {
+  const status = String(d.status ?? d.requestStatus ?? "").toLowerCase().trim();
+  const approvedBool = Boolean(d.approved ?? d.isApproved ?? false);
+  return approvedBool || status === "approved";
+}
+
+function extractEmployeeUid(d: any) {
+  return String(d.employeeId ?? d.employeeUid ?? d.uid ?? d.userId ?? "").trim();
+}
+
+function extractEmployeeName(d: any) {
+  return String(d.employeeName ?? d.displayName ?? d.name ?? "").trim();
+}
+
+function extractPtoDates(d: any): string[] {
+  const single = String(d.date ?? d.ptoDate ?? d.day ?? d.requestDate ?? "").trim();
+  if (single && /^\d{4}-\d{2}-\d{2}$/.test(single)) return [single];
+
+  const start = String(d.startDate ?? d.fromDate ?? d.start ?? "").trim();
+  const end = String(d.endDate ?? d.toDate ?? d.end ?? "").trim();
+
+  if (start && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
+    const s = fromIsoDate(start);
+    const e = end && /^\d{4}-\d{2}-\d{2}$/.test(end) ? fromIsoDate(end) : s;
+
+    const out: string[] = [];
+    const cur = new Date(s);
+    cur.setHours(0, 0, 0, 0);
+    const endDt = new Date(e);
+    endDt.setHours(0, 0, 0, 0);
+
+    while (cur <= endDt) {
+      out.push(toIsoDate(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
+
+  return [];
+}
+
 export default function OfficeDisplayPage() {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [weekOffset, setWeekOffset] = useState(0);
-
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const [techs, setTechs] = useState<TechRow[]>([]);
   const [trips, setTrips] = useState<TripDoc[]>([]);
   const [eventsByDate, setEventsByDate] = useState<Record<string, CompanyEvent[]>>({});
-
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
-
+  const [ptoByUidByDate, setPtoByUidByDate] = useState<Record<string, Record<string, PtoDay>>>({});
+  const [ptoNamesByDate, setPtoNamesByDate] = useState<Record<string, string[]>>({});
   const [lastUpdated, setLastUpdated] = useState<string>("");
 
   const anchor = useMemo(() => {
@@ -219,7 +330,6 @@ export default function OfficeDisplayPage() {
   }, [weekOffset]);
 
   const days = useMemo(() => {
-    // Mon–Fri
     return [0, 1, 2, 3, 4].map((i) => {
       const d = addDays(anchor, i);
       const iso = toIsoDate(d);
@@ -230,7 +340,6 @@ export default function OfficeDisplayPage() {
   const weekStartIso = days[0]?.iso || "";
   const weekEndIso = days[days.length - 1]?.iso || "";
 
-  // Hard lock: no scrollbars anywhere (TV mode)
   useEffect(() => {
     const prevOverflow = document.documentElement.style.overflow;
     const prevBodyOverflow = document.body.style.overflow;
@@ -242,14 +351,12 @@ export default function OfficeDisplayPage() {
     };
   }, []);
 
-  // Realtime: techs, trips, events
   useEffect(() => {
     setLoading(true);
     setError("");
 
     const unsubs: Array<() => void> = [];
 
-    // Tech rows
     const qUsers = query(collection(db, "users"));
     unsubs.push(
       onSnapshot(
@@ -278,7 +385,6 @@ export default function OfficeDisplayPage() {
       )
     );
 
-    // Trips for week
     const qTrips = query(
       collection(db, "trips"),
       where("active", "==", true),
@@ -322,7 +428,6 @@ export default function OfficeDisplayPage() {
       )
     );
 
-    // Meetings / companyEvents for week
     const qEvents = query(
       collection(db, "companyEvents"),
       where("active", "==", true),
@@ -354,16 +459,20 @@ export default function OfficeDisplayPage() {
               endTime: d.endTime ?? null,
               location: d.location ?? null,
               notes: d.notes ?? null,
-              blocksSchedule: typeof d.blocksSchedule === "boolean" ? d.blocksSchedule : true,
+              blocksSchedule:
+                typeof d.blocksSchedule === "boolean" ? d.blocksSchedule : true,
             };
 
             if (!ev.active) continue;
             map[date].push(ev);
           }
 
-          // stable sort
           for (const k of Object.keys(map)) {
-            map[k].sort((a, b) => String(a.timeWindow || "").localeCompare(String(b.timeWindow || "")) || a.title.localeCompare(b.title));
+            map[k].sort(
+              (a, b) =>
+                String(a.timeWindow || "").localeCompare(String(b.timeWindow || "")) ||
+                a.title.localeCompare(b.title)
+            );
           }
 
           setEventsByDate(map);
@@ -378,10 +487,73 @@ export default function OfficeDisplayPage() {
     return () => {
       for (const u of unsubs) u();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekStartIso, weekEndIso, days]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPto() {
+      try {
+        const snap = await getDocs(collection(db, "ptoRequests"));
+
+        const byUid: Record<string, Record<string, PtoDay>> = {};
+        const namesByDate: Record<string, Set<string>> = {};
+
+        for (const ds of snap.docs) {
+          const d = ds.data() as any;
+          if (!looksApprovedPto(d)) continue;
+
+          const uid = extractEmployeeUid(d);
+          if (!uid) continue;
+
+          const dates = extractPtoDates(d);
+          if (!dates.length) continue;
+
+          const employeeName = extractEmployeeName(d) || uid;
+          const hours = d.hours ?? d.hoursPaid ?? d.requestedHours ?? null;
+          const reason = d.reason ?? d.notes ?? d.note ?? null;
+
+          for (const date of dates) {
+            if (date < weekStartIso || date > weekEndIso) continue;
+
+            if (!byUid[uid]) byUid[uid] = {};
+            byUid[uid][date] = {
+              uid,
+              employeeName,
+              date,
+              hours: Number.isFinite(Number(hours)) ? Number(hours) : null,
+              requestId: ds.id,
+              reason: reason ? String(reason) : null,
+            };
+
+            if (!namesByDate[date]) namesByDate[date] = new Set<string>();
+            namesByDate[date].add(employeeName);
+          }
+        }
+
+        const outNames: Record<string, string[]> = {};
+        for (const date of Object.keys(namesByDate)) {
+          outNames[date] = Array.from(namesByDate[date].values()).sort((a, b) => a.localeCompare(b));
+        }
+
+        if (!cancelled) {
+          setPtoByUidByDate(byUid);
+          setPtoNamesByDate(outNames);
+          setLastUpdated(new Date().toLocaleTimeString());
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setError((prev) => prev || e?.message || "Failed to load PTO.");
+        }
+      }
+    }
+
+    loadPto();
+    return () => {
+      cancelled = true;
+    };
   }, [weekStartIso, weekEndIso]);
 
-  // Load ticket/project summaries for trips (best-effort, cached)
   const idsKey = useMemo(() => {
     const st = new Set<string>();
     const pj = new Set<string>();
@@ -404,7 +576,6 @@ export default function OfficeDisplayPage() {
       const serviceIds = idsKey.service ? idsKey.service.split("|").filter(Boolean) : [];
       const projectIds = idsKey.project ? idsKey.project.split("|").filter(Boolean) : [];
 
-      // Tickets
       if (serviceIds.length) {
         const missing = serviceIds.filter((id) => !ticketMap[id]);
         if (missing.length) {
@@ -431,7 +602,6 @@ export default function OfficeDisplayPage() {
         }
       }
 
-      // Projects
       if (projectIds.length) {
         const missing = projectIds.filter((id) => !projectMap[id]);
         if (missing.length) {
@@ -462,22 +632,31 @@ export default function OfficeDisplayPage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey.service, idsKey.project]);
+  }, [idsKey.service, idsKey.project, projectMap, ticketMap]);
 
-  // Build rows: technicians + Unassigned if needed
   const rows = useMemo(() => {
     const out: Array<{ key: string; label: string; uid: string | null }> = [];
-    const unassignedHasTrips = trips.some((t) => (t.date && t.date >= weekStartIso && t.date <= weekEndIso) && tripRowUids(t).length === 0);
-    if (unassignedHasTrips) out.push({ key: "UNASSIGNED", label: "Unassigned", uid: null });
-    for (const t of techs) out.push({ key: t.uid, label: t.name, uid: t.uid });
+    const unassignedHasTrips = trips.some(
+      (t) =>
+        t.date &&
+        t.date >= weekStartIso &&
+        t.date <= weekEndIso &&
+        tripRowUids(t).length === 0
+    );
+
+    if (unassignedHasTrips) {
+      out.push({ key: "UNASSIGNED", label: "Unassigned", uid: null });
+    }
+
+    for (const t of techs) {
+      out.push({ key: t.uid, label: t.name, uid: t.uid });
+    }
+
     return out;
   }, [techs, trips, weekStartIso, weekEndIso]);
 
-  // Grid: rowUid -> dateIso -> trips
   const grid = useMemo(() => {
     const out = new Map<string, Map<string, TripDoc[]>>();
-    for (const day of days) out.set(day.iso, new Map()); // not used directly, just ensures day list known
 
     for (const t of trips) {
       const dateIso = String(t.date || "").trim();
@@ -495,7 +674,6 @@ export default function OfficeDisplayPage() {
       }
     }
 
-    // sort trips in each cell
     for (const [, byDate] of out) {
       for (const [d, list] of byDate) {
         list.sort((a, b) => {
@@ -508,17 +686,11 @@ export default function OfficeDisplayPage() {
     }
 
     return out;
-  }, [trips, days, weekStartIso, weekEndIso]);
+  }, [trips, weekStartIso, weekEndIso]);
 
   const weekLabel = useMemo(() => {
-    // Show Mon–Fri range
     return `Week • ${formatIsoMDY(weekStartIso)} – ${formatIsoMDY(weekEndIso)}`;
   }, [weekStartIso, weekEndIso]);
-
-  const topRightInfo = useMemo(() => {
-    const lu = lastUpdated || "—";
-    return `Auto-refresh: live • Last updated: ${lu}`;
-  }, [lastUpdated]);
 
   const canControlWeek =
     appUser?.role === "admin" ||
@@ -526,7 +698,6 @@ export default function OfficeDisplayPage() {
     appUser?.role === "manager" ||
     appUser?.role === "office_display";
 
-  // Limit per-cell cards so we never need scrolling
   function renderTripCard(t: TripDoc) {
     const sid = String(t.link?.serviceTicketId || "").trim();
     const pid = String(t.link?.projectId || "").trim();
@@ -537,51 +708,128 @@ export default function OfficeDisplayPage() {
     const subtitle = tripDisplaySubtitle(t, ticket);
     const location = tripDisplayLocation(t, ticket, project);
     const timeText = tripTimeText(t);
-
-    const pill = statusPillStyle(t.status);
+    const tone = statusTone(t.status);
+    const tripType = normalizeStatus(t.type);
 
     return (
-      <div
+      <Paper
         key={t.id}
-        style={{
-          border: "1px solid rgba(148,163,184,0.22)",
-          borderRadius: 14,
-          padding: 12,
-          background: "rgba(2,6,23,0.55)",
-          boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
+        elevation={0}
+        sx={{
+          px: 1,
+          py: 0.9,
+          borderRadius: 1.5,
+          backgroundColor: "background.paper",
+          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+          minHeight: 0,
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-          <div style={{ fontWeight: 950, fontSize: 16, lineHeight: 1.2, letterSpacing: 0.2 }}>
-            {normalizeStatus(t.type) === "project" ? "📐 " : "🔧 "}
-            {title}
-          </div>
+        <Stack spacing={0.75}>
+          <Stack direction="row" spacing={0.75} justifyContent="space-between" alignItems="flex-start">
+            <Stack direction="row" spacing={0.75} sx={{ minWidth: 0, flex: 1 }}>
+              <Box
+                sx={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: 1,
+                  display: "grid",
+                  placeItems: "center",
+                  flexShrink: 0,
+                  backgroundColor:
+                    tripType === "project"
+                      ? alpha(theme.palette.warning.main, 0.14)
+                      : alpha(theme.palette.primary.main, 0.14),
+                  color:
+                    tripType === "project"
+                      ? "#FFD89C"
+                      : theme.palette.primary.light,
+                }}
+              >
+                {tripType === "project" ? (
+                  <ConstructionRoundedIcon sx={{ fontSize: 14 }} />
+                ) : (
+                  <PrecisionManufacturingRoundedIcon sx={{ fontSize: 14 }} />
+                )}
+              </Box>
 
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 950,
-              padding: "4px 10px",
-              borderRadius: 999,
-              border: `1px solid ${pill.bd}`,
-              background: pill.bg,
-              color: pill.tx,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {(t.status || "—").replaceAll("_", " ")}
-          </div>
-        </div>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{
+                    lineHeight: 1.2,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                  }}
+                >
+                  {title}
+                </Typography>
 
-        <div style={{ marginTop: 8, fontSize: 13, color: "rgba(226,232,240,0.92)", fontWeight: 800 }}>
-          {timeText}
-          {subtitle ? ` • ${subtitle}` : ""}
-        </div>
+                {subtitle ? (
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      display: "block",
+                      mt: 0.1,
+                      color: "text.secondary",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {subtitle}
+                  </Typography>
+                ) : null}
+              </Box>
+            </Stack>
 
-        {location ? (
-          <div style={{ marginTop: 6, fontSize: 13, color: "rgba(148,163,184,0.95)" }}>{location}</div>
-        ) : null}
-      </div>
+            <Chip
+              label={tone.label}
+              size="small"
+              sx={{
+                height: 20,
+                borderRadius: 1,
+                color: tone.color,
+                backgroundColor: tone.bg,
+                border: `1px solid ${tone.border}`,
+                "& .MuiChip-label": {
+                  px: 0.75,
+                  fontSize: 10,
+                  fontWeight: 500,
+                },
+              }}
+            />
+          </Stack>
+
+          <Stack spacing={0.35}>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <ScheduleRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                {timeText}
+              </Typography>
+            </Stack>
+
+            {location ? (
+              <Stack direction="row" spacing={0.5} alignItems="center">
+                <LocationOnRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: "text.secondary",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {location}
+                </Typography>
+              </Stack>
+            ) : null}
+          </Stack>
+        </Stack>
+      </Paper>
     );
   }
 
@@ -589,17 +837,16 @@ export default function OfficeDisplayPage() {
     const list = eventsByDate[dayIso] || [];
     if (!list.length) return null;
 
-    // TV-safe: show up to 2, then +N
     const head = list.slice(0, 2);
     const extra = list.length - head.length;
 
     return (
-      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+      <Stack spacing={0.5} sx={{ mt: 0.75 }}>
         {head.map((e) => {
           const w = String(e.timeWindow || "").toLowerCase();
           const time =
             w === "all_day"
-              ? "All Day"
+              ? "All day"
               : w === "am"
                 ? "AM"
                 : w === "pm"
@@ -609,335 +856,452 @@ export default function OfficeDisplayPage() {
                     : "Custom";
 
           return (
-            <div
+            <Paper
               key={e.id}
-              style={{
-                border: "1px solid rgba(16,185,129,0.28)",
-                background: "rgba(16,185,129,0.10)",
-                borderRadius: 14,
-                padding: "10px 12px",
+              elevation={0}
+              sx={{
+                px: 0.9,
+                py: 0.8,
+                borderRadius: 1.5,
+                backgroundColor: alpha(theme.palette.success.main, 0.08),
+                border: `1px solid ${alpha(theme.palette.success.main, 0.16)}`,
               }}
             >
-              <div style={{ fontWeight: 950, color: "rgba(209,250,229,0.96)", fontSize: 14 }}>
-                📣 {e.title}
-              </div>
-              <div style={{ marginTop: 4, fontSize: 12.5, color: "rgba(167,243,208,0.92)", fontWeight: 800 }}>
-                {time}
-                {e.location ? ` • ${e.location}` : ""}
-              </div>
-            </div>
+              <Stack spacing={0.25}>
+                <Stack direction="row" spacing={0.5} alignItems="center">
+                  <CampaignRoundedIcon sx={{ fontSize: 13, color: "#CFFFE0" }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "#E1FFEA",
+                      fontWeight: 500,
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {e.title}
+                  </Typography>
+                </Stack>
+
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: alpha("#E1FFEA", 0.88),
+                  }}
+                >
+                  {time}
+                  {e.location ? ` • ${e.location}` : ""}
+                </Typography>
+              </Stack>
+            </Paper>
           );
         })}
+
         {extra > 0 ? (
-          <div style={{ fontSize: 12.5, fontWeight: 900, color: "rgba(167,243,208,0.92)" }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: alpha("#E1FFEA", 0.88),
+            }}
+          >
             +{extra} more meeting(s)
-          </div>
+          </Typography>
         ) : null}
-      </div>
+      </Stack>
     );
   }
 
-  // Layout sizing (no scrolling)
-  const headerH = 108;
-  const outerPad = 18;
+  const headerH = 96;
+  const outerPad = 16;
+  const footerH = 46;
+  const dayHeaderApprox = 124;
   const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px)`;
-
-  const logoSrc = "/dcflow-logo.png"; // ✅ Put the uploaded logo into /public/dcflow-logo.png
+  const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px - ${footerH}px)`;
 
   return (
     <ProtectedPage fallbackTitle="Office Display">
-      <main
-        style={{
+      <Box
+        component="main"
+        sx={{
           minHeight: "100vh",
           height: "100vh",
           overflow: "hidden",
-          background:
-            "radial-gradient(1200px 700px at 20% 0%, rgba(59,130,246,0.18), rgba(2,6,23,0) 60%), radial-gradient(900px 600px at 80% 10%, rgba(99,102,241,0.14), rgba(2,6,23,0) 55%), #050816",
-          color: "white",
-          padding: outerPad,
-          boxSizing: "border-box",
+          p: `${outerPad}px`,
+          backgroundColor: "background.default",
+          color: "text.primary",
         }}
       >
-        {/* Header */}
-        <div
-          style={{
-            height: headerH,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 16,
-            padding: "14px 16px",
-            borderRadius: 18,
-            border: "1px solid rgba(148,163,184,0.22)",
-            background: "rgba(2,6,23,0.55)",
-            boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+        <Paper
+          elevation={0}
+          sx={{
+            height: `${headerH}px`,
+            px: 2,
+            py: 1.25,
+            borderRadius: 2,
+            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            backgroundColor: alpha("#FFFFFF", 0.02),
             overflow: "hidden",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 16, minWidth: 0 }}>
-            <img
-              src={logoSrc}
-              alt="DCFlow"
-              style={{
-                height: 78,
-                width: "auto",
-                display: "block",
-                filter: "drop-shadow(0 10px 20px rgba(0,0,0,0.45))",
-              }}
-            />
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <div style={{ textAlign: "right", lineHeight: 1.25 }}>
-              <div style={{ fontSize: 18, fontWeight: 1000, letterSpacing: 0.3 }}>{weekLabel}</div>
-              <div style={{ marginTop: 6, fontSize: 13.5, color: "rgba(203,213,225,0.92)", fontWeight: 800 }}>
-                {topRightInfo}
-              </div>
-              {error ? (
-                <div style={{ marginTop: 6, fontSize: 13.5, color: "rgba(252,165,165,0.95)", fontWeight: 950 }}>
-                  {error}
-                </div>
-              ) : null}
-            </div>
-
-            {canControlWeek ? (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                <button
-                  type="button"
-                  onClick={() => setWeekOffset((p) => p - 1)}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 14,
-                    border: "1px solid rgba(148,163,184,0.25)",
-                    background: "rgba(15,23,42,0.75)",
-                    color: "white",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
-                  ← Prev
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWeekOffset(0)}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 14,
-                    border: "1px solid rgba(59,130,246,0.35)",
-                    background: "rgba(59,130,246,0.14)",
-                    color: "white",
-                    cursor: "pointer",
-                    fontWeight: 950,
-                  }}
-                >
-                  This Week
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWeekOffset((p) => p + 1)}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 14,
-                    border: "1px solid rgba(148,163,184,0.25)",
-                    background: "rgba(15,23,42,0.75)",
-                    color: "white",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
-                  Next →
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        {/* Main grid (NO SCROLL) */}
-        <div
-          style={{
-            marginTop: 14,
-            height: gridH,
-            overflow: "hidden",
-            borderRadius: 18,
-            border: "1px solid rgba(148,163,184,0.18)",
-            background: "rgba(2,6,23,0.35)",
-            boxShadow: "0 18px 50px rgba(0,0,0,0.28)",
-          }}
-        >
-          {/* Weekday headers */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: `280px repeat(${days.length}, 1fr)`,
-              borderBottom: "1px solid rgba(148,163,184,0.18)",
-              background: "rgba(2,6,23,0.55)",
-            }}
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            spacing={2}
+            sx={{ height: "100%" }}
           >
-            <div style={{ padding: 14, fontWeight: 1000, color: "rgba(226,232,240,0.95)" }}>
-              Technician
-            </div>
-
-            {days.map(({ d, iso }) => (
-              <div
-                key={iso}
-                style={{
-                  padding: 14,
-                  borderLeft: "1px solid rgba(148,163,184,0.12)",
-                  overflow: "hidden",
+            <Stack direction="row" spacing={2} alignItems="center" minWidth={0}>
+              <Box
+                sx={{
+                  position: "relative",
+                  width: 252,
+                  height: 68,
+                  flexShrink: 0,
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                  <div style={{ fontWeight: 1000, fontSize: 18, letterSpacing: 0.2 }}>
-                    {formatDowShort(d)}
-                  </div>
-                  <div style={{ fontSize: 13, color: "rgba(148,163,184,0.95)", fontWeight: 900 }}>
-                    {formatIsoMDY(iso)}
-                  </div>
-                </div>
-                {renderMeetingsForDay(iso)}
-              </div>
-            ))}
-          </div>
+                <Image
+                  src="/brand/dcflow-logo.png"
+                  alt="DCFlow"
+                  fill
+                  priority
+                  sizes="252px"
+                  style={{ objectFit: "contain" }}
+                />
+              </Box>
 
-          {/* Body rows */}
-          <div
-            style={{
-              height: `calc(${gridH} - 1px - 132px)`, // subtract header-ish chunk (safe)
-              // NOTE: we avoid scroll by using fractional row heights
+              <Stack spacing={0.4} minWidth={0}>
+                <Stack direction="row" spacing={0.75} alignItems="center">
+                  <Chip
+                    icon={<CalendarMonthRoundedIcon />}
+                    label="Office Display"
+                    size="small"
+                    sx={{
+                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                      border: `1px solid ${alpha(theme.palette.primary.main, 0.20)}`,
+                    }}
+                  />
+                  <Chip
+                    icon={<RefreshRoundedIcon />}
+                    label={`Live • ${lastUpdated || "—"}`}
+                    size="small"
+                    sx={{
+                      backgroundColor: alpha("#FFFFFF", 0.04),
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    }}
+                  />
+                </Stack>
+
+                <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
+                  {weekLabel}
+                </Typography>
+
+                <Typography variant="body2" color="text.secondary">
+                  Technician schedule overview with meetings, assignments, approved PTO, and weekly visibility
+                </Typography>
+              </Stack>
+            </Stack>
+
+            {canControlWeek ? (
+              <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  startIcon={<ChevronLeftRoundedIcon />}
+                  onClick={() => setWeekOffset((p) => p - 1)}
+                  sx={{ minWidth: 108, borderRadius: 1.5 }}
+                >
+                  Prev
+                </Button>
+
+                <Button
+                  variant="contained"
+                  onClick={() => setWeekOffset(0)}
+                  sx={{ minWidth: 118, borderRadius: 1.5 }}
+                >
+                  This Week
+                </Button>
+
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  endIcon={<ChevronRightRoundedIcon />}
+                  onClick={() => setWeekOffset((p) => p + 1)}
+                  sx={{ minWidth: 108, borderRadius: 1.5 }}
+                >
+                  Next
+                </Button>
+              </Stack>
+            ) : null}
+          </Stack>
+        </Paper>
+
+        <Paper
+          elevation={0}
+          sx={{
+            mt: 1.5,
+            height: gridH,
+            overflow: "hidden",
+            borderRadius: 2,
+            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            backgroundColor: alpha("#FFFFFF", 0.02),
+          }}
+        >
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: `252px repeat(${days.length}, 1fr)`,
+              borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+              backgroundColor: alpha("#FFFFFF", 0.015),
+            }}
+          >
+            <Box
+              sx={{
+                px: 1.5,
+                py: 1.25,
+                display: "flex",
+                alignItems: "center",
+                gap: 0.75,
+              }}
+            >
+              <GroupsRoundedIcon sx={{ color: "primary.light", fontSize: 18 }} />
+              <Typography variant="subtitle2">Technician</Typography>
+            </Box>
+
+            {days.map(({ d, iso }) => {
+              const ptoNames = ptoNamesByDate[iso] || [];
+              return (
+                <Box
+                  key={iso}
+                  sx={{
+                    px: 1.2,
+                    py: 1.1,
+                    borderLeft: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    overflow: "hidden",
+                  }}
+                >
+                  <Stack spacing={0.5}>
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      spacing={1}
+                      alignItems="baseline"
+                    >
+                      <Typography variant="subtitle2">{formatDowShort(d)}</Typography>
+
+                      <Typography variant="caption" color="text.secondary">
+                        {formatIsoMDY(iso)}
+                      </Typography>
+                    </Stack>
+
+                    {ptoNames.length ? (
+                      <Chip
+                        size="small"
+                        icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
+                        label={ptoNames.length === 1 ? `PTO: ${ptoNames[0]}` : `PTO: ${ptoNames.length} employees`}
+                        color="secondary"
+                        variant="outlined"
+                        sx={{
+                          width: "fit-content",
+                          borderRadius: 1.25,
+                          fontWeight: 500,
+                        }}
+                      />
+                    ) : null}
+
+                    {renderMeetingsForDay(iso)}
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Box>
+
+          <Box
+            sx={{
+              height: bodyRowsH,
               display: "grid",
               gridTemplateRows: `repeat(${Math.max(1, rows.length)}, 1fr)`,
               overflow: "hidden",
             }}
           >
             {rows.map((r) => (
-              <div
+              <Box
                 key={r.key}
-                style={{
+                sx={{
                   display: "grid",
-                  gridTemplateColumns: `280px repeat(${days.length}, 1fr)`,
-                  borderTop: "1px solid rgba(148,163,184,0.10)",
+                  gridTemplateColumns: `252px repeat(${days.length}, 1fr)`,
+                  borderTop: `1px solid ${alpha("#FFFFFF", 0.06)}`,
                   minHeight: 0,
                 }}
               >
-                {/* Tech name */}
-                <div
-                  style={{
-                    padding: 14,
-                    borderRight: "1px solid rgba(148,163,184,0.12)",
-                    background: "rgba(2,6,23,0.45)",
+                <Box
+                  sx={{
+                    px: 1.5,
+                    py: 1.2,
+                    borderRight: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    backgroundColor: alpha("#FFFFFF", 0.015),
                     display: "flex",
                     alignItems: "center",
-                    gap: 10,
+                    gap: 0.75,
                     minWidth: 0,
                   }}
                 >
-                  <div style={{ fontWeight: 1000, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {r.label}
-                  </div>
-                </div>
+                  <Box
+                    sx={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 1,
+                      display: "grid",
+                      placeItems: "center",
+                      backgroundColor:
+                        r.key === "UNASSIGNED"
+                          ? alpha(theme.palette.warning.main, 0.12)
+                          : alpha(theme.palette.primary.main, 0.12),
+                      color:
+                        r.key === "UNASSIGNED"
+                          ? "#FFD89C"
+                          : theme.palette.primary.light,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {r.key === "UNASSIGNED" ? (
+                      <AssignmentLateRoundedIcon sx={{ fontSize: 14 }} />
+                    ) : (
+                      <HandymanRoundedIcon sx={{ fontSize: 14 }} />
+                    )}
+                  </Box>
 
-                {/* Cells */}
+                  <Typography
+                    variant="subtitle2"
+                    sx={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {r.label}
+                  </Typography>
+                </Box>
+
                 {days.map(({ iso }) => {
                   const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
                   const cellTrips = grid.get(rowKey)?.get(iso) || [];
-
-                  // TV-safe: show up to 2 trip cards, then +N
+                  const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
                   const head = cellTrips.slice(0, 2);
                   const extra = cellTrips.length - head.length;
 
                   return (
-                    <div
+                    <Box
                       key={`${r.key}_${iso}`}
-                      style={{
-                        padding: 12,
-                        borderLeft: "1px solid rgba(148,163,184,0.10)",
+                      sx={{
+                        p: 1,
+                        borderLeft: `1px solid ${alpha("#FFFFFF", 0.06)}`,
                         overflow: "hidden",
                         display: "grid",
                         alignContent: "start",
-                        gap: 10,
+                        gap: 0.7,
                         minHeight: 0,
+                        backgroundColor: pto
+                          ? alpha(theme.palette.secondary.main, 0.08)
+                          : "transparent",
                       }}
                     >
+                      {pto ? (
+                        <Chip
+                          size="small"
+                          icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
+                          label={`PTO ${pto.hours ? ` • ${pto.hours}h` : ""}`}
+                          color="secondary"
+                          variant="outlined"
+                          sx={{
+                            width: "fit-content",
+                            borderRadius: 1.25,
+                            fontWeight: 500,
+                          }}
+                        />
+                      ) : null}
+
                       {head.length === 0 ? (
-                        <div
-                          style={{
-                            border: "1px dashed rgba(148,163,184,0.22)",
-                            borderRadius: 14,
-                            padding: 12,
-                            background: "rgba(2,6,23,0.30)",
-                            color: "rgba(148,163,184,0.95)",
-                            fontSize: 13,
-                            fontWeight: 900,
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            minHeight: 64,
+                            borderRadius: 1.5,
+                            border: `1px dashed ${alpha("#FFFFFF", 0.12)}`,
+                            backgroundColor: "transparent",
+                            display: "grid",
+                            placeItems: "center",
+                            color: "text.secondary",
                           }}
                         >
-                          —
-                        </div>
+                          <Typography variant="caption">
+                            {pto ? "PTO" : "—"}
+                          </Typography>
+                        </Paper>
                       ) : (
                         <>
                           {head.map(renderTripCard)}
                           {extra > 0 ? (
-                            <div style={{ fontSize: 13, fontWeight: 1000, color: "rgba(203,213,225,0.92)" }}>
+                            <Typography variant="caption" color="text.secondary">
                               +{extra} more…
-                            </div>
+                            </Typography>
                           ) : null}
                         </>
                       )}
-                    </div>
+                    </Box>
                   );
                 })}
-              </div>
+              </Box>
             ))}
-          </div>
+          </Box>
 
-          {/* Footer strip (tiny) */}
-          <div
-            style={{
-              height: 48,
-              borderTop: "1px solid rgba(148,163,184,0.12)",
-              background: "rgba(2,6,23,0.55)",
+          <Divider />
+
+          <Box
+            sx={{
+              height: `${footerH}px`,
+              px: 1.5,
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "0 14px",
-              gap: 10,
-              overflow: "hidden",
+              gap: 1.25,
+              backgroundColor: alpha("#FFFFFF", 0.015),
             }}
           >
-            <div style={{ fontSize: 12.5, color: "rgba(148,163,184,0.95)", fontWeight: 900 }}>
-              Live updates: Trips + Meetings + Technicians
-            </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <Stack direction="row" spacing={0.75} alignItems="center">
               {loading ? (
-                <div style={{ fontSize: 12.5, color: "rgba(203,213,225,0.92)", fontWeight: 900 }}>
-                  Loading…
-                </div>
-              ) : null}
+                <CircularProgress size={15} thickness={5} />
+              ) : (
+                <RefreshRoundedIcon sx={{ fontSize: 15, color: "text.secondary" }} />
+              )}
+              <Typography variant="caption" color="text.secondary">
+                Live updates: Trips + Meetings + Technicians + Approved PTO
+              </Typography>
+            </Stack>
 
-              <Link
-                href="/schedule"
-                style={{
-                  fontSize: 12.5,
-                  fontWeight: 950,
-                  color: "rgba(219,234,254,0.95)",
-                  textDecoration: "none",
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid rgba(59,130,246,0.30)",
-                  background: "rgba(59,130,246,0.12)",
-                }}
-              >
-                Open Schedule →
-              </Link>
-            </div>
-          </div>
-        </div>
+            <Button
+              component={Link}
+              href="/schedule"
+              variant="outlined"
+              endIcon={<LaunchRoundedIcon />}
+              sx={{ minWidth: 140, borderRadius: 1.5 }}
+            >
+              Open Schedule
+            </Button>
+          </Box>
+        </Paper>
 
-        {/* Quick note for you (won’t show on TV much) */}
-        <div style={{ marginTop: 10, fontSize: 12, color: "rgba(148,163,184,0.85)" }}>
-          Logo path expected at <strong>/public/dcflow-logo.png</strong>.
-        </div>
-      </main>
+        {error ? (
+          <Alert
+            severity="error"
+            variant="outlined"
+            sx={{
+              mt: 1,
+              borderRadius: 1.5,
+            }}
+          >
+            {error}
+          </Alert>
+        ) : null}
+      </Box>
     </ProtectedPage>
   );
 }

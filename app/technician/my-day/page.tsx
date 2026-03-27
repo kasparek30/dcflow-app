@@ -12,9 +12,48 @@ import {
   orderBy,
   query,
   where,
-  setDoc,
   runTransaction,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardActionArea,
+  CardContent,
+  Checkbox,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Select,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import type { SelectChangeEvent } from "@mui/material/Select";
+import SharedTripCard from "../../../components/trips/SharedTripCard";
+import { alpha, useTheme } from "@mui/material/styles";
+import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
+import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
+import EngineeringRoundedIcon from "@mui/icons-material/EngineeringRounded";
+import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
+import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
+import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
+import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -23,13 +62,10 @@ import { db } from "../../../src/lib/firebase";
 type TripCrew = {
   primaryTechUid?: string | null;
   primaryTechName?: string | null;
-
   helperUid?: string | null;
   helperName?: string | null;
-
   secondaryTechUid?: string | null;
   secondaryTechName?: string | null;
-
   secondaryHelperUid?: string | null;
   secondaryHelperName?: string | null;
 };
@@ -49,23 +85,16 @@ type TripConfirmedEntry = {
 type Trip = {
   id: string;
   active: boolean;
-
   type?: "project" | "service" | string;
-  status?: string; // planned | in_progress | complete | cancelled | etc
-
-  date?: string; // YYYY-MM-DD
+  status?: string;
+  date?: string;
   timeWindow?: "am" | "pm" | "all_day" | "custom" | string;
-  startTime?: string; // HH:mm
-  endTime?: string; // HH:mm
-
+  startTime?: string;
+  endTime?: string;
   crew?: TripCrew;
   link?: TripLink;
-
   cancelReason?: string | null;
-
   confirmedBy?: Record<string, TripConfirmedEntry> | null;
-
-  // optional fields written by transaction
   completedAt?: string | null;
   completedByUid?: string | null;
 };
@@ -73,7 +102,7 @@ type Trip = {
 type DailyCrewOverride = {
   id: string;
   active: boolean;
-  date: string; // YYYY-MM-DD
+  date: string;
   helperUid: string;
   assignedTechUid: string;
   note?: string | null;
@@ -81,23 +110,17 @@ type DailyCrewOverride = {
 
 type MyDayItem = {
   id: string;
-
   headerText: string;
   subLine: string;
   techText: string;
   helperText?: string;
   secondaryTechText?: string;
   secondaryHelperText?: string;
-
   issueDetailsText?: string;
   followUpText?: string;
-
   status: string;
   sortKey: string;
-
   href: string;
-
-  // For confirm
   tripType?: string;
   tripDate?: string;
   tripWindow?: string;
@@ -105,7 +128,6 @@ type MyDayItem = {
   tripEndTime?: string;
   projectId?: string | null;
   projectStageKey?: string | null;
-
   confirmed?: TripConfirmedEntry | null;
 };
 
@@ -121,10 +143,8 @@ type ServiceTicketLite = {
   issueSummary?: string;
   issueDetails?: string;
   status?: string;
-
   customerDisplayName?: string;
   customerPhone?: string;
-
   serviceAddressLabel?: string;
   serviceAddressLine1?: string;
   serviceAddressLine2?: string;
@@ -135,7 +155,7 @@ type ServiceTicketLite = {
 
 type CompanyHoliday = {
   id: string;
-  holidayDate: string; // YYYY-MM-DD
+  holidayDate: string;
   name: string;
   active: boolean;
   scheduleBlocked?: boolean;
@@ -143,16 +163,15 @@ type CompanyHoliday = {
 
 type CompanyEvent = {
   id: string;
-  date: string; // YYYY-MM-DD
+  date: string;
   title: string;
   active: boolean;
-
   timeWindow?: "am" | "pm" | "all_day" | "custom" | string | null;
-  startTime?: string | null; // "08:00"
-  endTime?: string | null; // "09:00"
+  startTime?: string | null;
+  endTime?: string | null;
   location?: string | null;
   notes?: string | null;
-  type?: string | null; // meeting, etc
+  type?: string | null;
 };
 
 function isoTodayLocal() {
@@ -186,13 +205,12 @@ function addDays(d: Date, days: number) {
   return out;
 }
 
-// Monday-start payroll week bounds
 function getPayrollWeekBounds(entryDateIso: string) {
   const [y, m, d] = entryDateIso.split("-").map((x) => Number(x));
   const dt = new Date(y, (m || 1) - 1, d || 1);
   dt.setHours(0, 0, 0, 0);
 
-  const wd = dt.getDay(); // 0 Sun .. 6 Sat
+  const wd = dt.getDay();
   const diffToMon = (wd + 6) % 7;
   const weekStart = new Date(dt);
   weekStart.setDate(weekStart.getDate() - diffToMon);
@@ -221,9 +239,9 @@ function formatWindow(window?: string) {
 
 function formatType(type?: string) {
   const t = (type || "").toLowerCase();
-  if (t === "project") return "📐 Project";
-  if (t === "service") return "🔧 Service";
-  return type ? `🧩 ${type}` : "🧩 Trip";
+  if (t === "project") return "Project";
+  if (t === "service") return "Service";
+  return type ? type : "Trip";
 }
 
 function stageLabel(stageKey?: string | null) {
@@ -355,11 +373,9 @@ async function confirmProjectTripForEmployee(args: {
   tripDate: string;
   projectId: string;
   projectStageKey?: string | null;
-
   uid: string;
   displayName: string;
   role: string;
-
   hours: number;
   note?: string;
 }) {
@@ -387,13 +403,11 @@ async function confirmProjectTripForEmployee(args: {
     if (!tripSnap.exists()) throw new Error("Trip not found.");
 
     const tripData = tripSnap.data() as any;
-
     const tripType = String(tripData.type || "").toLowerCase();
     if (tripType !== "project") throw new Error("Only project trips can be confirmed for payroll.");
 
     const crew: TripCrew | null = (tripData.crew ?? null) as any;
     const requiredUids = crewUidsForConfirm(crew);
-
     const existingConfirmedBy: Record<string, TripConfirmedEntry> = (tripData.confirmedBy ?? {}) as any;
 
     const nextConfirmedBy: Record<string, TripConfirmedEntry> = {
@@ -415,11 +429,9 @@ async function confirmProjectTripForEmployee(args: {
         employeeRole: role || "technician",
         weekStartDate,
         weekEndDate,
-
         status: "draft",
         submittedAt: null,
         submittedByUid: null,
-
         createdAt: now,
         createdByUid: uid,
         updatedAt: now,
@@ -434,28 +446,22 @@ async function confirmProjectTripForEmployee(args: {
         employeeId: uid,
         employeeName: displayName || "Employee",
         employeeRole: role || "technician",
-
         entryDate: tripDate,
         weekStartDate,
         weekEndDate,
         timesheetId,
-
         category: "project",
         payType: "regular",
         billable: true,
         source: "trip_daily_confirm",
-
         hours: hrs,
         hoursSource: hrs,
         hoursLocked: true,
-
         tripId,
         projectId,
         projectStageKey: projectStageKey || null,
-
         entryStatus: "draft",
         notes: note ? String(note).trim() : null,
-
         createdAt: now,
         createdByUid: uid,
         updatedAt: now,
@@ -484,17 +490,58 @@ async function confirmProjectTripForEmployee(args: {
   return result;
 }
 
+function MyDaySection({
+  title,
+  subtitle,
+  icon,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  icon?: React.ReactElement;
+  children: React.ReactNode;
+}) {
+  return (
+<Card elevation={0} sx={{ borderRadius: 4 }}>
+        <Box sx={{ px: { xs: 2, md: 2.5 }, pt: { xs: 2, md: 2.5 }, pb: 1.5 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          {icon ? (
+            <Box sx={{ display: "grid", placeItems: "center", color: "primary.light" }}>{icon}</Box>
+          ) : null}
+          <Box>
+            <Typography
+              variant="h6"
+              sx={{
+                fontSize: { xs: "1rem", md: "1.05rem" },
+                fontWeight: 800,
+                letterSpacing: "-0.02em",
+              }}
+            >
+              {title}
+            </Typography>
+            {subtitle ? (
+              <Typography sx={{ mt: 0.35, color: "text.secondary", fontSize: 13, fontWeight: 500 }}>
+                {subtitle}
+              </Typography>
+            ) : null}
+          </Box>
+        </Stack>
+      </Box>
+
+      <Divider />
+
+<Box sx={{ p: { xs: 1.5, md: 2.5 } }}>{children}</Box>
+    </Card>
+  );
+}
+
 export default function TechnicianMyDayPage() {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
-
-  // Today trips
   const [trips, setTrips] = useState<Trip[]>([]);
-
-  // ✅ NEW: recent past project trips for “missed confirm”
   const [recentTrips, setRecentTrips] = useState<Trip[]>([]);
-
   const [override, setOverride] = useState<DailyCrewOverride | null>(null);
   const [error, setError] = useState("");
 
@@ -505,7 +552,6 @@ export default function TechnicianMyDayPage() {
   const [ticketById, setTicketById] = useState<Record<string, ServiceTicketLite>>({});
   const [followUpByTicketId, setFollowUpByTicketId] = useState<Record<string, string>>({});
 
-  // Confirm modal state
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmTripId, setConfirmTripId] = useState<string>("");
   const [confirmHours, setConfirmHours] = useState<string>("8");
@@ -513,12 +559,9 @@ export default function TechnicianMyDayPage() {
   const [confirmSaving, setConfirmSaving] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string>("");
 
-  // UI toggle
   const [showCompleted, setShowCompleted] = useState(false);
 
   const [holiday, setHoliday] = useState<CompanyHoliday | null>(null);
-
-  // Company events (meetings)
   const [companyEvents, setCompanyEvents] = useState<CompanyEvent[]>([]);
 
   const todayIso = useMemo(() => isoTodayLocal(), []);
@@ -563,7 +606,7 @@ export default function TechnicianMyDayPage() {
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setEmployees(items);
       } catch {
-        // best effort
+        // ignore
       } finally {
         setEmployeesLoading(false);
       }
@@ -585,8 +628,6 @@ export default function TechnicianMyDayPage() {
     return { uid, displayName: uid, role: "technician" };
   }
 
-  // Load today: holiday, company events, today trips, override, enrichment,
-  // PLUS recent past project trips so missed confirms are visible.
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -595,7 +636,6 @@ export default function TechnicianMyDayPage() {
       try {
         const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
 
-        // ---- Load company holiday (today) — uses holidayDate schema ----
         try {
           const hsnap = await getDocs(
             query(
@@ -623,7 +663,6 @@ export default function TechnicianMyDayPage() {
           setHoliday(null);
         }
 
-        // ---- Load company events (meetings) for today ----
         try {
           let esnap;
           try {
@@ -672,7 +711,6 @@ export default function TechnicianMyDayPage() {
           setCompanyEvents([]);
         }
 
-        // ---- Pull trips for today only ----
         const tripsSnap = await getDocs(
           query(collection(db, "trips"), where("date", "==", todayIso))
         );
@@ -697,7 +735,6 @@ export default function TechnicianMyDayPage() {
           };
         });
 
-        // ---- Load daily crew override for THIS helper (if helper/apprentice) ----
         let foundOverride: DailyCrewOverride | null = null;
 
         if (isHelperRole && whoUid) {
@@ -727,9 +764,6 @@ export default function TechnicianMyDayPage() {
         setTrips(todayTripItems);
         setOverride(foundOverride);
 
-        // ✅ NEW: Load recent past trips for missed confirmations
-        // We keep the query broad (date range) and filter client-side to avoid complex indexes.
-        // Default: last 14 days (includes weekends; fine).
         const start = addDays(fromIsoDate(todayIso), -14);
         start.setHours(0, 0, 0, 0);
         const startIso = toIsoDate(start);
@@ -746,7 +780,6 @@ export default function TechnicianMyDayPage() {
             )
           );
         } catch {
-          // Fallback: smaller query (still date constrained)
           recentSnap = await getDocs(
             query(
               collection(db, "trips"),
@@ -780,7 +813,6 @@ export default function TechnicianMyDayPage() {
 
         setRecentTrips(recentItems);
 
-        // ---- Enrich: load service ticket docs for TODAY trips (fast) ----
         const ticketIds = Array.from(
           new Set(todayTripItems.map((t) => t.link?.serviceTicketId || "").filter(Boolean))
         );
@@ -814,7 +846,6 @@ export default function TechnicianMyDayPage() {
         );
         setTicketById(nextTicketMap);
 
-        // ---- Enrich: follow-up notes (best effort) ----
         const followUpMap: Record<string, string> = {};
         await Promise.all(
           ticketIds.map(async (tid) => {
@@ -844,7 +875,7 @@ export default function TechnicianMyDayPage() {
         );
         setFollowUpByTicketId(followUpMap);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load My Day (trips).");
+        setError(err instanceof Error ? err.message : "Failed to load My Day.");
       } finally {
         setLoading(false);
       }
@@ -864,24 +895,20 @@ export default function TechnicianMyDayPage() {
       .filter((t) => t.active !== false)
       .filter((t) => isUidInCrew(whoUid, t.crew));
 
-    // Helper override behavior (for seeing schedule)
     if (!canViewOtherEmployees && isHelperRole && override?.assignedTechUid) {
       const overrideTechTrips = trips
         .filter((t) => t.active !== false)
         .filter((t) => (t.crew?.primaryTechUid || "") === override.assignedTechUid);
 
       const merged = [...explicitCrewTrips, ...overrideTechTrips];
-
       const byId = new Map<string, Trip>();
       for (const t of merged) byId.set(t.id, t);
-
       return Array.from(byId.values());
     }
 
     return explicitCrewTrips;
   }, [trips, whoUid, isHelperRole, override, canViewOtherEmployees]);
 
-  // ✅ Unconfirmed past trips (project-only) that this employee needs to confirm
   const unconfirmedPastTrips = useMemo(() => {
     if (!whoUid) return [];
 
@@ -891,8 +918,6 @@ export default function TechnicianMyDayPage() {
       .filter((t) => {
         const s = normalizeStatus(t.status);
         if (s === "cancelled") return false;
-        // If complete, still might be missing one person's confirm? In theory no,
-        // but we still allow confirm if missing.
         return true;
       })
       .filter((t) => isUidInCrew(whoUid, t.crew))
@@ -909,7 +934,7 @@ export default function TechnicianMyDayPage() {
     out.sort((a, b) => {
       const aKey = `${a.date || ""}_${timeSortKey(a.startTime, a.timeWindow)}_${a.id}`;
       const bKey = `${b.date || ""}_${timeSortKey(b.startTime, b.timeWindow)}_${b.id}`;
-      return bKey.localeCompare(aKey); // newest first
+      return bKey.localeCompare(aKey);
     });
 
     return out.slice(0, 20);
@@ -934,14 +959,13 @@ export default function TechnicianMyDayPage() {
 
         const status = normalizeStatus(t.status) || "planned";
 
-        // Service ticket enrichment (today only)
         const serviceTicketId = t.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
 
         let headerText = "";
         if ((t.type || "").toLowerCase() === "service") {
           const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
-          headerText = `🔧 Service Ticket: ${summary}`;
+          headerText = `Service Ticket: ${summary}`;
         } else if ((t.type || "").toLowerCase() === "project") {
           const stage = stageLabel(t.link?.projectStageKey || null);
           headerText = stage ? `${formatType(t.type)} • ${stage}` : `${formatType(t.type)}`;
@@ -965,9 +989,6 @@ export default function TechnicianMyDayPage() {
             ? (safeStr(followUpByTicketId[serviceTicketId]).trim() || "")
             : "";
 
-        // Sorting:
-        // - in_progress to top
-        // - otherwise by actual time
         const inProgBoost = status === "in_progress" ? "0" : "1";
         const tKey = timeSortKey(t.startTime, t.timeWindow);
         const sortKey = `${inProgBoost}_${tKey}_${t.id}`;
@@ -987,7 +1008,6 @@ export default function TechnicianMyDayPage() {
           status,
           sortKey,
           href,
-
           tripType: t.type || "",
           tripDate: t.date || "",
           tripWindow: t.timeWindow || "",
@@ -995,7 +1015,6 @@ export default function TechnicianMyDayPage() {
           tripEndTime: t.endTime || "",
           projectId: t.link?.projectId ?? null,
           projectStageKey: t.link?.projectStageKey ?? null,
-
           confirmed: confirmed || null,
         };
       });
@@ -1010,34 +1029,21 @@ export default function TechnicianMyDayPage() {
     if (!canViewOtherEmployees && isHelperRole) {
       if (override?.assignedTechUid) {
         return {
-          title: "✅ Override Active",
-          text: `Today you are reassigned to a different technician for today.`,
+          title: "Override active",
+          text: "Today you are reassigned to a different technician.",
           sub: `Assigned Tech UID: ${override.assignedTechUid}${override.note ? ` • Note: ${override.note}` : ""}`,
         };
       }
 
       return {
-        title: "✅ Pairing Active",
-        text: "Today you are using your normal crew pairing. (Overrides apply if set by admin.)",
+        title: "Pairing active",
+        text: "Today you are using your normal crew pairing. Overrides apply if set by admin.",
         sub: "",
       };
     }
 
     return null;
   }, [whoUid, isHelperRole, override, canViewOtherEmployees]);
-
-  function statusStyles(status: string) {
-    if (status === "in_progress") {
-      return { border: "1px solid #b7e3c2", background: "#f2fff6" };
-    }
-    if (status === "planned") {
-      return { border: "1px solid #b7cff5", background: "#f4f8ff" };
-    }
-    if (status === "complete" || status === "completed") {
-      return { border: "1px solid #eee", background: "#fafafa" };
-    }
-    return { border: "1px solid #ddd", background: "white" };
-  }
 
   function openConfirmModalFromTrip(t: Trip) {
     setConfirmErr("");
@@ -1072,12 +1078,11 @@ export default function TechnicianMyDayPage() {
       return;
     }
 
-    // IMPORTANT: confirm may be for TODAY trips OR past unconfirmed trips.
     const allKnownTrips = [...trips, ...recentTrips];
     const trip = allKnownTrips.find((t) => t.id === confirmTripId);
 
     if (!trip) {
-      setConfirmErr("Trip not found (try refreshing).");
+      setConfirmErr("Trip not found. Try refreshing.");
       return;
     }
 
@@ -1102,13 +1107,10 @@ export default function TechnicianMyDayPage() {
 
     const hrs = Number(confirmHours);
     if (!Number.isFinite(hrs) || hrs <= 0) {
-      setConfirmErr("Hours must be a number > 0.");
+      setConfirmErr("Hours must be a number greater than 0.");
       return;
     }
 
-    // Permission rule:
-    // - employee can confirm for self
-    // - admin/dispatcher/manager can confirm while viewing another employee
     const allowed = whoUid === myUid || canViewOtherEmployees;
     if (!allowed) {
       setConfirmErr("You do not have permission to confirm for this employee.");
@@ -1135,7 +1137,6 @@ export default function TechnicianMyDayPage() {
 
       const confirmedAt = nowIso();
 
-      // Update local state (today trips + recent trips)
       setTrips((prev) =>
         prev.map((t) =>
           t.id === trip.id
@@ -1187,512 +1188,531 @@ export default function TechnicianMyDayPage() {
   return (
     <ProtectedPage fallbackTitle="My Day">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-end",
-            gap: "12px",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>My Day</h1>
-            <p style={{ marginTop: "6px", color: "#666" }}>
-              Today: <strong>{todayIso}</strong>
-            </p>
-            <p style={{ marginTop: "6px", fontSize: "12px", color: "#777" }}>
-              Trips-driven view (scheduling + time capture)
-            </p>
-
-            <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
-              <input
-                type="checkbox"
-                checked={showCompleted}
-                onChange={(e) => setShowCompleted(e.target.checked)}
-              />
-              <span style={{ fontSize: 13, fontWeight: 800 }}>Show completed trips</span>
-            </label>
-          </div>
-
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-            {canViewOtherEmployees ? (
-              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <span style={{ fontSize: "12px", color: "#666", fontWeight: 800 }}>Employee</span>
-                <select
-                  value={selectedEmployeeUid || ""}
-                  onChange={(e) => setSelectedEmployeeUid(e.target.value)}
-                  disabled={employeesLoading}
-                  style={{
-                    padding: "8px 10px",
-                    border: "1px solid #ccc",
-                    borderRadius: "10px",
-                    background: "white",
-                  }}
+        <Box sx={{ width: "100%", maxWidth: 1240, mx: "auto" }}>
+          <Stack spacing={3}>
+<Card elevation={0} sx={{ borderRadius: 4 }}>
+                <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                <Stack
+                  direction={{ xs: "column", lg: "row" }}
+                  spacing={2}
+                  alignItems={{ xs: "flex-start", lg: "center" }}
+                  justifyContent="space-between"
                 >
-                  <option value={myUid}>Me</option>
-                  {employees.map((u) => (
-                    <option key={u.uid} value={u.uid}>
-                      {u.displayName} ({u.role})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
-
-            <Link
-              href="/schedule"
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: "10px",
-                textDecoration: "none",
-                color: "inherit",
-                background: "white",
-              }}
-            >
-              Weekly Schedule
-            </Link>
-
-            <Link
-              href="/time-entries"
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: "10px",
-                textDecoration: "none",
-                color: "inherit",
-                background: "white",
-              }}
-            >
-              Time Entries
-            </Link>
-          </div>
-        </div>
-
-        {banner ? (
-          <div
-            style={{
-              marginTop: "14px",
-              border: "1px solid #ddd",
-              borderRadius: "12px",
-              padding: "12px",
-              background: "#fafafa",
-              maxWidth: "980px",
-            }}
-          >
-            <div style={{ fontWeight: 900 }}>{banner.title}</div>
-            <div style={{ marginTop: "6px", color: "#555", fontSize: "13px" }}>{banner.text}</div>
-            {banner.sub ? (
-              <div style={{ marginTop: "6px", color: "#777", fontSize: "12px" }}>{banner.sub}</div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* ✅ Unconfirmed Past Trips Banner */}
-        {!loading && !error && unconfirmedPastTrips.length > 0 ? (
-          <div
-            style={{
-              marginTop: 14,
-              border: "1px solid #ffe2a8",
-              borderRadius: 12,
-              padding: 12,
-              background: "#fff7e6",
-              maxWidth: 980,
-            }}
-          >
-            <div style={{ fontWeight: 950 }}>⚠️ Unconfirmed Project Trips</div>
-            <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 800 }}>
-              You have <strong>{unconfirmedPastTrips.length}</strong> past trip(s) that still need hours confirmed.
-            </div>
-
-            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-              {unconfirmedPastTrips.map((t) => {
-                const crew = crewDisplay(t.crew);
-                const timeText =
-                  t.startTime || t.endTime
-                    ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
-                    : formatWindow(t.timeWindow);
-
-                return (
-                  <div
-                    key={t.id}
-                    style={{
-                      border: "1px solid #ffe2a8",
-                      borderRadius: 12,
-                      background: "white",
-                      padding: 12,
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                      <div style={{ fontWeight: 950 }}>
-                        📐 Project • {t.date} • {timeText}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openConfirmModalFromTrip(t)}
-                        style={{
-                          padding: "8px 12px",
-                          border: "1px solid #2e7d32",
-                          borderRadius: 10,
-                          background: "#eaffea",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        ✅ Confirm Hours
-                      </button>
-                    </div>
-
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                      Crew: <strong>{crew.primary}</strong>
-                      {crew.helper ? ` • ${crew.helper}` : ""}
-                      {crew.secondaryTech ? ` • ${crew.secondaryTech}` : ""}
-                      {crew.secondaryHelper ? ` • ${crew.secondaryHelper}` : ""}
-                    </div>
-
-                    <div style={{ marginTop: 8, fontSize: 12, color: "#777" }}>
-                      Trip ID: {t.id}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Holiday */}
-        {holiday ? (
-          <div
-            style={{
-              marginTop: "14px",
-              border: "1px solid #ffe2a8",
-              borderRadius: "12px",
-              padding: "12px",
-              background: "#fff7e6",
-              maxWidth: "980px",
-            }}
-          >
-            <div style={{ fontWeight: 950 }}>🎉 Company Holiday</div>
-            <div style={{ marginTop: 6, fontSize: 13, color: "#7a4b00", fontWeight: 900 }}>
-              {holiday.name} • {holiday.holidayDate}
-            </div>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#7a4b00" }}>
-              {holidayBlocks ? "Scheduling is blocked today." : "If any work is scheduled today, it will still appear below."}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Company Events (Meetings) */}
-        {!loading && companyEvents.length > 0 ? (
-          <div
-            style={{
-              marginTop: 14,
-              border: "1px solid #ddd",
-              borderRadius: 12,
-              padding: 12,
-              background: "#fafafa",
-              maxWidth: 980,
-            }}
-          >
-            <div style={{ fontWeight: 950 }}>📣 Company Event{companyEvents.length > 1 ? "s" : ""}</div>
-            <div style={{ marginTop: 8, display: "grid", gap: 10 }}>
-              {companyEvents.map((e) => (
-                <div
-                  key={e.id}
-                  style={{
-                    border: "1px solid #eee",
-                    borderRadius: 12,
-                    background: "white",
-                    padding: 12,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 950 }}>
-                      📣 {e.title}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#666", fontWeight: 900 }}>
-                      {formatEventTime(e)}
-                    </div>
-                  </div>
-
-                  {e.location ? (
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                      Location: <strong>{e.location}</strong>
-                    </div>
-                  ) : null}
-
-                  {e.notes ? (
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#555", whiteSpace: "pre-wrap" }}>
-                      {e.notes}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {loading ? <p style={{ marginTop: "16px" }}>Loading your day...</p> : null}
-        {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
-
-        {!loading && !error ? (
-          <div style={{ marginTop: "16px", maxWidth: "980px" }}>
-            {items.length === 0 ? (
-              <div
-                style={{
-                  border: "1px dashed #ccc",
-                  borderRadius: "12px",
-                  padding: "14px",
-                  background: "white",
-                  color: "#666",
-                }}
-              >
-                {holiday ? `No trips scheduled. Today is a company holiday: ${holiday.name}.` : "No trips scheduled for this employee today."}
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: "12px" }}>
-                {items.map((item) => {
-                  const styles = statusStyles(item.status);
-                  const isProject = String(item.tripType || "").toLowerCase() === "project";
-                  const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
-
-                  return (
-                    <Link
-                      key={item.id}
-                      href={item.href}
-                      style={{
-                        display: "block",
-                        borderRadius: "12px",
-                        padding: "12px",
-                        textDecoration: "none",
-                        color: "inherit",
-                        ...(styles as any),
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography
+                      variant="h4"
+                      sx={{
+                        fontSize: { xs: "1.7rem", md: "2.15rem" },
+                        lineHeight: 1.04,
+                        fontWeight: 800,
+                        letterSpacing: "-0.035em",
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
-                        <div style={{ fontWeight: 950, fontSize: "15px" }}>{item.headerText}</div>
+                      My Day
+                    </Typography>
 
-                        {isProject && item.confirmed ? (
-                          <div
-                            style={{
-                              fontSize: 12,
-                              padding: "4px 10px",
-                              borderRadius: 999,
-                              border: "1px solid #b7e3c2",
-                              background: "#eaffea",
-                              color: "#1f6b1f",
-                              fontWeight: 900,
-                              whiteSpace: "nowrap",
-                            }}
-                            title={item.confirmed.note ? `Note: ${item.confirmed.note}` : "Confirmed"}
-                          >
-                            ✅ Confirmed ({Number(item.confirmed.hours).toFixed(2)}h)
-                          </div>
-                        ) : null}
-                      </div>
+                    <Typography
+                      sx={{
+                        mt: 0.85,
+                        color: "text.secondary",
+                        fontSize: { xs: 13, md: 14 },
+                        fontWeight: 500,
+                      }}
+                    >
+                      Daily work view for trips, company events, confirmations, and schedule context.
+                    </Typography>
 
-                      <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
-                        {item.subLine}
-                      </div>
+                    <Stack
+                      direction="row"
+                      spacing={0.75}
+                      flexWrap="wrap"
+                      useFlexGap
+                      sx={{ mt: 1.5 }}
+                    >
+                      <Chip
+                        size="small"
+                        icon={<TodayRoundedIcon sx={{ fontSize: 16 }} />}
+                        label={todayIso}
+                        variant="outlined"
+                        sx={{ borderRadius: 1.5, fontWeight: 500 }}
+                      />
 
-                      <div style={{ marginTop: "8px", fontSize: "12px", color: "#555" }}>
-                        {item.techText}
-                      </div>
-                      {item.helperText ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>{item.helperText}</div> : null}
-                      {item.secondaryTechText ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>{item.secondaryTechText}</div> : null}
-                      {item.secondaryHelperText ? <div style={{ marginTop: "4px", fontSize: "12px", color: "#555" }}>{item.secondaryHelperText}</div> : null}
-
-                      {item.issueDetailsText ? (
-                        <div
-                          style={{
-                            marginTop: "10px",
-                            paddingTop: "10px",
-                            borderTop: "1px solid rgba(0,0,0,0.06)",
-                            fontSize: "12px",
-                            color: "#444",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          <strong>Issue:</strong> {item.issueDetailsText}
-                        </div>
+                      {showCompleted ? (
+                        <Chip
+                          size="small"
+                          label="Completed trips visible"
+                          variant="outlined"
+                          sx={{ borderRadius: 1.5, fontWeight: 500 }}
+                        />
                       ) : null}
+                    </Stack>
+                  </Box>
 
-                      {item.followUpText ? (
-                        <div style={{ marginTop: "8px", fontSize: "12px", color: "#6a4b00", whiteSpace: "pre-wrap" }}>
-                          <strong>Follow-up notes:</strong> {item.followUpText}
-                        </div>
-                      ) : null}
-
-                      {isProject ? (
-                        <div
-                          style={{
-                            marginTop: "12px",
-                            paddingTop: "10px",
-                            borderTop: "1px solid rgba(0,0,0,0.06)",
-                            display: "flex",
-                            gap: 10,
-                            flexWrap: "wrap",
-                            alignItems: "center",
-                          }}
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    alignItems={{ xs: "stretch", sm: "center" }}
+                    sx={{ width: { xs: "100%", lg: "auto" } }}
+                  >
+                    {canViewOtherEmployees ? (
+                      <FormControl size="small" sx={{ minWidth: 250 }}>
+                        <InputLabel>Employee</InputLabel>
+                        <Select
+                          label="Employee"
+                          value={selectedEmployeeUid || myUid}
+                          onChange={(e: SelectChangeEvent) => setSelectedEmployeeUid(e.target.value)}
+                          disabled={employeesLoading}
                         >
-                          {!item.confirmed ? (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if (!canConfirm) return;
-                                openConfirmModal(item);
-                              }}
-                              disabled={!canConfirm}
-                              style={{
-                                padding: "8px 12px",
-                                border: "1px solid #2e7d32",
-                                borderRadius: "10px",
-                                background: canConfirm ? "#eaffea" : "#f5f5f5",
-                                cursor: canConfirm ? "pointer" : "not-allowed",
-                                fontWeight: 900,
-                              }}
+                          <MenuItem value={myUid}>Me</MenuItem>
+                          {employees.map((u) => (
+                            <MenuItem key={u.uid} value={u.uid}>
+                              {u.displayName} ({u.role})
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : null}
+
+                    <Button
+                      component={Link}
+                      href="/schedule"
+                      variant="outlined"
+                      startIcon={<CalendarMonthRoundedIcon />}
+                    >
+                      Weekly Schedule
+                    </Button>
+
+                    <Button
+                      component={Link}
+                      href="/time-entries"
+                      variant="outlined"
+                      startIcon={<AccessTimeFilledRoundedIcon />}
+                    >
+                      Time Entries
+                    </Button>
+                  </Stack>
+                </Stack>
+
+                <FormControlLabel
+                  sx={{ mt: 1.5 }}
+                  control={
+                    <Checkbox
+                      checked={showCompleted}
+                      onChange={(e) => setShowCompleted(e.target.checked)}
+                    />
+                  }
+                  label="Show completed trips"
+                />
+              </Box>
+            </Card>
+
+            {banner ? (
+              <Alert severity="info" variant="outlined">
+                <Typography sx={{ fontWeight: 700 }}>{banner.title}</Typography>
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  {banner.text}
+                </Typography>
+                {banner.sub ? (
+                  <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+                    {banner.sub}
+                  </Typography>
+                ) : null}
+              </Alert>
+            ) : null}
+
+            {!loading && !error && unconfirmedPastTrips.length > 0 ? (
+              <MyDaySection
+                title="Needs confirmation"
+                subtitle="Past project trips still waiting for payroll hours confirmation."
+                icon={<WarningAmberRoundedIcon color="warning" />}
+              >
+                <Stack spacing={1.25}>
+                  {unconfirmedPastTrips.map((t) => {
+                    const crew = crewDisplay(t.crew);
+                    const timeText =
+                      t.startTime || t.endTime
+                        ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
+                        : formatWindow(t.timeWindow);
+
+                    return (
+                      <Card key={t.id} variant="outlined" sx={{ borderRadius: 3 }}>
+                        <CardContent sx={{ p: 1.75, "&:last-child": { pb: 1.75 } }}>
+                          <Stack spacing={1.25}>
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={1}
+                              alignItems={{ xs: "flex-start", sm: "center" }}
+                              justifyContent="space-between"
                             >
-                              ✅ Confirm Trip
-                            </button>
-                          ) : (
-                            <div style={{ fontSize: 12, color: "#666" }}>
-                              Confirmed time will appear in <strong>Time Entries</strong> for payroll.
-                            </div>
-                          )}
+                              <Stack spacing={0.5}>
+                                <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                  Project • {t.date}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {timeText}
+                                </Typography>
+                              </Stack>
 
-                          {!canConfirm ? (
-                            <div style={{ fontSize: 12, color: "#999" }}>
-                              Only the employee (or Admin/Dispatcher/Manager) can confirm project hours.
-                            </div>
+                              <Button
+                                variant="contained"
+                                color="success"
+                                startIcon={<TaskAltRoundedIcon />}
+                                onClick={() => openConfirmModalFromTrip(t)}
+                              >
+                                Confirm Hours
+                              </Button>
+                            </Stack>
+
+<Stack
+  direction="row"
+  spacing={0.6}
+  flexWrap="wrap"
+  useFlexGap
+  sx={{ rowGap: 0.6 }}
+>                              <Chip size="small" label={`Tech: ${crew.primary}`} variant="outlined" />
+                              {crew.helper ? <Chip size="small" label={crew.helper} variant="outlined" /> : null}
+                              {crew.secondaryTech ? <Chip size="small" label={crew.secondaryTech} variant="outlined" /> : null}
+                              {crew.secondaryHelper ? <Chip size="small" label={crew.secondaryHelper} variant="outlined" /> : null}
+                            </Stack>
+
+                            <Typography variant="caption" color="text.secondary">
+                              Trip ID: {t.id}
+                            </Typography>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </Stack>
+              </MyDaySection>
+            ) : null}
+
+            {holiday ? (
+              <Alert severity="warning" variant="outlined" icon={<CelebrationRoundedIcon />}>
+                <Typography sx={{ fontWeight: 700 }}>{holiday.name}</Typography>
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  {holiday.holidayDate}
+                </Typography>
+                <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+                  {holidayBlocks
+                    ? "Scheduling is blocked today."
+                    : "If any work is scheduled today, it will still appear below."}
+                </Typography>
+              </Alert>
+            ) : null}
+
+            {!loading && companyEvents.length > 0 ? (
+              <MyDaySection
+                title={`Company event${companyEvents.length > 1 ? "s" : ""}`}
+                subtitle="Today’s meetings and company-wide schedule events."
+                icon={<CampaignRoundedIcon color="success" />}
+              >
+                <Stack spacing={1.25}>
+                  {companyEvents.map((e) => (
+                    <Card key={e.id} variant="outlined" sx={{ borderRadius: 3 }}>
+                      <CardContent sx={{ p: 1.75, "&:last-child": { pb: 1.75 } }}>
+                        <Stack spacing={1}>
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            alignItems={{ xs: "flex-start", sm: "center" }}
+                            justifyContent="space-between"
+                          >
+                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                              {e.title}
+                            </Typography>
+
+                            <Chip
+                              size="small"
+                              icon={<TodayRoundedIcon sx={{ fontSize: 16 }} />}
+                              label={formatEventTime(e)}
+                              color="success"
+                              variant="outlined"
+                              sx={{ borderRadius: 1.5, fontWeight: 500 }}
+                            />
+                          </Stack>
+
+                          {e.location ? (
+                            <Stack direction="row" spacing={0.75} alignItems="center">
+                              <LocationOnRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                              <Typography variant="body2" color="text.secondary">
+                                {e.location}
+                              </Typography>
+                            </Stack>
                           ) : null}
-                        </div>
-                      ) : null}
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        ) : null}
 
-        {/* Confirm Modal */}
-        {confirmOpen ? (
-          <div
-            onClick={() => {
-              if (!confirmSaving) closeConfirmModal();
-            }}
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(0,0,0,0.35)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 14,
-              zIndex: 9999,
+                          {e.notes ? (
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ whiteSpace: "pre-wrap" }}
+                            >
+                              {e.notes}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </Stack>
+              </MyDaySection>
+            ) : null}
+
+            {loading ? (
+<Card elevation={0} sx={{ borderRadius: 4 }}>
+                  <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Loading your day...
+                  </Typography>
+                </Box>
+              </Card>
+            ) : null}
+
+            {error ? <Alert severity="error">{error}</Alert> : null}
+
+            {!loading && !error ? (
+              <MyDaySection
+                title="Assigned work"
+                subtitle="Today’s scheduled trips for the selected employee."
+                icon={<GroupsRoundedIcon />}
+              >
+                {items.length === 0 ? (
+                  <Alert severity="info" variant="outlined">
+                    {holiday
+                      ? `No trips scheduled. Today is a company holiday: ${holiday.name}.`
+                      : "No trips scheduled for this employee today."}
+                  </Alert>
+                ) : (
+                  <Stack spacing={1.5}>
+                    {items.map((item) => {
+  const isProject = String(item.tripType || "").toLowerCase() === "project";
+  const isService = String(item.tripType || "").toLowerCase() === "service";
+  const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
+
+  return (
+    <SharedTripCard
+      key={item.id}
+      title={item.headerText}
+      status={item.status}
+      tripType={item.tripType}
+      subtitle={item.subLine}
+      crewChips={
+        <Stack
+          direction="row"
+          spacing={0.6}
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ rowGap: 0.6 }}
+        >
+          <Chip
+            size="small"
+            icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
+            label={item.techText}
+            variant="outlined"
+            sx={{ borderRadius: 1.5 }}
+          />
+          {item.helperText ? (
+            <Chip
+              size="small"
+              label={item.helperText}
+              variant="outlined"
+              sx={{ borderRadius: 1.5 }}
+            />
+          ) : null}
+          {item.secondaryTechText ? (
+            <Chip
+              size="small"
+              label={item.secondaryTechText}
+              variant="outlined"
+              sx={{ borderRadius: 1.5 }}
+            />
+          ) : null}
+          {item.secondaryHelperText ? (
+            <Chip
+              size="small"
+              label={item.secondaryHelperText}
+              variant="outlined"
+              sx={{ borderRadius: 1.5 }}
+            />
+          ) : null}
+        </Stack>
+      }
+      detailBlock={
+        item.issueDetailsText ? (
+          <Box
+            sx={{
+              px: 1.25,
+              py: 1,
+              borderRadius: 2,
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
+              backgroundColor: alpha(theme.palette.primary.main, 0.06),
             }}
           >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                width: "100%",
-                maxWidth: 520,
-                borderRadius: 16,
-                border: "1px solid #ddd",
-                background: "white",
-                padding: 14,
-              }}
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
+                  Issue
+                </Typography>
+                <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
+                  {item.issueDetailsText}
+                </Typography>
+              </Box>
+            </Stack>
+          </Box>
+        ) : undefined
+      }
+      followUpBlock={
+        item.followUpText ? (
+          <Box
+            sx={{
+              px: 1.25,
+              py: 1,
+              borderRadius: 2,
+              border: "1px solid #FFE2A8",
+              backgroundColor: "#FFF7E6",
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
+                  Follow-up notes
+                </Typography>
+                <Typography
+                  variant="body2"
+                  sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
+                >
+                  {item.followUpText}
+                </Typography>
+              </Box>
+            </Stack>
+          </Box>
+        ) : undefined
+      }
+      trailingContent={
+        isProject && item.confirmed ? (
+          <Chip
+            size="small"
+            icon={<TaskAltRoundedIcon sx={{ fontSize: 16 }} />}
+            label={`Confirmed (${Number(item.confirmed.hours).toFixed(2)}h)`}
+            color="success"
+            variant="outlined"
+            sx={{
+              height: 24,
+              borderRadius: 1.5,
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          />
+        ) : undefined
+      }
+      footer={
+        isProject ? (
+          !item.confirmed ? (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.25}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              justifyContent="space-between"
             >
-              <div style={{ fontWeight: 950, fontSize: 16 }}>✅ Confirm Project Trip</div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  Confirm your project hours for payroll.
+                </Typography>
+                {!canConfirm ? (
+                  <Typography variant="caption" color="text.secondary">
+                    Only the employee or Admin/Dispatcher/Manager can confirm project hours.
+                  </Typography>
+                ) : null}
+              </Box>
+
+              <Button
+                variant="contained"
+                color="success"
+                startIcon={<TaskAltRoundedIcon />}
+                disabled={!canConfirm}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!canConfirm) return;
+                  openConfirmModal(item);
+                }}
+              >
+                Confirm Trip
+              </Button>
+            </Stack>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Confirmed time will appear in <strong>Time Entries</strong> for payroll.
+            </Typography>
+          )
+        ) : isService ? (
+          <Typography variant="caption" color="text.secondary">
+            Open the service ticket for full details and workflow actions.
+          </Typography>
+        ) : undefined
+      }
+      onClick={() => {
+        window.location.href = item.href;
+      }}
+    />
+  );
+})}
+                  </Stack>
+                )}
+              </MyDaySection>
+            ) : null}
+          </Stack>
+        </Box>
+
+        <Dialog open={confirmOpen} onClose={closeConfirmModal} fullWidth maxWidth="sm">
+          <DialogTitle>Confirm Project Trip</DialogTitle>
+
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" color="text.secondary">
                 Enter hours spent on this project. This creates a <strong>locked draft time entry</strong>.
-              </div>
+              </Typography>
 
-              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 900 }}>Hours</label>
-                  <input
-                    type="number"
-                    min="0.25"
-                    step="0.25"
-                    value={confirmHours}
-                    onChange={(e) => setConfirmHours(e.target.value)}
-                    disabled={confirmSaving}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #ccc",
-                      marginTop: 6,
-                    }}
-                  />
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                    Tip: If you worked 6 hours on the project, you can log the other 2 hours as a separate manual entry.
-                  </div>
-                </div>
+              <TextField
+                label="Hours"
+                type="number"
+                inputProps={{ min: 0.25, step: 0.25 }}
+                value={confirmHours}
+                onChange={(e) => setConfirmHours(e.target.value)}
+                disabled={confirmSaving}
+                fullWidth
+              />
 
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 900 }}>Note (optional)</label>
-                  <textarea
-                    value={confirmNote}
-                    onChange={(e) => setConfirmNote(e.target.value)}
-                    rows={3}
-                    disabled={confirmSaving}
-                    placeholder="What did you work on? (optional)"
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #ccc",
-                      marginTop: 6,
-                    }}
-                  />
-                </div>
+              <Typography variant="caption" color="text.secondary">
+                Tip: If you worked 6 hours on the project, you can log the other 2 hours as a separate manual entry.
+              </Typography>
 
-                {confirmErr ? <div style={{ fontSize: 12, color: "red" }}>{confirmErr}</div> : null}
+              <TextField
+                label="Note (optional)"
+                value={confirmNote}
+                onChange={(e) => setConfirmNote(e.target.value)}
+                disabled={confirmSaving}
+                multiline
+                minRows={3}
+                placeholder="What did you work on?"
+                fullWidth
+              />
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  <button
-                    type="button"
-                    onClick={() => closeConfirmModal()}
-                    disabled={confirmSaving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 12,
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
-                    Cancel
-                  </button>
+              {confirmErr ? <Alert severity="error">{confirmErr}</Alert> : null}
+            </Stack>
+          </DialogContent>
 
-                  <button
-                    type="button"
-                    onClick={() => submitConfirm()}
-                    disabled={confirmSaving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 12,
-                      border: "1px solid #2e7d32",
-                      background: "#eaffea",
-                      cursor: "pointer",
-                      fontWeight: 950,
-                    }}
-                  >
-                    {confirmSaving ? "Confirming..." : "Confirm Hours"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
+          <DialogActions>
+            <Button onClick={closeConfirmModal} disabled={confirmSaving}>
+              Cancel
+            </Button>
+            <Button onClick={submitConfirm} disabled={confirmSaving} variant="contained" color="success">
+              {confirmSaving ? "Confirming…" : "Confirm Hours"}
+            </Button>
+          </DialogActions>
+        </Dialog>
       </AppShell>
     </ProtectedPage>
   );

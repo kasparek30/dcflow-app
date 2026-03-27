@@ -1,5 +1,6 @@
 "use client";
 
+import { Stack, Typography } from "@mui/material";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -10,25 +11,33 @@ export default function DashboardPage() {
   return (
     <ProtectedPage fallbackTitle="Dashboard">
       <AppShell appUser={appUser}>
-        <h1 className="text-2xl font-bold mb-6">DCFlow Dashboard</h1>
+        <Stack spacing={2}>
+          <Typography variant="h5">Dashboard</Typography>
 
-        <div className="space-y-2 text-sm">
-          <p>
-            <strong>Authenticated UID:</strong> {authUser?.uid || "—"}
-          </p>
-          <p>
-            <strong>Display Name:</strong> {appUser?.displayName || "—"}
-          </p>
-          <p>
-            <strong>Email:</strong> {appUser?.email || "—"}
-          </p>
-          <p>
-            <strong>Role:</strong> {appUser?.role || "—"}
-          </p>
-          <p>
-            <strong>Active:</strong> {appUser ? String(appUser.active) : "—"}
-          </p>
-        </div>
+          <Typography variant="body2" color="text.secondary">
+            DCFlow dashboard is loading correctly.
+          </Typography>
+
+          <Typography variant="body2">
+            Authenticated UID: {authUser?.uid || "—"}
+          </Typography>
+
+          <Typography variant="body2">
+            Display Name: {appUser?.displayName || "—"}
+          </Typography>
+
+          <Typography variant="body2">
+            Email: {appUser?.email || "—"}
+          </Typography>
+
+          <Typography variant="body2">
+            Role: {appUser?.role || "—"}
+          </Typography>
+
+          <Typography variant="body2">
+            Active: {appUser ? String(appUser.active) : "—"}
+          </Typography>
+        </Stack>
       </AppShell>
     </ProtectedPage>
   );

@@ -1,6 +1,7 @@
+// components/AppShell.tsx
 "use client";
 
-import Link from "next/link";
+import Image from "next/image";
 import React, { ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import LogoutButton from "./LogoutButton";
@@ -17,6 +18,50 @@ import {
   limit,
   type Unsubscribe,
 } from "firebase/firestore";
+import {
+  Alert,
+  AppBar,
+  Badge,
+  BottomNavigation,
+  BottomNavigationAction,
+  Box,
+  Button,
+  Chip,
+  Divider,
+  Drawer,
+  IconButton,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Paper,
+  Stack,
+  Toolbar,
+  Typography,
+  useMediaQuery,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import DashboardRoundedIcon from "@mui/icons-material/DashboardRounded";
+import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import TvRoundedIcon from "@mui/icons-material/TvRounded";
+import FolderRoundedIcon from "@mui/icons-material/FolderRounded";
+import PeopleAltRoundedIcon from "@mui/icons-material/PeopleAltRounded";
+import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
+import ViewWeekRoundedIcon from "@mui/icons-material/ViewWeekRounded";
+import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
+import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
+import AdminPanelSettingsRoundedIcon from "@mui/icons-material/AdminPanelSettingsRounded";
+import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
+import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
+import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
+import DirectionsRunRoundedIcon from "@mui/icons-material/DirectionsRunRounded";
+import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
+import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
+import MapRoundedIcon from "@mui/icons-material/MapRounded";
+import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
+import WaterDropRoundedIcon from "@mui/icons-material/WaterDropRounded";
 
 type PauseBlock = {
   startAt: string;
@@ -45,25 +90,21 @@ type TripDoc = {
   active?: boolean;
   status?: string;
   type?: string;
-
   date?: string;
   timeWindow?: string;
   startTime?: string;
   endTime?: string;
-
   crew?: TripCrew | null;
   crewConfirmed?: TripCrew | null;
   link?: TripLink | null;
-
-  timerState?: string | null; // not_started | running | paused | complete
+  timerState?: string | null;
   actualStartAt?: string | null;
   actualEndAt?: string | null;
   pauseBlocks?: PauseBlock[] | null;
-
   updatedAt?: string | null;
 };
 
-type ActiveTripPill = {
+type ActiveTripCard = {
   tripId: string;
   href: string;
   statusLabel: string;
@@ -71,18 +112,16 @@ type ActiveTripPill = {
   secondaryLine: string;
 };
 
-function useIsMobile(breakpointPx = 900) {
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    function onResize() {
-      setIsMobile(window.innerWidth < breakpointPx);
-    }
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [breakpointPx]);
-  return isMobile;
-}
+type NavEntry = {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  badgeCount?: number;
+};
+
+const DESKTOP_DRAWER_WIDTH = 296;
+const MOBILE_BOTTOM_NAV_HEIGHT = 68;
+const MOBILE_ACTIVE_TRIP_HEIGHT = 76;
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
@@ -166,10 +205,34 @@ function useRealtimeActiveTrip(uid: string) {
     const base = collection(db, "trips");
 
     const qs = [
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.primaryTechUid", "==", u), limit(10)),
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.helperUid", "==", u), limit(10)),
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.secondaryTechUid", "==", u), limit(10)),
-      query(base, where("active", "==", true), where("status", "==", "in_progress"), where("crew.secondaryHelperUid", "==", u), limit(10)),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.primaryTechUid", "==", u),
+        limit(10)
+      ),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.helperUid", "==", u),
+        limit(10)
+      ),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.secondaryTechUid", "==", u),
+        limit(10)
+      ),
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where("crew.secondaryHelperUid", "==", u),
+        limit(10)
+      ),
     ];
 
     const map = new Map<string, TripDoc>();
@@ -198,7 +261,9 @@ function useRealtimeActiveTrip(uid: string) {
 
     function recompute() {
       const union = new Set<string>();
-      for (const s of idsByQuery) for (const id of s) union.add(id);
+      for (const s of idsByQuery) {
+        for (const id of s) union.add(id);
+      }
 
       for (const id of Array.from(map.keys())) {
         if (!union.has(id)) map.delete(id);
@@ -210,9 +275,9 @@ function useRealtimeActiveTrip(uid: string) {
 
     const unsubs: Unsubscribe[] = [];
 
-    qs.forEach((q, idx) => {
+    qs.forEach((qRef, idx) => {
       const unsub = onSnapshot(
-        q,
+        qRef,
         (snap) => {
           const idsThisSnap = new Set<string>();
           snap.docs.forEach((ds) => {
@@ -238,7 +303,7 @@ function useRealtimeActiveTrip(uid: string) {
   return trip;
 }
 
-async function buildActiveTripPill(trip: TripDoc): Promise<ActiveTripPill> {
+async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
   const serviceTicketId = safeTrim(trip.link?.serviceTicketId);
   const tripId = trip.id;
 
@@ -310,104 +375,235 @@ function todayKeyLocal() {
   return `${y}-${m}-${day}`;
 }
 
-function Badge({ count }: { count: number }) {
-  if (!count || count <= 0) return null;
+function isActivePath(pathname: string, target: string) {
+  if (!target) return false;
+  if (target === "/") return pathname === "/";
+  if (pathname === target) return true;
+  return pathname.startsWith(target + "/");
+}
+
+function NavList({
+  items,
+  pathname,
+  onNavigate,
+}: {
+  items: NavEntry[];
+  pathname: string;
+  onNavigate?: () => void;
+}) {
+  const router = useRouter();
+
   return (
-    <span
-      style={{
-        marginLeft: 8,
-        padding: "2px 8px",
-        borderRadius: 999,
-        background: "#e11d48",
-        color: "white",
-        fontWeight: 900,
-        fontSize: 12,
-        lineHeight: "18px",
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        minWidth: 22,
-      }}
-      aria-label={`${count} pending`}
-      title={`${count} pending`}
-    >
-      {count > 99 ? "99+" : count}
-    </span>
+    <List disablePadding sx={{ display: "grid", gap: 0.25 }}>
+      {items.map((item) => {
+        const active = isActivePath(pathname, item.href);
+
+        return (
+          <ListItemButton
+            key={item.href}
+            selected={active}
+            onClick={() => {
+              onNavigate?.();
+              router.push(item.href);
+            }}
+            sx={{
+              minHeight: 44,
+              px: 1.25,
+              py: 0.375,
+              borderRadius: 1.25,
+              "&.Mui-selected": {
+                backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.14),
+              },
+              "&.Mui-selected:hover": {
+                backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.18),
+              },
+              "&:hover": {
+                backgroundColor: (theme) =>
+                  active
+                    ? alpha(theme.palette.primary.main, 0.18)
+                    : alpha(theme.palette.common.white, 0.04),
+              },
+            }}
+          >
+            <ListItemIcon
+              sx={{
+                minWidth: 36,
+                color: active ? "primary.light" : "text.secondary",
+              }}
+            >
+              {item.icon}
+            </ListItemIcon>
+
+            <ListItemText
+              primary={item.label}
+              primaryTypographyProps={{
+                variant: "body2",
+                fontWeight: active ? 500 : 400,
+                color: active ? "text.primary" : "text.secondary",
+              }}
+            />
+
+            {typeof item.badgeCount === "number" && item.badgeCount > 0 ? (
+              <Badge
+                color="error"
+                badgeContent={item.badgeCount > 99 ? "99+" : item.badgeCount}
+                sx={{
+                  "& .MuiBadge-badge": {
+                    fontWeight: 700,
+                    right: -2,
+                  },
+                }}
+              />
+            ) : null}
+          </ListItemButton>
+        );
+      })}
+    </List>
   );
 }
 
-export default function AppShell({ children, appUser }: { children: ReactNode; appUser: AppUser | null }) {
+function BannerCard({
+  severity,
+  title,
+  body,
+  action,
+}: {
+  severity: "warning" | "error";
+  title: string;
+  body: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  return (
+    <Alert
+      severity={severity}
+      variant="outlined"
+      sx={{
+        mb: 1.5,
+        borderRadius: 1.5,
+        alignItems: "flex-start",
+        "& .MuiAlert-message": {
+          width: "100%",
+        },
+      }}
+      action={action}
+    >
+      <Typography variant="subtitle2" sx={{ mb: 0.25 }}>
+        {title}
+      </Typography>
+      <Typography variant="body2">{body}</Typography>
+    </Alert>
+  );
+}
+
+export default function AppShell({
+  children,
+  appUser,
+}: {
+  children: ReactNode;
+  appUser: AppUser | null;
+}) {
   const router = useRouter();
   const pathname = usePathname();
-  const isMobile = useIsMobile(900);
-
-  const BRAND = useMemo(
-    () => ({
-      sidebarBg: "#070A10",
-      sidebarBg2: "#0B1220",
-      sidebarBorder: "rgba(255,255,255,0.08)",
-      text: "rgba(255,255,255,0.92)",
-      subtext: "rgba(255,255,255,0.60)",
-
-      blue: "#1e90ff",
-      blueSoft: "rgba(30,144,255,0.18)",
-      blueBorder: "rgba(30,144,255,0.30)",
-
-      itemBg: "rgba(255,255,255,0.04)",
-      itemHover: "rgba(255,255,255,0.07)",
-      itemBorder: "rgba(255,255,255,0.08)",
-      activeGlow: "0 10px 30px rgba(30,144,255,0.12)",
-    }),
-    []
-  );
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
 
   const role = appUser?.role;
   const myUid = safeTrim(appUser?.uid);
 
-  const showDashboard = role === "admin" || role === "dispatcher" || role === "manager" || role === "billing" || role === "office_display";
-  const showAdmin = role === "admin";
-  const showMyDay =
-    role === "admin" || role === "dispatcher" || role === "manager" || role === "technician" || role === "helper" || role === "apprentice";
-  const showTechnician = role === "technician" || role === "admin";
-  const showDispatch = role === "admin" || role === "dispatcher" || role === "manager";
-  const showSchedule = role === "admin" || role === "dispatcher" || role === "manager" || role === "office_display";
-  const showOfficeDisplay = role === "admin" || role === "dispatcher" || role === "manager" || role === "office_display";
-  const showProjects = role === "admin" || role === "dispatcher" || role === "manager";
+  const showDashboard =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "billing" ||
+    role === "office_display";
 
-  // ✅ removed per your request
+  const showAdmin = role === "admin";
+
+  const showMyDay =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice";
+
+  const showDispatch =
+    role === "admin" || role === "dispatcher" || role === "manager";
+
+  const showSchedule =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "office_display";
+
+  const showOfficeDisplay =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "office_display";
+
+  const showProjects =
+    role === "admin" || role === "dispatcher" || role === "manager";
+
   const showWorkload = false;
 
   const showTimeEntries =
-    role === "admin" || role === "manager" || role === "dispatcher" || role === "technician" || role === "helper" || role === "apprentice";
+    role === "admin" ||
+    role === "manager" ||
+    role === "dispatcher" ||
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice";
+
   const showWeeklyTimesheet =
-    role === "admin" || role === "manager" || role === "dispatcher" || role === "technician" || role === "helper" || role === "apprentice";
-  const showTimesheetReview = role === "admin" || role === "manager" || role === "dispatcher";
+    role === "admin" ||
+    role === "manager" ||
+    role === "dispatcher" ||
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice";
+
+  const showTimesheetReview =
+    role === "admin" || role === "manager" || role === "dispatcher";
+
   const showPTORequests =
-    role === "admin" || role === "manager" || role === "dispatcher" || role === "technician" || role === "helper" || role === "apprentice";
+    role === "admin" ||
+    role === "manager" ||
+    role === "dispatcher" ||
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice";
 
   const [drawerOpen, setDrawerOpen] = useState(false);
-  useEffect(() => setDrawerOpen(false), [pathname]);
+
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [pathname]);
 
   const activeTrip = useRealtimeActiveTrip(myUid);
-  const [pill, setPill] = useState<ActiveTripPill | null>(null);
+  const [activeTripCard, setActiveTripCard] = useState<ActiveTripCard | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+
     async function run() {
       if (!activeTrip) {
-        setPill(null);
+        setActiveTripCard(null);
         return;
       }
-      const p = await buildActiveTripPill(activeTrip);
-      if (!cancelled) setPill(p);
+      const card = await buildActiveTripCard(activeTrip);
+      if (!cancelled) setActiveTripCard(card);
     }
+
     run();
+
     return () => {
       cancelled = true;
     };
   }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId]);
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
   useEffect(() => {
     if (!activeTrip) return;
     const t = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -423,15 +619,19 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
     return Math.max(0, grossMins - pausedMins);
   }, [activeTrip, nowMs]);
 
-  const timerState = useMemo(() => safeTrim(activeTrip?.timerState).toLowerCase(), [activeTrip?.timerState]);
+  const timerState = useMemo(
+    () => safeTrim(activeTrip?.timerState).toLowerCase(),
+    [activeTrip?.timerState]
+  );
+
   const isPaused = timerState === "paused";
-  const isRunning = timerState === "running" || timerState === "" || timerState === "in_progress";
 
   const canQuickAct = useMemo(() => {
     if (!activeTrip) return false;
     const c = activeTrip.crewConfirmed || activeTrip.crew || null;
     const onCrew = userIsOnCrew(myUid, c);
-    const elevated = role === "admin" || role === "manager" || role === "dispatcher";
+    const elevated =
+      role === "admin" || role === "manager" || role === "dispatcher";
     return Boolean(myUid) && (onCrew || elevated);
   }, [activeTrip, myUid, role]);
 
@@ -443,12 +643,19 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
     try {
       const tripRef = doc(db, "trips", activeTrip.id);
       const now = new Date().toISOString();
-      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks) ? [...activeTrip.pauseBlocks] : [];
+      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
+        ? [...activeTrip.pauseBlocks]
+        : [];
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx !== -1) return;
       curBlocks.push({ startAt: now, endAt: null });
 
-      await updateDoc(tripRef, { timerState: "paused", pauseBlocks: curBlocks, updatedAt: now, updatedByUid: myUid || null } as any);
+      await updateDoc(tripRef, {
+        timerState: "paused",
+        pauseBlocks: curBlocks,
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      } as any);
     } finally {
       setPillActionBusy(false);
     }
@@ -460,67 +667,110 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
     try {
       const tripRef = doc(db, "trips", activeTrip.id);
       const now = new Date().toISOString();
-      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks) ? [...activeTrip.pauseBlocks] : [];
+      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
+        ? [...activeTrip.pauseBlocks]
+        : [];
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx === -1) return;
       curBlocks[openIdx] = { ...curBlocks[openIdx], endAt: now };
 
-      await updateDoc(tripRef, { timerState: "running", pauseBlocks: curBlocks, updatedAt: now, updatedByUid: myUid || null } as any);
+      await updateDoc(tripRef, {
+        timerState: "running",
+        pauseBlocks: curBlocks,
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      } as any);
     } finally {
       setPillActionBusy(false);
     }
   }
 
-  const DOCK_HEIGHT = 66;
-  const DOCK_SAFE_GAP = 12;
-  const DOCK_TOTAL = DOCK_HEIGHT + DOCK_SAFE_GAP;
-
-  const bottomBarHeight = isMobile ? DOCK_TOTAL : 0;
-  const pillHeight = isMobile && pill ? 66 : 0;
-  const bottomPadding = bottomBarHeight + pillHeight + (isMobile ? 14 : 0);
-
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
+
   useEffect(() => {
     if (!showTimesheetReview) {
       setPendingReviewCount(0);
       return;
     }
-    const q = query(collection(db, "weeklyTimesheets"), where("status", "==", "submitted"), limit(200));
-    const unsub = onSnapshot(q, (snap) => setPendingReviewCount(snap.size || 0), () => {});
+    const qRef = query(
+      collection(db, "weeklyTimesheets"),
+      where("status", "==", "submitted"),
+      limit(200)
+    );
+    const unsub = onSnapshot(
+      qRef,
+      (snap) => setPendingReviewCount(snap.size || 0),
+      () => {}
+    );
     return () => unsub();
   }, [showTimesheetReview]);
 
   const [pendingPtoCount, setPendingPtoCount] = useState(0);
+
   useEffect(() => {
     if (!showPTORequests) {
       setPendingPtoCount(0);
       return;
     }
-    const canReviewPto = role === "admin" || role === "manager" || role === "dispatcher";
+
+    const canReviewPto =
+      role === "admin" || role === "manager" || role === "dispatcher";
+
     if (!canReviewPto) {
       setPendingPtoCount(0);
       return;
     }
-    const q = query(collection(db, "ptoRequests"), where("status", "==", "pending"), limit(50));
-    const unsub = onSnapshot(q, (snap) => setPendingPtoCount(snap.size || 0), () => setPendingPtoCount(0));
+
+    const qRef = query(
+      collection(db, "ptoRequests"),
+      where("status", "==", "pending"),
+      limit(50)
+    );
+
+    const unsub = onSnapshot(
+      qRef,
+      (snap) => setPendingPtoCount(snap.size || 0),
+      () => setPendingPtoCount(0)
+    );
+
     return () => unsub();
   }, [showPTORequests, role]);
 
   const [myRejectedCount, setMyRejectedCount] = useState(0);
+
   useEffect(() => {
     const uid = safeTrim(myUid);
     if (!uid) {
       setMyRejectedCount(0);
       return;
     }
+
     const canReceive =
-      role === "technician" || role === "helper" || role === "apprentice" || role === "dispatcher" || role === "manager" || role === "admin";
+      role === "technician" ||
+      role === "helper" ||
+      role === "apprentice" ||
+      role === "dispatcher" ||
+      role === "manager" ||
+      role === "admin";
+
     if (!canReceive) {
       setMyRejectedCount(0);
       return;
     }
-    const q = query(collection(db, "weeklyTimesheets"), where("employeeId", "==", uid), where("status", "==", "rejected"), limit(20));
-    const unsub = onSnapshot(q, (snap) => setMyRejectedCount(snap.size || 0), () => {});
+
+    const qRef = query(
+      collection(db, "weeklyTimesheets"),
+      where("employeeId", "==", uid),
+      where("status", "==", "rejected"),
+      limit(20)
+    );
+
+    const unsub = onSnapshot(
+      qRef,
+      (snap) => setMyRejectedCount(snap.size || 0),
+      () => {}
+    );
+
     return () => unsub();
   }, [myUid, role]);
 
@@ -530,13 +780,19 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
 
   useEffect(() => {
     const uid = safeTrim(myUid);
+
     if (!uid) {
       setShowMondayReminder(false);
       return;
     }
 
     const canReceive =
-      role === "technician" || role === "helper" || role === "apprentice" || role === "dispatcher" || role === "manager" || role === "admin";
+      role === "technician" ||
+      role === "helper" ||
+      role === "apprentice" ||
+      role === "dispatcher" ||
+      role === "manager" ||
+      role === "admin";
 
     if (!canReceive) {
       setShowMondayReminder(false);
@@ -550,7 +806,10 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
 
     const dismissKey = `dcflow_missingTimesheetDismissed_${todayKeyLocal()}`;
     try {
-      if (typeof window !== "undefined" && window.localStorage.getItem(dismissKey) === "1") {
+      if (
+        typeof window !== "undefined" &&
+        window.localStorage.getItem(dismissKey) === "1"
+      ) {
         setShowMondayReminder(false);
         return;
       }
@@ -576,11 +835,17 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
           setShowMondayReminder(true);
           return;
         }
+
         const d: any = snap.data();
         const status = safeTrim(d.status).toLowerCase() || "draft";
         setPrevWeekStatus(status);
 
-        const ok = status === "submitted" || status === "approved" || status === "exported_to_quickbooks" || status === "exported";
+        const ok =
+          status === "submitted" ||
+          status === "approved" ||
+          status === "exported_to_quickbooks" ||
+          status === "exported";
+
         setShowMondayReminder(!ok);
       },
       () => setShowMondayReminder(false)
@@ -592,407 +857,508 @@ export default function AppShell({ children, appUser }: { children: ReactNode; a
   function dismissMondayReminderForToday() {
     const dismissKey = `dcflow_missingTimesheetDismissed_${todayKeyLocal()}`;
     try {
-      if (typeof window !== "undefined") window.localStorage.setItem(dismissKey, "1");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(dismissKey, "1");
+      }
     } catch {}
     setShowMondayReminder(false);
   }
 
+  const topNav: NavEntry[] = [
+    ...(showDashboard
+      ? [{ href: "/dashboard", label: "Dashboard", icon: <DashboardRoundedIcon /> }]
+      : []),
+    ...(showDispatch
+      ? [{ href: "/dispatch", label: "Dispatcher Board", icon: <MapRoundedIcon /> }]
+      : []),
+    ...(showMyDay
+      ? [{ href: "/technician/my-day", label: "My Day", icon: <TodayRoundedIcon /> }]
+      : []),
+    ...(showSchedule
+      ? [{ href: "/schedule", label: "Schedule", icon: <CalendarMonthRoundedIcon /> }]
+      : []),
+    ...(showOfficeDisplay
+      ? [{ href: "/office-display", label: "Office Display", icon: <TvRoundedIcon /> }]
+      : []),
+    ...(showProjects
+      ? [{ href: "/projects", label: "Projects", icon: <FolderRoundedIcon /> }]
+      : []),
+    ...(showWorkload
+      ? [{ href: "/technician-workload", label: "Technician Workload", icon: <AssignmentRoundedIcon /> }]
+      : []),
+    { href: "/customers", label: "Customers", icon: <PeopleAltRoundedIcon /> },
+    { href: "/service-tickets", label: "Service Tickets", icon: <ReceiptLongRoundedIcon /> },
+    ...(showTimeEntries
+      ? [{ href: "/time-entries", label: "Time Entries", icon: <AccessTimeFilledRoundedIcon /> }]
+      : []),
+    ...(showWeeklyTimesheet
+      ? [{ href: "/weekly-timesheet", label: "Weekly Timesheet", icon: <ViewWeekRoundedIcon /> }]
+      : []),
+    ...(showPTORequests
+      ? [{
+          href: "/pto-requests",
+          label: "PTO Requests",
+          icon: <BeachAccessRoundedIcon />,
+          badgeCount: pendingPtoCount,
+        }]
+      : []),
+    ...(showTimesheetReview
+      ? [{
+          href: "/timesheet-review",
+          label: "Timesheet Review",
+          icon: <TaskAltRoundedIcon />,
+          badgeCount: pendingReviewCount,
+        }]
+      : []),
+  ];
+
+  const bottomNav: NavEntry[] = [
+    ...(showAdmin
+      ? [{ href: "/admin", label: "Admin", icon: <AdminPanelSettingsRoundedIcon /> }]
+      : []),
+  ];
+
+  const mobileBottomNavValue = useMemo(() => {
+    if (isActivePath(pathname, "/technician/my-day")) return "/technician/my-day";
+    if (isActivePath(pathname, "/schedule")) return "/schedule";
+    if (isActivePath(pathname, "/service-tickets")) return "/service-tickets";
+    return "more";
+  }, [pathname]);
+
+  const mobileBottomPadding =
+    MOBILE_BOTTOM_NAV_HEIGHT +
+    (activeTripCard && isMobile ? MOBILE_ACTIVE_TRIP_HEIGHT : 0) +
+    18;
+
   const mondayReminderBanner =
     showMondayReminder && showWeeklyTimesheet ? (
-      <div style={{ border: "1px solid #f59e0b", background: "#fff7ed", borderRadius: 14, padding: 12, marginBottom: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 1000 }}>⏰ Last week’s timesheet isn’t submitted yet</div>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#7c2d12", fontWeight: 800 }}>
-              Week starting <strong>{prevWeekStart || "—"}</strong> {prevWeekStatus ? `• Status: ${prevWeekStatus}` : ""}
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              type="button"
+      <BannerCard
+        severity="warning"
+        title="Last week’s timesheet isn’t submitted yet"
+        body={
+          <>
+            Week starting <strong>{prevWeekStart || "—"}</strong>
+            {prevWeekStatus ? <> • Status: {prevWeekStatus}</> : null}
+          </>
+        }
+        action={
+          <Stack direction="row" spacing={1}>
+            <Button
+              size="small"
+              variant="contained"
+              color="warning"
               onClick={() => router.push("/weekly-timesheet?weekOffset=-1")}
-              style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #c2410c", background: "#f97316", color: "white", cursor: "pointer", fontWeight: 1000 }}
             >
               Review last week
-            </button>
-
-            <button
-              type="button"
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              color="warning"
               onClick={dismissMondayReminderForToday}
-              style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}
             >
               Dismiss today
-            </button>
-          </div>
-        </div>
-      </div>
+            </Button>
+          </Stack>
+        }
+      />
     ) : null;
 
   const rejectedBanner =
     myRejectedCount > 0 && showWeeklyTimesheet ? (
-      <div style={{ border: "1px solid #ef4444", background: "#fff1f2", borderRadius: 14, padding: 12, marginBottom: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ fontWeight: 1000 }}>
-            ❗ Your timesheet was rejected and needs changes
-            <div style={{ marginTop: 6, fontSize: 12, color: "#7f1d1d", fontWeight: 800 }}>
-              {myRejectedCount} rejected timesheet{myRejectedCount === 1 ? "" : "s"} found.
-            </div>
-          </div>
-
-          <button
-            type="button"
+      <BannerCard
+        severity="error"
+        title="Your timesheet was rejected and needs changes"
+        body={
+          <>
+            {myRejectedCount} rejected timesheet{myRejectedCount === 1 ? "" : "s"} found.
+          </>
+        }
+        action={
+          <Button
+            size="small"
+            variant="contained"
+            color="error"
             onClick={() => router.push("/weekly-timesheet?showRejected=1")}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #991b1b", background: "#dc2626", color: "white", cursor: "pointer", fontWeight: 1000 }}
           >
             Fix now
-          </button>
-        </div>
-      </div>
+          </Button>
+        }
+      />
     ) : null;
 
-  function isActivePath(target: string) {
-    if (!target) return false;
-    if (target === "/") return pathname === "/";
-    if (pathname === target) return true;
-    return pathname?.startsWith(target + "/");
-  }
-
-  function NavItem(props: { href: string; label: string; icon: string; right?: ReactNode }) {
-    const { href, label, icon, right } = props;
-    const active = isActivePath(href);
-    const [hover, setHover] = useState(false);
-
-    // slightly tighter sizing to ensure no-scroll sidebar fits top-to-bottom
-    const bg = active ? BRAND.blueSoft : hover ? BRAND.itemHover : BRAND.itemBg;
-    const border = active ? BRAND.blueBorder : BRAND.itemBorder;
-
-    return (
-      <Link
-        href={href}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        style={{
-          textDecoration: "none",
-          color: BRAND.text,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          padding: "9px 10px",
-          borderRadius: 14,
-          border: `1px solid ${border}`,
-          background: bg,
-          boxShadow: active ? BRAND.activeGlow : "none",
-          position: "relative",
-          overflow: "hidden",
-        }}
-        aria-current={active ? "page" : undefined}
-      >
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 9,
-            bottom: 9,
-            width: 3,
-            borderRadius: 99,
-            background: active ? BRAND.blue : "transparent",
-            boxShadow: active ? "0 0 0 4px rgba(30,144,255,0.10)" : "none",
-          }}
-        />
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, paddingLeft: 6 }}>
-          <div style={{ width: 20, textAlign: "center", fontSize: 15, opacity: active ? 1 : 0.9 }}>{icon}</div>
-          <div style={{ fontWeight: active ? 950 : 850, fontSize: 12.5, letterSpacing: "-0.1px" }}>{label}</div>
-        </div>
-
-        {right ? <div style={{ display: "flex", alignItems: "center" }}>{right}</div> : null}
-      </Link>
-    );
-  }
-
-  const desktopNavTop = (
-    <div style={{ display: "grid", gap: 8 }}>
-      {showDashboard ? <NavItem href="/dashboard" label="Dashboard" icon="🏠" /> : null}
-      {showDispatch ? <NavItem href="/dispatch" label="Dispatcher Board" icon="🧭" /> : null}
-      {showMyDay ? <NavItem href="/technician/my-day" label="My Day" icon="📅" /> : null}
-      {showSchedule ? <NavItem href="/schedule" label="Schedule" icon="🗓️" /> : null}
-      {showOfficeDisplay ? <NavItem href="/office-display" label="Office Display" icon="📺" /> : null}
-      {showProjects ? <NavItem href="/projects" label="Projects" icon="🏗️" /> : null}
-      {showWorkload ? <NavItem href="/technician-workload" label="Technician Workload" icon="📊" /> : null}
-
-      <div style={{ height: 2 }} />
-
-      <NavItem href="/customers" label="Customers" icon="👥" />
-      <NavItem href="/service-tickets" label="Service Tickets" icon="🧾" />
-
-      <div style={{ height: 2 }} />
-
-      {showTimeEntries ? <NavItem href="/time-entries" label="Time Entries" icon="⏱️" /> : null}
-      {showWeeklyTimesheet ? <NavItem href="/weekly-timesheet" label="Weekly Timesheet" icon="🗂️" /> : null}
-
-      {showPTORequests ? <NavItem href="/pto-requests" label="PTO Requests" icon="🌴" right={<Badge count={pendingPtoCount} />} /> : null}
-
-      {showTimesheetReview ? (
-        <NavItem href="/timesheet-review" label="Timesheet Review" icon="✅" right={<Badge count={pendingReviewCount} />} />
-      ) : null}
-
-      {showTechnician ? <NavItem href="/technician" label="Technician" icon="🧰" /> : null}
-    </div>
-  );
-
-  const desktopNavBottom = (
-    <div style={{ display: "grid", gap: 8 }}>
-      {showAdmin ? <NavItem href="/admin" label="Admin" icon="⚙️" /> : null}
-      <LogoutButton />
-    </div>
-  );
-
-  // Mobile drawer left as-is from your previous version (not the focus here)
-  const mobileMoreDrawer = (
-    <>
-      {drawerOpen ? <div onClick={() => setDrawerOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 9998 }} /> : null}
-
-      <div
-        style={{
-          position: "fixed",
-          top: 0,
-          right: 0,
-          height: "100vh",
-          width: "84vw",
-          maxWidth: 360,
-          background: "white",
-          borderLeft: "1px solid #eee",
-          boxShadow: "0 10px 40px rgba(0,0,0,0.15)",
-          zIndex: 9999,
-          transform: drawerOpen ? "translateX(0)" : "translateX(105%)",
-          transition: "transform 180ms ease",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        <div style={{ padding: 14, borderBottom: "1px solid #eee" }}>
-          <div style={{ fontWeight: 900, fontSize: 16 }}>Menu</div>
-          <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-            {appUser?.displayName || "Unknown User"} • {appUser?.role || "No Role"}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setDrawerOpen(false)}
-            style={{ marginTop: 10, padding: "8px 12px", border: "1px solid #ccc", borderRadius: 10, background: "white", cursor: "pointer", fontWeight: 800, width: "fit-content" }}
-          >
-            Close
-          </button>
-        </div>
-
-        <div style={{ padding: 14, overflow: "auto" }}>
-          <div style={{ display: "grid", gap: 10 }}>
-            {showDashboard ? <Link href="/dashboard">Dashboard</Link> : null}
-            {showDispatch ? <Link href="/dispatch">Dispatcher Board</Link> : null}
-            {showSchedule ? <Link href="/schedule">Schedule</Link> : null}
-            {showOfficeDisplay ? <Link href="/office-display">Office Display</Link> : null}
-            {showProjects ? <Link href="/projects">Projects</Link> : null}
-            {showTimeEntries ? <Link href="/time-entries">Time Entries</Link> : null}
-            {showWeeklyTimesheet ? <Link href="/weekly-timesheet">Weekly Timesheet</Link> : null}
-
-            {showPTORequests ? (
-              <Link href="/pto-requests" style={{ display: "inline-flex", alignItems: "center" }}>
-                PTO Requests
-                <Badge count={pendingPtoCount} />
-              </Link>
-            ) : null}
-
-            {showTimesheetReview ? (
-              <Link href="/timesheet-review" style={{ display: "inline-flex", alignItems: "center" }}>
-                Timesheet Review
-                <Badge count={pendingReviewCount} />
-              </Link>
-            ) : null}
-
-            {showTechnician ? <Link href="/technician">Technician</Link> : null}
-            <Link href="/customers">Customers</Link>
-            <Link href="/service-tickets">Service Tickets</Link>
-
-            {showAdmin ? (
-              <>
-                <div style={{ height: 10 }} />
-                <Link href="/admin">Admin</Link>
-              </>
-            ) : null}
-
-            <div style={{ height: 10 }} />
-            <LogoutButton />
-          </div>
-        </div>
-      </div>
-    </>
-  );
-
-  // Minimal mobile dock kept (unchanged)
-  function DockTab(args: { label: string; icon: string; onClick: () => void; active: boolean }) {
-    const { label, icon, onClick, active } = args;
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, height: DOCK_HEIGHT, userSelect: "none", WebkitTapHighlightColor: "transparent" }}
-        aria-current={active ? "page" : undefined}
-      >
-        <div style={{ width: 40, height: 32, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", background: active ? "rgba(0,0,0,0.06)" : "transparent", border: active ? "1px solid rgba(0,0,0,0.08)" : "1px solid transparent" }}>
-          <div style={{ fontSize: 19, lineHeight: "19px" }}>{icon}</div>
-        </div>
-        <div style={{ fontSize: 11, fontWeight: active ? 950 : 800, color: active ? "#111" : "#555", letterSpacing: "-0.1px" }}>{label}</div>
-      </button>
-    );
-  }
-
-  const mobileDock = (
-    <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 9997, display: "flex", justifyContent: "center", paddingBottom: DOCK_SAFE_GAP, pointerEvents: "none" }}>
-      <div
-        style={{
-          pointerEvents: "auto",
-          width: "min(520px, calc(100vw - 24px))",
-          height: DOCK_HEIGHT,
-          borderRadius: 999,
-          padding: "0 10px",
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          alignItems: "center",
-          background: "rgba(255,255,255,0.86)",
-          border: "1px solid rgba(0,0,0,0.08)",
-          boxShadow: "0 12px 30px rgba(0,0,0,0.18)",
-          backdropFilter: "blur(14px)",
-          WebkitBackdropFilter: "blur(14px)",
-        }}
-      >
-        <DockTab label="My Day" icon="📅" onClick={() => router.push("/technician/my-day")} active={isActivePath("/technician/my-day")} />
-        <DockTab label="Schedule" icon="🗓️" onClick={() => router.push("/schedule")} active={isActivePath("/schedule")} />
-        <DockTab label="Tickets" icon="🧾" onClick={() => router.push("/service-tickets")} active={isActivePath("/service-tickets")} />
-        <DockTab label="More" icon="☰" onClick={() => setDrawerOpen(true)} active={drawerOpen} />
-      </div>
-    </div>
-  );
-
-  const activeTripPill = isMobile && pill ? (
-    <div style={{ position: "fixed", left: 12, right: 12, bottom: DOCK_TOTAL + 10, zIndex: 9996 }}>
-      <div style={{ display: "flex", gap: 10, alignItems: "stretch", background: isPaused ? "#d97706" : "#1f8f3a", border: `1px solid ${isPaused ? "#b45309" : "#177a30"}`, borderRadius: 14, padding: "10px 10px", boxShadow: "0 10px 25px rgba(0,0,0,0.18)" }}>
-        <Link href={pill.href} style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, alignItems: "center", textDecoration: "none", color: "inherit" }}>
-          <div style={{ width: 10, height: 10, borderRadius: 999, background: "rgba(255,255,255,0.92)" }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-              <div style={{ fontWeight: 1000, color: "white", fontSize: 13 }}>
-                {pill.statusLabel} • {liveMinutes} min
-              </div>
-              <div style={{ fontWeight: 900, color: "rgba(255,255,255,0.92)", fontSize: 11, whiteSpace: "nowrap" }}>Tap to return</div>
-            </div>
-            <div style={{ marginTop: 2, color: "white", fontWeight: 900, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {pill.primaryLine}
-            </div>
-            <div style={{ marginTop: 2, color: "rgba(255,255,255,0.92)", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {pill.secondaryLine}
-            </div>
-          </div>
-        </Link>
-
-        <div style={{ display: "flex", alignItems: "center" }}>
-          {canQuickAct ? (
-            isPaused ? (
-              <button type="button" onClick={handleQuickResume} disabled={pillActionBusy} style={{ width: 46, height: 46, borderRadius: 12, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(255,255,255,0.18)", color: "white", fontWeight: 1000, cursor: pillActionBusy ? "not-allowed" : "pointer" }} title="Resume">
-                ▶
-              </button>
-            ) : (
-              <button type="button" onClick={handleQuickPause} disabled={pillActionBusy} style={{ width: 46, height: 46, borderRadius: 12, border: "1px solid rgba(255,255,255,0.28)", background: "rgba(255,255,255,0.18)", color: "white", fontWeight: 1000, cursor: pillActionBusy ? "not-allowed" : "pointer" }} title="Pause">
-                ❚❚
-              </button>
-            )
-          ) : (
-            <div style={{ width: 46, height: 46, borderRadius: 12, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.10)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.9)", fontSize: 12, fontWeight: 900 }} title="Not assigned to this trip">
-              —
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  ) : null;
-
-  // ✅ Desktop shell: NO sidebar scroll, main content scrolls
-  if (!isMobile) {
-    return (
-      <div style={{ height: "100vh", display: "flex", background: "#fff", overflow: "hidden" }}>
-        {/* Sidebar fixed height, NO scrolling */}
-        <aside
-          style={{
-            width: 280,
-            height: "100vh",
-            overflow: "hidden",
-            padding: 14,
-            color: BRAND.text,
-            background: `radial-gradient(1200px 400px at 10% 0%, rgba(30,144,255,0.10), transparent 45%), linear-gradient(180deg, ${BRAND.sidebarBg}, ${BRAND.sidebarBg2})`,
-            borderRight: `1px solid ${BRAND.sidebarBorder}`,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
+  const drawerContent = (
+    <Box
+      sx={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        backgroundColor: "background.paper",
+      }}
+    >
+      <Box sx={{ p: 1.25 }}>
+        <Paper
+          elevation={0}
+          sx={{
+            borderRadius: 1.5,
+            px: 1.25,
+            py: 1.25,
+            backgroundColor: alpha("#FFFFFF", 0.02),
+            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
           }}
         >
-          {/* ✅ Logo header */}
-          <div
-            style={{
-              borderRadius: 18,
-              border: `1px solid ${BRAND.itemBorder}`,
-              background: "rgba(255,255,255,0.03)",
-              padding: 12,
-            }}
-          >
-            <img
+          <Box sx={{ position: "relative", width: "100%", height: 52 }}>
+            <Image
               src="/brand/dcflow-logo.png"
               alt="DCFlow"
-              style={{
-                width: "100%",
-                height: 56,
-                objectFit: "contain",
-                display: "block",
-              }}
+              fill
+              sizes="280px"
+              style={{ objectFit: "contain" }}
+              priority
             />
-            <div style={{ marginTop: 8, fontSize: 12, color: BRAND.subtext, fontWeight: 800 }}>
-              {appUser?.displayName || "Unknown User"} • {appUser?.role || "No Role"}
-            </div>
-          </div>
+          </Box>
 
-          {/* Nav + bottom section, sized to fit */}
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <div style={{ display: "grid", gap: 8 }}>{desktopNavTop}</div>
+          <Typography variant="caption" sx={{ mt: 1, display: "block", color: "text.secondary" }}>
+            {appUser?.displayName || "Unknown User"} • {appUser?.role || "No Role"}
+          </Typography>
+        </Paper>
+      </Box>
 
-            <div style={{ flex: 1 }} />
+      <Box sx={{ px: 1, pb: 1 }}>
+        <NavList
+          items={topNav}
+          pathname={pathname}
+          onNavigate={isMobile ? () => setDrawerOpen(false) : undefined}
+        />
+      </Box>
 
-            <div style={{ borderTop: `1px solid ${BRAND.itemBorder}`, paddingTop: 10, display: "grid", gap: 8 }}>
-              {desktopNavBottom}
-            </div>
-          </div>
-        </aside>
+      <Box sx={{ flex: 1 }} />
 
-        {/* Main area scrolls independently */}
-        <main style={{ flex: 1, height: "100vh", overflowY: "auto", padding: 24 }}>
-          {rejectedBanner}
-          {mondayReminderBanner}
-          {children}
-        </main>
-      </div>
+      <Box sx={{ px: 1, pb: 1.25 }}>
+        <Divider sx={{ mb: 1 }} />
+
+        {bottomNav.length > 0 ? (
+          <NavList
+            items={bottomNav}
+            pathname={pathname}
+            onNavigate={isMobile ? () => setDrawerOpen(false) : undefined}
+          />
+        ) : null}
+
+        <Box
+          sx={{
+            mt: bottomNav.length > 0 ? 0.75 : 0,
+            "& button": {
+              width: "100%",
+              justifyContent: "flex-start",
+              minHeight: 44,
+              borderRadius: 1.25,
+            },
+          }}
+        >
+          <LogoutButton />
+        </Box>
+      </Box>
+    </Box>
+  );
+
+  const activeTripSurface = isMobile && activeTripCard ? (
+    <Paper
+      elevation={0}
+      sx={{
+        position: "fixed",
+        left: 12,
+        right: 12,
+        bottom: MOBILE_BOTTOM_NAV_HEIGHT + 12,
+        zIndex: 1201,
+        borderRadius: 2,
+        overflow: "hidden",
+        border: `1px solid ${
+          isPaused
+            ? alpha(theme.palette.warning.main, 0.24)
+            : alpha(theme.palette.success.main, 0.24)
+        }`,
+        backgroundColor: isPaused
+          ? alpha(theme.palette.warning.main, 0.12)
+          : alpha(theme.palette.success.main, 0.12),
+      }}
+    >
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 1.25, py: 1 }}>
+        <Box
+          onClick={() => router.push(activeTripCard.href)}
+          sx={{
+            minWidth: 0,
+            flex: 1,
+            display: "flex",
+            gap: 1,
+            alignItems: "center",
+            color: "inherit",
+            cursor: "pointer",
+          }}
+        >
+          <DirectionsRunRoundedIcon
+            sx={{
+              fontSize: 18,
+              color: isPaused ? "#FFD89C" : "#CFFFE0",
+              flexShrink: 0,
+            }}
+          />
+
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="caption" sx={{ display: "block", color: "text.secondary" }}>
+              {activeTripCard.statusLabel} • {liveMinutes} min
+            </Typography>
+
+            <Typography
+              variant="subtitle2"
+              sx={{
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {activeTripCard.primaryLine}
+            </Typography>
+
+            <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                color: "text.secondary",
+              }}
+            >
+              {activeTripCard.secondaryLine}
+            </Typography>
+          </Box>
+        </Box>
+
+        {canQuickAct ? (
+          isPaused ? (
+            <IconButton
+              onClick={handleQuickResume}
+              disabled={pillActionBusy}
+              sx={{
+                width: 40,
+                height: 40,
+                borderRadius: 1.5,
+                color: "text.primary",
+                border: `1px solid ${alpha("#FFFFFF", 0.12)}`,
+                backgroundColor: alpha("#FFFFFF", 0.05),
+              }}
+            >
+              <PlayArrowRoundedIcon />
+            </IconButton>
+          ) : (
+            <IconButton
+              onClick={handleQuickPause}
+              disabled={pillActionBusy}
+              sx={{
+                width: 40,
+                height: 40,
+                borderRadius: 1.5,
+                color: "text.primary",
+                border: `1px solid ${alpha("#FFFFFF", 0.12)}`,
+                backgroundColor: alpha("#FFFFFF", 0.05),
+              }}
+            >
+              <PauseRoundedIcon />
+            </IconButton>
+          )
+        ) : null}
+      </Stack>
+    </Paper>
+  ) : null;
+
+  if (!isMobile) {
+    return (
+      <Box
+        sx={{
+          height: "100vh",
+          display: "flex",
+          backgroundColor: "background.default",
+          overflow: "hidden",
+        }}
+      >
+        <Drawer
+          variant="permanent"
+          PaperProps={{
+            sx: {
+              width: DESKTOP_DRAWER_WIDTH,
+              boxSizing: "border-box",
+            },
+          }}
+          sx={{
+            width: DESKTOP_DRAWER_WIDTH,
+            flexShrink: 0,
+            "& .MuiDrawer-paper": {
+              width: DESKTOP_DRAWER_WIDTH,
+              boxSizing: "border-box",
+            },
+          }}
+        >
+          {drawerContent}
+        </Drawer>
+
+        <Box
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            height: "100vh",
+            overflow: "auto",
+            backgroundColor: "background.default",
+          }}
+        >
+          <Box
+            sx={{
+              maxWidth: 1600,
+              mx: "auto",
+              px: { xs: 2, md: 3 },
+              py: 3,
+            }}
+          >
+            {rejectedBanner}
+            {mondayReminderBanner}
+            {children}
+          </Box>
+        </Box>
+      </Box>
     );
   }
 
-  // Mobile shell
   return (
-    <div style={{ minHeight: "100vh", background: "#fff" }}>
-      {mobileMoreDrawer}
-      <main style={{ padding: 14, paddingBottom: bottomPadding }}>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        backgroundColor: "background.default",
+      }}
+    >
+      <AppBar position="sticky" color="transparent" elevation={0}>
+        <Toolbar sx={{ minHeight: 64, px: 1.5 }}>
+          <IconButton
+            edge="start"
+            color="inherit"
+            onClick={() => setDrawerOpen(true)}
+            sx={{ mr: 1 }}
+          >
+            <MenuRoundedIcon />
+          </IconButton>
+
+          <Stack direction="row" spacing={1} alignItems="center" minWidth={0}>
+            <WaterDropRoundedIcon color="primary" sx={{ fontSize: 18 }} />
+            <Box minWidth={0}>
+              <Typography variant="subtitle2">DCFlow</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {appUser?.displayName || "Unknown User"}
+              </Typography>
+            </Box>
+          </Stack>
+
+          <Box sx={{ flex: 1 }} />
+
+          {activeTripCard ? (
+            <Chip
+              icon={<DirectionsRunRoundedIcon />}
+              label={`${isPaused ? "Paused" : "Running"} • ${liveMinutes}m`}
+              size="small"
+              sx={{
+                backgroundColor: isPaused
+                  ? alpha(theme.palette.warning.main, 0.12)
+                  : alpha(theme.palette.success.main, 0.12),
+                border: `1px solid ${
+                  isPaused
+                    ? alpha(theme.palette.warning.main, 0.22)
+                    : alpha(theme.palette.success.main, 0.22)
+                }`,
+              }}
+            />
+          ) : null}
+        </Toolbar>
+      </AppBar>
+
+      <Drawer
+        anchor="left"
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        PaperProps={{
+          sx: {
+            width: "84vw",
+            maxWidth: 360,
+          },
+        }}
+      >
+        {drawerContent}
+      </Drawer>
+
+      <Box
+        component="main"
+        sx={{
+          px: 1.5,
+          pt: 1.5,
+          pb: `${mobileBottomPadding}px`,
+        }}
+      >
         {rejectedBanner}
         {mondayReminderBanner}
         {children}
-      </main>
-      {activeTripPill}
-      {mobileDock}
-    </div>
+      </Box>
+
+      {activeTripSurface}
+
+      <Paper
+        elevation={0}
+        sx={{
+          position: "fixed",
+          left: 12,
+          right: 12,
+          bottom: 12,
+          zIndex: 1200,
+          borderRadius: 2.5,
+          overflow: "hidden",
+          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+          backgroundColor: "background.paper",
+        }}
+      >
+        <BottomNavigation
+          showLabels
+          value={mobileBottomNavValue}
+          onChange={(_, nextValue) => {
+            if (nextValue === "more") {
+              setDrawerOpen(true);
+              return;
+            }
+            router.push(nextValue);
+          }}
+          sx={{
+            height: MOBILE_BOTTOM_NAV_HEIGHT,
+            background: "transparent",
+          }}
+        >
+          <BottomNavigationAction
+            label="My Day"
+            value="/technician/my-day"
+            icon={<EventNoteRoundedIcon />}
+          />
+          <BottomNavigationAction
+            label="Schedule"
+            value="/schedule"
+            icon={<CalendarMonthRoundedIcon />}
+          />
+          <BottomNavigationAction
+            label="Tickets"
+            value="/service-tickets"
+            icon={<ReceiptLongRoundedIcon />}
+          />
+          <BottomNavigationAction
+            label="More"
+            value="more"
+            icon={<MoreHorizRoundedIcon />}
+          />
+        </BottomNavigation>
+      </Paper>
+    </Box>
   );
 }
