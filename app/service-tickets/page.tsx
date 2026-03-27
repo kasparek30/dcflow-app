@@ -1,9 +1,43 @@
-// app/service-tickets/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, orderBy, query } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardActionArea,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Divider,
+  FormControl,
+  InputAdornment,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  Switch,
+  TextField,
+  Typography,
+} from "@mui/material";
+import type { SelectChangeEvent } from "@mui/material/Select";
+import { alpha, useTheme } from "@mui/material/styles";
+import ConfirmationNumberRoundedIcon from "@mui/icons-material/ConfirmationNumberRounded";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+import PlaceRoundedIcon from "@mui/icons-material/PlaceRounded";
+import BuildCircleRoundedIcon from "@mui/icons-material/BuildCircleRounded";
+import TuneRoundedIcon from "@mui/icons-material/TuneRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import AssignmentIndRoundedIcon from "@mui/icons-material/AssignmentIndRounded";
+import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -19,7 +53,44 @@ type StatusFilter =
   | "completed"
   | "cancelled";
 
-function getStatusLabel(status: ServiceTicket["status"]) {
+function SectionHeader({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <Box>
+      <Typography
+        variant="h6"
+        sx={{
+          fontSize: { xs: "1rem", md: "1.05rem" },
+          fontWeight: 800,
+          letterSpacing: "-0.02em",
+        }}
+      >
+        {title}
+      </Typography>
+
+      {subtitle ? (
+        <Typography
+          sx={{
+            mt: 0.5,
+            color: "text.secondary",
+            fontSize: 13,
+            fontWeight: 500,
+            maxWidth: 920,
+          }}
+        >
+          {subtitle}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function getStatusLabel(status?: ServiceTicket["status"]) {
   switch (status) {
     case "new":
       return "New";
@@ -34,7 +105,7 @@ function getStatusLabel(status: ServiceTicket["status"]) {
     case "cancelled":
       return "Cancelled";
     default:
-      return status;
+      return "Unknown";
   }
 }
 
@@ -59,9 +130,6 @@ function isAssigned(ticket: ServiceTicket) {
 }
 
 function statusRankForSort(status: string) {
-  // Your desired “work queue” feel:
-  // Unassigned/new on top handled separately, then:
-  // follow_up -> scheduled -> in_progress -> completed -> cancelled
   const s = normalize(status);
   if (s === "new") return 0;
   if (s === "follow_up") return 1;
@@ -76,7 +144,87 @@ function safeStr(x: unknown) {
   return String(x ?? "");
 }
 
+function statusTone(status?: ServiceTicket["status"]) {
+  const s = normalize(status);
+
+  if (s === "new") {
+    return {
+      label: "New",
+      sx: {
+        color: "#DCEBFF",
+        backgroundColor: "rgba(13,126,242,0.10)",
+        border: "1px solid rgba(13,126,242,0.22)",
+      },
+    };
+  }
+
+  if (s === "scheduled") {
+    return {
+      label: "Scheduled",
+      sx: {
+        color: "#D8F0FF",
+        backgroundColor: "rgba(71,184,255,0.12)",
+        border: "1px solid rgba(71,184,255,0.24)",
+      },
+    };
+  }
+
+  if (s === "in_progress") {
+    return {
+      label: "In Progress",
+      sx: {
+        color: "#DFF7E7",
+        backgroundColor: "rgba(52,199,89,0.12)",
+        border: "1px solid rgba(52,199,89,0.24)",
+      },
+    };
+  }
+
+  if (s === "follow_up") {
+    return {
+      label: "Follow Up",
+      sx: {
+        color: "#FFEDD5",
+        backgroundColor: "rgba(245,158,11,0.10)",
+        border: "1px solid rgba(245,158,11,0.22)",
+      },
+    };
+  }
+
+  if (s === "completed") {
+    return {
+      label: "Completed",
+      sx: {
+        color: "#E2E8F0",
+        backgroundColor: "rgba(148,163,184,0.12)",
+        border: "1px solid rgba(148,163,184,0.20)",
+      },
+    };
+  }
+
+  if (s === "cancelled") {
+    return {
+      label: "Cancelled",
+      sx: {
+        color: "#FFE1E4",
+        backgroundColor: "rgba(255,42,54,0.10)",
+        border: "1px solid rgba(255,42,54,0.20)",
+      },
+    };
+  }
+
+  return {
+    label: getStatusLabel(status),
+    sx: {
+      color: "#E2E8F0",
+      backgroundColor: "rgba(148,163,184,0.12)",
+      border: "1px solid rgba(148,163,184,0.20)",
+    },
+  };
+}
+
 export default function ServiceTicketsPage() {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const role = String(appUser?.role || "");
@@ -90,14 +238,9 @@ export default function ServiceTicketsPage() {
   const [error, setError] = useState("");
 
   const [searchText, setSearchText] = useState("");
-
-  // ✅ default status filter for techs = New
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(defaultStatus);
-
   const [assignedFilter, setAssignedFilter] = useState<"all" | "assigned" | "unassigned">("all");
   const [scheduleFilter, setScheduleFilter] = useState<"all" | "scheduled" | "unscheduled">("all");
-
-  // ✅ new toggles
   const [hideCompleted, setHideCompleted] = useState<boolean>(defaultHideCompleted);
   const [availableOnly, setAvailableOnly] = useState<boolean>(false);
 
@@ -154,33 +297,24 @@ export default function ServiceTicketsPage() {
     const base = tickets.filter((ticket) => {
       const s = normalize(ticket.status);
 
-      // ✅ hide completed (and cancelled) convenience
       if (hideCompleted && (s === "completed" || s === "cancelled")) return false;
 
-      // ✅ Available tickets toggle:
-      // - unassigned
-      // - status in [new, scheduled] (you can extend later)
-      // - not completed/cancelled
       if (availableOnly) {
         const assigned = isAssigned(ticket);
         if (assigned) return false;
         if (!(s === "new" || s === "scheduled")) return false;
       }
 
-      // status filter
       if (statusFilter !== "all" && ticket.status !== statusFilter) return false;
 
-      // assigned filter
       const assigned = isAssigned(ticket);
       if (assignedFilter === "assigned" && !assigned) return false;
       if (assignedFilter === "unassigned" && assigned) return false;
 
-      // schedule filter
       const scheduled = Boolean(ticket.scheduledDate || ticket.scheduledStartTime || ticket.scheduledEndTime);
       if (scheduleFilter === "scheduled" && !scheduled) return false;
       if (scheduleFilter === "unscheduled" && scheduled) return false;
 
-      // search
       if (!normalizedSearch) return true;
 
       const haystack = [
@@ -208,16 +342,11 @@ export default function ServiceTicketsPage() {
       return haystack.includes(normalizedSearch);
     });
 
-    // ✅ Sort rules:
-    // 1) Unassigned first
-    // 2) New before anything else
-    // 3) Then by status rank
-    // 4) Then createdAt desc fallback (we don't have a real date object; string compare ok-ish for ISO)
     const sorted = [...base].sort((a, b) => {
       const aAssigned = isAssigned(a);
       const bAssigned = isAssigned(b);
 
-      if (aAssigned !== bAssigned) return aAssigned ? 1 : -1; // unassigned first
+      if (aAssigned !== bAssigned) return aAssigned ? 1 : -1;
 
       const aStatus = normalize(a.status);
       const bStatus = normalize(b.status);
@@ -232,7 +361,6 @@ export default function ServiceTicketsPage() {
 
       const ac = safeStr(a.createdAt);
       const bc = safeStr(b.createdAt);
-      // newer first
       return bc.localeCompare(ac);
     });
 
@@ -251,286 +379,532 @@ export default function ServiceTicketsPage() {
     setSearchText("");
     setAssignedFilter("all");
     setScheduleFilter("all");
-
-    // Important: reset to role-based defaults
     setStatusFilter(defaultStatus);
     setHideCompleted(defaultHideCompleted);
-
-    // keep availableOnly off unless you want it sticky
     setAvailableOnly(false);
   }
 
   return (
     <ProtectedPage fallbackTitle="Service Tickets">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "16px",
-            gap: "12px",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Service Tickets</h1>
-            <p style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
-              Search by customer, issue, address, technician, status, or schedule.
-            </p>
-          </div>
+        <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
+          <Stack spacing={4}>
+            <Stack
+              direction={{ xs: "column", lg: "row" }}
+              spacing={2}
+              alignItems={{ xs: "flex-start", lg: "center" }}
+              justifyContent="space-between"
+            >
+              <Box sx={{ minWidth: 0 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Chip
+                    size="small"
+                    icon={<ConfirmationNumberRoundedIcon sx={{ fontSize: 16 }} />}
+                    label="Service Tickets"
+                    sx={{
+                      borderRadius: 1.5,
+                      fontWeight: 600,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                      border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                    }}
+                  />
+                </Stack>
 
-          <Link
-            href="/service-tickets/new"
-            style={{
-              padding: "8px 14px",
-              border: "1px solid #ccc",
-              borderRadius: "10px",
-              textDecoration: "none",
-              color: "inherit",
-              whiteSpace: "nowrap",
-            }}
-          >
-            New Service Ticket
-          </Link>
-        </div>
-
-        <div
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: "12px",
-            padding: "16px",
-            marginBottom: "16px",
-            background: "#fafafa",
-          }}
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "2fr 1fr 1fr 1fr",
-              gap: "12px",
-              alignItems: "end",
-            }}
-          >
-            <div>
-              <label>Search</label>
-              <input
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Issue, customer, address, tech, date..."
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "8px",
-                  marginTop: "4px",
-                }}
-              />
-            </div>
-
-            <div>
-              <label>Status</label>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "8px",
-                  marginTop: "4px",
-                }}
-              >
-                <option value="all">All Statuses</option>
-                <option value="new">New</option>
-                <option value="scheduled">Scheduled</option>
-                <option value="in_progress">In Progress</option>
-                <option value="follow_up">Follow Up</option>
-                <option value="completed">Completed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
-            </div>
-
-            <div>
-              <label>Assignment</label>
-              <select
-                value={assignedFilter}
-                onChange={(e) => setAssignedFilter(e.target.value as "all" | "assigned" | "unassigned")}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "8px",
-                  marginTop: "4px",
-                }}
-              >
-                <option value="all">All Tickets</option>
-                <option value="assigned">Assigned Only</option>
-                <option value="unassigned">Unassigned Only</option>
-              </select>
-            </div>
-
-            <div>
-              <label>Schedule</label>
-              <select
-                value={scheduleFilter}
-                onChange={(e) => setScheduleFilter(e.target.value as "all" | "scheduled" | "unscheduled")}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "8px",
-                  marginTop: "4px",
-                }}
-              >
-                <option value="all">All Tickets</option>
-                <option value="scheduled">Scheduled Only</option>
-                <option value="unscheduled">Unscheduled Only</option>
-              </select>
-            </div>
-          </div>
-
-          {/* ✅ new quick toggles row */}
-          <div
-            style={{
-              marginTop: "12px",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: "12px",
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", alignItems: "center" }}>
-              <label style={{ display: "flex", gap: "8px", alignItems: "center", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={availableOnly}
-                  onChange={(e) => setAvailableOnly(e.target.checked)}
-                />
-                <span style={{ fontSize: "13px" }}>Available Tickets</span>
-              </label>
-
-              <label style={{ display: "flex", gap: "8px", alignItems: "center", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={hideCompleted}
-                  onChange={(e) => setHideCompleted(e.target.checked)}
-                />
-                <span style={{ fontSize: "13px" }}>Hide completed</span>
-              </label>
-            </div>
-
-            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ fontSize: "13px", color: "#666" }}>
-                Showing {filteredTickets.length} of {tickets.length}
-              </div>
-
-              <button
-                type="button"
-                onClick={clearFilters}
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #ccc",
-                  borderRadius: "10px",
-                  background: "white",
-                  cursor: "pointer",
-                }}
-              >
-                Clear Filters
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {loading ? <p>Loading service tickets...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
-
-        {!loading && !error && filteredTickets.length === 0 ? <p>No matching service tickets found.</p> : null}
-
-        {!loading && !error && filteredTickets.length > 0 ? (
-          <div style={{ display: "grid", gap: "12px" }}>
-            {filteredTickets.map((ticket) => {
-              const assigned = isAssigned(ticket);
-              const statusText = getStatusLabel(ticket.status);
-
-              return (
-                <Link
-                  key={ticket.id}
-                  href={`/service-tickets/${ticket.id}`}
-                  style={{
-                    display: "block",
-                    border: "1px solid #ddd",
-                    borderRadius: "12px",
-                    padding: "12px",
-                    textDecoration: "none",
-                    color: "inherit",
-                    background: "white",
+                <Typography
+                  variant="h4"
+                  sx={{
+                    fontSize: { xs: "1.65rem", md: "2.1rem" },
+                    lineHeight: 1.05,
+                    fontWeight: 800,
+                    letterSpacing: "-0.035em",
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                    <div style={{ fontWeight: 800 }}>{ticket.issueSummary}</div>
+                  Service tickets
+                </Typography>
 
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      {!assigned ? (
-                        <div
-                          style={{
-                            fontSize: 11,
-                            padding: "2px 8px",
-                            borderRadius: 999,
-                            border: "1px solid #d8e6ff",
-                            background: "#eef5ff",
-                            color: "#1b4fbf",
-                            fontWeight: 900,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          Unassigned
-                        </div>
-                      ) : null}
+                <Typography
+                  sx={{
+                    mt: 0.9,
+                    color: "text.secondary",
+                    fontSize: { xs: 13, md: 14 },
+                    fontWeight: 500,
+                    maxWidth: 960,
+                  }}
+                >
+                  Search by customer, issue, address, technician, status, and schedule
+                  to manage the service work queue.
+                </Typography>
+              </Box>
 
-                      <div
-                        style={{
-                          fontSize: 11,
-                          padding: "2px 8px",
-                          borderRadius: 999,
-                          border: "1px solid #eee",
-                          background: "#fafafa",
-                          color: "#444",
-                          fontWeight: 900,
-                          whiteSpace: "nowrap",
+              <Button
+                component={Link}
+                href="/service-tickets/new"
+                variant="contained"
+                startIcon={<AddRoundedIcon />}
+                sx={{ minHeight: 40, borderRadius: 2 }}
+              >
+                New Service Ticket
+              </Button>
+            </Stack>
+
+            <Card
+              elevation={0}
+              sx={{
+                borderRadius: 3,
+                border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                backgroundColor: "background.paper",
+              }}
+            >
+              <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                <Stack spacing={2.25}>
+                  <SectionHeader
+                    title="Filters"
+                    subtitle="Refine the work queue by search text, status, assignment state, and scheduling state."
+                  />
+
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        md: "2fr 1fr",
+                        xl: "2fr 1fr 1fr 1fr",
+                      },
+                      gap: 1.5,
+                    }}
+                  >
+                    <TextField
+                      label="Search"
+                      value={searchText}
+                      onChange={(e) => setSearchText(e.target.value)}
+                      placeholder="Issue, customer, address, tech, date..."
+                      size="small"
+                      fullWidth
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchRoundedIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Status</InputLabel>
+                      <Select
+                        label="Status"
+                        value={statusFilter}
+                        onChange={(e: SelectChangeEvent) =>
+                          setStatusFilter(e.target.value as StatusFilter)
+                        }
+                      >
+                        <MenuItem value="all">All Statuses</MenuItem>
+                        <MenuItem value="new">New</MenuItem>
+                        <MenuItem value="scheduled">Scheduled</MenuItem>
+                        <MenuItem value="in_progress">In Progress</MenuItem>
+                        <MenuItem value="follow_up">Follow Up</MenuItem>
+                        <MenuItem value="completed">Completed</MenuItem>
+                        <MenuItem value="cancelled">Cancelled</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Assignment</InputLabel>
+                      <Select
+                        label="Assignment"
+                        value={assignedFilter}
+                        onChange={(e: SelectChangeEvent) =>
+                          setAssignedFilter(
+                            e.target.value as "all" | "assigned" | "unassigned"
+                          )
+                        }
+                      >
+                        <MenuItem value="all">All Tickets</MenuItem>
+                        <MenuItem value="assigned">Assigned Only</MenuItem>
+                        <MenuItem value="unassigned">Unassigned Only</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Schedule</InputLabel>
+                      <Select
+                        label="Schedule"
+                        value={scheduleFilter}
+                        onChange={(e: SelectChangeEvent) =>
+                          setScheduleFilter(
+                            e.target.value as "all" | "scheduled" | "unscheduled"
+                          )
+                        }
+                      >
+                        <MenuItem value="all">All Tickets</MenuItem>
+                        <MenuItem value="scheduled">Scheduled Only</MenuItem>
+                        <MenuItem value="unscheduled">Unscheduled Only</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Box>
+
+                  <Divider />
+
+                  <Stack
+                    direction={{ xs: "column", lg: "row" }}
+                    spacing={1.5}
+                    alignItems={{ xs: "flex-start", lg: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1.5}
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                    >
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          px: 1.25,
+                          py: 0.75,
+                          borderRadius: 2,
+                          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                          backgroundColor: alpha("#FFFFFF", 0.02),
                         }}
                       >
-                        {statusText}
-                      </div>
-                    </div>
-                  </div>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <TuneRoundedIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            Available Tickets
+                          </Typography>
+                          <Switch
+                            size="small"
+                            checked={availableOnly}
+                            onChange={(e) => setAvailableOnly(e.target.checked)}
+                          />
+                        </Stack>
+                      </Paper>
 
-                  <div style={{ marginTop: "6px", fontSize: "14px", color: "#555" }}>
-                    Customer: {ticket.customerDisplayName || "—"}
-                  </div>
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          px: 1.25,
+                          py: 0.75,
+                          borderRadius: 2,
+                          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                          backgroundColor: alpha("#FFFFFF", 0.02),
+                        }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <CheckCircleRoundedIcon
+                            sx={{ fontSize: 18, color: "text.secondary" }}
+                          />
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            Hide Completed
+                          </Typography>
+                          <Switch
+                            size="small"
+                            checked={hideCompleted}
+                            onChange={(e) => setHideCompleted(e.target.checked)}
+                          />
+                        </Stack>
+                      </Paper>
+                    </Stack>
 
-                  <div style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
-                    {ticket.serviceAddressLine1 || "—"}
-                  </div>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ xs: "stretch", sm: "center" }}
+                    >
+                      <Chip
+                        size="small"
+                        label={`Showing ${filteredTickets.length} of ${tickets.length}`}
+                        variant="outlined"
+                        sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                      />
 
-                  <div style={{ marginTop: "4px", fontSize: "14px", color: "#555" }}>
-                    {ticket.serviceCity || "—"}, {ticket.serviceState || "—"} {ticket.servicePostalCode || ""}
-                  </div>
+                      <Button
+                        type="button"
+                        onClick={clearFilters}
+                        variant="outlined"
+                        sx={{ borderRadius: 2, minHeight: 36 }}
+                      >
+                        Clear Filters
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Stack>
+              </Box>
+            </Card>
 
-                  <div style={{ marginTop: "8px", fontSize: "12px", color: "#777" }}>
-                    Schedule: {getScheduleText(ticket)}
-                  </div>
+            {error ? (
+              <Alert severity="error" variant="outlined" icon={<ErrorOutlineRoundedIcon />}>
+                {error}
+              </Alert>
+            ) : null}
 
-                  <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                    Estimated Duration: {ticket.estimatedDurationMinutes} min
-                  </div>
+            {loading ? (
+              <Paper
+                elevation={0}
+                sx={{
+                  borderRadius: 3,
+                  p: 3,
+                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                  backgroundColor: "background.paper",
+                }}
+              >
+                <Stack direction="row" spacing={1.25} alignItems="center">
+                  <CircularProgress size={20} thickness={5} />
+                  <Typography variant="body2" color="text.secondary">
+                    Loading service tickets...
+                  </Typography>
+                </Stack>
+              </Paper>
+            ) : null}
 
-                  {/* Keep “Assigned To” but make it clean (no big badge) */}
-                  <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                    Assigned To: {ticket.assignedTechnicianName || (assigned ? "Assigned" : "—")}
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
-        ) : null}
+            {!loading && !error && filteredTickets.length === 0 ? (
+              <Paper
+                elevation={0}
+                sx={{
+                  borderRadius: 3,
+                  p: 3,
+                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                  backgroundColor: "background.paper",
+                }}
+              >
+                <Typography variant="body2" color="text.secondary">
+                  No matching service tickets found.
+                </Typography>
+              </Paper>
+            ) : null}
+
+            {!loading && !error && filteredTickets.length > 0 ? (
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    md: "repeat(2, minmax(0, 1fr))",
+                    xl: "repeat(3, minmax(0, 1fr))",
+                  },
+                  gap: 1.5,
+                }}
+              >
+                {filteredTickets.map((ticket) => {
+                  const assigned = isAssigned(ticket);
+                  const tone = statusTone(ticket.status);
+
+                  return (
+                    <Card
+                      key={ticket.id}
+                      elevation={0}
+                      sx={{
+                        height: "100%",
+                        borderRadius: 3,
+                        border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                        backgroundColor: "background.paper",
+                      }}
+                    >
+                      <CardActionArea
+                        component={Link}
+                        href={`/service-tickets/${ticket.id}`}
+                        sx={{ height: "100%", borderRadius: 3, alignItems: "stretch" }}
+                      >
+                        <CardContent
+                          sx={{
+                            p: { xs: 2, md: 2.25 },
+                            height: "100%",
+                            display: "flex",
+                            flexDirection: "column",
+                            "&:last-child": { pb: { xs: 2, md: 2.25 } },
+                          }}
+                        >
+                          <Stack spacing={1.5} sx={{ height: "100%" }}>
+                            <Stack
+                              direction="row"
+                              spacing={1.25}
+                              justifyContent="space-between"
+                              alignItems="flex-start"
+                            >
+                              <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, flex: 1 }}>
+                                <Box
+                                  sx={{
+                                    width: 42,
+                                    height: 42,
+                                    borderRadius: 2,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    flexShrink: 0,
+                                    backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                                    color: theme.palette.primary.light,
+                                  }}
+                                >
+                                  <BuildCircleRoundedIcon sx={{ fontSize: 22 }} />
+                                </Box>
+
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography
+                                    variant="subtitle1"
+                                    sx={{
+                                      fontWeight: 800,
+                                      lineHeight: 1.2,
+                                      letterSpacing: "-0.01em",
+                                    }}
+                                  >
+                                    {ticket.issueSummary || "Service Ticket"}
+                                  </Typography>
+
+                                  <Typography
+                                    variant="body2"
+                                    sx={{
+                                      mt: 0.45,
+                                      color: "text.secondary",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {ticket.customerDisplayName || "—"}
+                                  </Typography>
+                                </Box>
+                              </Stack>
+
+                              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                                {!assigned ? (
+                                  <Chip
+                                    size="small"
+                                    label="Unassigned"
+                                    sx={{
+                                      borderRadius: 1.5,
+                                      fontWeight: 700,
+                                      color: "#DCEBFF",
+                                      backgroundColor: "rgba(13,126,242,0.10)",
+                                      border: "1px solid rgba(13,126,242,0.22)",
+                                    }}
+                                  />
+                                ) : null}
+
+                                <Chip
+                                  size="small"
+                                  label={tone.label}
+                                  sx={{
+                                    borderRadius: 1.5,
+                                    fontWeight: 700,
+                                    ...tone.sx,
+                                  }}
+                                />
+                              </Stack>
+                            </Stack>
+
+                            <Divider />
+
+                            <Stack spacing={1}>
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                <PlaceRoundedIcon
+                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                />
+                                <Typography
+                                  variant="body2"
+                                  sx={{
+                                    color: "text.secondary",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {ticket.serviceAddressLine1 || "—"}
+                                </Typography>
+                              </Stack>
+
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  pl: 3,
+                                  color: "text.secondary",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {ticket.serviceCity || "—"}, {ticket.serviceState || "—"}{" "}
+                                {ticket.servicePostalCode || ""}
+                              </Typography>
+
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                <ScheduleRoundedIcon
+                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                />
+                                <Typography variant="body2" color="text.secondary">
+                                  {getScheduleText(ticket)}
+                                </Typography>
+                              </Stack>
+
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                <BuildCircleRoundedIcon
+                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                />
+                                <Typography variant="body2" color="text.secondary">
+                                  Estimated Duration:{" "}
+                                  <Typography
+                                    component="span"
+                                    variant="body2"
+                                    sx={{ color: "text.primary", fontWeight: 700 }}
+                                  >
+                                    {ticket.estimatedDurationMinutes} min
+                                  </Typography>
+                                </Typography>
+                              </Stack>
+
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                <AssignmentIndRoundedIcon
+                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                />
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                  sx={{
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  Assigned To:{" "}
+                                  <Typography
+                                    component="span"
+                                    variant="body2"
+                                    sx={{ color: "text.primary", fontWeight: 700 }}
+                                  >
+                                    {ticket.assignedTechnicianName || (assigned ? "Assigned" : "—")}
+                                  </Typography>
+                                </Typography>
+                              </Stack>
+                            </Stack>
+
+                            <Box sx={{ flex: 1 }} />
+
+                            <Stack
+                              direction="row"
+                              spacing={0.75}
+                              alignItems="center"
+                              sx={{
+                                color: "primary.light",
+                              }}
+                            >
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontWeight: 700,
+                                  letterSpacing: "0.02em",
+                                }}
+                              >
+                                Open ticket
+                              </Typography>
+                              <ArrowForwardRoundedIcon sx={{ fontSize: 14 }} />
+                            </Stack>
+                          </Stack>
+                        </CardContent>
+                      </CardActionArea>
+                    </Card>
+                  );
+                })}
+              </Box>
+            ) : null}
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );

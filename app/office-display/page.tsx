@@ -963,7 +963,7 @@ export default function OfficeDisplayPage() {
                   alt="DCFlow"
                   fill
                   priority
-                  sizes="252px"
+                  sizes="272px"
                   style={{ objectFit: "contain" }}
                 />
               </Box>
@@ -1251,31 +1251,6 @@ export default function OfficeDisplayPage() {
                 })}
               </Box>
             ))}
-          </Box>
-
-          <Divider />
-
-          <Box
-            sx={{
-              height: `${footerH}px`,
-              px: 1.5,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 1.25,
-              backgroundColor: alpha("#FFFFFF", 0.015),
-            }}
-          >
-            <Stack direction="row" spacing={0.75} alignItems="center">
-              {loading ? (
-                <CircularProgress size={15} thickness={5} />
-              ) : (
-                <RefreshRoundedIcon sx={{ fontSize: 15, color: "text.secondary" }} />
-              )}
-              <Typography variant="caption" color="text.secondary">
-                Live updates: Trips + Meetings + Technicians + Approved PTO
-              </Typography>
-            </Stack>
           </Box>
         </Paper>
 
