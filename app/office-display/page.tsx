@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import Image from "next/image";
 import {
   collection,
@@ -18,8 +17,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
-  Divider,
   Paper,
   Stack,
   Typography,
@@ -30,13 +27,10 @@ import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
 import HandymanRoundedIcon from "@mui/icons-material/HandymanRounded";
-import LaunchRoundedIcon from "@mui/icons-material/LaunchRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
-import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
-import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import AssignmentLateRoundedIcon from "@mui/icons-material/AssignmentLateRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -305,6 +299,29 @@ function extractPtoDates(d: any): string[] {
   return [];
 }
 
+function MaterialSymbolIcon({
+  name,
+  size = 14,
+}: {
+  name: "plumbing" | "square_foot";
+  size?: number;
+}) {
+  return (
+    <Box
+      component="span"
+      className="material-symbols-outlined"
+      sx={{
+        fontSize: `${size}px`,
+        lineHeight: 1,
+        display: "block",
+        fontVariationSettings: '"FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24',
+      }}
+    >
+      {name}
+    </Box>
+  );
+}
+
 export default function OfficeDisplayPage() {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -533,7 +550,9 @@ export default function OfficeDisplayPage() {
 
         const outNames: Record<string, string[]> = {};
         for (const date of Object.keys(namesByDate)) {
-          outNames[date] = Array.from(namesByDate[date].values()).sort((a, b) => a.localeCompare(b));
+          outNames[date] = Array.from(namesByDate[date].values()).sort((a, b) =>
+            a.localeCompare(b)
+          );
         }
 
         if (!cancelled) {
@@ -710,6 +729,9 @@ export default function OfficeDisplayPage() {
     const timeText = tripTimeText(t);
     const tone = statusTone(t.status);
     const tripType = normalizeStatus(t.type);
+    const isCompleted =
+      normalizeStatus(t.status) === "complete" ||
+      normalizeStatus(t.status) === "completed";
 
     return (
       <Paper
@@ -717,14 +739,14 @@ export default function OfficeDisplayPage() {
         elevation={0}
         sx={{
           px: 1,
-          py: 0.9,
+          py: isCompleted ? 0.75 : 0.9,
           borderRadius: 1.5,
           backgroundColor: "background.paper",
           border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
           minHeight: 0,
         }}
       >
-        <Stack spacing={0.75}>
+        <Stack spacing={isCompleted ? 0.45 : 0.75}>
           <Stack direction="row" spacing={0.75} justifyContent="space-between" alignItems="flex-start">
             <Stack direction="row" spacing={0.75} sx={{ minWidth: 0, flex: 1 }}>
               <Box
@@ -746,9 +768,9 @@ export default function OfficeDisplayPage() {
                 }}
               >
                 {tripType === "project" ? (
-                  <ConstructionRoundedIcon sx={{ fontSize: 14 }} />
+                  <MaterialSymbolIcon name="square_foot" size={14} />
                 ) : (
-                  <PrecisionManufacturingRoundedIcon sx={{ fontSize: 14 }} />
+                  <MaterialSymbolIcon name="plumbing" size={14} />
                 )}
               </Box>
 
@@ -803,31 +825,33 @@ export default function OfficeDisplayPage() {
             />
           </Stack>
 
-          <Stack spacing={0.35}>
-            <Stack direction="row" spacing={0.5} alignItems="center">
-              <ScheduleRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-              <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                {timeText}
-              </Typography>
-            </Stack>
-
-            {location ? (
+          {!isCompleted ? (
+            <Stack spacing={0.35}>
               <Stack direction="row" spacing={0.5} alignItems="center">
-                <LocationOnRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: "text.secondary",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {location}
+                <ScheduleRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                  {timeText}
                 </Typography>
               </Stack>
-            ) : null}
-          </Stack>
+
+              {location ? (
+                <Stack direction="row" spacing={0.5} alignItems="center">
+                  <LocationOnRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "text.secondary",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {location}
+                  </Typography>
+                </Stack>
+              ) : null}
+            </Stack>
+          ) : null}
         </Stack>
       </Paper>
     );
@@ -912,10 +936,9 @@ export default function OfficeDisplayPage() {
 
   const headerH = 96;
   const outerPad = 16;
-  const footerH = 46;
   const dayHeaderApprox = 124;
-  const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px)`;
-  const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px - ${footerH}px)`;
+  const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px - 12px)`;
+  const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
 
   return (
     <ProtectedPage fallbackTitle="Office Display">
@@ -1208,7 +1231,7 @@ export default function OfficeDisplayPage() {
                         <Chip
                           size="small"
                           icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
-                          label={`PTO ${pto.hours ? ` • ${pto.hours}h` : ""}`}
+                          label={`PTO${pto.hours ? ` • ${pto.hours}h` : ""}`}
                           color="secondary"
                           variant="outlined"
                           sx={{
