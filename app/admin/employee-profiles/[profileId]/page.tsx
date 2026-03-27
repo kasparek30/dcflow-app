@@ -1,4 +1,3 @@
-// app/admin/employee-profiles/[profileId]/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -13,6 +12,34 @@ import {
   orderBy,
   query,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  Chip,
+  CircularProgress,
+  Divider,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
+  Stack,
+  Switch,
+  TextField,
+  Typography,
+} from "@mui/material";
+import type { SelectChangeEvent } from "@mui/material/Select";
+import { alpha, useTheme } from "@mui/material/styles";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import BadgeRoundedIcon from "@mui/icons-material/BadgeRounded";
+import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
+import AccountBalanceRoundedIcon from "@mui/icons-material/AccountBalanceRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import WorkHistoryRoundedIcon from "@mui/icons-material/WorkHistoryRounded";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import DeleteRoundedIcon from "@mui/icons-material/DeleteRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import AppShell from "../../../../components/AppShell";
 import ProtectedPage from "../../../../components/ProtectedPage";
 import { useAuthContext } from "../../../../src/context/auth-context";
@@ -32,11 +59,11 @@ type DcflowUser = {
 };
 
 type QboEmployeeDoc = {
-  id: string; // doc id = qbo employee id
+  id: string;
   qboEmployeeId?: string;
   displayName?: string;
   email?: string;
-  hiredDate?: string; // YYYY-MM-DD
+  hiredDate?: string;
   releasedDate?: string;
   active?: boolean;
 };
@@ -56,7 +83,11 @@ const laborRoles: LaborRole[] = [
   "other",
 ];
 
-const employmentStatuses: EmploymentStatus[] = ["current", "inactive", "seasonal"];
+const employmentStatuses: EmploymentStatus[] = [
+  "current",
+  "inactive",
+  "seasonal",
+];
 
 function toIsoDate(date: Date): string {
   const y = date.getUTCFullYear();
@@ -71,7 +102,66 @@ function addDaysIso(dateIso: string, days: number): string {
   return toIsoDate(dt);
 }
 
+function SectionHeader({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <Stack spacing={1.25}>
+      <Stack direction="row" spacing={1.25} alignItems="center">
+        <Box
+          sx={{
+            width: 40,
+            height: 40,
+            borderRadius: 2,
+            display: "grid",
+            placeItems: "center",
+            backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.12),
+            color: "primary.light",
+            flexShrink: 0,
+          }}
+        >
+          {icon}
+        </Box>
+
+        <Box sx={{ minWidth: 0 }}>
+          <Typography
+            variant="h6"
+            sx={{
+              fontSize: { xs: "1rem", md: "1.05rem" },
+              fontWeight: 800,
+              letterSpacing: "-0.02em",
+              lineHeight: 1.15,
+            }}
+          >
+            {title}
+          </Typography>
+
+          {subtitle ? (
+            <Typography
+              sx={{
+                mt: 0.4,
+                color: "text.secondary",
+                fontSize: 13,
+                fontWeight: 500,
+              }}
+            >
+              {subtitle}
+            </Typography>
+          ) : null}
+        </Box>
+      </Stack>
+    </Stack>
+  );
+}
+
 export default function EmployeeProfileDetailPage({ params }: PageProps) {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -88,7 +178,6 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
 
   const [error, setError] = useState("");
 
-  // Form state
   const [userUid, setUserUid] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -99,7 +188,6 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
   const [defaultPairedTechUid, setDefaultPairedTechUid] = useState("");
   const [notes, setNotes] = useState("");
 
-  // QBO link UI state
   const [selectedQboId, setSelectedQboId] = useState("");
   const [linkingQbo, setLinkingQbo] = useState(false);
   const [qboLinkError, setQboLinkError] = useState("");
@@ -111,11 +199,10 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
   );
 
   const techUsers = useMemo(() => {
-    return users.filter(
-      (u) =>
-        (u.role || "").toLowerCase() === "technician" ||
-        (u.role || "").toLowerCase() === "admin"
-    );
+    return users.filter((u) => {
+      const role = String(u.role || "").toLowerCase();
+      return role === "technician" || role === "admin";
+    });
   }, [users]);
 
   const filteredQboEmployees = useMemo(() => {
@@ -139,7 +226,6 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         const id = resolved.profileId;
         setProfileId(id);
 
-        // Load profile
         const ref = doc(db, "employeeProfiles", id);
         const snap = await getDoc(ref);
 
@@ -158,14 +244,12 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
           email: d.email ?? undefined,
           phone: d.phone ?? undefined,
           employmentStatus: (d.employmentStatus ?? "current") as EmploymentStatus,
-          laborRole: (d.laborRole ?? "other") as any,
+          laborRole: (d.laborRole ?? "other") as LaborRole,
           defaultPairedTechUid: d.defaultPairedTechUid ?? undefined,
-
           qboEmployeeId: d.qboEmployeeId ?? undefined,
           qboEmployeeDisplayName: d.qboEmployeeDisplayName ?? undefined,
           qboEmployeeHiredDate: d.qboEmployeeHiredDate ?? undefined,
           ptoEligibilityDate: d.ptoEligibilityDate ?? undefined,
-
           notes: d.notes ?? undefined,
           createdAt: d.createdAt ?? "",
           updatedAt: d.updatedAt ?? "",
@@ -173,7 +257,6 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
 
         setProfile(item);
 
-        // Seed form values
         setUserUid(item.userUid || "");
         setDisplayName(item.displayName);
         setEmail(item.email || "");
@@ -183,7 +266,6 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         setDefaultPairedTechUid(item.defaultPairedTechUid || "");
         setNotes(item.notes || "");
 
-        // Load users
         const qUsers = query(collection(db, "users"), orderBy("displayName"));
         const snapUsers = await getDocs(qUsers);
 
@@ -241,9 +323,7 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
   }, []);
 
   useEffect(() => {
-    // If a user is selected and fields are empty, auto-fill
     if (!selectedUser) return;
-
     if (!displayName) setDisplayName(selectedUser.displayName || "");
     if (!email) setEmail(selectedUser.email || "");
   }, [selectedUser, displayName, email]);
@@ -287,13 +367,15 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         email: payload.email || undefined,
         phone: payload.phone || undefined,
         employmentStatus: payload.employmentStatus as EmploymentStatus,
-        laborRole: payload.laborRole as any,
+        laborRole: payload.laborRole as LaborRole,
         defaultPairedTechUid: payload.defaultPairedTechUid || undefined,
         notes: payload.notes || undefined,
         updatedAt: payload.updatedAt,
       });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to save employee profile.");
+      setError(
+        err instanceof Error ? err.message : "Failed to save employee profile."
+      );
     } finally {
       setSaving(false);
     }
@@ -311,7 +393,9 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
       await deleteDoc(doc(db, "employeeProfiles", profile.id));
       window.location.href = "/admin/employee-profiles";
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to delete employee profile.");
+      setError(
+        err instanceof Error ? err.message : "Failed to delete employee profile."
+      );
     } finally {
       setDeleting(false);
     }
@@ -341,7 +425,6 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
 
       const hiredDate = match.hiredDate || "";
       const eligibilityDate = hiredDate ? addDaysIso(hiredDate, 365) : "";
-
       const nowIso = new Date().toISOString();
 
       await updateDoc(doc(db, "employeeProfiles", profile.id), {
@@ -361,9 +444,13 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         updatedAt: nowIso,
       });
 
-      setQboLinkMsg("✅ Linked QuickBooks employee successfully.");
+      setQboLinkMsg("QuickBooks employee linked successfully.");
     } catch (err: unknown) {
-      setQboLinkError(err instanceof Error ? err.message : "Failed to link QuickBooks employee.");
+      setQboLinkError(
+        err instanceof Error
+          ? err.message
+          : "Failed to link QuickBooks employee."
+      );
     } finally {
       setLinkingQbo(false);
     }
@@ -400,9 +487,13 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
       });
 
       setSelectedQboId("");
-      setQboLinkMsg("✅ Unlinked QuickBooks employee.");
+      setQboLinkMsg("QuickBooks employee unlinked.");
     } catch (err: unknown) {
-      setQboLinkError(err instanceof Error ? err.message : "Failed to unlink QuickBooks employee.");
+      setQboLinkError(
+        err instanceof Error
+          ? err.message
+          : "Failed to unlink QuickBooks employee."
+      );
     } finally {
       setLinkingQbo(false);
     }
@@ -411,299 +502,610 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
   return (
     <ProtectedPage fallbackTitle="Employee Profile" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 900, marginTop: 0 }}>
-              Employee Profile
-            </h1>
-            <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-              Profile ID: {profileId}
-            </p>
-          </div>
+        <Box sx={{ width: "100%", maxWidth: 1080, mx: "auto" }}>
+          <Stack spacing={3}>
+            <Stack
+              direction={{ xs: "column", lg: "row" }}
+              spacing={2}
+              alignItems={{ xs: "flex-start", lg: "center" }}
+              justifyContent="space-between"
+            >
+              <Box sx={{ minWidth: 0 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Chip
+                    size="small"
+                    icon={<BadgeRoundedIcon sx={{ fontSize: 16 }} />}
+                    label="Employee Profile"
+                    sx={{
+                      borderRadius: 1.5,
+                      fontWeight: 600,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                      border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                    }}
+                  />
+                  {profile?.employmentStatus ? (
+                    <Chip
+                      size="small"
+                      label={profile.employmentStatus}
+                      variant="outlined"
+                      sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                    />
+                  ) : null}
+                </Stack>
 
-          <Link
-            href="/admin/employee-profiles"
-            style={{
-              padding: "10px 14px",
-              borderRadius: "10px",
-              border: "1px solid #ccc",
-              background: "white",
-              textDecoration: "none",
-              fontWeight: 800,
-              color: "inherit",
-            }}
-          >
-            Back
-          </Link>
-        </div>
+                <Typography
+                  variant="h4"
+                  sx={{
+                    fontSize: { xs: "1.65rem", md: "2rem" },
+                    lineHeight: 1.05,
+                    fontWeight: 800,
+                    letterSpacing: "-0.03em",
+                  }}
+                >
+                  {loading ? "Employee Profile" : displayName || "Employee Profile"}
+                </Typography>
 
-        {loading ? <p>Loading...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+                <Typography
+                  sx={{
+                    mt: 0.8,
+                    color: "text.secondary",
+                    fontSize: { xs: 13, md: 14 },
+                    fontWeight: 500,
+                    maxWidth: 900,
+                  }}
+                >
+                  Operational employee record with DCFlow user linkage, staffing role,
+                  technician pairing, and QuickBooks employment linkage.
+                </Typography>
 
-        {!loading && profile ? (
-          <div style={{ maxWidth: "920px", display: "grid", gap: "12px" }}>
-            {/* ✅ QuickBooks Link Section */}
-            <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
-              <h2 style={{ marginTop: 0 }}>QuickBooks Link</h2>
-              <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-                Link this employee profile to a QuickBooks employee to pull hire date and compute PTO eligibility.
-              </p>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    mt: 1,
+                    display: "block",
+                    color: "text.secondary",
+                  }}
+                >
+                  Profile ID: {profileId || "—"}
+                </Typography>
+              </Box>
 
-              {qboLoading ? <p>Loading QuickBooks employees...</p> : null}
+              <Button
+                component={Link}
+                href="/admin/employee-profiles"
+                variant="outlined"
+                startIcon={<ArrowBackRoundedIcon />}
+                sx={{ minHeight: 40, borderRadius: 2 }}
+              >
+                Back
+              </Button>
+            </Stack>
 
-              {profile.qboEmployeeId ? (
-                <div style={{ marginTop: "10px", padding: "12px", border: "1px solid #eee", borderRadius: "12px" }}>
-                  <div style={{ fontWeight: 900 }}>
-                    Linked: {profile.qboEmployeeDisplayName || "—"} (ID: {profile.qboEmployeeId})
-                  </div>
-                  <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
-                    Hired Date: <strong>{profile.qboEmployeeHiredDate || "—"}</strong>
-                  </div>
-                  <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
-                    PTO Eligible On: <strong>{profile.ptoEligibilityDate || "—"}</strong>
-                  </div>
+            {error ? (
+              <Alert severity="error" variant="outlined" sx={{ borderRadius: 2 }}>
+                {error}
+              </Alert>
+            ) : null}
 
-                  <button
-                    type="button"
-                    onClick={handleUnlinkQbo}
-                    disabled={linkingQbo}
-                    style={{
-                      marginTop: "12px",
-                      padding: "10px 14px",
-                      borderRadius: "12px",
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 900,
+            {loading ? (
+              <Card
+                elevation={0}
+                sx={{
+                  borderRadius: 3,
+                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                  backgroundColor: "background.paper",
+                }}
+              >
+                <Box sx={{ p: 3 }}>
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <CircularProgress size={20} />
+                    <Typography variant="body2" color="text.secondary">
+                      Loading employee profile...
+                    </Typography>
+                  </Stack>
+                </Box>
+              </Card>
+            ) : null}
+
+            {!loading && profile ? (
+              <>
+                <Card
+                  elevation={0}
+                  sx={{
+                    borderRadius: 3,
+                    border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+                    backgroundColor: alpha(theme.palette.primary.main, 0.05),
+                  }}
+                >
+                  <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                    <Stack
+                      direction={{ xs: "column", md: "row" }}
+                      spacing={2}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", md: "center" }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          variant="h6"
+                          sx={{
+                            fontSize: { xs: "1rem", md: "1.05rem" },
+                            fontWeight: 800,
+                            letterSpacing: "-0.02em",
+                          }}
+                        >
+                          Quick snapshot
+                        </Typography>
+
+                        <Typography
+                          sx={{
+                            mt: 0.5,
+                            color: "text.secondary",
+                            fontSize: 13,
+                            fontWeight: 500,
+                          }}
+                        >
+                          High-level employee status and linked systems summary.
+                        </Typography>
+                      </Box>
+
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip
+                          size="small"
+                          label={`Role: ${laborRole || "—"}`}
+                          sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                        />
+                        <Chip
+                          size="small"
+                          label={`Status: ${employmentStatus || "—"}`}
+                          sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                        />
+                        <Chip
+                          size="small"
+                          label={
+                            profile.qboEmployeeId
+                              ? "QuickBooks linked"
+                              : "QuickBooks not linked"
+                          }
+                          color={profile.qboEmployeeId ? "success" : "default"}
+                          variant={profile.qboEmployeeId ? "filled" : "outlined"}
+                          sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                        />
+                      </Stack>
+                    </Stack>
+                  </Box>
+                </Card>
+
+                <Card
+                  elevation={0}
+                  sx={{
+                    borderRadius: 3,
+                    border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    backgroundColor: "background.paper",
+                  }}
+                >
+                  <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                    <SectionHeader
+                      icon={<AccountBalanceRoundedIcon sx={{ fontSize: 22 }} />}
+                      title="QuickBooks Link"
+                      subtitle="Link this employee profile to a QuickBooks employee to pull hire date and compute PTO eligibility."
+                    />
+                  </Box>
+
+                  <Divider />
+
+                  <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                    <Stack spacing={2}>
+                      {qboLoading ? (
+                        <Stack direction="row" spacing={1.25} alignItems="center">
+                          <CircularProgress size={18} />
+                          <Typography variant="body2" color="text.secondary">
+                            Loading QuickBooks employees...
+                          </Typography>
+                        </Stack>
+                      ) : null}
+
+                      {qboLinkError ? (
+                        <Alert severity="error" variant="outlined" sx={{ borderRadius: 2 }}>
+                          {qboLinkError}
+                        </Alert>
+                      ) : null}
+
+                      {qboLinkMsg ? (
+                        <Alert severity="success" variant="outlined" sx={{ borderRadius: 2 }}>
+                          {qboLinkMsg}
+                        </Alert>
+                      ) : null}
+
+                      {profile.qboEmployeeId ? (
+                        <Card
+                          elevation={0}
+                          sx={{
+                            borderRadius: 2.5,
+                            border: `1px solid ${alpha(theme.palette.success.main, 0.22)}`,
+                            backgroundColor: alpha(theme.palette.success.main, 0.07),
+                          }}
+                        >
+                          <Box sx={{ p: 2 }}>
+                            <Stack spacing={1.25}>
+                              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                Linked: {profile.qboEmployeeDisplayName || "—"}
+                              </Typography>
+
+                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                <Chip
+                                  size="small"
+                                  label={`QBO ID: ${profile.qboEmployeeId}`}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                                <Chip
+                                  size="small"
+                                  label={`Hired: ${profile.qboEmployeeHiredDate || "—"}`}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                                <Chip
+                                  size="small"
+                                  label={`PTO Eligible: ${profile.ptoEligibilityDate || "—"}`}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                              </Stack>
+
+                              <Box>
+                                <Button
+                                  type="button"
+                                  onClick={handleUnlinkQbo}
+                                  disabled={linkingQbo}
+                                  variant="outlined"
+                                  color="inherit"
+                                  startIcon={<LinkRoundedIcon />}
+                                  sx={{ borderRadius: 2 }}
+                                >
+                                  {linkingQbo
+                                    ? "Working..."
+                                    : "Unlink QuickBooks Employee"}
+                                </Button>
+                              </Box>
+                            </Stack>
+                          </Box>
+                        </Card>
+                      ) : (
+                        <Stack spacing={2}>
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            alignItems="center"
+                            sx={{
+                              px: 0.25,
+                            }}
+                          >
+                            <Switch
+                              checked={showInactiveQbo}
+                              onChange={(e) => setShowInactiveQbo(e.target.checked)}
+                            />
+                            <Typography variant="body2">
+                              Show inactive QuickBooks employees
+                            </Typography>
+                          </Stack>
+
+                          <FormControl fullWidth>
+                            <InputLabel>Select QuickBooks Employee</InputLabel>
+                            <Select
+                              label="Select QuickBooks Employee"
+                              value={selectedQboId}
+                              onChange={(e: SelectChangeEvent) =>
+                                setSelectedQboId(e.target.value)
+                              }
+                            >
+                              <MenuItem value="">— Select —</MenuItem>
+                              {filteredQboEmployees.map((e) => (
+                                <MenuItem key={e.id} value={e.id}>
+                                  {e.displayName || "Unnamed"} · Hired:{" "}
+                                  {e.hiredDate || "—"} ·{" "}
+                                  {e.active === false ? "INACTIVE" : "ACTIVE"}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+
+                          {selectedQbo ? (
+                            <Card
+                              elevation={0}
+                              sx={{
+                                borderRadius: 2.5,
+                                border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                                backgroundColor: alpha("#FFFFFF", 0.02),
+                              }}
+                            >
+                              <Box sx={{ p: 2 }}>
+                                <Typography variant="body2" color="text.secondary">
+                                  Selected QuickBooks employee
+                                </Typography>
+                                <Typography
+                                  variant="subtitle1"
+                                  sx={{ mt: 0.5, fontWeight: 700 }}
+                                >
+                                  {selectedQbo.displayName || "—"}
+                                </Typography>
+                                <Typography
+                                  variant="body2"
+                                  sx={{ mt: 0.5, color: "text.secondary" }}
+                                >
+                                  Email: {selectedQbo.email || "—"}
+                                </Typography>
+                              </Box>
+                            </Card>
+                          ) : null}
+
+                          <Box>
+                            <Button
+                              type="button"
+                              onClick={handleLinkQbo}
+                              disabled={linkingQbo}
+                              variant="contained"
+                              startIcon={<LinkRoundedIcon />}
+                              sx={{ borderRadius: 2 }}
+                            >
+                              {linkingQbo ? "Linking..." : "Link QBO Employee"}
+                            </Button>
+                          </Box>
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Box>
+                </Card>
+
+                <Box
+                  component="form"
+                  onSubmit={handleSave}
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                  }}
+                >
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      backgroundColor: "background.paper",
                     }}
                   >
-                    {linkingQbo ? "Working..." : "Unlink QuickBooks Employee"}
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginTop: "10px" }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 800 }}>
-                      <input
-                        type="checkbox"
-                        checked={showInactiveQbo}
-                        onChange={(e) => setShowInactiveQbo(e.target.checked)}
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <SectionHeader
+                        icon={<LinkRoundedIcon sx={{ fontSize: 22 }} />}
+                        title="Link to DCFlow User"
+                        subtitle="Attach this operational employee profile to an existing DCFlow login account."
                       />
-                      Show inactive QBO employees
-                    </label>
-                  </div>
+                    </Box>
 
-                  <div style={{ display: "grid", gap: "10px", marginTop: "10px" }}>
-                    <label style={{ display: "block", fontWeight: 800 }}>
-                      Select QuickBooks Employee
-                    </label>
+                    <Divider />
 
-                    <select
-                      value={selectedQboId}
-                      onChange={(e) => setSelectedQboId(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "10px",
-                        borderRadius: "10px",
-                        border: "1px solid #ccc",
-                      }}
-                    >
-                      <option value="">— Select —</option>
-                      {filteredQboEmployees.map((e) => (
-                        <option key={e.id} value={e.id}>
-                          {e.displayName || "Unnamed"} · Hired: {e.hiredDate || "—"} · {e.active === false ? "INACTIVE" : "ACTIVE"}
-                        </option>
-                      ))}
-                    </select>
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <FormControl fullWidth>
+                        <InputLabel>Linked User</InputLabel>
+                        <Select
+                          label="Linked User"
+                          value={userUid}
+                          onChange={(e: SelectChangeEvent) =>
+                            setUserUid(e.target.value)
+                          }
+                        >
+                          <MenuItem value="">— No user linked —</MenuItem>
+                          {users.map((u) => (
+                            <MenuItem key={u.uid} value={u.uid}>
+                              {u.displayName || "Unnamed"} — {u.email || "no email"} (
+                              {u.role || "no role"})
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Box>
+                  </Card>
 
-                    {selectedQbo ? (
-                      <div style={{ fontSize: "13px", color: "#555" }}>
-                        Selected: <strong>{selectedQbo.displayName || "—"}</strong> · Email:{" "}
-                        <strong>{selectedQbo.email || "—"}</strong>
-                      </div>
-                    ) : null}
-
-                    {qboLinkError ? <p style={{ color: "red" }}>{qboLinkError}</p> : null}
-                    {qboLinkMsg ? <p style={{ color: "#0a7" }}>{qboLinkMsg}</p> : null}
-
-                    <button
-                      type="button"
-                      onClick={handleLinkQbo}
-                      disabled={linkingQbo}
-                      style={{
-                        padding: "10px 14px",
-                        borderRadius: "12px",
-                        border: "1px solid #ccc",
-                        background: "white",
-                        cursor: "pointer",
-                        fontWeight: 900,
-                        width: "fit-content",
-                      }}
-                    >
-                      {linkingQbo ? "Linking..." : "Link QBO Employee"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Profile Edit Form */}
-            <form onSubmit={handleSave} style={{ display: "grid", gap: "12px" }}>
-              <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
-                <h2 style={{ marginTop: 0 }}>Link to DCFlow User (optional)</h2>
-
-                <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                  Linked User
-                </label>
-                <select
-                  value={userUid}
-                  onChange={(e) => setUserUid(e.target.value)}
-                  style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                >
-                  <option value="">— No user linked —</option>
-                  {users.map((u) => (
-                    <option key={u.uid} value={u.uid}>
-                      {u.displayName || "Unnamed"} — {u.email || "no email"} ({u.role || "no role"})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
-                <h2 style={{ marginTop: 0 }}>Profile</h2>
-
-                <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                  Display Name *
-                </label>
-                <input
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                  required
-                />
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "12px" }}>
-                  <div>
-                    <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Email</label>
-                    <input
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>Phone</label>
-                    <input
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ border: "1px solid #ddd", borderRadius: "12px", padding: "16px", background: "white" }}>
-                <h2 style={{ marginTop: 0 }}>Employment</h2>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div>
-                    <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                      Employment Status
-                    </label>
-                    <select
-                      value={employmentStatus}
-                      onChange={(e) => setEmploymentStatus(e.target.value as EmploymentStatus)}
-                      style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                    >
-                      {employmentStatuses.map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                      Labor Role
-                    </label>
-                    <select
-                      value={laborRole}
-                      onChange={(e) => setLaborRole(e.target.value as LaborRole)}
-                      style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                    >
-                      {laborRoles.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: "12px" }}>
-                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                    Default Paired Technician (helpers/apprentices)
-                  </label>
-                  <select
-                    value={defaultPairedTechUid}
-                    onChange={(e) => setDefaultPairedTechUid(e.target.value)}
-                    style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      backgroundColor: "background.paper",
+                    }}
                   >
-                    <option value="">— None —</option>
-                    {techUsers.map((u) => (
-                      <option key={u.uid} value={u.uid}>
-                        {u.displayName || "Unnamed"} — {u.email || "no email"}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <SectionHeader
+                        icon={<PersonRoundedIcon sx={{ fontSize: 22 }} />}
+                        title="Profile"
+                        subtitle="Core employee identity and contact information."
+                      />
+                    </Box>
 
-                <div style={{ marginTop: "12px" }}>
-                  <label style={{ display: "block", fontWeight: 800, marginBottom: "6px" }}>
-                    Notes
-                  </label>
-                  <textarea
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    rows={3}
-                    style={{ width: "100%", padding: "10px", borderRadius: "10px", border: "1px solid #ccc" }}
-                  />
-                </div>
-              </div>
+                    <Divider />
 
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  style={{
-                    padding: "12px 16px",
-                    borderRadius: "12px",
-                    border: "1px solid #ccc",
-                    background: "white",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
-                  {saving ? "Saving..." : "Save"}
-                </button>
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <Stack spacing={2}>
+                        <TextField
+                          label="Display Name"
+                          value={displayName}
+                          onChange={(e) => setDisplayName(e.target.value)}
+                          required
+                          fullWidth
+                        />
 
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  style={{
-                    padding: "12px 16px",
-                    borderRadius: "12px",
-                    border: "1px solid #ccc",
-                    background: "white",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
-                  {deleting ? "Deleting..." : "Delete Profile"}
-                </button>
-              </div>
-            </form>
-          </div>
-        ) : null}
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                            gap: 2,
+                          }}
+                        >
+                          <TextField
+                            label="Email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Phone"
+                            value={phone}
+                            onChange={(e) => setPhone(e.target.value)}
+                            fullWidth
+                          />
+                        </Box>
+                      </Stack>
+                    </Box>
+                  </Card>
+
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      backgroundColor: "background.paper",
+                    }}
+                  >
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <SectionHeader
+                        icon={<WorkHistoryRoundedIcon sx={{ fontSize: 22 }} />}
+                        title="Employment"
+                        subtitle="Roster status, labor role, helper pairing, and operational notes."
+                      />
+                    </Box>
+
+                    <Divider />
+
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <Stack spacing={2}>
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                            gap: 2,
+                          }}
+                        >
+                          <FormControl fullWidth>
+                            <InputLabel>Employment Status</InputLabel>
+                            <Select
+                              label="Employment Status"
+                              value={employmentStatus}
+                              onChange={(e: SelectChangeEvent) =>
+                                setEmploymentStatus(
+                                  e.target.value as EmploymentStatus
+                                )
+                              }
+                            >
+                              {employmentStatuses.map((s) => (
+                                <MenuItem key={s} value={s}>
+                                  {s}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+
+                          <FormControl fullWidth>
+                            <InputLabel>Labor Role</InputLabel>
+                            <Select
+                              label="Labor Role"
+                              value={laborRole}
+                              onChange={(e: SelectChangeEvent) =>
+                                setLaborRole(e.target.value as LaborRole)
+                              }
+                            >
+                              {laborRoles.map((r) => (
+                                <MenuItem key={r} value={r}>
+                                  {r}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </Box>
+
+                        <FormControl fullWidth>
+                          <InputLabel>
+                            Default Paired Technician (helpers/apprentices)
+                          </InputLabel>
+                          <Select
+                            label="Default Paired Technician (helpers/apprentices)"
+                            value={defaultPairedTechUid}
+                            onChange={(e: SelectChangeEvent) =>
+                              setDefaultPairedTechUid(e.target.value)
+                            }
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {techUsers.map((u) => (
+                              <MenuItem key={u.uid} value={u.uid}>
+                                {u.displayName || "Unnamed"} — {u.email || "no email"}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+
+                        <TextField
+                          label="Notes"
+                          value={notes}
+                          onChange={(e) => setNotes(e.target.value)}
+                          multiline
+                          minRows={4}
+                          fullWidth
+                        />
+                      </Stack>
+                    </Box>
+                  </Card>
+
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      backgroundColor: "background.paper",
+                    }}
+                  >
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <SectionHeader
+                        icon={<NotesRoundedIcon sx={{ fontSize: 22 }} />}
+                        title="Actions"
+                        subtitle="Save changes to this profile or permanently remove the record."
+                      />
+                    </Box>
+
+                    <Divider />
+
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1.25}
+                        alignItems={{ xs: "stretch", sm: "center" }}
+                      >
+                        <Button
+                          type="submit"
+                          disabled={saving}
+                          variant="contained"
+                          startIcon={<SaveRoundedIcon />}
+                          sx={{ minHeight: 42, borderRadius: 2 }}
+                        >
+                          {saving ? "Saving..." : "Save"}
+                        </Button>
+
+                        <Button
+                          type="button"
+                          onClick={handleDelete}
+                          disabled={deleting}
+                          variant="outlined"
+                          color="error"
+                          startIcon={<DeleteRoundedIcon />}
+                          sx={{ minHeight: 42, borderRadius: 2 }}
+                        >
+                          {deleting ? "Deleting..." : "Delete Profile"}
+                        </Button>
+                      </Stack>
+                    </Box>
+                  </Card>
+                </Box>
+              </>
+            ) : null}
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );
