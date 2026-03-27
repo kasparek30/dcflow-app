@@ -39,11 +39,14 @@ function getOrInitAdminApp() {
   });
 }
 
-const adminApp = getOrInitAdminApp();
-
-export const adminAuth = admin.auth(adminApp);
-export const adminFirestore = admin.firestore(adminApp);
+export function adminApp() {
+  return getOrInitAdminApp();
+}
 
 export function adminDb() {
-  return adminFirestore;
+  return admin.firestore(adminApp());
+}
+
+export function adminAuth() {
+  return admin.auth(adminApp());
 }

@@ -1,9 +1,6 @@
 // app/api/admin/create-user/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import {
-  adminAuth,
-  adminFirestore,
-} from "../../../../src/lib/firebase-admin";
+import { adminAuth, adminDb } from "../../../../src/lib/firebase-admin";
 
 type RoleOption =
   | "admin"
@@ -42,13 +39,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const decoded = await adminAuth.verifyIdToken(token);
+    const decoded = await adminAuth().verifyIdToken(token);
     const requesterUid = decoded.uid;
+    const db = adminDb();
 
-    const requesterSnap = await adminFirestore
-      .collection("users")
-      .doc(requesterUid)
-      .get();
+    const requesterSnap = await db.collection("users").doc(requesterUid).get();
 
     if (!requesterSnap.exists) {
       return NextResponse.json(
@@ -68,13 +63,9 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
 
     const displayName = String(body.displayName || "").trim();
-    const email = String(body.email || "")
-      .trim()
-      .toLowerCase();
+    const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
-    const role = String(body.role || "")
-      .trim()
-      .toLowerCase();
+    const role = String(body.role || "").trim().toLowerCase();
     const active = Boolean(body.active);
 
     const laborRoleTypeRaw = body.laborRoleType;
@@ -112,7 +103,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (!isAllowedRole(role)) {
-      return NextResponse.json({ error: "Invalid role." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid role." },
+        { status: 400 }
+      );
     }
 
     let preferredTechnicianName: string | null = null;
@@ -125,10 +119,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const techSnap = await adminFirestore
-        .collection("users")
-        .doc(preferredTechnicianId)
-        .get();
+      const techSnap = await db.collection("users").doc(preferredTechnicianId).get();
 
       if (!techSnap.exists) {
         return NextResponse.json(
@@ -145,12 +136,10 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      preferredTechnicianName = String(
-        techData.displayName || "Technician"
-      );
+      preferredTechnicianName = String(techData.displayName || "Technician");
     }
 
-    const existingByEmail = await adminAuth
+    const existingByEmail = await adminAuth()
       .getUserByEmail(email)
       .then((u) => u)
       .catch(() => null);
@@ -162,7 +151,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const created = await adminAuth.createUser({
+    const created = await adminAuth().createUser({
       email,
       password,
       displayName,
@@ -171,36 +160,29 @@ export async function POST(req: NextRequest) {
 
     const now = new Date().toISOString();
 
-    await adminFirestore
-      .collection("users")
-      .doc(created.uid)
-      .set(
-        {
-          uid: created.uid,
-          displayName,
-          email,
-          role,
-          active,
-          laborRoleType,
-          preferredTechnicianId,
-          preferredTechnicianName,
-          holidayEligible:
-            role === "technician" ||
-            role === "helper" ||
-            role === "apprentice",
-          defaultDailyHolidayHours:
-            role === "technician" ||
-            role === "helper" ||
-            role === "apprentice"
-              ? 8
-              : null,
-          createdAt: now,
-          createdByUid: requesterUid,
-          updatedAt: now,
-          updatedByUid: requesterUid,
-        },
-        { merge: true }
-      );
+    await db.collection("users").doc(created.uid).set(
+      {
+        uid: created.uid,
+        displayName,
+        email,
+        role,
+        active,
+        laborRoleType,
+        preferredTechnicianId,
+        preferredTechnicianName,
+        holidayEligible:
+          role === "technician" || role === "helper" || role === "apprentice",
+        defaultDailyHolidayHours:
+          role === "technician" || role === "helper" || role === "apprentice"
+            ? 8
+            : null,
+        createdAt: now,
+        createdByUid: requesterUid,
+        updatedAt: now,
+        updatedByUid: requesterUid,
+      },
+      { merge: true }
+    );
 
     return NextResponse.json({
       ok: true,

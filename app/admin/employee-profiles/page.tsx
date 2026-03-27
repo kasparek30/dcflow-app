@@ -1,18 +1,37 @@
-// app/admin/employee-profiles/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { collection, getDocs, orderBy, query } from "firebase/firestore";
 import {
-  collection,
-  getDocs,
-  orderBy,
-  query,
-} from "firebase/firestore";
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardActionArea,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Divider,
+  Paper,
+  Stack,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import BadgeRoundedIcon from "@mui/icons-material/BadgeRounded";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import PersonAddRoundedIcon from "@mui/icons-material/PersonAddRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
+import ManageAccountsRoundedIcon from "@mui/icons-material/ManageAccountsRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
-import { db } from "../../../src/lib/firebase";
+import { auth, db } from "../../../src/lib/firebase";
 import type {
   EmployeeProfile,
   EmploymentStatus,
@@ -28,7 +47,82 @@ type DcflowUser = {
   active?: boolean;
 };
 
+function SectionHeader({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <Box>
+      <Typography
+        variant="h6"
+        sx={{
+          fontSize: { xs: "1rem", md: "1.05rem" },
+          fontWeight: 800,
+          letterSpacing: "-0.02em",
+        }}
+      >
+        {title}
+      </Typography>
+
+      {subtitle ? (
+        <Typography
+          sx={{
+            mt: 0.5,
+            color: "text.secondary",
+            fontSize: 13,
+            fontWeight: 500,
+          }}
+        >
+          {subtitle}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function employmentStatusTone(
+  status?: EmploymentStatus
+): {
+  label: string;
+  sx: object;
+} {
+  if (status === "inactive") {
+    return {
+      label: "Inactive",
+      sx: {
+        color: "#FFE1E4",
+        backgroundColor: "rgba(255,42,54,0.10)",
+        border: "1px solid rgba(255,42,54,0.20)",
+      },
+    };
+  }
+
+  if (status === "current") {
+    return {
+      label: "Current",
+      sx: {
+        color: "#DFF7E7",
+        backgroundColor: "rgba(52,199,89,0.12)",
+        border: "1px solid rgba(52,199,89,0.24)",
+      },
+    };
+  }
+
+  return {
+    label: status || "Unknown",
+    sx: {
+      color: "#DCEBFF",
+      backgroundColor: "rgba(13,126,242,0.10)",
+      border: "1px solid rgba(13,126,242,0.22)",
+    },
+  };
+}
+
 export default function EmployeeProfilesPage() {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -89,7 +183,9 @@ export default function EmployeeProfilesPage() {
       setProfiles(profileItems);
       setUsers(userItems);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load employee profiles.");
+      setError(
+        err instanceof Error ? err.message : "Failed to load employee profiles."
+      );
     } finally {
       setLoading(false);
     }
@@ -114,9 +210,7 @@ export default function EmployeeProfilesPage() {
   }, [profiles]);
 
   const usersMissingProfiles = useMemo(() => {
-    // Only show active DCFlow users by default
     const activeUsers = users.filter((u) => u.active !== false);
-
     return activeUsers.filter((u) => !profileUserUids.has(u.uid));
   }, [users, profileUserUids]);
 
@@ -126,9 +220,18 @@ export default function EmployeeProfilesPage() {
     setCreateMessage("");
 
     try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) {
+        setCreateError("Missing admin auth token. Please sign out and back in.");
+        return;
+      }
+
       const res = await fetch("/api/employee-profiles/create-from-user", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ userUid }),
         cache: "no-store",
       });
@@ -152,10 +255,11 @@ export default function EmployeeProfilesPage() {
         return;
       }
 
-      // fallback refresh
       await loadAll();
     } catch (err: unknown) {
-      setCreateError(err instanceof Error ? err.message : "Create profile failed.");
+      setCreateError(
+        err instanceof Error ? err.message : "Create profile failed."
+      );
     } finally {
       setCreatingUid(null);
     }
@@ -164,217 +268,451 @@ export default function EmployeeProfilesPage() {
   return (
     <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "12px",
-            flexWrap: "wrap",
-            marginBottom: "16px",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>
-              Employee Profiles
-            </h1>
-            <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-              Your operational roster truth (separate from QuickBooks active flags).
-            </p>
-          </div>
+        <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
+          <Stack spacing={4}>
+            <Stack
+              direction={{ xs: "column", lg: "row" }}
+              spacing={2}
+              alignItems={{ xs: "flex-start", lg: "center" }}
+              justifyContent="space-between"
+            >
+              <Box sx={{ minWidth: 0 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Chip
+                    size="small"
+                    icon={<BadgeRoundedIcon sx={{ fontSize: 16 }} />}
+                    label="Employee Profiles"
+                    sx={{
+                      borderRadius: 1.5,
+                      fontWeight: 600,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                      border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                    }}
+                  />
+                </Stack>
 
-          <Link
-            href="/admin/employee-profiles/new"
-            style={{
-              padding: "10px 14px",
-              borderRadius: "10px",
-              border: "1px solid #ccc",
-              background: "white",
-              textDecoration: "none",
-              fontWeight: 800,
-              color: "inherit",
-            }}
-          >
-            New Employee Profile
-          </Link>
-        </div>
+                <Typography
+                  variant="h4"
+                  sx={{
+                    fontSize: { xs: "1.65rem", md: "2.1rem" },
+                    lineHeight: 1.05,
+                    fontWeight: 800,
+                    letterSpacing: "-0.035em",
+                  }}
+                >
+                  Employee profiles
+                </Typography>
 
-        {loading ? <p>Loading...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+                <Typography
+                  sx={{
+                    mt: 0.9,
+                    color: "text.secondary",
+                    fontSize: { xs: 13, md: 14 },
+                    fontWeight: 500,
+                    maxWidth: 920,
+                  }}
+                >
+                  Your internal workforce roster truth for DCFlow. This is separate from
+                  QuickBooks active flags and should represent who is currently in your
+                  operating team.
+                </Typography>
+              </Box>
 
-        {!loading && !error ? (
-          <>
-            {/* ✅ Quick Create Section */}
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "white",
-                marginBottom: "16px",
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1}
+                alignItems={{ xs: "stretch", sm: "center" }}
+                sx={{ width: { xs: "100%", lg: "auto" } }}
+              >
+                <Button
+                  component={Link}
+                  href="/admin"
+                  variant="outlined"
+                  startIcon={<ArrowBackRoundedIcon />}
+                  sx={{ minHeight: 40, borderRadius: 2 }}
+                >
+                  Back to Admin
+                </Button>
+
+                <Button
+                  component={Link}
+                  href="/admin/employee-profiles/new"
+                  variant="contained"
+                  startIcon={<AddRoundedIcon />}
+                  sx={{ minHeight: 40, borderRadius: 2 }}
+                >
+                  New Employee Profile
+                </Button>
+              </Stack>
+            </Stack>
+
+            {error ? (
+              <Alert severity="error" variant="outlined" icon={<ErrorOutlineRoundedIcon />}>
+                {error}
+              </Alert>
+            ) : null}
+
+            {createError ? (
+              <Alert severity="error" variant="outlined" icon={<ErrorOutlineRoundedIcon />}>
+                {createError}
+              </Alert>
+            ) : null}
+
+            {createMessage ? (
+              <Alert severity="success" variant="outlined" icon={<CheckCircleRoundedIcon />}>
+                {createMessage}
+              </Alert>
+            ) : null}
+
+            <Card
+              elevation={0}
+              sx={{
+                borderRadius: 3,
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                backgroundColor: alpha(theme.palette.primary.main, 0.08),
               }}
             >
-              <h2 style={{ marginTop: 0 }}>Quick Create from DCFlow Users</h2>
-              <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-                These are active DCFlow users who do not yet have an Employee Profile.
-                Click <strong>Create Profile</strong> to generate the profile automatically.
-              </p>
+              <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                <Stack spacing={1.5}>
+                  <SectionHeader
+                    title="Quick create from DCFlow users"
+                    subtitle="These active users do not yet have an employee profile. Creating from here generates the profile automatically and opens it."
+                  />
 
-              {createError ? <p style={{ color: "red" }}>{createError}</p> : null}
-              {createMessage ? <p style={{ color: "#0a7" }}>{createMessage}</p> : null}
-
-              {usersMissingProfiles.length === 0 ? (
-                <p style={{ marginTop: "10px" }}>
-                  ✅ All active users already have employee profiles.
-                </p>
-              ) : (
-                <div style={{ display: "grid", gap: "10px", marginTop: "10px" }}>
-                  {usersMissingProfiles.map((u) => (
-                    <div
-                      key={u.uid}
-                      style={{
-                        border: "1px solid #eee",
-                        borderRadius: "12px",
-                        padding: "12px",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: "12px",
-                        flexWrap: "wrap",
+                  {usersMissingProfiles.length === 0 ? (
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        borderRadius: 2,
+                        p: 1.5,
+                        border: `1px solid ${alpha(theme.palette.success.main, 0.22)}`,
+                        backgroundColor: alpha(theme.palette.success.main, 0.10),
                       }}
                     >
-                      <div>
-                        <div style={{ fontWeight: 900 }}>
-                          {u.displayName || "Unnamed"}
-                        </div>
-                        <div style={{ fontSize: "13px", color: "#555", marginTop: "4px" }}>
-                          {u.email || "no email"} · role: {u.role || "—"}
-                        </div>
-                        <div style={{ fontSize: "12px", color: "#888", marginTop: "4px" }}>
-                          UID: {u.uid}
-                        </div>
-                      </div>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <CheckCircleRoundedIcon
+                          sx={{ color: theme.palette.success.light, fontSize: 18 }}
+                        />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          All active users already have employee profiles.
+                        </Typography>
+                      </Stack>
+                    </Paper>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          lg: "repeat(2, minmax(0, 1fr))",
+                        },
+                        gap: 1.5,
+                      }}
+                    >
+                      {usersMissingProfiles.map((u) => (
+                        <Paper
+                          key={u.uid}
+                          elevation={0}
+                          sx={{
+                            borderRadius: 2.5,
+                            p: 1.5,
+                            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                            backgroundColor: "background.paper",
+                          }}
+                        >
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1.5}
+                            alignItems={{ xs: "flex-start", sm: "center" }}
+                            justifyContent="space-between"
+                          >
+                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                              <Typography
+                                variant="subtitle1"
+                                sx={{
+                                  fontWeight: 800,
+                                  lineHeight: 1.2,
+                                  letterSpacing: "-0.01em",
+                                }}
+                              >
+                                {u.displayName || "Unnamed"}
+                              </Typography>
 
-                      <button
-                        onClick={() => handleCreateFromUser(u.uid)}
-                        disabled={creatingUid === u.uid}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: "12px",
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: "pointer",
-                          fontWeight: 900,
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  mt: 0.5,
+                                  color: "text.secondary",
+                                }}
+                              >
+                                {u.email || "no email"}
+                              </Typography>
+
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                flexWrap="wrap"
+                                useFlexGap
+                                sx={{ mt: 1 }}
+                              >
+                                <Chip
+                                  size="small"
+                                  label={`Role: ${u.role || "—"}`}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                                <Chip
+                                  size="small"
+                                  label={`UID: ${u.uid}`}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                              </Stack>
+                            </Box>
+
+                            <Button
+                              variant="contained"
+                              startIcon={<PersonAddRoundedIcon />}
+                              onClick={() => handleCreateFromUser(u.uid)}
+                              disabled={creatingUid === u.uid}
+                              sx={{
+                                borderRadius: 2,
+                                minHeight: 40,
+                                flexShrink: 0,
+                              }}
+                            >
+                              {creatingUid === u.uid ? "Creating..." : "Create Profile"}
+                            </Button>
+                          </Stack>
+                        </Paper>
+                      ))}
+                    </Box>
+                  )}
+                </Stack>
+              </Box>
+            </Card>
+
+            <Box>
+              <SectionHeader
+                title="Roster"
+                subtitle="Browse and open employee profiles by employment status."
+              />
+
+              <Stack
+                direction={{ xs: "column", md: "row" }}
+                spacing={1.5}
+                alignItems={{ xs: "stretch", md: "center" }}
+                justifyContent="space-between"
+                sx={{ mt: 1.5 }}
+              >
+                <ToggleButtonGroup
+                  exclusive
+                  value={filter}
+                  onChange={(_, next) => {
+                    if (next) setFilter(next);
+                  }}
+                  size="small"
+                >
+                  <ToggleButton value="current">Current</ToggleButton>
+                  <ToggleButton value="inactive">Inactive</ToggleButton>
+                  <ToggleButton value="all">All</ToggleButton>
+                </ToggleButtonGroup>
+
+                <Chip
+                  size="small"
+                  icon={<ManageAccountsRoundedIcon sx={{ fontSize: 16 }} />}
+                  label={`${filteredProfiles.length} profile(s)`}
+                  variant="outlined"
+                  sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                />
+              </Stack>
+            </Box>
+
+            {loading ? (
+              <Paper
+                elevation={0}
+                sx={{
+                  borderRadius: 3,
+                  p: 3,
+                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                  backgroundColor: "background.paper",
+                }}
+              >
+                <Stack direction="row" spacing={1.25} alignItems="center">
+                  <CircularProgress size={20} thickness={5} />
+                  <Typography variant="body2" color="text.secondary">
+                    Loading employee profiles...
+                  </Typography>
+                </Stack>
+              </Paper>
+            ) : null}
+
+            {!loading && !error ? (
+              filteredProfiles.length === 0 ? (
+                <Paper
+                  elevation={0}
+                  sx={{
+                    borderRadius: 3,
+                    p: 3,
+                    border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    backgroundColor: "background.paper",
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    No employee profiles found for this filter.
+                  </Typography>
+                </Paper>
+              ) : (
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: {
+                      xs: "1fr",
+                      md: "repeat(2, minmax(0, 1fr))",
+                      xl: "repeat(3, minmax(0, 1fr))",
+                    },
+                    gap: 1.5,
+                  }}
+                >
+                  {filteredProfiles.map((p) => {
+                    const tone = employmentStatusTone(p.employmentStatus);
+
+                    return (
+                      <Card
+                        key={p.id}
+                        elevation={0}
+                        sx={{
+                          height: "100%",
+                          borderRadius: 3,
+                          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                          backgroundColor: "background.paper",
                         }}
                       >
-                        {creatingUid === u.uid ? "Creating..." : "Create Profile"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                        <CardActionArea
+                          component={Link}
+                          href={`/admin/employee-profiles/${p.id}`}
+                          sx={{ height: "100%", borderRadius: 3, alignItems: "stretch" }}
+                        >
+                          <CardContent
+                            sx={{
+                              p: { xs: 2, md: 2.25 },
+                              height: "100%",
+                              display: "flex",
+                              flexDirection: "column",
+                              "&:last-child": { pb: { xs: 2, md: 2.25 } },
+                            }}
+                          >
+                            <Stack spacing={1.5} sx={{ height: "100%" }}>
+                              <Stack
+                                direction="row"
+                                spacing={1.25}
+                                justifyContent="space-between"
+                                alignItems="flex-start"
+                              >
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography
+                                    variant="subtitle1"
+                                    sx={{
+                                      fontWeight: 800,
+                                      lineHeight: 1.2,
+                                      letterSpacing: "-0.01em",
+                                    }}
+                                  >
+                                    {p.displayName}
+                                  </Typography>
 
-            {/* Filter Buttons */}
-            <div
-              style={{
-                display: "flex",
-                gap: "10px",
-                flexWrap: "wrap",
-                alignItems: "center",
-                marginBottom: "14px",
-              }}
-            >
-              <span style={{ fontSize: "13px", color: "#666" }}>Filter:</span>
+                                  <Typography
+                                    variant="body2"
+                                    sx={{
+                                      mt: 0.5,
+                                      color: "text.secondary",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {p.email || "—"}
+                                  </Typography>
+                                </Box>
 
-              <button
-                onClick={() => setFilter("current")}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: "999px",
-                  border: "1px solid #ccc",
-                  background: filter === "current" ? "#111" : "white",
-                  color: filter === "current" ? "white" : "inherit",
-                  cursor: "pointer",
-                  fontWeight: 800,
-                }}
-              >
-                Current
-              </button>
+                                <Chip
+                                  size="small"
+                                  label={tone.label}
+                                  sx={{
+                                    borderRadius: 1.5,
+                                    fontWeight: 700,
+                                    ...tone.sx,
+                                  }}
+                                />
+                              </Stack>
 
-              <button
-                onClick={() => setFilter("inactive")}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: "999px",
-                  border: "1px solid #ccc",
-                  background: filter === "inactive" ? "#111" : "white",
-                  color: filter === "inactive" ? "white" : "inherit",
-                  cursor: "pointer",
-                  fontWeight: 800,
-                }}
-              >
-                Inactive
-              </button>
+                              <Divider />
 
-              <button
-                onClick={() => setFilter("all")}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: "999px",
-                  border: "1px solid #ccc",
-                  background: filter === "all" ? "#111" : "white",
-                  color: filter === "all" ? "white" : "inherit",
-                  cursor: "pointer",
-                  fontWeight: 800,
-                }}
-              >
-                All
-              </button>
-            </div>
+                              <Stack spacing={1}>
+                                <Stack direction="row" spacing={0.75} alignItems="center">
+                                  <BadgeRoundedIcon
+                                    sx={{ fontSize: 16, color: "text.secondary" }}
+                                  />
+                                  <Typography variant="body2" color="text.secondary">
+                                    Labor Role:{" "}
+                                    <Typography
+                                      component="span"
+                                      variant="body2"
+                                      sx={{ color: "text.primary", fontWeight: 700 }}
+                                    >
+                                      {p.laborRole || "—"}
+                                    </Typography>
+                                  </Typography>
+                                </Stack>
 
-            {/* Profiles List */}
-            {filteredProfiles.length === 0 ? (
-              <p>No employee profiles found for this filter.</p>
-            ) : (
-              <div style={{ display: "grid", gap: "12px" }}>
-                {filteredProfiles.map((p) => (
-                  <Link
-                    key={p.id}
-                    href={`/admin/employee-profiles/${p.id}`}
-                    style={{
-                      display: "block",
-                      border: "1px solid #ddd",
-                      borderRadius: "12px",
-                      padding: "12px",
-                      textDecoration: "none",
-                      color: "inherit",
-                      background: "white",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
-                      <div>
-                        <div style={{ fontWeight: 900 }}>{p.displayName}</div>
-                        <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
-                          {p.email || "—"}
-                        </div>
-                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#777" }}>
-                          Role: <strong>{p.laborRole}</strong> · Status:{" "}
-                          <strong>{p.employmentStatus}</strong>
-                        </div>
-                      </div>
+                                <Stack direction="row" spacing={0.75} alignItems="center">
+                                  <LinkRoundedIcon
+                                    sx={{ fontSize: 16, color: "text.secondary" }}
+                                  />
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                    sx={{
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    Linked User UID:{" "}
+                                    <Typography
+                                      component="span"
+                                      variant="body2"
+                                      sx={{ color: "text.primary", fontWeight: 700 }}
+                                    >
+                                      {p.userUid || "—"}
+                                    </Typography>
+                                  </Typography>
+                                </Stack>
+                              </Stack>
 
-                      <div style={{ textAlign: "right", fontSize: "12px", color: "#777" }}>
-                        <div>Linked User UID:</div>
-                        <div style={{ fontWeight: 800 }}>{p.userUid || "—"}</div>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </>
-        ) : null}
+                              <Box sx={{ flex: 1 }} />
+
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  color: "primary.light",
+                                  fontWeight: 700,
+                                  letterSpacing: "0.02em",
+                                }}
+                              >
+                                Open profile
+                              </Typography>
+                            </Stack>
+                          </CardContent>
+                        </CardActionArea>
+                      </Card>
+                    );
+                  })}
+                </Box>
+              )
+            ) : null}
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );
