@@ -934,16 +934,9 @@ export default function OfficeDisplayPage() {
     );
   }
 
-const headerH = 104;
-const outerPad = 16;
-const headerGap = 10;
-const dayHeaderApprox = 124;
-
-// Full remaining space below the flat header
-const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px - ${headerGap}px)`;
-
-// No footer subtraction anymore
-const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
+  const headerH = 96;
+  const outerPad = 16;
+  const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px - 12px)`;
 
   return (
     <ProtectedPage fallbackTitle="Office Display">
@@ -956,125 +949,132 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
           p: `${outerPad}px`,
           backgroundColor: "background.default",
           color: "text.primary",
+          display: "flex",
+          flexDirection: "column",
+          gap: 1.5,
+          boxSizing: "border-box",
         }}
       >
-<Box
-  sx={{
-    height: `${headerH}px`,
-    px: 0.5,
-    pb: 1,
-    display: "flex",
-    alignItems: "center",
-  }}
->
-  <Stack
-    direction="row"
-    alignItems="center"
-    justifyContent="space-between"
-    spacing={2}
-    sx={{ width: "100%" }}
-  >
-    <Stack direction="row" spacing={2.25} alignItems="center" minWidth={0}>
-      <Box
-        sx={{
-          position: "relative",
-          width: 300,
-          height: 82,
-          flexShrink: 0,
-        }}
-      >
-        <Image
-          src="/brand/dcflow-logo.png"
-          alt="DCFlow"
-          fill
-          priority
-          sizes="300px"
-          style={{ objectFit: "contain" }}
-        />
-      </Box>
-
-      <Stack spacing={0.5} minWidth={0}>
-        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-          <Chip
-            icon={<CalendarMonthRoundedIcon />}
-            label="Office Display"
-            size="small"
-            sx={{
-              backgroundColor: alpha(theme.palette.primary.main, 0.12),
-              border: `1px solid ${alpha(theme.palette.primary.main, 0.20)}`,
-            }}
-          />
-          <Chip
-            icon={<RefreshRoundedIcon />}
-            label={`Live • ${lastUpdated || "—"}`}
-            size="small"
-            sx={{
-              backgroundColor: alpha("#FFFFFF", 0.04),
-              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-            }}
-          />
-        </Stack>
-
-        <Typography
-          variant="h5"
+        <Box
           sx={{
-            lineHeight: 1.1,
-            fontWeight: 800,
-            letterSpacing: "-0.02em",
+            height: `${headerH}px`,
+            px: 0.5,
+            pb: 1,
+            display: "flex",
+            alignItems: "center",
+            flexShrink: 0,
           }}
         >
-          {weekLabel}
-        </Typography>
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            spacing={2}
+            sx={{ width: "100%" }}
+          >
+            <Stack direction="row" spacing={2.25} alignItems="center" minWidth={0}>
+              <Box
+                sx={{
+                  position: "relative",
+                  width: 300,
+                  height: 82,
+                  flexShrink: 0,
+                }}
+              >
+                <Image
+                  src="/brand/dcflow-logo.png"
+                  alt="DCFlow"
+                  fill
+                  priority
+                  sizes="300px"
+                  style={{ objectFit: "contain" }}
+                />
+              </Box>
 
-        <Typography variant="body2" color="text.secondary">
-          Technician schedule overview with meetings, assignments, approved PTO, and weekly visibility
-        </Typography>
-      </Stack>
-    </Stack>
+              <Stack spacing={0.5} minWidth={0}>
+                <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+                  <Chip
+                    icon={<CalendarMonthRoundedIcon />}
+                    label="Office Display"
+                    size="small"
+                    sx={{
+                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                      border: `1px solid ${alpha(theme.palette.primary.main, 0.20)}`,
+                    }}
+                  />
+                  <Chip
+                    icon={<RefreshRoundedIcon />}
+                    label={`Live • ${lastUpdated || "—"}`}
+                    size="small"
+                    sx={{
+                      backgroundColor: alpha("#FFFFFF", 0.04),
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    }}
+                  />
+                </Stack>
 
-    {canControlWeek ? (
-      <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
-        <Button
-          variant="outlined"
-          color="primary"
-          startIcon={<ChevronLeftRoundedIcon />}
-          onClick={() => setWeekOffset((p) => p - 1)}
-          sx={{ minWidth: 108, borderRadius: 999 }}
-        >
-          Prev
-        </Button>
+                <Typography
+                  variant="h5"
+                  sx={{
+                    lineHeight: 1.1,
+                    fontWeight: 800,
+                    letterSpacing: "-0.02em",
+                  }}
+                >
+                  {weekLabel}
+                </Typography>
 
-        <Button
-          variant="contained"
-          onClick={() => setWeekOffset(0)}
-          sx={{ minWidth: 118, borderRadius: 999 }}
-        >
-          This Week
-        </Button>
+                <Typography variant="body2" color="text.secondary">
+                  Technician schedule overview with meetings, assignments, approved PTO, and weekly visibility
+                </Typography>
+              </Stack>
+            </Stack>
 
-        <Button
-          variant="outlined"
-          color="primary"
-          endIcon={<ChevronRightRoundedIcon />}
-          onClick={() => setWeekOffset((p) => p + 1)}
-          sx={{ minWidth: 108, borderRadius: 999 }}
-        >
-          Next
-        </Button>
-      </Stack>
-    ) : null}
-  </Stack>
-</Box>
+            {canControlWeek ? (
+              <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  startIcon={<ChevronLeftRoundedIcon />}
+                  onClick={() => setWeekOffset((p) => p - 1)}
+                  sx={{ minWidth: 108, borderRadius: 999 }}
+                >
+                  Prev
+                </Button>
 
-<Paper
-  elevation={0}
-  sx={{
-    mt: `${headerGap}px`,
+                <Button
+                  variant="contained"
+                  onClick={() => setWeekOffset(0)}
+                  sx={{ minWidth: 118, borderRadius: 999 }}
+                >
+                  This Week
+                </Button>
+
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  endIcon={<ChevronRightRoundedIcon />}
+                  onClick={() => setWeekOffset((p) => p + 1)}
+                  sx={{ minWidth: 108, borderRadius: 999 }}
+                >
+                  Next
+                </Button>
+              </Stack>
+            ) : null}
+          </Stack>
+        </Box>
+
+        <Paper
+          elevation={0}
+          sx={{
             height: gridH,
+            minHeight: 0,
             overflow: "hidden",
             borderRadius: 1.5,
             border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
             backgroundColor: alpha("#FFFFFF", 0.02),
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           <Box
@@ -1083,6 +1083,7 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
               gridTemplateColumns: `252px repeat(${days.length}, 1fr)`,
               borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}`,
               backgroundColor: alpha("#FFFFFF", 0.015),
+              flexShrink: 0,
             }}
           >
             <Box
@@ -1148,9 +1149,10 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
 
           <Box
             sx={{
-              height: bodyRowsH,
+              flex: 1,
+              minHeight: 0,
               display: "grid",
-              gridTemplateRows: `repeat(${Math.max(1, rows.length)}, 1fr)`,
+              gridTemplateRows: `repeat(${Math.max(1, rows.length)}, minmax(0, 1fr))`,
               overflow: "hidden",
             }}
           >
@@ -1162,6 +1164,7 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
                   gridTemplateColumns: `252px repeat(${days.length}, 1fr)`,
                   borderTop: `1px solid ${alpha("#FFFFFF", 0.06)}`,
                   minHeight: 0,
+                  overflow: "hidden",
                 }}
               >
                 <Box
@@ -1217,8 +1220,6 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
                   const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
                   const cellTrips = grid.get(rowKey)?.get(iso) || [];
                   const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
-                  const head = cellTrips.slice(0, 2);
-                  const extra = cellTrips.length - head.length;
 
                   return (
                     <Box
@@ -1226,11 +1227,11 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
                       sx={{
                         p: 1,
                         borderLeft: `1px solid ${alpha("#FFFFFF", 0.06)}`,
-                        overflow: "hidden",
-                        display: "grid",
-                        alignContent: "start",
-                        gap: 0.7,
                         minHeight: 0,
+                        overflow: "hidden",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 0.7,
                         backgroundColor: pto
                           ? alpha(theme.palette.secondary.main, 0.08)
                           : "transparent",
@@ -1247,11 +1248,12 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
                             width: "fit-content",
                             borderRadius: 1.25,
                             fontWeight: 500,
+                            flexShrink: 0,
                           }}
                         />
                       ) : null}
 
-                      {head.length === 0 ? (
+                      {cellTrips.length === 0 ? (
                         <Paper
                           elevation={0}
                           sx={{
@@ -1262,6 +1264,7 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
                             display: "grid",
                             placeItems: "center",
                             color: "text.secondary",
+                            flexShrink: 0,
                           }}
                         >
                           <Typography variant="caption">
@@ -1269,14 +1272,29 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
                           </Typography>
                         </Paper>
                       ) : (
-                        <>
-                          {head.map(renderTripCard)}
-                          {extra > 0 ? (
-                            <Typography variant="caption" color="text.secondary">
-                              +{extra} more…
-                            </Typography>
-                          ) : null}
-                        </>
+                        <Box
+                          sx={{
+                            minHeight: 0,
+                            overflowY: "auto",
+                            overflowX: "hidden",
+                            display: "grid",
+                            alignContent: "start",
+                            gap: 0.7,
+                            pr: 0.25,
+                            "&::-webkit-scrollbar": {
+                              width: 6,
+                            },
+                            "&::-webkit-scrollbar-thumb": {
+                              backgroundColor: alpha("#FFFFFF", 0.16),
+                              borderRadius: 999,
+                            },
+                            "&::-webkit-scrollbar-track": {
+                              backgroundColor: "transparent",
+                            },
+                          }}
+                        >
+                          {cellTrips.map(renderTripCard)}
+                        </Box>
                       )}
                     </Box>
                   );
@@ -1291,8 +1309,8 @@ const bodyRowsH = `calc(${gridH} - ${dayHeaderApprox}px)`;
             severity="error"
             variant="outlined"
             sx={{
-              mt: 1,
               borderRadius: 1.5,
+              flexShrink: 0,
             }}
           >
             {error}
