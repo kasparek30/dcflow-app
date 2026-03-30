@@ -1,4 +1,3 @@
-// app/timesheet-review/[timesheetId]/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -12,6 +11,36 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Checkbox,
+  Chip,
+  CircularProgress,
+  Container,
+  Divider,
+  FormControlLabel,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import EditCalendarRoundedIcon from "@mui/icons-material/EditCalendarRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import HourglassTopRoundedIcon from "@mui/icons-material/HourglassTopRounded";
+import LockRoundedIcon from "@mui/icons-material/LockRounded";
+import PublishRoundedIcon from "@mui/icons-material/PublishRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
+import NoteAltRoundedIcon from "@mui/icons-material/NoteAltRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -48,6 +77,42 @@ function formatStatus(status: WeeklyTimesheet["status"]) {
   }
 }
 
+function getStatusTone(status: WeeklyTimesheet["status"]) {
+  switch (status) {
+    case "submitted":
+      return {
+        label: "Submitted",
+        color: "warning" as const,
+        icon: <HourglassTopRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "approved":
+      return {
+        label: "Approved",
+        color: "success" as const,
+        icon: <CheckCircleRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "rejected":
+      return {
+        label: "Rejected",
+        color: "error" as const,
+        icon: <ErrorOutlineRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "exported_to_quickbooks":
+      return {
+        label: "Exported",
+        color: "info" as const,
+        icon: <PublishRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "draft":
+    default:
+      return {
+        label: "Draft",
+        color: "default" as const,
+        icon: <ScheduleRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+  }
+}
+
 function numOr0(x: unknown) {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
@@ -65,7 +130,6 @@ function stageLabel(stage?: string) {
 function isWorkedHoursCategory(category: TimeEntry["category"]) {
   const c = safeTrim(category).toLowerCase();
 
-  // ✅ New schema (what you’re using now)
   if (
     c === "service" ||
     c === "project" ||
@@ -77,7 +141,6 @@ function isWorkedHoursCategory(category: TimeEntry["category"]) {
     return true;
   }
 
-  // ✅ Legacy schema support (still exists in older records)
   if (c === "service_ticket" || c === "project_stage") return true;
 
   return false;
@@ -95,6 +158,7 @@ type ProjectMini = {
 };
 
 export default function TimesheetReviewDetailPage({ params }: Props) {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const canReview =
@@ -112,7 +176,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
   const [error, setError] = useState("");
   const [ok, setOk] = useState("");
 
-  // Admin Adjust state (hours edits + lock)
   const [editedHoursByEntryId, setEditedHoursByEntryId] = useState<
     Record<string, number>
   >({});
@@ -120,11 +183,9 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     {}
   );
 
-  // Reject / notes
   const [rejectionReason, setRejectionReason] = useState("");
   const [managerNote, setManagerNote] = useState("");
 
-  // ✅ mini lookups for nicer cards
   const [ticketMiniById, setTicketMiniById] = useState<
     Record<string, ServiceTicketMini>
   >({});
@@ -132,9 +193,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     Record<string, ProjectMini>
   >({});
 
-  // -----------------------------
-  // Load timesheet + entries
-  // -----------------------------
   useEffect(() => {
     async function load() {
       setError("");
@@ -196,9 +254,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
         setRejectionReason(safeTrim(ts.rejectionReason));
         setManagerNote(safeTrim(ts.managerNote));
 
-        // ✅ Load entries AUTHORITATIVELY:
-        // 1) By timeEntryIds if present
-        // 2) Fallback to employee/week query if empty
         const byIds: TimeEntry[] = [];
 
         if (Array.isArray(ts.timeEntryIds) && ts.timeEntryIds.length > 0) {
@@ -293,29 +348,20 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
 
         setEntries(items);
 
-        // seed admin adjust fields + locks
         const nextHours: Record<string, number> = {};
         const nextLocks: Record<string, boolean> = {};
 
-        if (items.length && byIds.length) {
-          // We loaded with getDoc; we need locks by a second fetch per entry (only if you actually use hoursLocked)
-          // BUT: many of your timeEntries already include hoursLocked field. We'll read it safely from doc data.
-          for (const it of items) {
-            nextHours[it.id] = numOr0(it.hours);
-            nextLocks[it.id] = Boolean((it as any)?.hoursLocked);
-          }
-        } else {
-          // We loaded via getDocs; hoursLocked is in those docs (if present)
-          for (const it of items) {
-            nextHours[it.id] = numOr0(it.hours);
-            nextLocks[it.id] = Boolean((it as any)?.hoursLocked);
-          }
+        for (const it of items) {
+          nextHours[it.id] = numOr0(it.hours);
+          nextLocks[it.id] = Boolean((it as any)?.hoursLocked);
         }
 
         setEditedHoursByEntryId(nextHours);
         setLockByEntryId(nextLocks);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load timesheet.");
+        setError(
+          err instanceof Error ? err.message : "Failed to load timesheet."
+        );
       } finally {
         setLoading(false);
       }
@@ -324,9 +370,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     load();
   }, [params]);
 
-  // -----------------------------
-  // Hydrate display names (service ticket / project)
-  // -----------------------------
   useEffect(() => {
     async function hydrate() {
       const needTicketIds = new Set<string>();
@@ -435,9 +478,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     return "";
   }
 
-  // -----------------------------
-  // Computed totals
-  // -----------------------------
   const computed = useMemo(() => {
     let workedHours = 0;
     let ptoHours = 0;
@@ -475,6 +515,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
   }, [entries, editedHoursByEntryId]);
 
   const status = (timesheet?.status ?? "draft") as WeeklyTimesheet["status"];
+  const statusTone = getStatusTone(status);
 
   const canApproveReject = canReview && status === "submitted";
   const canAdminAdjust =
@@ -494,7 +535,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     try {
       const now = nowIso();
 
-      // 1) Update timeEntries (hours + optional lock)
       for (const e of entries) {
         const nextHours = numOr0(editedHoursByEntryId[e.id] ?? e.hours);
         const locked = Boolean(lockByEntryId[e.id]);
@@ -513,7 +553,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
         } as any);
       }
 
-      // 2) Update weeklyTimesheet totals + manager note (still submitted/rejected)
       await updateDoc(doc(db, "weeklyTimesheets", timesheet.id), {
         totalHours: computed.totalHours,
         regularHours: computed.regularHours,
@@ -544,7 +583,6 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
           : prev
       );
 
-      // reflect hours in UI list
       setEntries((prev) =>
         prev.map((x) => ({
           ...x,
@@ -553,9 +591,11 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
         }))
       );
 
-      setOk("✅ Admin adjustments saved.");
+      setOk("Admin adjustments saved.");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to save adjustments.");
+      setError(
+        err instanceof Error ? err.message : "Failed to save adjustments."
+      );
     } finally {
       setSaving(false);
     }
@@ -580,12 +620,9 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
         approvedAt: now,
         approvedById: appUser?.uid || null,
         approvedByName: appUser?.displayName || null,
-
-        // clear rejection fields
         rejectedAt: null,
         rejectedById: null,
         rejectionReason: null,
-
         managerNote: managerNote.trim() || null,
         updatedAt: now,
       } as any);
@@ -607,9 +644,11 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
           : prev
       );
 
-      setOk("✅ Approved.");
+      setOk("Approved.");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to approve timesheet.");
+      setError(
+        err instanceof Error ? err.message : "Failed to approve timesheet."
+      );
     } finally {
       setSaving(false);
     }
@@ -659,10 +698,12 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
       );
 
       setOk(
-        "🟡 Rejected (employee will see the rejection reason on their Weekly Timesheet page)."
+        "Rejected. The employee will see the rejection reason on their Weekly Timesheet page."
       );
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to reject timesheet.");
+      setError(
+        err instanceof Error ? err.message : "Failed to reject timesheet."
+      );
     } finally {
       setSaving(false);
     }
@@ -671,412 +712,655 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
   return (
     <ProtectedPage fallbackTitle="Timesheet Review Detail">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            alignItems: "flex-start",
+        <Container
+          maxWidth="lg"
+          disableGutters
+          sx={{
+            pb: { xs: 14, md: 3 },
           }}
         >
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0 }}>
-              Timesheet Review
-            </h1>
-            <div style={{ marginTop: 6, color: "#666", fontSize: 13 }}>
-              Timesheet ID: {timesheetId}
-            </div>
-          </div>
-
-          <Link
-            href="/timesheet-review"
-            style={{
-              padding: "10px 14px",
-              borderRadius: 12,
-              border: "1px solid #ccc",
-              background: "white",
-              textDecoration: "none",
-              color: "inherit",
-              fontWeight: 900,
-              height: "fit-content",
-            }}
-          >
-            Back to Review Queue
-          </Link>
-        </div>
-
-        {loading ? <p style={{ marginTop: 16 }}>Loading timesheet...</p> : null}
-        {error ? (
-          <p style={{ marginTop: 16, color: "red" }}>{error}</p>
-        ) : null}
-        {ok ? <p style={{ marginTop: 16, color: "green" }}>{ok}</p> : null}
-
-        {!loading && timesheet ? (
-          <>
-            <div
-              style={{
-                marginTop: 16,
-                border: "1px solid #ddd",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                maxWidth: 980,
-                display: "grid",
-                gap: 8,
+          <Stack spacing={3}>
+            <Box
+              sx={{
+                px: { xs: 2, md: 3 },
+                py: { xs: 2.5, md: 3 },
+                borderRadius: 5,
+                background: `linear-gradient(135deg, ${alpha(
+                  theme.palette.primary.main,
+                  0.12
+                )} 0%, ${alpha(theme.palette.secondary.main, 0.08)} 100%)`,
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
               }}
             >
-              <div style={{ fontWeight: 950, fontSize: 18 }}>
-                {timesheet.employeeName}{" "}
-                <span style={{ color: "#666" }}>({timesheet.employeeRole})</span>
-              </div>
+              <Stack
+                direction={{ xs: "column", md: "row" }}
+                spacing={2}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", md: "center" }}
+              >
+                <Stack spacing={1.25}>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1.25}
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                  >
+                    <Chip
+                      icon={statusTone.icon}
+                      label={statusTone.label}
+                      color={statusTone.color}
+                      variant={statusTone.color === "default" ? "outlined" : "filled"}
+                    />
+                    <Chip label={`Timesheet ID: ${timesheetId || "—"}`} variant="outlined" />
+                  </Stack>
 
-              <div style={{ fontSize: 13, color: "#555" }}>
-                Week: <strong>{timesheet.weekStartDate}</strong> →{" "}
-                <strong>{timesheet.weekEndDate}</strong>
-              </div>
+                  <Typography variant="h4" fontWeight={800} letterSpacing={-0.4}>
+                    Timesheet Review
+                  </Typography>
 
-              <div style={{ fontSize: 13, color: "#555" }}>
-                Status: <strong>{formatStatus(timesheet.status)}</strong>
-                {timesheet.submittedAt ? (
-                  <span style={{ color: "#777" }}>
-                    {" "}
-                    • Submitted: {timesheet.submittedAt}
-                  </span>
-                ) : null}
-                {timesheet.approvedAt ? (
-                  <span style={{ color: "#777" }}>
-                    {" "}
-                    • Approved: {timesheet.approvedAt}
-                  </span>
-                ) : null}
-              </div>
+                  <Typography variant="body1" color="text.secondary">
+                    Review, adjust, approve, or reject a weekly timesheet with full
+                    entry-level visibility.
+                  </Typography>
+                </Stack>
 
-              {timesheet.employeeNote ? (
-                <div
-                  style={{
-                    marginTop: 8,
-                    border: "1px solid #eee",
-                    borderRadius: 12,
-                    padding: 12,
-                    background: "white",
-                  }}
+                <Button
+                  component={Link}
+                  href="/timesheet-review"
+                  variant="outlined"
+                  startIcon={<ArrowBackRoundedIcon />}
+                  sx={{ borderRadius: 999 }}
                 >
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>
-                    Employee Note
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 13,
-                      color: "#555",
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
-                    {timesheet.employeeNote}
-                  </div>
-                </div>
-              ) : null}
-            </div>
+                  Back to Review Queue
+                </Button>
+              </Stack>
+            </Box>
 
-            <div
-              style={{
-                marginTop: 16,
-                border: "1px solid #ddd",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                maxWidth: 980,
-                display: "grid",
-                gap: 10,
-              }}
-            >
-              <div style={{ fontWeight: 950, fontSize: 18 }}>Admin Adjust</div>
-              <div style={{ fontSize: 12, color: "#666" }}>
-                You can edit hours and optionally lock entries to prevent later
-                automation overwrites.
-                <br />
-                Allowed when status is <strong>Submitted</strong> or{" "}
-                <strong>Rejected</strong>.
-              </div>
-
-              <textarea
-                value={managerNote}
-                onChange={(e) => setManagerNote(e.target.value)}
-                rows={3}
-                disabled={!canReview}
-                placeholder="Manager note (optional)…"
-                style={{
-                  width: "100%",
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                  background: !canReview ? "#f1f1f1" : "white",
-                }}
-              />
-
-              {!canReview ? (
-                <div style={{ fontSize: 12, color: "#8a5a00" }}>
-                  You do not have permission to review timesheets.
-                </div>
-              ) : null}
-
-              <div style={{ display: "grid", gap: 10 }}>
-                {entries.length === 0 ? (
-                  <div
-                    style={{
-                      border: "1px dashed #ccc",
-                      borderRadius: 12,
-                      padding: 12,
-                      background: "white",
-                      color: "#666",
-                    }}
-                  >
-                    No time entries found for this employee/week.
-                  </div>
-                ) : (
-                  entries.map((e) => {
-                    const hours = numOr0(
-                      editedHoursByEntryId[e.id] ?? e.hours ?? 0
-                    );
-                    const locked = Boolean(lockByEntryId[e.id]);
-
-                    const primary = formatEntryPrimary(e);
-                    const secondary = formatEntrySecondary(e);
-
-                    return (
-                      <div
-                        key={e.id}
-                        style={{
-                          border: "1px solid #eee",
-                          borderRadius: 12,
-                          padding: 12,
-                          background: "white",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            gap: 12,
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 950 }}>
-                              {e.entryDate} • {primary}
-                            </div>
-                            {secondary ? (
-                              <div
-                                style={{
-                                  marginTop: 6,
-                                  fontSize: 12,
-                                  color: "#555",
-                                  fontWeight: 800,
-                                }}
-                              >
-                                {secondary}
-                              </div>
-                            ) : null}
-
-                            <div
-                              style={{ marginTop: 6, fontSize: 12, color: "#777" }}
-                            >
-                              Category: <strong>{safeTrim(e.category)}</strong>{" "}
-                              • Billable: <strong>{String(e.billable)}</strong>
-                              {e.linkedTechnicianName
-                                ? ` • Linked Tech: ${e.linkedTechnicianName}`
-                                : ""}
-                            </div>
-                          </div>
-
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: 10,
-                              alignItems: "center",
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <label style={{ fontSize: 12, fontWeight: 900 }}>
-                              Hours
-                            </label>
-                            <input
-                              type="number"
-                              step={0.25}
-                              min={0}
-                              value={hours}
-                              onChange={(evt) =>
-                                setEditedHoursByEntryId((prev) => ({
-                                  ...prev,
-                                  [e.id]: numOr0(evt.target.value),
-                                }))
-                              }
-                              disabled={!canAdminAdjust || saving}
-                              style={{
-                                width: 110,
-                                padding: "8px 10px",
-                                borderRadius: 10,
-                                border: "1px solid #ccc",
-                              }}
-                            />
-
-                            <label
-                              style={{
-                                display: "flex",
-                                gap: 8,
-                                alignItems: "center",
-                                fontSize: 12,
-                                fontWeight: 900,
-                              }}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={locked}
-                                onChange={(evt) =>
-                                  setLockByEntryId((prev) => ({
-                                    ...prev,
-                                    [e.id]: evt.target.checked,
-                                  }))
-                                }
-                                disabled={!canAdminAdjust || saving}
-                              />
-                              Lock
-                            </label>
-                          </div>
-                        </div>
-
-                        <div style={{ marginTop: 6, fontSize: 11, color: "#999" }}>
-                          Entry ID: {e.id}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              <div
-                style={{
-                  borderTop: "1px solid #e6e6e6",
-                  paddingTop: 12,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  flexWrap: "wrap",
-                  alignItems: "center",
+            {loading ? (
+              <Card
+                elevation={0}
+                sx={{
+                  borderRadius: 5,
+                  border: `1px solid ${theme.palette.divider}`,
                 }}
               >
-                <div style={{ fontSize: 13, color: "#555" }}>
-                  <strong>Recomputed Totals:</strong> Total{" "}
-                  {computed.totalHours.toFixed(2)} • Regular{" "}
-                  {computed.regularHours.toFixed(2)} • OT{" "}
-                  {computed.overtimeHours.toFixed(2)}
-                </div>
+                <CardContent sx={{ py: 6 }}>
+                  <Stack spacing={2} alignItems="center">
+                    <CircularProgress />
+                    <Typography variant="body2" color="text.secondary">
+                      Loading timesheet...
+                    </Typography>
+                  </Stack>
+                </CardContent>
+              </Card>
+            ) : null}
 
-                <button
+            {error ? <Alert severity="error">{error}</Alert> : null}
+            {ok ? <Alert severity="success">{ok}</Alert> : null}
+
+            {!loading && timesheet ? (
+              <>
+                <Card
+                  elevation={0}
+                  sx={{
+                    borderRadius: 5,
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                    <Stack spacing={2}>
+                      <Stack
+                        direction={{ xs: "column", md: "row" }}
+                        spacing={2}
+                        justifyContent="space-between"
+                        alignItems={{ xs: "flex-start", md: "center" }}
+                      >
+                        <Box>
+                          <Typography variant="h5" fontWeight={800}>
+                            {timesheet.employeeName || "Unnamed Employee"}
+                          </Typography>
+                          <Typography variant="body1" color="text.secondary">
+                            {timesheet.employeeRole || "No role set"}
+                          </Typography>
+                        </Box>
+
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                          useFlexGap
+                          flexWrap="wrap"
+                        >
+                          <Chip
+                            icon={<PersonRoundedIcon />}
+                            label={timesheet.employeeRole || "Role"}
+                            variant="outlined"
+                          />
+                          <Chip
+                            icon={<AccessTimeRoundedIcon />}
+                            label={`${timesheet.weekStartDate} → ${timesheet.weekEndDate}`}
+                            variant="outlined"
+                          />
+                        </Stack>
+                      </Stack>
+
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                        useFlexGap
+                        flexWrap="wrap"
+                      >
+                        <Chip
+                          label={`Total: ${timesheet.totalHours.toFixed(2)} hr`}
+                          variant="outlined"
+                        />
+                        <Chip
+                          label={`Regular: ${timesheet.regularHours.toFixed(2)} hr`}
+                          variant="outlined"
+                        />
+                        <Chip
+                          label={`OT: ${timesheet.overtimeHours.toFixed(2)} hr`}
+                          variant="outlined"
+                        />
+                        <Chip
+                          label={`PTO: ${timesheet.ptoHours.toFixed(2)} hr`}
+                          variant="outlined"
+                        />
+                        <Chip
+                          label={`Holiday: ${timesheet.holidayHours.toFixed(2)} hr`}
+                          variant="outlined"
+                        />
+                      </Stack>
+
+                      <Stack spacing={0.75}>
+                        <Typography variant="body2" color="text.secondary">
+                          Status: <strong>{formatStatus(timesheet.status)}</strong>
+                        </Typography>
+
+                        {timesheet.submittedAt ? (
+                          <Typography variant="body2" color="text.secondary">
+                            Submitted: {timesheet.submittedAt}
+                          </Typography>
+                        ) : null}
+
+                        {timesheet.approvedAt ? (
+                          <Typography variant="body2" color="text.secondary">
+                            Approved: {timesheet.approvedAt}
+                          </Typography>
+                        ) : null}
+
+                        {timesheet.rejectedAt ? (
+                          <Typography variant="body2" color="text.secondary">
+                            Rejected: {timesheet.rejectedAt}
+                          </Typography>
+                        ) : null}
+                      </Stack>
+
+                      {timesheet.employeeNote ? (
+                        <>
+                          <Divider />
+                          <Box
+                            sx={{
+                              p: 2,
+                              borderRadius: 4,
+                              backgroundColor: alpha(
+                                theme.palette.primary.main,
+                                0.05
+                              ),
+                              border: `1px solid ${alpha(
+                                theme.palette.primary.main,
+                                0.12
+                              )}`,
+                            }}
+                          >
+                            <Stack spacing={1}>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <NoteAltRoundedIcon
+                                  sx={{ fontSize: 18, color: "text.secondary" }}
+                                />
+                                <Typography variant="subtitle1" fontWeight={700}>
+                                  Employee Note
+                                </Typography>
+                              </Stack>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{ whiteSpace: "pre-wrap" }}
+                              >
+                                {timesheet.employeeNote}
+                              </Typography>
+                            </Stack>
+                          </Box>
+                        </>
+                      ) : null}
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Card
+                  elevation={0}
+                  sx={{
+                    borderRadius: 5,
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                    <Stack spacing={2.5}>
+                      <Box>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <EditCalendarRoundedIcon color="primary" />
+                          <Typography variant="h6" fontWeight={800}>
+                            Admin Adjust
+                          </Typography>
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          Edit entry hours, optionally lock them, and save corrected
+                          totals. Allowed when status is <strong>Submitted</strong> or{" "}
+                          <strong>Rejected</strong>.
+                        </Typography>
+                      </Box>
+
+                      {!canReview ? (
+                        <Alert severity="warning">
+                          You do not have permission to review timesheets.
+                        </Alert>
+                      ) : null}
+
+                      <TextField
+                        label="Manager Note"
+                        value={managerNote}
+                        onChange={(e) => setManagerNote(e.target.value)}
+                        multiline
+                        minRows={3}
+                        disabled={!canReview}
+                        placeholder="Optional note for payroll review or follow-up."
+                        fullWidth
+                      />
+
+                      <Stack spacing={1.5}>
+                        {entries.length === 0 ? (
+                          <Box
+                            sx={{
+                              p: 3,
+                              borderRadius: 4,
+                              border: `1px dashed ${theme.palette.divider}`,
+                              textAlign: "center",
+                              color: "text.secondary",
+                            }}
+                          >
+                            <Typography variant="body2">
+                              No time entries found for this employee/week.
+                            </Typography>
+                          </Box>
+                        ) : (
+                          entries.map((e) => {
+                            const hours = numOr0(
+                              editedHoursByEntryId[e.id] ?? e.hours ?? 0
+                            );
+                            const locked = Boolean(lockByEntryId[e.id]);
+                            const primary = formatEntryPrimary(e);
+                            const secondary = formatEntrySecondary(e);
+
+                            return (
+                              <Card
+                                key={e.id}
+                                elevation={0}
+                                sx={{
+                                  borderRadius: 4,
+                                  border: `1px solid ${theme.palette.divider}`,
+                                  backgroundColor: alpha(
+                                    theme.palette.background.default,
+                                    0.5
+                                  ),
+                                }}
+                              >
+                                <CardContent sx={{ p: 2 }}>
+                                  <Stack spacing={1.5}>
+                                    <Stack
+                                      direction={{ xs: "column", md: "row" }}
+                                      spacing={2}
+                                      justifyContent="space-between"
+                                      alignItems={{ xs: "flex-start", md: "flex-start" }}
+                                    >
+                                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                                        <Typography variant="subtitle1" fontWeight={700}>
+                                          {e.entryDate} • {primary}
+                                        </Typography>
+
+                                        {secondary ? (
+                                          <Typography
+                                            variant="body2"
+                                            color="text.secondary"
+                                            sx={{ mt: 0.5 }}
+                                          >
+                                            {secondary}
+                                          </Typography>
+                                        ) : null}
+
+                                        <Stack
+                                          direction={{ xs: "column", sm: "row" }}
+                                          spacing={1}
+                                          useFlexGap
+                                          flexWrap="wrap"
+                                          sx={{ mt: 1.25 }}
+                                        >
+                                          <Chip
+                                            size="small"
+                                            label={`Category: ${
+                                              safeTrim(e.category) || "—"
+                                            }`}
+                                            variant="outlined"
+                                          />
+                                          <Chip
+                                            size="small"
+                                            label={`Billable: ${
+                                              e.billable ? "Yes" : "No"
+                                            }`}
+                                            variant="outlined"
+                                          />
+                                          {e.linkedTechnicianName ? (
+                                            <Chip
+                                              size="small"
+                                              label={`Linked Tech: ${e.linkedTechnicianName}`}
+                                              variant="outlined"
+                                            />
+                                          ) : null}
+                                        </Stack>
+                                      </Box>
+
+                                      <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1.5}
+                                        alignItems={{ xs: "stretch", sm: "center" }}
+                                        sx={{ width: { xs: "100%", md: "auto" } }}
+                                      >
+                                        <TextField
+                                          label="Hours"
+                                          type="number"
+                                          inputProps={{ step: 0.25, min: 0 }}
+                                          value={hours}
+                                          onChange={(evt) =>
+                                            setEditedHoursByEntryId((prev) => ({
+                                              ...prev,
+                                              [e.id]: numOr0(evt.target.value),
+                                            }))
+                                          }
+                                          disabled={!canAdminAdjust || saving}
+                                          sx={{ minWidth: { xs: "100%", sm: 120 } }}
+                                        />
+
+                                        <FormControlLabel
+                                          control={
+                                            <Checkbox
+                                              checked={locked}
+                                              onChange={(evt) =>
+                                                setLockByEntryId((prev) => ({
+                                                  ...prev,
+                                                  [e.id]: evt.target.checked,
+                                                }))
+                                              }
+                                              disabled={!canAdminAdjust || saving}
+                                            />
+                                          }
+                                          label={
+                                            <Stack
+                                              direction="row"
+                                              spacing={0.75}
+                                              alignItems="center"
+                                            >
+                                              <LockRoundedIcon sx={{ fontSize: 16 }} />
+                                              <span>Lock</span>
+                                            </Stack>
+                                          }
+                                          sx={{ ml: 0 }}
+                                        />
+                                      </Stack>
+                                    </Stack>
+
+                                    <Typography variant="caption" color="text.secondary">
+                                      Entry ID: {e.id}
+                                    </Typography>
+                                  </Stack>
+                                </CardContent>
+                              </Card>
+                            );
+                          })
+                        )}
+                      </Stack>
+
+                      <Divider />
+
+                      <Stack
+                        direction={{ xs: "column", lg: "row" }}
+                        spacing={2}
+                        justifyContent="space-between"
+                        alignItems={{ xs: "flex-start", lg: "center" }}
+                      >
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                          useFlexGap
+                          flexWrap="wrap"
+                        >
+                          <Chip
+                            label={`Total ${computed.totalHours.toFixed(2)}`}
+                            color="primary"
+                            variant="outlined"
+                          />
+                          <Chip
+                            label={`Regular ${computed.regularHours.toFixed(2)}`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            label={`OT ${computed.overtimeHours.toFixed(2)}`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            label={`PTO ${computed.ptoHours.toFixed(2)}`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            label={`Holiday ${computed.holidayHours.toFixed(2)}`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            label={`Billable ${computed.billableHours.toFixed(2)}`}
+                            variant="outlined"
+                          />
+                          <Chip
+                            label={`Non-Billable ${computed.nonBillableHours.toFixed(
+                              2
+                            )}`}
+                            variant="outlined"
+                          />
+                        </Stack>
+
+                        <Button
+                          type="button"
+                          onClick={handleSaveAdminAdjust}
+                          disabled={!canAdminAdjust || saving}
+                          variant="contained"
+                          startIcon={<SaveRoundedIcon />}
+                          sx={{
+                            borderRadius: 999,
+                            display: { xs: "none", md: "inline-flex" },
+                          }}
+                        >
+                          {saving ? "Saving..." : "Save Admin Adjustments"}
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Card
+                  elevation={0}
+                  sx={{
+                    borderRadius: 5,
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                    <Stack spacing={2.5}>
+                      <Box>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <CheckCircleRoundedIcon color="primary" />
+                          <Typography variant="h6" fontWeight={800}>
+                            Approve / Reject
+                          </Typography>
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          Approval actions are only enabled while the timesheet is in{" "}
+                          <strong>Submitted</strong> status.
+                        </Typography>
+                      </Box>
+
+                      <TextField
+                        label="Rejection Reason"
+                        value={rejectionReason}
+                        onChange={(e) => setRejectionReason(e.target.value)}
+                        disabled={!canApproveReject || saving}
+                        placeholder="Example: Please correct Tuesday hours; missing job note."
+                        fullWidth
+                      />
+
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1.25}
+                        alignItems={{ xs: "stretch", sm: "center" }}
+                        justifyContent="space-between"
+                      >
+                        <Stack
+                          direction="row"
+                          spacing={1.25}
+                          flexWrap="wrap"
+                          sx={{ display: { xs: "none", md: "flex" } }}
+                        >
+                          <Button
+                            type="button"
+                            onClick={handleApprove}
+                            disabled={!canApproveReject || saving}
+                            variant="contained"
+                            color="success"
+                            sx={{ borderRadius: 999 }}
+                          >
+                            {saving ? "Working..." : "Approve"}
+                          </Button>
+
+                          <Button
+                            type="button"
+                            onClick={handleReject}
+                            disabled={!canApproveReject || saving}
+                            variant="outlined"
+                            color="error"
+                            sx={{ borderRadius: 999 }}
+                          >
+                            {saving ? "Working..." : "Reject"}
+                          </Button>
+                        </Stack>
+
+                        <Chip
+                          label={`Current: ${formatStatus(status)}`}
+                          color={statusTone.color}
+                          variant={statusTone.color === "default" ? "outlined" : "filled"}
+                        />
+                      </Stack>
+
+                      {status !== "submitted" ? (
+                        <Alert severity="warning">
+                          This timesheet is not in Submitted status, so approve/reject
+                          is disabled.
+                        </Alert>
+                      ) : null}
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </>
+            ) : null}
+          </Stack>
+        </Container>
+
+        {!loading && timesheet ? (
+          <Paper
+            elevation={8}
+            sx={{
+              display: { xs: "block", md: "none" },
+              position: "fixed",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: theme.zIndex.appBar,
+              borderTopLeftRadius: 20,
+              borderTopRightRadius: 20,
+              borderTop: `1px solid ${theme.palette.divider}`,
+              backgroundColor: alpha(theme.palette.background.paper, 0.98),
+              backdropFilter: "blur(14px)",
+              px: 2,
+              pt: 1.5,
+              pb: "calc(env(safe-area-inset-bottom, 0px) + 12px)",
+            }}
+          >
+            <Stack spacing={1.25}>
+              <Stack
+                direction="row"
+                justifyContent="space-between"
+                alignItems="center"
+                spacing={1}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="subtitle2" fontWeight={800} noWrap>
+                    {timesheet.employeeName || "Timesheet Review"}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {formatStatus(status)} • Total {computed.totalHours.toFixed(2)} hr
+                  </Typography>
+                </Box>
+
+                <Chip
+                  size="small"
+                  label={formatStatus(status)}
+                  color={statusTone.color}
+                  variant={statusTone.color === "default" ? "outlined" : "filled"}
+                />
+              </Stack>
+
+              <Stack direction="row" spacing={1}>
+                <Button
+                  fullWidth
                   type="button"
                   onClick={handleSaveAdminAdjust}
                   disabled={!canAdminAdjust || saving}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 12,
-                    border: "1px solid #ccc",
-                    background: "white",
-                    cursor: canAdminAdjust ? "pointer" : "not-allowed",
-                    fontWeight: 900,
-                  }}
+                  variant="outlined"
+                  startIcon={<SaveRoundedIcon />}
+                  sx={{ borderRadius: 999 }}
                 >
-                  {saving ? "Saving..." : "Save Admin Adjustments"}
-                </button>
-              </div>
-            </div>
+                  {saving ? "Saving..." : "Save"}
+                </Button>
 
-            <div
-              style={{
-                marginTop: 16,
-                border: "1px solid #ddd",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                maxWidth: 980,
-                display: "grid",
-                gap: 12,
-              }}
-            >
-              <div style={{ fontWeight: 950, fontSize: 18 }}>
-                Approve / Reject
-              </div>
-
-              <div style={{ fontSize: 12, color: "#666" }}>
-                Approve/Reject is only enabled while the timesheet is{" "}
-                <strong>Submitted</strong>.
-              </div>
-
-              <div style={{ display: "grid", gap: 10 }}>
-                <label style={{ fontWeight: 900, fontSize: 12 }}>
-                  Rejection Reason (required to reject)
-                </label>
-                <input
-                  value={rejectionReason}
-                  onChange={(e) => setRejectionReason(e.target.value)}
-                  disabled={!canApproveReject || saving}
-                  placeholder="Example: Please correct Tuesday hours; missing job note…"
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #ccc",
-                    background: !canApproveReject ? "#f1f1f1" : "white",
-                  }}
-                />
-              </div>
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
+                <Button
+                  fullWidth
                   type="button"
                   onClick={handleApprove}
                   disabled={!canApproveReject || saving}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 12,
-                    border: "1px solid #1f6b1f",
-                    background: "#1f8f3a",
-                    color: "white",
-                    cursor: canApproveReject ? "pointer" : "not-allowed",
-                    fontWeight: 1000,
-                  }}
+                  variant="contained"
+                  color="success"
+                  sx={{ borderRadius: 999 }}
                 >
                   {saving ? "Working..." : "Approve"}
-                </button>
+                </Button>
 
-                <button
+                <Button
+                  fullWidth
                   type="button"
                   onClick={handleReject}
                   disabled={!canApproveReject || saving}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 12,
-                    border: "1px solid #b91c1c",
-                    background: "#fee2e2",
-                    cursor: canApproveReject ? "pointer" : "not-allowed",
-                    fontWeight: 1000,
-                  }}
+                  variant="outlined"
+                  color="error"
+                  sx={{ borderRadius: 999 }}
                 >
                   {saving ? "Working..." : "Reject"}
-                </button>
-
-                <div style={{ fontSize: 12, color: "#777", alignSelf: "center" }}>
-                  Current: <strong>{formatStatus(status)}</strong>
-                </div>
-              </div>
-
-              {status !== "submitted" ? (
-                <div style={{ fontSize: 12, color: "#8a5a00" }}>
-                  This timesheet is not in Submitted status, so approve/reject is
-                  disabled.
-                </div>
-              ) : null}
-            </div>
-          </>
+                </Button>
+              </Stack>
+            </Stack>
+          </Paper>
         ) : null}
       </AppShell>
     </ProtectedPage>

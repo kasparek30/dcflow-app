@@ -7,10 +7,36 @@ import {
   doc,
   getDoc,
   getDocs,
-  query,
   setDoc,
-  where,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Divider,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import type { SelectChangeEvent } from "@mui/material/Select";
+import { alpha, useTheme } from "@mui/material/styles";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
+import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
+import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+import SummarizeRoundedIcon from "@mui/icons-material/SummarizeRounded";
+
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -116,7 +142,6 @@ function isWorkedHoursCategory(category: TimeEntry["category"]) {
     c === "shop" ||
     c === "office" ||
     c === "manual_other" ||
-    // legacy support
     c === "service_ticket" ||
     c === "project_stage"
   );
@@ -130,9 +155,6 @@ function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
 
-// ---------------------------
-// Display helpers (NEW)
-// ---------------------------
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
 }
@@ -151,7 +173,6 @@ function firstMeaningfulLine(notes?: string) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // Prefer a human line, not the AUTO_TIME header
   const preferred =
     lines.find((l) => l.startsWith("Customer:")) ||
     lines.find((l) => l.startsWith("Issue:")) ||
@@ -183,6 +204,44 @@ function stageLabel(stage?: unknown) {
   return s;
 }
 
+function getStatusChipColor(status: WeeklyTimesheetStatus) {
+  switch (status) {
+    case "draft":
+      return "default";
+    case "submitted":
+      return "info";
+    case "approved":
+      return "success";
+    case "rejected":
+      return "warning";
+    case "exported_to_quickbooks":
+      return "secondary";
+    default:
+      return "default";
+  }
+}
+
+function getCategoryChipColor(category: string) {
+  switch (category) {
+    case "service":
+      return "primary";
+    case "project":
+      return "secondary";
+    case "meeting":
+      return "info";
+    case "shop":
+      return "warning";
+    case "office":
+      return "default";
+    case "pto":
+      return "success";
+    case "holiday":
+      return "success";
+    default:
+      return "default";
+  }
+}
+
 type ServiceTicketMini = {
   id: string;
   customerDisplayName: string;
@@ -196,6 +255,7 @@ type ProjectMini = {
 
 export default function WeeklyTimesheetPage() {
   const { appUser } = useAuthContext();
+  const theme = useTheme();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -207,7 +267,6 @@ export default function WeeklyTimesheetPage() {
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
-  // Default to last week (what employees will usually submit)
   const [weekOffset, setWeekOffset] = useState(-1);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(appUser?.uid || "");
   const [employeeNote, setEmployeeNote] = useState("");
@@ -220,7 +279,6 @@ export default function WeeklyTimesheetPage() {
   const isOwnTimesheet =
     Boolean(appUser?.uid) && selectedEmployeeId === appUser?.uid;
 
-  // ✅ lookup caches (id -> display)
   const [ticketMiniById, setTicketMiniById] = useState<
     Record<string, ServiceTicketMini>
   >({});
@@ -248,29 +306,22 @@ export default function WeeklyTimesheetPage() {
             employeeName: data.employeeName ?? "",
             employeeRole: data.employeeRole ?? "",
             laborRoleType: data.laborRoleType ?? undefined,
-
             entryDate: data.entryDate ?? "",
             weekStartDate: data.weekStartDate ?? "",
             weekEndDate: data.weekEndDate ?? "",
-
             category: data.category ?? "manual_other",
             hours: typeof data.hours === "number" ? data.hours : 0,
             payType: data.payType ?? "regular",
             billable: data.billable ?? false,
             source: data.source ?? "manual_entry",
-
             serviceTicketId: data.serviceTicketId ?? undefined,
             projectId: data.projectId ?? undefined,
             projectStageKey: data.projectStageKey ?? undefined,
-
             linkedTechnicianId: data.linkedTechnicianId ?? undefined,
             linkedTechnicianName: data.linkedTechnicianName ?? undefined,
-
             notes: data.notes ?? undefined,
             timesheetId: data.timesheetId ?? undefined,
-
             entryStatus: data.entryStatus ?? "draft",
-
             createdAt: data.createdAt ?? undefined,
             updatedAt: data.updatedAt ?? undefined,
           };
@@ -316,7 +367,6 @@ export default function WeeklyTimesheetPage() {
     return users.find((u) => u.uid === selectedEmployeeId) ?? null;
   }, [users, selectedEmployeeId]);
 
-  // Load timesheet doc directly using standardized ID
   useEffect(() => {
     async function loadTimesheetDoc() {
       setError("");
@@ -401,7 +451,6 @@ export default function WeeklyTimesheetPage() {
       });
   }, [entries, selectedEmployeeId, weekStart, weekEnd]);
 
-  // ✅ Hydrate ticket/project display info for this week
   useEffect(() => {
     async function hydrate() {
       const needTicketIds = new Set<string>();
@@ -501,7 +550,6 @@ export default function WeeklyTimesheetPage() {
       return { title, subtitle };
     }
 
-    // everything else (office/shop/pto/holiday/etc)
     return {
       title: safeTrim((entry as any).category) || "Entry",
       subtitle: "",
@@ -566,12 +614,12 @@ export default function WeeklyTimesheetPage() {
   const isLocked =
     currentStatus === "approved" || currentStatus === "exported_to_quickbooks";
 
-  const canSaveDraftOrNote = !isLocked; // allow save draft/note even when submitted (note-only)
+  const canSaveDraftOrNote = !isLocked;
   const canSubmit =
     Boolean(selectedEmployee) &&
     isOwnTimesheet &&
     !isLocked &&
-    currentStatus !== "submitted"; // allow submit from draft/rejected
+    currentStatus !== "submitted";
 
   async function handleSubmitTimesheet() {
     if (!selectedEmployee || !appUser?.uid) {
@@ -597,32 +645,23 @@ export default function WeeklyTimesheetPage() {
         employeeId: selectedEmployee.uid,
         employeeName: selectedEmployee.displayName,
         employeeRole: selectedEmployee.role,
-
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
-
         timeEntryIds: weekEntries.map((entry) => entry.id),
-
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
         ptoHours: computedTotals.ptoHours,
         holidayHours: computedTotals.holidayHours,
-
         billableHours: computedTotals.billableHours,
         nonBillableHours: computedTotals.nonBillableHours,
-
         status: nextStatus,
         submittedAt: now,
         submittedById: appUser.uid,
-
-        // clear rejection on resubmit
         rejectedAt: null,
         rejectedById: null,
         rejectionReason: null,
-
         quickbooksExportStatus: "not_ready",
-
         employeeNote: employeeNote.trim() || null,
         updatedAt: now,
         updatedById: appUser.uid,
@@ -645,7 +684,6 @@ export default function WeeklyTimesheetPage() {
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
         timeEntryIds: weekEntries.map((entry) => entry.id),
-
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
@@ -653,7 +691,6 @@ export default function WeeklyTimesheetPage() {
         holidayHours: computedTotals.holidayHours,
         billableHours: computedTotals.billableHours,
         nonBillableHours: computedTotals.nonBillableHours,
-
         status: nextStatus,
         submittedAt: now,
         submittedById: appUser.uid,
@@ -663,7 +700,7 @@ export default function WeeklyTimesheetPage() {
         updatedAt: now,
       });
 
-      setSaveMsg("✅ Weekly timesheet submitted.");
+      setSaveMsg("Weekly timesheet submitted.");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to submit weekly timesheet.");
     } finally {
@@ -685,7 +722,6 @@ export default function WeeklyTimesheetPage() {
       const now = nowIso();
       const docId = buildWeeklyTimesheetId(selectedEmployee.uid, weekStart);
 
-      // If it's already submitted, keep it submitted (notes-only)
       const nextStatus: WeeklyTimesheetStatus =
         currentStatus === "submitted" ? "submitted" : "draft";
 
@@ -695,12 +731,9 @@ export default function WeeklyTimesheetPage() {
           employeeId: selectedEmployee.uid,
           employeeName: selectedEmployee.displayName,
           employeeRole: selectedEmployee.role,
-
           weekStartDate: weekStart,
           weekEndDate: weekEnd,
-
           timeEntryIds: weekEntries.map((entry) => entry.id),
-
           totalHours: computedTotals.totalHours,
           regularHours: computedTotals.regularHours,
           overtimeHours: computedTotals.overtimeHours,
@@ -708,11 +741,8 @@ export default function WeeklyTimesheetPage() {
           holidayHours: computedTotals.holidayHours,
           billableHours: computedTotals.billableHours,
           nonBillableHours: computedTotals.nonBillableHours,
-
           status: nextStatus,
-
           quickbooksExportStatus: timesheet?.quickbooksExportStatus ?? "not_ready",
-
           employeeNote: employeeNote.trim() || null,
           createdAt: timesheet?.createdAt ?? now,
           updatedAt: now,
@@ -747,8 +777,8 @@ export default function WeeklyTimesheetPage() {
 
       setSaveMsg(
         nextStatus === "submitted"
-          ? "✅ Note saved (timesheet already submitted)."
-          : "✅ Draft saved."
+          ? "Note saved. Timesheet remains submitted."
+          : "Draft saved."
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save draft.");
@@ -757,437 +787,543 @@ export default function WeeklyTimesheetPage() {
     }
   }
 
+  const handleEmployeeChange = (event: SelectChangeEvent<string>) => {
+    setSelectedEmployeeId(event.target.value);
+  };
+
   return (
     <ProtectedPage fallbackTitle="Weekly Timesheet">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-            marginBottom: 16,
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
-              Weekly Timesheet
-            </h1>
-            <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
-              Review, total, and submit one payroll week at a time.
-            </p>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              type="button"
-              onClick={() => setWeekOffset((p) => p - 1)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
+        <Box sx={{ width: "100%", maxWidth: 1240, mx: "auto", pb: 6 }}>
+          <Stack spacing={3}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: { xs: 2, md: 3 },
+                borderRadius: 4,
+                border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                background: `linear-gradient(135deg, ${alpha(
+                  theme.palette.primary.main,
+                  0.08
+                )} 0%, ${alpha(theme.palette.secondary.main, 0.06)} 100%)`,
               }}
             >
-              Previous Week
-            </button>
-            <button
-              type="button"
-              onClick={() => setWeekOffset(0)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
-              This Week
-            </button>
-            <button
-              type="button"
-              onClick={() => setWeekOffset((p) => p + 1)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
-              Next Week
-            </button>
-          </div>
-        </div>
-
-        <div
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: 12,
-            padding: 16,
-            marginBottom: 16,
-            background: "#fafafa",
-            display: "grid",
-            gap: 12,
-            maxWidth: 760,
-          }}
-        >
-          <div style={{ fontWeight: 700 }}>
-            Week of {weekStart} through {weekEnd}
-          </div>
-
-          {canSelectOtherEmployee ? (
-            <div>
-              <label style={{ fontWeight: 700 }}>Employee</label>
-              <select
-                value={selectedEmployeeId}
-                onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: 4,
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                }}
+              <Stack
+                direction={{ xs: "column", lg: "row" }}
+                spacing={2}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", lg: "center" }}
               >
-                <option value="">Select employee</option>
-                {users.map((u) => (
-                  <option key={u.uid} value={u.uid}>
-                    {u.displayName} ({u.role})
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : (
-            <div style={{ fontSize: 13, color: "#555" }}>
-              Employee: <strong>{selectedEmployee?.displayName || "—"}</strong>
-            </div>
-          )}
-
-          <div style={{ fontSize: 13, color: "#555" }}>
-            Current Status: <strong>{formatStatus(currentStatus)}</strong>
-          </div>
-
-          {currentStatus === "rejected" && timesheet?.rejectionReason ? (
-            <div
-              style={{
-                fontSize: 12,
-                color: "#8a5a00",
-                border: "1px solid #f2d9a6",
-                background: "#fff7e6",
-                padding: 10,
-                borderRadius: 10,
-              }}
-            >
-              <strong>Rejected:</strong> {timesheet.rejectionReason}
-            </div>
-          ) : null}
-
-          {timesheet?.submittedAt ? (
-            <div style={{ fontSize: 12, color: "#666" }}>
-              Submitted At: {timesheet.submittedAt}
-            </div>
-          ) : null}
-        </div>
-
-        {loading ? <p>Loading weekly timesheet...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
-        {saveMsg ? <p style={{ color: "green" }}>{saveMsg}</p> : null}
-
-        {!loading && selectedEmployee ? (
-          <>
-            <div style={{ display: "grid", gap: 16 }}>
-              {payrollWeekDays.map((day) => {
-                const dayEntries = entriesByDay[day.isoDate] ?? [];
-                const dayTotal = dayTotals[day.isoDate] ?? 0;
-
-                return (
-                  <div
-                    key={day.isoDate}
-                    style={{
-                      border: "1px solid #ddd",
-                      borderRadius: 12,
-                      padding: 16,
-                      background: "#fafafa",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: 12,
-                        flexWrap: "wrap",
-                        marginBottom: 12,
+                <Stack spacing={1.25} sx={{ minWidth: 0 }}>
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <Box
+                      sx={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: 3,
+                        display: "grid",
+                        placeItems: "center",
+                        bgcolor: alpha(theme.palette.primary.main, 0.12),
+                        color: "primary.main",
                       }}
                     >
-                      <div>
-                        <div style={{ fontWeight: 800, fontSize: 18 }}>
-                          {day.label} {formatDisplayDate(day.isoDate)}
-                        </div>
-                        <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
-                          {day.isoDate}
-                        </div>
-                      </div>
+                      <SummarizeRoundedIcon />
+                    </Box>
+                    <Box>
+                      <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1.1 }}>
+                        Weekly Timesheet
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Review, total, and submit one payroll week at a time.
+                      </Typography>
+                    </Box>
+                  </Stack>
 
-                      <div style={{ fontSize: 13, color: "#666", fontWeight: 700 }}>
-                        Daily Total: {dayTotal.toFixed(2)} hr
-                      </div>
-                    </div>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    useFlexGap
+                    flexWrap="wrap"
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                  >
+                    <Chip
+                      icon={<CalendarMonthRoundedIcon />}
+                      label={`Week of ${weekStart} through ${weekEnd}`}
+                      color="primary"
+                      variant="filled"
+                    />
+                    <Chip
+                      icon={<CheckCircleRoundedIcon />}
+                      label={formatStatus(currentStatus)}
+                      color={getStatusChipColor(currentStatus) as any}
+                      variant="outlined"
+                    />
+                  </Stack>
+                </Stack>
 
-                    {dayEntries.length === 0 ? (
-                      <div
-                        style={{
-                          border: "1px dashed #ccc",
-                          borderRadius: 10,
-                          padding: 10,
-                          background: "white",
-                          color: "#666",
-                          fontSize: 13,
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1}
+                  sx={{ width: { xs: "100%", lg: "auto" } }}
+                >
+                  <Button
+                    variant="outlined"
+                    startIcon={<ChevronLeftRoundedIcon />}
+                    onClick={() => setWeekOffset((p) => p - 1)}
+                  >
+                    Previous Week
+                  </Button>
+
+                  <Button
+                    variant="contained"
+                    onClick={() => setWeekOffset(0)}
+                    sx={{
+                      bgcolor: alpha(theme.palette.primary.main, 0.10),
+                      color: theme.palette.primary.main,
+                      boxShadow: "none",
+                      "&:hover": {
+                        bgcolor: alpha(theme.palette.primary.main, 0.16),
+                        boxShadow: "none",
+                      },
+                    }}
+                  >
+                    This Week
+                  </Button>
+
+                  <Button
+                    variant="outlined"
+                    endIcon={<ChevronRightRoundedIcon />}
+                    onClick={() => setWeekOffset((p) => p + 1)}
+                  >
+                    Next Week
+                  </Button>
+                </Stack>
+              </Stack>
+            </Paper>
+
+            <Paper
+              elevation={0}
+              sx={{
+                p: { xs: 2, md: 3 },
+                borderRadius: 4,
+                border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                bgcolor: "background.paper",
+              }}
+            >
+              <Stack spacing={2}>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  sx={{ color: "text.secondary" }}
+                >
+                  <DescriptionRoundedIcon fontSize="small" />
+                  <Typography variant="h6" sx={{ fontWeight: 700, color: "text.primary" }}>
+                    Payroll Week Details
+                  </Typography>
+                </Stack>
+
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  spacing={2}
+                  alignItems={{ xs: "stretch", md: "center" }}
+                >
+                  <Box sx={{ flex: 1 }}>
+                    {canSelectOtherEmployee ? (
+                      <FormControl fullWidth>
+                        <InputLabel id="timesheet-employee-label">Employee</InputLabel>
+                        <Select
+                          labelId="timesheet-employee-label"
+                          value={selectedEmployeeId}
+                          label="Employee"
+                          onChange={handleEmployeeChange}
+                        >
+                          <MenuItem value="">Select employee</MenuItem>
+                          {users.map((u) => (
+                            <MenuItem key={u.uid} value={u.uid}>
+                              {u.displayName} ({u.role})
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : (
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          p: 2,
+                          borderRadius: 3,
+                          border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                          bgcolor: alpha(theme.palette.primary.main, 0.04),
                         }}
                       >
-                        No entries for this day.
-                      </div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {dayEntries.map((entry) => {
-                          const { title, subtitle } = renderTitleAndSubtitle(entry);
-                          const pill = categoryPillLabel((entry as any).category);
-
-                          return (
-                            <div
-                              key={entry.id}
-                              style={{
-                                border: "1px solid #ddd",
-                                borderRadius: 12,
-                                padding: 12,
-                                background: "white",
-                              }}
-                            >
-                              <div
-                                style={{
-                                  display: "flex",
-                                  justifyContent: "space-between",
-                                  gap: 12,
-                                  alignItems: "flex-start",
-                                }}
-                              >
-                                <div style={{ minWidth: 0 }}>
-                                  <div
-                                    style={{
-                                      fontWeight: 950,
-                                      fontSize: 16,
-                                      lineHeight: 1.15,
-                                    }}
-                                  >
-                                    {title}
-                                  </div>
-
-                                  <div
-                                    style={{
-                                      marginTop: 8,
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      gap: 8,
-                                    }}
-                                  >
-                                    <span
-                                      style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        padding: "4px 10px",
-                                        borderRadius: 999,
-                                        border: "1px solid #e6e6e6",
-                                        background: "#fafafa",
-                                        fontSize: 12,
-                                        fontWeight: 900,
-                                        textTransform: "lowercase",
-                                      }}
-                                    >
-                                      {pill}
-                                    </span>
-                                  </div>
-
-                                  {subtitle ? (
-                                    <div
-                                      style={{
-                                        marginTop: 8,
-                                        fontSize: 13,
-                                        color: "#555",
-                                        fontWeight: 700,
-                                      }}
-                                    >
-                                      {subtitle}
-                                    </div>
-                                  ) : null}
-                                </div>
-
-                                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                                  <div style={{ fontWeight: 1000, fontSize: 16 }}>
-                                    {Number(entry.hours).toFixed(2)} hr
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div style={{ marginTop: 10, fontSize: 12, color: "#777" }}>
-                                Billable: <strong>{String(entry.billable)}</strong>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <PersonRoundedIcon fontSize="small" color="primary" />
+                          <Typography variant="body2" color="text.secondary">
+                            Employee:
+                          </Typography>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                            {selectedEmployee?.displayName || "—"}
+                          </Typography>
+                        </Stack>
+                      </Paper>
                     )}
-                  </div>
-                );
-              })}
-            </div>
+                  </Box>
 
-            <div
-              style={{
-                marginTop: 18,
-                border: "1px solid #ddd",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                maxWidth: 760,
-                display: "grid",
-                gap: 10,
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: 18 }}>Weekly Summary</div>
+                  {timesheet?.submittedAt ? (
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        p: 2,
+                        minWidth: { xs: "100%", md: 280 },
+                        borderRadius: 3,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                        bgcolor: alpha(theme.palette.secondary.main, 0.05),
+                      }}
+                    >
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <ScheduleRoundedIcon fontSize="small" color="action" />
+                        <Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Submitted At
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {timesheet.submittedAt}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    </Paper>
+                  ) : null}
+                </Stack>
 
-              <div style={{ fontSize: 14, color: "#444" }}>
-                Worked Hours: {computedTotals.workedHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: 14, color: "#444" }}>
-                Regular Hours: {computedTotals.regularHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: 14, color: "#444" }}>
-                Overtime Hours: {computedTotals.overtimeHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: 14, color: "#444" }}>
-                PTO Hours: {computedTotals.ptoHours.toFixed(2)}
-              </div>
-              <div style={{ fontSize: 14, color: "#444" }}>
-                Holiday Hours: {computedTotals.holidayHours.toFixed(2)}
-              </div>
+                {currentStatus === "rejected" && timesheet?.rejectionReason ? (
+                  <Alert severity="warning" variant="outlined">
+                    <strong>Rejected:</strong> {timesheet.rejectionReason}
+                  </Alert>
+                ) : null}
+              </Stack>
+            </Paper>
 
-              <div
-                style={{
-                  marginTop: 4,
-                  paddingTop: 8,
-                  borderTop: "1px solid #e3e3e3",
-                  fontSize: 15,
-                  fontWeight: 800,
+            {loading ? (
+              <Paper
+                elevation={0}
+                sx={{
+                  p: 4,
+                  borderRadius: 4,
+                  border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                 }}
               >
-                Total Paid Hours: {computedTotals.totalHours.toFixed(2)}
-              </div>
+                <Stack direction="row" spacing={1.5} alignItems="center">
+                  <CircularProgress size={22} />
+                  <Typography>Loading weekly timesheet...</Typography>
+                </Stack>
+              </Paper>
+            ) : null}
 
-              <div style={{ fontSize: 12, color: "#666" }}>
-                Overtime is calculated only from worked-hour categories above 40.
-                PTO and holiday do not count toward the 40-hour threshold.
-              </div>
-            </div>
+            {error ? <Alert severity="error">{error}</Alert> : null}
+            {saveMsg ? <Alert severity="success">{saveMsg}</Alert> : null}
 
-            <div
-              style={{
-                marginTop: 16,
-                border: "1px solid #ddd",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                maxWidth: 760,
-                display: "grid",
-                gap: 12,
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: 18 }}>Employee Note</div>
+            {!loading && selectedEmployee ? (
+              <>
+                <Stack spacing={2}>
+                  {payrollWeekDays.map((day) => {
+                    const dayEntries = entriesByDay[day.isoDate] ?? [];
+                    const dayTotal = dayTotals[day.isoDate] ?? 0;
 
-              <textarea
-                value={employeeNote}
-                onChange={(e) => setEmployeeNote(e.target.value)}
-                rows={4}
-                disabled={isLocked}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                  background: isLocked ? "#f7f7f7" : "white",
-                }}
-              />
+                    return (
+                      <Paper
+                        key={day.isoDate}
+                        elevation={0}
+                        sx={{
+                          p: { xs: 2, md: 2.25 },
+                          borderRadius: 4,
+                          border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                          overflow: "hidden",
+                        }}
+                      >
+                        <Stack spacing={2}>
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            justifyContent="space-between"
+                            alignItems={{ xs: "flex-start", sm: "center" }}
+                            spacing={1.5}
+                          >
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                {day.label} {formatDisplayDate(day.isoDate)}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {day.isoDate}
+                              </Typography>
+                            </Box>
 
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {canSaveDraftOrNote ? (
-                  <button
-                    type="button"
-                    onClick={handleSaveDraftOrNote}
-                    disabled={saving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                    }}
-                  >
-                    {saving
-                      ? "Saving..."
-                      : currentStatus === "submitted"
-                      ? "Save Note"
-                      : "Save Draft"}
-                  </button>
-                ) : null}
+                            <Chip
+                              label={`Daily Total: ${dayTotal.toFixed(2)} hr`}
+                              color="primary"
+                              variant="outlined"
+                              sx={{ fontWeight: 700 }}
+                            />
+                          </Stack>
 
-                {canSubmit ? (
-                  <button
-                    type="button"
-                    onClick={handleSubmitTimesheet}
-                    disabled={saving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: "1px solid #1f6b1f",
-                      background: "#1f8f3a",
-                      color: "white",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
-                    {saving ? "Submitting..." : "Submit Timesheet"}
-                  </button>
-                ) : (
-                  <span
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: "1px solid #ddd",
-                      background: "#f7f7f7",
-                      color: "#777",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {isOwnTimesheet
-                      ? currentStatus === "submitted"
-                        ? "Already Submitted"
-                        : currentStatus === "approved"
-                        ? "Approved"
-                        : currentStatus === "exported_to_quickbooks"
-                        ? "Exported"
-                        : "Submission Unavailable"
-                      : "View Only"}
-                  </span>
-                )}
-              </div>
-            </div>
-          </>
-        ) : null}
+                          {dayEntries.length === 0 ? (
+                            <Paper
+                              elevation={0}
+                              sx={{
+                                p: 2,
+                                borderRadius: 3,
+                                border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
+                                bgcolor: alpha(theme.palette.grey[500], 0.06),
+                              }}
+                            >
+                              <Typography variant="body2" color="text.secondary">
+                                No entries for this day.
+                              </Typography>
+                            </Paper>
+                          ) : (
+                            <Stack spacing={1.25}>
+                              {dayEntries.map((entry) => {
+                                const { title, subtitle } = renderTitleAndSubtitle(entry);
+                                const pill = categoryPillLabel((entry as any).category);
+
+                                return (
+                                  <Paper
+                                    key={entry.id}
+                                    elevation={0}
+                                    sx={{
+                                      p: 2,
+                                      borderRadius: 3,
+                                      border: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
+                                      bgcolor: alpha(theme.palette.background.default, 0.7),
+                                    }}
+                                  >
+                                    <Stack spacing={1.5}>
+                                      <Stack
+                                        direction="row"
+                                        justifyContent="space-between"
+                                        alignItems="flex-start"
+                                        spacing={2}
+                                      >
+                                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                                          <Typography
+                                            variant="subtitle1"
+                                            sx={{
+                                              fontWeight: 800,
+                                              lineHeight: 1.2,
+                                              wordBreak: "break-word",
+                                            }}
+                                          >
+                                            {title}
+                                          </Typography>
+
+                                          {subtitle ? (
+                                            <Typography
+                                              variant="body2"
+                                              color="text.secondary"
+                                              sx={{ mt: 0.75, fontWeight: 500 }}
+                                            >
+                                              {subtitle}
+                                            </Typography>
+                                          ) : null}
+                                        </Box>
+
+                                        <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+                                          <Typography
+                                            variant="subtitle1"
+                                            sx={{ fontWeight: 900 }}
+                                          >
+                                            {Number(entry.hours).toFixed(2)} hr
+                                          </Typography>
+                                        </Box>
+                                      </Stack>
+
+                                      <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1}
+                                        alignItems={{ xs: "flex-start", sm: "center" }}
+                                        justifyContent="space-between"
+                                      >
+                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                          <Chip
+                                            size="small"
+                                            label={pill}
+                                            color={getCategoryChipColor(pill) as any}
+                                            variant="filled"
+                                            sx={{ textTransform: "capitalize", fontWeight: 700 }}
+                                          />
+                                          <Chip
+                                            size="small"
+                                            label={entry.billable ? "Billable" : "Non-billable"}
+                                            variant="outlined"
+                                            sx={{ fontWeight: 600 }}
+                                          />
+                                        </Stack>
+                                      </Stack>
+                                    </Stack>
+                                  </Paper>
+                                );
+                              })}
+                            </Stack>
+                          )}
+                        </Stack>
+                      </Paper>
+                    );
+                  })}
+                </Stack>
+
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: { xs: 2, md: 3 },
+                    borderRadius: 4,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                  }}
+                >
+                  <Stack spacing={2}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <SummarizeRoundedIcon color="primary" />
+                      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                        Weekly Summary
+                      </Typography>
+                    </Stack>
+
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          sm: "repeat(2, minmax(0, 1fr))",
+                          lg: "repeat(3, minmax(0, 1fr))",
+                        },
+                        gap: 1.5,
+                      }}
+                    >
+                      {[
+                        ["Worked Hours", computedTotals.workedHours],
+                        ["Regular Hours", computedTotals.regularHours],
+                        ["Overtime Hours", computedTotals.overtimeHours],
+                        ["PTO Hours", computedTotals.ptoHours],
+                        ["Holiday Hours", computedTotals.holidayHours],
+                        ["Billable Hours", computedTotals.billableHours],
+                      ].map(([label, value]) => (
+                        <Paper
+                          key={String(label)}
+                          elevation={0}
+                          sx={{
+                            p: 2,
+                            borderRadius: 3,
+                            border: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
+                            bgcolor: alpha(theme.palette.primary.main, 0.035),
+                          }}
+                        >
+                          <Typography variant="caption" color="text.secondary">
+                            {label}
+                          </Typography>
+                          <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>
+                            {Number(value).toFixed(2)}
+                          </Typography>
+                        </Paper>
+                      ))}
+                    </Box>
+
+                    <Divider />
+
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                    >
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                        Total Paid Hours
+                      </Typography>
+                      <Typography variant="h4" sx={{ fontWeight: 900 }}>
+                        {computedTotals.totalHours.toFixed(2)}
+                      </Typography>
+                    </Stack>
+
+                    <Typography variant="body2" color="text.secondary">
+                      Overtime is calculated only from worked-hour categories above 40.
+                      PTO and holiday do not count toward the 40-hour threshold.
+                    </Typography>
+                  </Stack>
+                </Paper>
+
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: { xs: 2, md: 3 },
+                    borderRadius: 4,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                  }}
+                >
+                  <Stack spacing={2}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <NotesRoundedIcon color="primary" />
+                      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                        Employee Note
+                      </Typography>
+                    </Stack>
+
+                    <TextField
+                      value={employeeNote}
+                      onChange={(e) => setEmployeeNote(e.target.value)}
+                      multiline
+                      minRows={4}
+                      fullWidth
+                      disabled={isLocked}
+                      placeholder="Add any payroll note, clarification, or context for this week..."
+                    />
+
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1.25}
+                      alignItems={{ xs: "stretch", sm: "center" }}
+                    >
+                      {canSaveDraftOrNote ? (
+                        <Button
+                          variant="outlined"
+                          onClick={handleSaveDraftOrNote}
+                          disabled={saving}
+                        >
+                          {saving
+                            ? "Saving..."
+                            : currentStatus === "submitted"
+                            ? "Save Note"
+                            : "Save Draft"}
+                        </Button>
+                      ) : null}
+
+                      {canSubmit ? (
+                        <Button
+                          variant="contained"
+                          onClick={handleSubmitTimesheet}
+                          disabled={saving}
+                        >
+                          {saving ? "Submitting..." : "Submit Timesheet"}
+                        </Button>
+                      ) : (
+                        <Chip
+                          label={
+                            isOwnTimesheet
+                              ? currentStatus === "submitted"
+                                ? "Already Submitted"
+                                : currentStatus === "approved"
+                                ? "Approved"
+                                : currentStatus === "exported_to_quickbooks"
+                                ? "Exported"
+                                : "Submission Unavailable"
+                              : "View Only"
+                          }
+                          variant="outlined"
+                          sx={{ fontWeight: 700, alignSelf: "flex-start" }}
+                        />
+                      )}
+                    </Stack>
+                  </Stack>
+                </Paper>
+              </>
+            ) : null}
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );

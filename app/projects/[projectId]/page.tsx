@@ -4,19 +4,57 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+  addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
-  updateDoc,
-  query,
-  where,
   orderBy,
+  query,
   setDoc,
+  updateDoc,
+  where,
   writeBatch,
-  deleteDoc,
-  addDoc,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  Switch,
+  Tab,
+  Tabs,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import EditCalendarRoundedIcon from "@mui/icons-material/EditCalendarRounded";
+import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
+import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
+import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
+import NoteAltRoundedIcon from "@mui/icons-material/NoteAltRounded";
+import RouteRoundedIcon from "@mui/icons-material/RouteRounded";
+import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
+import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
+
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -42,7 +80,7 @@ type EmployeeProfileOption = {
   userUid?: string | null;
   displayName?: string;
   employmentStatus?: string;
-  laborRole?: string; // helper/apprentice/technician/etc
+  laborRole?: string;
   defaultPairedTechUid?: string | null;
 };
 
@@ -51,10 +89,10 @@ type StageKey = "roughIn" | "topOutVent" | "trimFinish";
 type StageAssignmentState = {
   primaryUid: string;
   secondaryUid: string;
-  helperUid: string; // single helper (simpler + consistent with trip crew)
-  secondaryHelperUid: string; // second helper
+  helperUid: string;
+  secondaryHelperUid: string;
   useDefaultHelper: boolean;
-  overrideEnabled: boolean; // if false -> stage uses project defaults (no staffing saved)
+  overrideEnabled: boolean;
 };
 
 function emptyStageAssignment(): StageAssignmentState {
@@ -155,11 +193,11 @@ type TripDoc = {
   id: string;
   active: boolean;
   type: "service" | "project" | string;
-  status: string; // planned | in_progress | complete | cancelled
-  date: string; // YYYY-MM-DD
+  status: string;
+  date: string;
   timeWindow: "am" | "pm" | "all_day" | "custom" | string;
-  startTime: string; // "08:00"
-  endTime: string; // "17:00"
+  startTime: string;
+  endTime: string;
   crew?: TripCrew | null;
   link?: {
     projectId?: string | null;
@@ -175,8 +213,7 @@ type TripDoc = {
 };
 
 function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
-  if (!uid) return false;
-  if (!crew) return false;
+  if (!uid || !crew) return false;
   return (
     (crew.primaryTechUid || "") === uid ||
     (crew.helperUid || "") === uid ||
@@ -191,31 +228,16 @@ function stageLabel(stageKey: StageKey) {
   return "Trim / Finish";
 }
 
-function stageScheduledStart(project: Project, stageKey: StageKey) {
-  const stage =
-    stageKey === "roughIn"
-      ? project.roughIn
-      : stageKey === "topOutVent"
-      ? project.topOutVent
-      : project.trimFinish;
-  return String(stage.scheduledDate || "").trim();
-}
-
-function stageScheduledEnd(project: Project, stageKey: StageKey) {
-  const stage: any =
-    stageKey === "roughIn"
-      ? project.roughIn
-      : stageKey === "topOutVent"
-      ? project.topOutVent
-      : project.trimFinish;
-  return String(stage.scheduledEndDate || "").trim();
-}
-
 function getEnabledStages(projectType: string): StageKey[] {
   const t = String(projectType || "").toLowerCase();
   if (t === "new_construction") return ["roughIn", "topOutVent", "trimFinish"];
-  if (t === "remodel") return ["roughIn", "trimFinish"]; // 2 stages
-  if (t === "time_materials" || t === "time+materials" || t === "time_and_materials") return [];
+  if (t === "remodel") return ["roughIn", "trimFinish"];
+  if (
+    t === "time_materials" ||
+    t === "time+materials" ||
+    t === "time_and_materials"
+  )
+    return [];
   return ["roughIn", "topOutVent", "trimFinish"];
 }
 
@@ -245,7 +267,10 @@ function makeProjectTripId(projectId: string, stageKey: StageKey, dateIso: strin
   return `proj_${projectId}_${stageKey}_${dateIso}_${suffix}`;
 }
 
-function defaultStageTripDate(stageKey: StageKey, args: { roughStart: string; topStart: string; trimStart: string }) {
+function defaultStageTripDate(
+  stageKey: StageKey,
+  args: { roughStart: string; topStart: string; trimStart: string }
+) {
   const start =
     stageKey === "roughIn"
       ? safeTrim(args.roughStart)
@@ -255,218 +280,6 @@ function defaultStageTripDate(stageKey: StageKey, args: { roughStart: string; to
 
   if (start) return start;
   return toIsoDate(new Date());
-}
-
-// -----------------------------
-// UI bits (consistent DCFlow vibe)
-// -----------------------------
-const UI = {
-  pageBg: "#ffffff",
-  cardBg: "#ffffff",
-  cardBorder: "rgba(15, 23, 42, 0.10)",
-  softShadow: "0 12px 30px rgba(2, 6, 23, 0.08)",
-  title: "#0b1220",
-  sub: "rgba(2, 6, 23, 0.65)",
-  faint: "rgba(2, 6, 23, 0.45)",
-  primary: "#1e40ff",
-  primaryDark: "#1636d8",
-  primarySoft: "rgba(30, 64, 255, 0.10)",
-  danger: "#ef4444",
-  dangerDark: "#dc2626",
-  dangerSoft: "rgba(239, 68, 68, 0.10)",
-  surface: "rgba(2, 6, 23, 0.03)",
-  surface2: "rgba(2, 6, 23, 0.045)",
-  focusRing: "0 0 0 4px rgba(30, 64, 255, 0.16)",
-};
-
-function Card({
-  children,
-  title,
-  right,
-  subtitle,
-}: {
-  children: React.ReactNode;
-  title?: string;
-  subtitle?: string;
-  right?: React.ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${UI.cardBorder}`,
-        borderRadius: 16,
-        background: UI.cardBg,
-        boxShadow: UI.softShadow,
-        overflow: "hidden",
-      }}
-    >
-      {title ? (
-        <div
-          style={{
-            padding: "14px 16px",
-            borderBottom: `1px solid ${UI.cardBorder}`,
-            background: "linear-gradient(180deg, rgba(30,64,255,0.06), rgba(255,255,255,0.00))",
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 12,
-            alignItems: "flex-start",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 950, color: UI.title, fontSize: 15 }}>{title}</div>
-            {subtitle ? (
-              <div style={{ marginTop: 4, fontSize: 12, color: UI.sub, fontWeight: 700 }}>{subtitle}</div>
-            ) : null}
-          </div>
-          {right ? <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{right}</div> : null}
-        </div>
-      ) : null}
-
-      <div style={{ padding: 16 }}>{children}</div>
-    </div>
-  );
-}
-
-function Button({
-  children,
-  onClick,
-  disabled,
-  variant,
-  type,
-  title,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  variant?: "primary" | "ghost" | "danger" | "soft" | "softDanger";
-  type?: "button" | "submit";
-  title?: string;
-}) {
-  const v = variant || "ghost";
-  const styles: Record<string, any> = {
-    primary: {
-      border: `1px solid ${UI.primaryDark}`,
-      background: UI.primary,
-      color: "white",
-    },
-    ghost: {
-      border: `1px solid ${UI.cardBorder}`,
-      background: "white",
-      color: UI.title,
-    },
-    soft: {
-      border: `1px solid rgba(30,64,255,0.20)`,
-      background: UI.primarySoft,
-      color: UI.primaryDark,
-    },
-    danger: {
-      border: `1px solid ${UI.dangerDark}`,
-      background: UI.danger,
-      color: "white",
-    },
-    softDanger: {
-      border: `1px solid rgba(239,68,68,0.25)`,
-      background: UI.dangerSoft,
-      color: UI.dangerDark,
-    },
-  };
-
-  return (
-    <button
-      type={type || "button"}
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      style={{
-        padding: "10px 12px",
-        borderRadius: 12,
-        fontWeight: 950,
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.55 : 1,
-        ...styles[v],
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12, fontWeight: 900, color: UI.sub }}>{children}</div>;
-}
-
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      style={{
-        width: "100%",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: `1px solid ${UI.cardBorder}`,
-        outline: "none",
-        ...(props.style || {}),
-      }}
-      onFocus={(e) => {
-        (e.currentTarget as any).style.boxShadow = UI.focusRing;
-        props.onFocus?.(e as any);
-      }}
-      onBlur={(e) => {
-        (e.currentTarget as any).style.boxShadow = "none";
-        props.onBlur?.(e as any);
-      }}
-    />
-  );
-}
-
-function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      {...props}
-      style={{
-        width: "100%",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: `1px solid ${UI.cardBorder}`,
-        outline: "none",
-        background: "white",
-        ...(props.style || {}),
-      }}
-      onFocus={(e) => {
-        (e.currentTarget as any).style.boxShadow = UI.focusRing;
-        props.onFocus?.(e as any);
-      }}
-      onBlur={(e) => {
-        (e.currentTarget as any).style.boxShadow = "none";
-        props.onBlur?.(e as any);
-      }}
-    />
-  );
-}
-
-function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      {...props}
-      style={{
-        width: "100%",
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: `1px solid ${UI.cardBorder}`,
-        outline: "none",
-        ...(props.style || {}),
-      }}
-      onFocus={(e) => {
-        (e.currentTarget as any).style.boxShadow = UI.focusRing;
-        props.onFocus?.(e as any);
-      }}
-      onBlur={(e) => {
-        (e.currentTarget as any).style.boxShadow = "none";
-        props.onBlur?.(e as any);
-      }}
-    />
-  );
 }
 
 type TripModalMode = "create" | "edit";
@@ -507,7 +320,105 @@ function emptyTripModal(): TripModalState {
   };
 }
 
+function InfoField({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        borderRadius: 3,
+        height: "100%",
+        bgcolor: "background.paper",
+      }}
+    >
+      <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+        {label}
+      </Typography>
+      <Typography variant="subtitle1" sx={{ fontWeight: 700, mt: 0.75 }}>
+        {value || "—"}
+      </Typography>
+    </Paper>
+  );
+}
+
+function SectionCard({
+  title,
+  subtitle,
+  icon,
+  action,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card
+      elevation={0}
+      sx={{
+        borderRadius: 4,
+        border: (theme) => `1px solid ${theme.palette.divider}`,
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          px: { xs: 2, sm: 3 },
+          py: 2,
+          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
+          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.04),
+        }}
+      >
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={2}
+          alignItems={{ xs: "flex-start", md: "center" }}
+          justifyContent="space-between"
+        >
+          <Stack direction="row" spacing={1.25} alignItems="center">
+            {icon}
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                {title}
+              </Typography>
+              {subtitle ? (
+                <Typography variant="body2" color="text.secondary">
+                  {subtitle}
+                </Typography>
+              ) : null}
+            </Box>
+          </Stack>
+          {action ? <Stack direction="row" spacing={1} flexWrap="wrap">{action}</Stack> : null}
+        </Stack>
+      </Box>
+
+      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>{children}</CardContent>
+    </Card>
+  );
+}
+
+function selectMenuProps() {
+  return {
+    MenuProps: {
+      PaperProps: {
+        sx: {
+          borderRadius: 3,
+        },
+      },
+    },
+  };
+}
+
 export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -529,50 +440,45 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
   const [bidStatus, setBidStatus] = useState<"draft" | "submitted" | "won" | "lost">("draft");
 
-  // ✅ Project-level default crew (fallback)
   const [projectPrimaryUid, setProjectPrimaryUid] = useState("");
   const [projectSecondaryUid, setProjectSecondaryUid] = useState("");
   const [projectHelperUid, setProjectHelperUid] = useState<string>("");
   const [projectSecondaryHelperUid, setProjectSecondaryHelperUid] = useState<string>("");
   const [projectUseDefaultHelper, setProjectUseDefaultHelper] = useState(true);
 
-  // ✅ Stage-level crew (override)
   const [roughInAssign, setRoughInAssign] = useState<StageAssignmentState>(emptyStageAssignment());
   const [topOutAssign, setTopOutAssign] = useState<StageAssignmentState>(emptyStageAssignment());
   const [trimAssign, setTrimAssign] = useState<StageAssignmentState>(emptyStageAssignment());
 
-  const [roughInStatus, setRoughInStatus] = useState<"not_started" | "scheduled" | "in_progress" | "complete">(
-    "not_started"
-  );
+  const [roughInStatus, setRoughInStatus] = useState<
+    "not_started" | "scheduled" | "in_progress" | "complete"
+  >("not_started");
   const [roughInScheduledDate, setRoughInScheduledDate] = useState("");
   const [roughInScheduledEndDate, setRoughInScheduledEndDate] = useState("");
   const [roughInCompletedDate, setRoughInCompletedDate] = useState("");
 
-  const [topOutVentStatus, setTopOutVentStatus] = useState<"not_started" | "scheduled" | "in_progress" | "complete">(
-    "not_started"
-  );
+  const [topOutVentStatus, setTopOutVentStatus] = useState<
+    "not_started" | "scheduled" | "in_progress" | "complete"
+  >("not_started");
   const [topOutVentScheduledDate, setTopOutVentScheduledDate] = useState("");
   const [topOutVentScheduledEndDate, setTopOutVentScheduledEndDate] = useState("");
   const [topOutVentCompletedDate, setTopOutVentCompletedDate] = useState("");
 
-  const [trimFinishStatus, setTrimFinishStatus] = useState<"not_started" | "scheduled" | "in_progress" | "complete">(
-    "not_started"
-  );
+  const [trimFinishStatus, setTrimFinishStatus] = useState<
+    "not_started" | "scheduled" | "in_progress" | "complete"
+  >("not_started");
   const [trimFinishScheduledDate, setTrimFinishScheduledDate] = useState("");
   const [trimFinishScheduledEndDate, setTrimFinishScheduledEndDate] = useState("");
   const [trimFinishCompletedDate, setTrimFinishCompletedDate] = useState("");
 
   const [internalNotes, setInternalNotes] = useState("");
 
-  // ✅ Stage tab UX
   const [activeStageTab, setActiveStageTab] = useState<StageKey>("roughIn");
 
-  // ✅ Project trips
   const [tripsLoading, setTripsLoading] = useState(true);
   const [tripsError, setTripsError] = useState("");
   const [projectTrips, setProjectTrips] = useState<TripDoc[]>([]);
 
-  // ✅ Trip modal (edit + create)
   const [tripModal, setTripModal] = useState<TripModalState>(emptyTripModal());
   const [tripModalBusy, setTripModalBusy] = useState(false);
   const [tripModalErr, setTripModalErr] = useState("");
@@ -580,15 +486,23 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
   const myUid = String(appUser?.uid || "").trim();
 
-  // ✅ Editing permissions
-  const canEditProject = appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
-  const isFieldRole = appUser?.role === "technician" || appUser?.role === "helper" || appUser?.role === "apprentice";
+  const canEditProject =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager";
 
-  // -----------------------------
-  // Helpers: profiles + pairing
-  // -----------------------------
+  const isFieldRole =
+    appUser?.role === "technician" ||
+    appUser?.role === "helper" ||
+    appUser?.role === "apprentice";
+
   const helperCandidates = useMemo(() => {
-    const candidates: { uid: string; name: string; laborRole: string; defaultPairedTechUid?: string | null }[] = [];
+    const candidates: {
+      uid: string;
+      name: string;
+      laborRole: string;
+      defaultPairedTechUid?: string | null;
+    }[] = [];
 
     for (const p of employeeProfiles) {
       if ((p.employmentStatus || "current").toLowerCase() !== "current") continue;
@@ -613,7 +527,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   function computeDefaultHelperForTech(techUid: string) {
     const uid = techUid.trim();
     if (!uid) return "";
-    const match = helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === uid);
+    const match = helperCandidates.find(
+      (h) => String(h.defaultPairedTechUid || "").trim() === uid
+    );
     return match?.uid || "";
   }
 
@@ -627,9 +543,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     return h?.name || "";
   }
 
-  // -----------------------------
-  // Effective Crew per stage
-  // -----------------------------
   function getEffectiveCrewForStage(stageKey: StageKey): {
     primary: string;
     helper: string;
@@ -637,7 +550,11 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     secondaryHelper: string;
   } {
     const stageState =
-      stageKey === "roughIn" ? roughInAssign : stageKey === "topOutVent" ? topOutAssign : trimAssign;
+      stageKey === "roughIn"
+        ? roughInAssign
+        : stageKey === "topOutVent"
+        ? topOutAssign
+        : trimAssign;
 
     if (stageState.overrideEnabled) {
       return {
@@ -656,9 +573,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     };
   }
 
-  // -----------------------------
-  // Load Project
-  // -----------------------------
   useEffect(() => {
     async function loadProject() {
       try {
@@ -696,19 +610,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
           topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
           trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
-
-          // legacy
           assignedTechnicianId: data.assignedTechnicianId ?? undefined,
           assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-
-          // project default crew
           primaryTechnicianId: data.primaryTechnicianId ?? undefined,
           primaryTechnicianName: data.primaryTechnicianName ?? undefined,
           secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
           secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
           helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
           helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-
           internalNotes: data.internalNotes ?? undefined,
           active: data.active ?? true,
           createdAt: data.createdAt ?? undefined,
@@ -718,13 +627,16 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         setProject(item);
         setBidStatus(item.bidStatus);
 
-        // seed project default crew
-        const seededProjectPrimary = (data.primaryTechnicianId as string | undefined) || item.assignedTechnicianId || "";
+        const seededProjectPrimary =
+          (data.primaryTechnicianId as string | undefined) ||
+          item.assignedTechnicianId ||
+          "";
         setProjectPrimaryUid(seededProjectPrimary);
         setProjectSecondaryUid((data.secondaryTechnicianId as string | undefined) || "");
 
-        // helpers: convert old array -> first/second
-        const helperIds: string[] = Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : [];
+        const helperIds: string[] = Array.isArray(data.helperIds)
+          ? data.helperIds.filter(Boolean)
+          : [];
         setProjectHelperUid(helperIds[0] || "");
         setProjectSecondaryHelperUid(helperIds[1] || "");
 
@@ -736,8 +648,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         const topStaff = stageStaffing(item.topOutVent);
         const trimStaff = stageStaffing(item.trimFinish);
 
-        const pickHelper1 = (staff?: StageStaffing) => (Array.isArray(staff?.helperIds) ? staff!.helperIds![0] || "" : "");
-        const pickHelper2 = (staff?: StageStaffing) => (Array.isArray(staff?.helperIds) ? staff!.helperIds![1] || "" : "");
+        const pickHelper1 = (staff?: StageStaffing) =>
+          Array.isArray(staff?.helperIds) ? staff!.helperIds![0] || "" : "";
+        const pickHelper2 = (staff?: StageStaffing) =>
+          Array.isArray(staff?.helperIds) ? staff!.helperIds![1] || "" : "";
 
         setRoughInAssign({
           primaryUid: roughStaff?.primaryTechnicianId || "",
@@ -783,7 +697,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
         setInternalNotes(item.internalNotes ?? "");
 
-        // default active stage tab based on project type
         const enabled = getEnabledStages(item.projectType);
         if (enabled.length > 0) setActiveStageTab(enabled[0]);
       } catch (err: unknown) {
@@ -796,9 +709,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     loadProject();
   }, [params]);
 
-  // -----------------------------
-  // Load Technicians
-  // -----------------------------
   useEffect(() => {
     async function loadTechnicians() {
       try {
@@ -828,9 +738,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     loadTechnicians();
   }, []);
 
-  // -----------------------------
-  // Load Employee Profiles
-  // -----------------------------
   useEffect(() => {
     async function loadProfiles() {
       setProfilesLoading(true);
@@ -852,7 +759,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
         setEmployeeProfiles(items);
       } catch (err: unknown) {
-        setProfilesError(err instanceof Error ? err.message : "Failed to load employee profiles.");
+        setProfilesError(
+          err instanceof Error ? err.message : "Failed to load employee profiles."
+        );
       } finally {
         setProfilesLoading(false);
       }
@@ -861,9 +770,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     loadProfiles();
   }, []);
 
-  // -----------------------------
-  // Auto default helper pairing (project-level)
-  // -----------------------------
   useEffect(() => {
     if (!projectUseDefaultHelper) return;
 
@@ -876,14 +782,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
     const defaultHelper = computeDefaultHelperForTech(techUid);
     setProjectHelperUid(defaultHelper || "");
-    // leave secondary helper alone unless empty
     setProjectSecondaryHelperUid((prev) => (prev ? prev : ""));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectPrimaryUid, projectUseDefaultHelper, helperCandidates.length]);
 
-  // -----------------------------
-  // Auto default helper pairing (stage-level)
-  // -----------------------------
   useEffect(() => {
     if (!roughInAssign.overrideEnabled || !roughInAssign.useDefaultHelper) return;
     const techUid = roughInAssign.primaryUid.trim();
@@ -893,8 +794,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
     const h = computeDefaultHelperForTech(techUid);
     setRoughInAssign((p) => ({ ...p, helperUid: h || "" }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roughInAssign.primaryUid, roughInAssign.overrideEnabled, roughInAssign.useDefaultHelper, helperCandidates.length]);
+  }, [
+    roughInAssign.primaryUid,
+    roughInAssign.overrideEnabled,
+    roughInAssign.useDefaultHelper,
+    helperCandidates.length,
+  ]);
 
   useEffect(() => {
     if (!topOutAssign.overrideEnabled || !topOutAssign.useDefaultHelper) return;
@@ -905,8 +810,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
     const h = computeDefaultHelperForTech(techUid);
     setTopOutAssign((p) => ({ ...p, helperUid: h || "" }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topOutAssign.primaryUid, topOutAssign.overrideEnabled, topOutAssign.useDefaultHelper, helperCandidates.length]);
+  }, [
+    topOutAssign.primaryUid,
+    topOutAssign.overrideEnabled,
+    topOutAssign.useDefaultHelper,
+    helperCandidates.length,
+  ]);
 
   useEffect(() => {
     if (!trimAssign.overrideEnabled || !trimAssign.useDefaultHelper) return;
@@ -917,12 +826,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
     const h = computeDefaultHelperForTech(techUid);
     setTrimAssign((p) => ({ ...p, helperUid: h || "" }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trimAssign.primaryUid, trimAssign.overrideEnabled, trimAssign.useDefaultHelper, helperCandidates.length]);
+  }, [
+    trimAssign.primaryUid,
+    trimAssign.overrideEnabled,
+    trimAssign.useDefaultHelper,
+    helperCandidates.length,
+  ]);
 
-  // -----------------------------
-  // Load Project Trips (linked to projectId)
-  // -----------------------------
   useEffect(() => {
     async function loadProjectTrips() {
       if (!projectId) return;
@@ -971,9 +881,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     loadProjectTrips();
   }, [projectId]);
 
-  // -----------------------------
-  // Stage filtering based on project type
-  // -----------------------------
   const enabledStages = useMemo(() => {
     if (!project) return ["roughIn", "topOutVent", "trimFinish"] as StageKey[];
     return getEnabledStages(project.projectType);
@@ -981,9 +888,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
   const hasStages = enabledStages.length > 0;
 
-  // -----------------------------
-  // Trips grouped by stage
-  // -----------------------------
   const tripsByStage = useMemo(() => {
     const map: Record<StageKey, TripDoc[]> = {
       roughIn: [],
@@ -999,7 +903,11 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
 
     for (const k of Object.keys(map) as StageKey[]) {
-      map[k].sort((a, b) => `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`));
+      map[k].sort((a, b) =>
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+          `${b.date}_${b.startTime}_${b.id}`
+        )
+      );
     }
 
     return map;
@@ -1008,7 +916,11 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const nonStageProjectTrips = useMemo(() => {
     return projectTrips
       .filter((t) => !String(t.link?.projectStageKey || "").trim())
-      .sort((a, b) => `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`));
+      .sort((a, b) =>
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+          `${b.date}_${b.startTime}_${b.id}`
+        )
+      );
   }, [projectTrips]);
 
   function canCurrentUserEditTrip(t: TripDoc) {
@@ -1017,9 +929,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
   }
 
-  // -----------------------------
-  // Trip actions: cancel + delete
-  // -----------------------------
   async function cancelTrip(t: TripDoc) {
     if (!project) return;
 
@@ -1050,7 +959,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       setProjectTrips((prev) =>
         prev.map((x) =>
           x.id === t.id
-            ? { ...x, status: "cancelled", active: false, cancelReason: trimmed, updatedAt: now, updatedByUid: myUid || null }
+            ? {
+                ...x,
+                status: "cancelled",
+                active: false,
+                cancelReason: trimmed,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
             : x
         )
       );
@@ -1068,24 +984,21 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
 
     const ok = window.confirm(
-      `Permanently delete this trip?\n\n${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}\n\nThis cannot be undone.`
+      `Permanently delete this trip?\n\n${t.date} • ${formatTripWindow(
+        String(t.timeWindow || "")
+      )} • ${t.startTime}-${t.endTime}\n\nThis cannot be undone.`
     );
     if (!ok) return;
 
     try {
       await deleteDoc(doc(db, "trips", t.id));
       setProjectTrips((prev) => prev.filter((x) => x.id !== t.id));
-      // if modal open on this trip, close it
       setTripModal((m) => (m.open && m.tripId === t.id ? emptyTripModal() : m));
     } catch (e: any) {
       alert(e?.message || "Failed to delete trip.");
     }
   }
 
-  // -----------------------------
-  // Sync Stage Trips: create missing daily all-day trips
-  // (does NOT overwrite existing trips)
-  // -----------------------------
   async function syncStageTrips(stageKey: StageKey) {
     if (!project) return;
     if (!canEditProject) return;
@@ -1121,7 +1034,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
     const primaryUid = crew.primary.trim();
     if (!primaryUid) {
-      alert("Stage crew requires a Primary Technician (either stage override or project default).");
+      alert(
+        "Stage crew requires a Primary Technician (either stage override or project default)."
+      );
       return;
     }
 
@@ -1132,7 +1047,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const primaryName = findTechName(primaryUid) || "Primary Tech";
     const helperName = helperUid ? findHelperName(helperUid) || "Helper" : null;
     const secondaryName = secondaryUid ? findTechName(secondaryUid) || "Secondary Tech" : null;
-    const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Helper" : null;
+    const secondaryHelperName = secondaryHelperUid
+      ? findHelperName(secondaryHelperUid) || "Helper"
+      : null;
 
     const batchMax = 450;
     let batch = writeBatch(db);
@@ -1158,12 +1075,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         active: true,
         type: "project",
         status: "planned",
-
         date: dateIso,
         timeWindow: "all_day",
         startTime: "08:00",
         endTime: "17:00",
-
         crew: {
           primaryTechUid: primaryUid,
           primaryTechName: primaryName,
@@ -1174,16 +1089,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           secondaryHelperUid: secondaryHelperUid || null,
           secondaryHelperName: secondaryHelperName,
         },
-
         link: {
           projectId: project.id,
           projectStageKey: stageKey,
           serviceTicketId: null,
         },
-
         notes: null,
         cancelReason: null,
-
         createdAt,
         createdByUid,
         updatedAt: createdAt,
@@ -1207,7 +1119,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
     alert(`✅ Stage trips synced.\nCreated: ${created}\nSkipped (already existed): ${skipped}`);
 
-    // reload trips quickly
     try {
       setTripsLoading(true);
       const qTrips = query(
@@ -1246,9 +1157,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
   }
 
-  // -----------------------------
-  // Add Stage Trip (single, using effective crew)
-  // -----------------------------
   async function addStageTrip(stageKey: StageKey) {
     if (!project) return;
     if (!canEditProject) {
@@ -1276,7 +1184,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const primaryName = findTechName(primaryUid) || "Primary Tech";
     const helperName = helperUid ? findHelperName(helperUid) || "Helper" : null;
     const secondaryName = secondaryUid ? findTechName(secondaryUid) || "Secondary Tech" : null;
-    const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Helper" : null;
+    const secondaryHelperName = secondaryHelperUid
+      ? findHelperName(secondaryHelperUid) || "Helper"
+      : null;
 
     const now = nowIso();
     const id = makeProjectTripId(project.id, stageKey, dateIso);
@@ -1285,12 +1195,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       active: true,
       type: "project",
       status: "planned",
-
       date: dateIso,
       timeWindow: "all_day",
       startTime: "08:00",
       endTime: "17:00",
-
       crew: {
         primaryTechUid: primaryUid,
         primaryTechName: primaryName,
@@ -1301,16 +1209,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         secondaryHelperUid: secondaryHelperUid || null,
         secondaryHelperName: secondaryHelperName,
       },
-
       link: {
         projectId: project.id,
         projectStageKey: stageKey,
         serviceTicketId: null,
       },
-
       notes: null,
       cancelReason: null,
-
       createdAt: now,
       createdByUid: myUid || null,
       updatedAt: now,
@@ -1321,16 +1226,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       await setDoc(doc(db, "trips", id), payload, { merge: false });
       const newTrip: TripDoc = { id, ...(payload as any) };
       setProjectTrips((prev) =>
-        [...prev, newTrip].sort((a, b) => `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`))
+        [...prev, newTrip].sort((a, b) =>
+          `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+            `${b.date}_${b.startTime}_${b.id}`
+          )
+        )
       );
     } catch (e: any) {
       alert(e?.message || "Failed to add trip.");
     }
   }
 
-  // -----------------------------
-  // Project Trips (no stages / time+materials): add trip (uses project defaults)
-  // -----------------------------
   async function addProjectTripNoStageFromModal(values: TripModalState) {
     if (!project) return;
     if (!canEditProject) {
@@ -1346,7 +1252,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     if (!st || !et) throw new Error("Start and end times are required.");
     if (et <= st) throw new Error("End time must be after start time.");
 
-    // require at least a primary tech
     const primaryUid = safeTrim(values.primaryTechUid || projectPrimaryUid);
     if (!primaryUid) throw new Error("Primary Tech is required.");
 
@@ -1357,7 +1262,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const primaryName = findTechName(primaryUid) || "Primary Tech";
     const helperName = helperUid ? findHelperName(helperUid) || "Helper" : null;
     const secondaryName = secondaryUid ? findTechName(secondaryUid) || "Secondary Tech" : null;
-    const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Helper" : null;
+    const secondaryHelperName = secondaryHelperUid
+      ? findHelperName(secondaryHelperUid) || "Helper"
+      : null;
 
     const now = nowIso();
 
@@ -1365,12 +1272,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       active: true,
       type: "project",
       status: "planned",
-
       date,
       timeWindow: values.timeWindow,
       startTime: st,
       endTime: et,
-
       crew: {
         primaryTechUid: primaryUid,
         primaryTechName: primaryName,
@@ -1381,16 +1286,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         secondaryHelperUid: secondaryHelperUid || null,
         secondaryHelperName: secondaryHelperName,
       },
-
       link: {
         projectId: project.id,
         projectStageKey: null,
         serviceTicketId: null,
       },
-
       notes: safeTrim(values.notes) || null,
       cancelReason: null,
-
       createdAt: now,
       createdByUid: myUid || null,
       updatedAt: now,
@@ -1400,14 +1302,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const createdRef = await addDoc(collection(db, "trips"), payload as any);
     setProjectTrips((prev) =>
       [...prev, { id: createdRef.id, ...(payload as any) }].sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`)
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+          `${b.date}_${b.startTime}_${b.id}`
+        )
       )
     );
   }
 
-  // -----------------------------
-  // Trip Modal open helpers
-  // -----------------------------
   function openCreateTrip(stageKey: StageKey | null) {
     if (!project) return;
 
@@ -1438,7 +1339,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     setTripModal({
       open: true,
       mode: "create",
-      stageKey: stageKey,
+      stageKey,
       tripId: null,
       date,
       timeWindow: tw,
@@ -1456,7 +1357,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     setTripModalErr("");
     setTripModalOk("");
 
-    const tw = (String(t.timeWindow || "all_day") as any) as "am" | "pm" | "all_day" | "custom";
+    const tw = String(t.timeWindow || "all_day") as "am" | "pm" | "all_day" | "custom";
 
     setTripModal({
       open: true,
@@ -1482,26 +1383,19 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     setTripModalOk("");
   }
 
-  // keep times in sync when window changes away from custom
   useEffect(() => {
     if (!tripModal.open) return;
     if (tripModal.timeWindow !== "custom") {
       const { start, end } = windowToTimes(tripModal.timeWindow);
       setTripModal((m) => ({ ...m, startTime: start, endTime: end }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripModal.timeWindow]);
+  }, [tripModal.timeWindow, tripModal.open]);
 
-  // -----------------------------
-  // Save modal (create or edit)
-  // -----------------------------
   async function saveTripModal() {
-    if (!project) return;
-    if (!tripModal.open) return;
+    if (!project || !tripModal.open) return;
 
     const mode = tripModal.mode;
 
-    // permission: edit requires either canEditProject OR on-crew tech
     if (mode === "edit") {
       const existing = projectTrips.find((x) => x.id === tripModal.tripId);
       if (!existing) {
@@ -1542,14 +1436,15 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       const primaryName = findTechName(primaryUid) || "Primary Tech";
       const helperName = helperUid ? findHelperName(helperUid) || "Helper" : null;
       const secondaryName = secondaryUid ? findTechName(secondaryUid) || "Secondary Tech" : null;
-      const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Helper" : null;
+      const secondaryHelperName = secondaryHelperUid
+        ? findHelperName(secondaryHelperUid) || "Helper"
+        : null;
 
       const now = nowIso();
 
       if (mode === "create") {
         const stageKey = tripModal.stageKey;
 
-        // staged project types: create stage trip doc
         if (hasStages && stageKey) {
           const id = makeProjectTripId(project.id, stageKey, date);
 
@@ -1589,7 +1484,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           const newTrip: TripDoc = { id, ...(payload as any) };
           setProjectTrips((prev) =>
             [...prev, newTrip].sort((a, b) =>
-              `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`)
+              `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+                `${b.date}_${b.startTime}_${b.id}`
+              )
             )
           );
 
@@ -1598,14 +1495,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           return;
         }
 
-        // no-stage projects
         await addProjectTripNoStageFromModal(tripModal);
         setTripModalOk("✅ Trip scheduled.");
         setTimeout(() => closeTripModal(), 450);
         return;
       }
 
-      // EDIT mode
       const tripId = safeTrim(tripModal.tripId);
       if (!tripId) throw new Error("Missing trip id.");
 
@@ -1665,9 +1560,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
   }
 
-  // -----------------------------
-  // Save Project Updates
-  // -----------------------------
   async function handleSaveUpdates(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!project) return;
@@ -1684,8 +1576,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
       const helpers: string[] = [];
       if (projectHelperUid.trim()) helpers.push(projectHelperUid.trim());
-      if (projectSecondaryHelperUid.trim() && projectSecondaryHelperUid.trim() !== projectHelperUid.trim())
+      if (
+        projectSecondaryHelperUid.trim() &&
+        projectSecondaryHelperUid.trim() !== projectHelperUid.trim()
+      ) {
         helpers.push(projectSecondaryHelperUid.trim());
+      }
 
       const helperNames = helpers.map((uid) => findHelperName(uid) || uid);
 
@@ -1705,9 +1601,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           primaryTechnicianId: primaryUid || undefined,
           primaryTechnicianName: primaryUid ? findTechName(primaryUid) || undefined : undefined,
           secondaryTechnicianId: secondaryUid || undefined,
-          secondaryTechnicianName: secondaryUid ? findTechName(secondaryUid) || undefined : undefined,
+          secondaryTechnicianName: secondaryUid
+            ? findTechName(secondaryUid) || undefined
+            : undefined,
           helperIds: helperIds.length ? helperIds : undefined,
-          helperNames: helperIds.length ? helperIds.map((uid) => findHelperName(uid) || uid) : undefined,
+          helperNames: helperIds.length
+            ? helperIds.map((uid) => findHelperName(uid) || uid)
+            : undefined,
         };
 
         return staffing;
@@ -1762,7 +1662,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         primaryTechnicianId: projPrimary,
         primaryTechnicianName: projPrimary ? findTechName(projPrimary) || null : null,
         secondaryTechnicianId: projSecondary,
-        secondaryTechnicianName: projSecondary ? findTechName(projSecondary) || null : null,
+        secondaryTechnicianName: projSecondary
+          ? findTechName(projSecondary) || null
+          : null,
 
         helperIds: helpers.length ? helpers : null,
         helperNames: helperNames.length ? helperNames : null,
@@ -1792,24 +1694,23 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       );
       setSaveSuccess("✅ Project updates saved.");
     } catch (err: unknown) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save project updates.");
+      setSaveError(
+        err instanceof Error ? err.message : "Failed to save project updates."
+      );
     } finally {
       setSaving(false);
     }
   }
 
-  // Snapshot display helpers
   const projectPrimaryName = projectPrimaryUid ? findTechName(projectPrimaryUid) : "";
   const projectSecondaryName = projectSecondaryUid ? findTechName(projectSecondaryUid) : "";
   const projectHelperName = projectHelperUid ? findHelperName(projectHelperUid) : "";
-  const projectSecondaryHelperName = projectSecondaryHelperUid ? findHelperName(projectSecondaryHelperUid) : "";
+  const projectSecondaryHelperName = projectSecondaryHelperUid
+    ? findHelperName(projectSecondaryHelperUid)
+    : "";
 
   const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
-  const activeStageEffectiveCrew = hasStages ? getEffectiveCrewForStage(activeStageTab) : null;
 
-  // -----------------------------
-  // Stage tab rendering helpers (editable stage info lives here)
-  // -----------------------------
   function stageStateForKey(stageKey: StageKey) {
     if (stageKey === "roughIn") {
       return {
@@ -1853,1056 +1754,1275 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     };
   }
 
-  // -----------------------------
-  // Modal UI
-  // -----------------------------
-  const TripModal = tripModal.open ? (
-    <div
-      role="dialog"
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-      }}
-    >
-      <div
-        onClick={closeTripModal}
-        style={{ position: "absolute", inset: 0, background: "rgba(2,6,23,0.55)" }}
-      />
+  function statusChipColor(status: string): "default" | "primary" | "success" | "warning" | "error" {
+    const s = String(status || "").toLowerCase();
+    if (s === "complete") return "success";
+    if (s === "in_progress") return "warning";
+    if (s === "scheduled") return "primary";
+    if (s === "cancelled") return "error";
+    return "default";
+  }
 
-      <div
-        style={{
-          position: "relative",
-          width: "min(920px, calc(100vw - 24px))",
-          maxHeight: "calc(100vh - 24px)",
-          overflow: "auto",
-          borderRadius: 18,
-          border: "1px solid rgba(255,255,255,0.12)",
-          background: "white",
-          boxShadow: "0 20px 70px rgba(2,6,23,0.35)",
+  function TripRow({
+    t,
+  }: {
+    t: TripDoc;
+  }) {
+    const canEditThis = canCurrentUserEditTrip(t);
+    const cancelled = t.status === "cancelled" || t.active === false;
+
+    const crew = t.crew || {};
+    const tech = crew.primaryTechName || "Unassigned";
+    const helper = crew.helperName ? ` • Helper: ${crew.helperName}` : "";
+    const secondTech = crew.secondaryTechName ? ` • 2nd Tech: ${crew.secondaryTechName}` : "";
+    const secondHelper = crew.secondaryHelperName
+      ? ` • 2nd Helper: ${crew.secondaryHelperName}`
+      : "";
+
+    return (
+      <Paper
+        variant="outlined"
+        sx={{
+          p: 2,
+          borderRadius: 4,
+          bgcolor: cancelled
+            ? alpha(theme.palette.error.main, 0.04)
+            : "background.paper",
         }}
       >
-        <div
-          style={{
-            padding: 16,
-            borderBottom: `1px solid ${UI.cardBorder}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            flexWrap: "wrap",
-            background: "linear-gradient(180deg, rgba(30,64,255,0.08), rgba(255,255,255,0))",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 16, fontWeight: 1000, color: UI.title }}>
-              {tripModal.mode === "edit" ? "Edit / Reschedule Trip" : "Schedule New Trip"}
-            </div>
-            <div style={{ marginTop: 6, fontSize: 12, color: UI.sub, fontWeight: 800 }}>
-              {tripModal.stageKey ? (
-                <>
-                  Stage: <strong>{stageLabel(tripModal.stageKey)}</strong>
-                </>
-              ) : (
-                <>Project Trips</>
-              )}
-            </div>
-          </div>
+        <Stack spacing={1.5}>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1.25}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+          >
+            <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+              {t.date} • {formatTripWindow(String(t.timeWindow || "all_day"))} •{" "}
+              {t.startTime}–{t.endTime}
+            </Typography>
 
-          <Button variant="ghost" onClick={closeTripModal}>
-            Close
-          </Button>
-        </div>
+            <Chip
+              label={
+                cancelled
+                  ? "Cancelled"
+                  : (t.status || "planned").replaceAll("_", " ").toUpperCase()
+              }
+              color={statusChipColor(cancelled ? "cancelled" : t.status)}
+              variant={cancelled ? "filled" : "outlined"}
+              size="small"
+            />
+          </Stack>
 
-        <div style={{ padding: 16 }}>
-          <div style={{ display: "grid", gap: 12 }}>
-            <div
-              style={{
-                display: "grid",
-                gap: 12,
-                gridTemplateColumns: "repeat(2, minmax(260px, 1fr))",
-              }}
+          <Typography variant="body2" color="text.secondary">
+            <strong>Crew:</strong> {tech}
+            {helper}
+            {secondTech}
+            {secondHelper}
+          </Typography>
+
+          {t.notes ? (
+            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+              {t.notes}
+            </Typography>
+          ) : null}
+
+          {t.cancelReason ? (
+            <Typography variant="caption" color="text.secondary">
+              Cancel reason: {t.cancelReason}
+            </Typography>
+          ) : null}
+
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Button
+              variant="outlined"
+              onClick={() => openEditTrip(t)}
+              disabled={!canEditThis}
             >
-              <div>
-                <Label>Date</Label>
-                <Input
-                  type="date"
-                  value={tripModal.date}
-                  onChange={(e) => setTripModal((m) => ({ ...m, date: e.target.value }))}
-                  disabled={tripModalBusy}
-                />
-              </div>
+              Edit
+            </Button>
 
-              <div>
-                <Label>Time Window</Label>
-                <Select
-                  value={tripModal.timeWindow}
-                  onChange={(e) => setTripModal((m) => ({ ...m, timeWindow: e.target.value as any }))}
-                  disabled={tripModalBusy}
+            {canEditProject ? (
+              <>
+                <Button
+                  variant="text"
+                  color="warning"
+                  onClick={() => cancelTrip(t)}
+                  disabled={cancelled}
                 >
-                  <option value="all_day">All Day (8:00–5:00)</option>
-                  <option value="am">Morning (8:00–12:00)</option>
-                  <option value="pm">Afternoon (1:00–5:00)</option>
-                  <option value="custom">Custom</option>
-                </Select>
-              </div>
-
-              <div>
-                <Label>Start Time</Label>
-                <Input
-                  type="time"
-                  value={tripModal.startTime}
-                  onChange={(e) => setTripModal((m) => ({ ...m, startTime: e.target.value }))}
-                  disabled={tripModalBusy || tripModal.timeWindow !== "custom"}
-                  style={{
-                    background: tripModal.timeWindow === "custom" ? "white" : UI.surface,
-                  }}
-                />
-              </div>
-
-              <div>
-                <Label>End Time</Label>
-                <Input
-                  type="time"
-                  value={tripModal.endTime}
-                  onChange={(e) => setTripModal((m) => ({ ...m, endTime: e.target.value }))}
-                  disabled={tripModalBusy || tripModal.timeWindow !== "custom"}
-                  style={{
-                    background: tripModal.timeWindow === "custom" ? "white" : UI.surface,
-                  }}
-                />
-              </div>
-            </div>
-
-            <div style={{ marginTop: 4 }}>
-              <div
-                style={{
-                  border: `1px solid ${UI.cardBorder}`,
-                  borderRadius: 14,
-                  padding: 12,
-                  background: UI.surface,
-                }}
-              >
-                <div style={{ fontWeight: 1000, color: UI.title, marginBottom: 10 }}>Crew</div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 12,
-                    gridTemplateColumns: "repeat(2, minmax(260px, 1fr))",
-                  }}
-                >
-                  <div>
-                    <Label>Primary Tech</Label>
-                    <Select
-                      value={tripModal.primaryTechUid}
-                      onChange={(e) => setTripModal((m) => ({ ...m, primaryTechUid: e.target.value }))}
-                      disabled={tripModalBusy}
-                    >
-                      <option value="">Select a technician...</option>
-                      {technicians.map((t) => (
-                        <option key={t.uid} value={t.uid}>
-                          {t.displayName}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Label>Helper</Label>
-                    <Select
-                      value={tripModal.helperUid}
-                      onChange={(e) => setTripModal((m) => ({ ...m, helperUid: e.target.value }))}
-                      disabled={tripModalBusy}
-                    >
-                      <option value="">— None —</option>
-                      {helperCandidates.map((h) => (
-                        <option key={h.uid} value={h.uid}>
-                          {h.name} ({h.laborRole})
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Label>Secondary Tech</Label>
-                    <Select
-                      value={tripModal.secondaryTechUid}
-                      onChange={(e) => setTripModal((m) => ({ ...m, secondaryTechUid: e.target.value }))}
-                      disabled={tripModalBusy || !tripModal.primaryTechUid}
-                    >
-                      <option value="">— None —</option>
-                      {technicians
-                        .filter((t) => t.uid !== tripModal.primaryTechUid)
-                        .map((t) => (
-                          <option key={t.uid} value={t.uid}>
-                            {t.displayName}
-                          </option>
-                        ))}
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Label>Secondary Helper</Label>
-                    <Select
-                      value={tripModal.secondaryHelperUid}
-                      onChange={(e) => setTripModal((m) => ({ ...m, secondaryHelperUid: e.target.value }))}
-                      disabled={tripModalBusy}
-                    >
-                      <option value="">— None —</option>
-                      {helperCandidates.map((h) => (
-                        <option key={h.uid} value={h.uid}>
-                          {h.name} ({h.laborRole})
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 10, fontSize: 12, color: UI.faint, fontWeight: 700 }}>
-                  Tip: adjusting crew here ensures trips show correctly on <strong>My Day</strong> and the schedule.
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <Label>Trip Notes</Label>
-              <Textarea
-                value={tripModal.notes}
-                onChange={(e) => setTripModal((m) => ({ ...m, notes: e.target.value }))}
-                rows={4}
-                disabled={tripModalBusy}
-                placeholder="Optional notes for this trip..."
-              />
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Button variant="primary" onClick={saveTripModal} disabled={tripModalBusy}>
-                  {tripModalBusy ? "Saving..." : "Save Changes"}
-                </Button>
-
-                {tripModal.mode === "edit" && canEditProject && tripModal.tripId ? (
-                  <Button
-                    variant="softDanger"
-                    onClick={() => {
-                      const t = projectTrips.find((x) => x.id === tripModal.tripId);
-                      if (t) removeTrip(t);
-                    }}
-                    disabled={tripModalBusy}
-                    title="Delete trip"
-                  >
-                    Delete
-                  </Button>
-                ) : null}
-
-                <Button variant="ghost" onClick={closeTripModal} disabled={tripModalBusy}>
                   Cancel
                 </Button>
-              </div>
-
-              <div style={{ minWidth: 0 }}>
-                {tripModalErr ? <div style={{ color: UI.dangerDark, fontWeight: 900, fontSize: 13 }}>{tripModalErr}</div> : null}
-                {tripModalOk ? <div style={{ color: "#15803d", fontWeight: 900, fontSize: 13 }}>{tripModalOk}</div> : null}
-              </div>
-            </div>
-
-            {tripModal.mode === "edit" ? (
-              <div style={{ marginTop: 6, fontSize: 12, color: UI.faint }}>
-                This modal is intentionally separate from “Schedule New Trip” so rescheduling never feels like it’s using the same fields.
-              </div>
+                <Button
+                  variant="text"
+                  color="error"
+                  onClick={() => removeTrip(t)}
+                >
+                  Delete
+                </Button>
+              </>
             ) : null}
-          </div>
-        </div>
-      </div>
-    </div>
-  ) : null;
+          </Stack>
+
+          {!canEditThis ? (
+            <Typography variant="caption" color="text.secondary">
+              Techs can edit trips they are assigned to. Admin / Dispatcher / Manager can
+              edit any trip.
+            </Typography>
+          ) : null}
+
+          <Typography variant="caption" color="text.disabled">
+            Trip ID: {t.id}
+          </Typography>
+        </Stack>
+      </Paper>
+    );
+  }
 
   return (
     <ProtectedPage fallbackTitle="Project Detail">
       <AppShell appUser={appUser}>
-        {TripModal}
+        <Dialog
+          open={tripModal.open}
+          onClose={tripModalBusy ? undefined : closeTripModal}
+          fullWidth
+          maxWidth="md"
+          PaperProps={{
+            sx: {
+              borderRadius: 4,
+            },
+          }}
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            <Stack spacing={0.75}>
+              <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                {tripModal.mode === "edit" ? "Edit / Reschedule Trip" : "Schedule New Trip"}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {tripModal.stageKey
+                  ? `Stage: ${stageLabel(tripModal.stageKey)}`
+                  : "Project Trips"}
+              </Typography>
+            </Stack>
+          </DialogTitle>
 
-        {loading ? <p>Loading project...</p> : null}
-        {error ? <p style={{ color: UI.dangerDark, fontWeight: 900 }}>{error}</p> : null}
-
-        {!loading && !error && project ? (
-          <div style={{ display: "grid", gap: 16 }}>
-            {/* Header */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: 12,
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ minWidth: 0 }}>
-                <h1 style={{ fontSize: 24, fontWeight: 1000, margin: 0, color: UI.title }}>{project.projectName}</h1>
-                <div style={{ marginTop: 6, color: UI.sub, fontWeight: 800, fontSize: 12 }}>
-                  Project ID: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{projectId}</span>
-                </div>
-              </div>
-
-              <Link
-                href="/projects"
-                style={{
-                  padding: "10px 12px",
-                  border: `1px solid ${UI.cardBorder}`,
-                  borderRadius: 12,
-                  textDecoration: "none",
-                  color: UI.title,
-                  fontWeight: 950,
-                  background: "white",
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 2,
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    sm: "repeat(2, minmax(0, 1fr))",
+                  },
                 }}
               >
-                Back to Projects
-              </Link>
-            </div>
+                <TextField
+                  label="Date"
+                  type="date"
+                  value={tripModal.date}
+                  onChange={(e) =>
+                    setTripModal((m) => ({ ...m, date: e.target.value }))
+                  }
+                  InputLabelProps={{ shrink: true }}
+                  disabled={tripModalBusy}
+                  fullWidth
+                />
 
-            {/* Customer + Address */}
-            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(320px, 1fr))" }}>
-              <Card title="Customer">
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ fontSize: 14 }}>
-                    <strong>Customer:</strong> {project.customerDisplayName || "—"}
-                  </div>
-                  <div style={{ fontSize: 13, color: UI.sub }}>
-                    <strong>Customer ID:</strong> {project.customerId || "—"}
-                  </div>
-                </div>
-              </Card>
+                <FormControl fullWidth>
+                  <InputLabel>Time Window</InputLabel>
+                  <Select
+                    label="Time Window"
+                    value={tripModal.timeWindow}
+                    onChange={(e) =>
+                      setTripModal((m) => ({
+                        ...m,
+                        timeWindow: e.target.value as any,
+                      }))
+                    }
+                    disabled={tripModalBusy}
+                    {...selectMenuProps()}
+                  >
+                    <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
+                    <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
+                    <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
+                    <MenuItem value="custom">Custom</MenuItem>
+                  </Select>
+                </FormControl>
 
-              <Card title="Project Address">
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ fontSize: 13, color: UI.sub }}>
-                    <strong>Label:</strong> {project.serviceAddressLabel || "—"}
-                  </div>
-                  <div style={{ fontSize: 14 }}>{project.serviceAddressLine1 || "—"}</div>
-                  {project.serviceAddressLine2 ? <div style={{ fontSize: 14 }}>{project.serviceAddressLine2}</div> : null}
-                  <div style={{ fontSize: 14 }}>
-                    {project.serviceCity || "—"}, {project.serviceState || "—"} {project.servicePostalCode || ""}
-                  </div>
-                </div>
-              </Card>
-            </div>
+                <TextField
+                  label="Start Time"
+                  type="time"
+                  value={tripModal.startTime}
+                  onChange={(e) =>
+                    setTripModal((m) => ({ ...m, startTime: e.target.value }))
+                  }
+                  InputLabelProps={{ shrink: true }}
+                  disabled={tripModalBusy || tripModal.timeWindow !== "custom"}
+                  fullWidth
+                />
 
-            {/* Project Overview (tight) */}
-            <Card
-              title="Project Overview"
-              subtitle="Defaults are used as stage fallback, and can be overridden per stage or per trip."
-            >
-              <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(3, minmax(240px, 1fr))" }}>
-                  <div style={{ border: `1px solid ${UI.cardBorder}`, borderRadius: 14, padding: 12, background: UI.surface }}>
-                    <div style={{ fontSize: 12, fontWeight: 900, color: UI.sub }}>Project Type</div>
-                    <div style={{ marginTop: 6, fontWeight: 1000, color: UI.title }}>{project.projectType}</div>
-                  </div>
+                <TextField
+                  label="End Time"
+                  type="time"
+                  value={tripModal.endTime}
+                  onChange={(e) =>
+                    setTripModal((m) => ({ ...m, endTime: e.target.value }))
+                  }
+                  InputLabelProps={{ shrink: true }}
+                  disabled={tripModalBusy || tripModal.timeWindow !== "custom"}
+                  fullWidth
+                />
+              </Box>
 
-                  <div style={{ border: `1px solid ${UI.cardBorder}`, borderRadius: 14, padding: 12, background: UI.surface }}>
-                    <div style={{ fontSize: 12, fontWeight: 900, color: UI.sub }}>Bid Status</div>
-                    <div style={{ marginTop: 6, fontWeight: 1000, color: UI.title }}>{formatBidStatus(project.bidStatus)}</div>
-                  </div>
-
-                  <div style={{ border: `1px solid ${UI.cardBorder}`, borderRadius: 14, padding: 12, background: UI.surface }}>
-                    <div style={{ fontSize: 12, fontWeight: 900, color: UI.sub }}>Total Bid</div>
-                    <div style={{ marginTop: 6, fontWeight: 1000, color: UI.title }}>${Number(project.totalBidAmount || 0).toFixed(2)}</div>
-                  </div>
-                </div>
-
-                <div style={{ border: `1px solid ${UI.cardBorder}`, borderRadius: 14, padding: 12, background: "white" }}>
-                  <div style={{ fontWeight: 1000, color: UI.title, marginBottom: 8 }}>Default Crew</div>
-
-                  <div style={{ display: "grid", gap: 6, color: UI.sub, fontSize: 13 }}>
-                    <div>
-                      <strong>Primary Tech:</strong> {projectPrimaryName || "Unassigned"}
-                    </div>
-                    <div>
-                      <strong>Helper:</strong> {projectHelperName || "—"}
-                    </div>
-                    <div>
-                      <strong>Secondary Tech:</strong> {projectSecondaryName || "—"}
-                    </div>
-                    <div>
-                      <strong>Secondary Helper:</strong> {projectSecondaryHelperName || "—"}
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 10, fontSize: 12, color: UI.faint }}>
-                    Note: you can still override crew per-stage <em>and</em> per-trip (via Edit / Reschedule).
-                  </div>
-                </div>
-
-                {project.description ? (
-                  <div style={{ borderTop: `1px solid ${UI.cardBorder}`, paddingTop: 10 }}>
-                    <div style={{ fontWeight: 1000, color: UI.title, marginBottom: 6 }}>Description</div>
-                    <div style={{ color: UI.sub, fontSize: 14 }}>{project.description}</div>
-                  </div>
-                ) : null}
-              </div>
-            </Card>
-
-            {/* Stages (tabs) OR Project Trips for no-stage */}
-            {hasStages ? (
-              <Card
-                title="Stages"
-                subtitle="Stage info + trips live together. Crew can be overridden per stage, and also adjusted per trip in the Edit modal."
-                right={
-                  canEditProject ? (
-                    <>
-                      <Button variant="soft" onClick={() => syncStageTrips(activeStageTab)}>
-                        🔄 Sync Stage Trips
-                      </Button>
-                      <Button variant="primary" onClick={() => openCreateTrip(activeStageTab)}>
-                        + Schedule New Trip
-                      </Button>
-                    </>
-                  ) : (
-                    <div style={{ fontSize: 12, color: UI.sub, fontWeight: 800 }}>
-                      Read-only (Admin/Dispatcher/Manager can edit)
-                    </div>
-                  )
-                }
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 2,
+                  borderRadius: 4,
+                  bgcolor: alpha(theme.palette.primary.main, 0.03),
+                }}
               >
-                {/* Stage Tabs */}
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-                  {enabledStages.map((k) => (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => setActiveStageTab(k)}
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 999,
-                        border: `1px solid ${UI.cardBorder}`,
-                        background: activeStageTab === k ? UI.primarySoft : "white",
-                        color: activeStageTab === k ? UI.primaryDark : UI.title,
-                        fontWeight: 950,
-                        cursor: "pointer",
-                      }}
-                    >
-                      {stageLabel(k)}
-                    </button>
-                  ))}
-                </div>
+                <Stack spacing={2}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                    Crew
+                  </Typography>
 
-                {/* Stage details + trips */}
-                {(() => {
-                  const st = stageStateForKey(activeStageTab);
-                  const effective = getEffectiveCrewForStage(activeStageTab);
-
-                  const effPrimary = effective.primary ? findTechName(effective.primary) : "Unassigned";
-                  const effHelper = effective.helper ? findHelperName(effective.helper) : "—";
-                  const effSecondary = effective.secondary ? findTechName(effective.secondary) : "—";
-                  const effSecondaryHelper = effective.secondaryHelper ? findHelperName(effective.secondaryHelper) : "—";
-
-                  return (
-                    <div style={{ display: "grid", gap: 12 }}>
-                      <div
-                        style={{
-                          border: `1px solid ${UI.cardBorder}`,
-                          borderRadius: 16,
-                          padding: 14,
-                          background: UI.surface,
-                        }}
-                      >
-                        <div style={{ fontWeight: 1000, color: UI.title, marginBottom: 10 }}>Stage Details</div>
-
-                        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(3, minmax(240px, 1fr))" }}>
-                          <div>
-                            <Label>Status</Label>
-                            <Select
-                              value={st.status}
-                              onChange={(e) => st.setStatus(e.target.value as any)}
-                              disabled={!canEditProject}
-                            >
-                              <option value="not_started">Not Started</option>
-                              <option value="scheduled">Scheduled</option>
-                              <option value="in_progress">In Progress</option>
-                              <option value="complete">Complete</option>
-                            </Select>
-                          </div>
-
-                          <div>
-                            <Label>Scheduled Start</Label>
-                            <Input
-                              type="date"
-                              value={st.start}
-                              onChange={(e) => st.setStart(e.target.value)}
-                              disabled={!canEditProject}
-                            />
-                          </div>
-
-                          <div>
-                            <Label>Scheduled End</Label>
-                            <Input
-                              type="date"
-                              value={st.end}
-                              onChange={(e) => st.setEnd(e.target.value)}
-                              disabled={!canEditProject}
-                            />
-                          </div>
-
-                          <div>
-                            <Label>Completed Date</Label>
-                            <Input
-                              type="date"
-                              value={st.done}
-                              onChange={(e) => st.setDone(e.target.value)}
-                              disabled={!canEditProject}
-                            />
-                          </div>
-
-                          <div style={{ gridColumn: "span 2" }}>
-                            <div style={{ border: `1px solid ${UI.cardBorder}`, borderRadius: 14, padding: 12, background: "white" }}>
-                              <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-                                <div style={{ fontWeight: 1000, color: UI.title }}>
-                                  Stage Crew{" "}
-                                  <span style={{ color: UI.sub, fontWeight: 800, fontSize: 12 }}>
-                                    ({st.assign.overrideEnabled ? "override" : "using project defaults"})
-                                  </span>
-                                </div>
-
-                                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: UI.sub, fontWeight: 900 }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={st.assign.overrideEnabled}
-                                    onChange={(e) => st.setAssign((p: any) => ({ ...p, overrideEnabled: e.target.checked }))}
-                                    disabled={!canEditProject}
-                                  />
-                                  Override for this stage
-                                </label>
-                              </div>
-
-                              {st.assign.overrideEnabled ? (
-                                <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(240px, 1fr))" }}>
-                                  <div>
-                                    <Label>Primary Tech</Label>
-                                    <Select
-                                      value={st.assign.primaryUid}
-                                      onChange={(e) => st.setAssign((p: any) => ({ ...p, primaryUid: e.target.value }))}
-                                      disabled={!canEditProject}
-                                    >
-                                      <option value="">Unassigned</option>
-                                      {technicians.map((t) => (
-                                        <option key={t.uid} value={t.uid}>
-                                          {t.displayName}
-                                        </option>
-                                      ))}
-                                    </Select>
-                                  </div>
-
-                                  <div>
-                                    <Label>Helper</Label>
-                                    <Select
-                                      value={st.assign.helperUid}
-                                      onChange={(e) => st.setAssign((p: any) => ({ ...p, helperUid: e.target.value, useDefaultHelper: false }))}
-                                      disabled={!canEditProject}
-                                    >
-                                      <option value="">— None —</option>
-                                      {helperCandidates.map((h) => (
-                                        <option key={h.uid} value={h.uid}>
-                                          {h.name} ({h.laborRole})
-                                        </option>
-                                      ))}
-                                    </Select>
-                                  </div>
-
-                                  <div>
-                                    <Label>Secondary Tech</Label>
-                                    <Select
-                                      value={st.assign.secondaryUid}
-                                      onChange={(e) => st.setAssign((p: any) => ({ ...p, secondaryUid: e.target.value }))}
-                                      disabled={!canEditProject || !st.assign.primaryUid}
-                                    >
-                                      <option value="">— None —</option>
-                                      {technicians
-                                        .filter((t) => t.uid !== st.assign.primaryUid)
-                                        .map((t) => (
-                                          <option key={t.uid} value={t.uid}>
-                                            {t.displayName}
-                                          </option>
-                                        ))}
-                                    </Select>
-                                  </div>
-
-                                  <div>
-                                    <Label>Secondary Helper</Label>
-                                    <Select
-                                      value={st.assign.secondaryHelperUid}
-                                      onChange={(e) =>
-                                        st.setAssign((p: any) => ({ ...p, secondaryHelperUid: e.target.value, useDefaultHelper: false }))
-                                      }
-                                      disabled={!canEditProject}
-                                    >
-                                      <option value="">— None —</option>
-                                      {helperCandidates.map((h) => (
-                                        <option key={h.uid} value={h.uid}>
-                                          {h.name} ({h.laborRole})
-                                        </option>
-                                      ))}
-                                    </Select>
-                                  </div>
-
-                                  <div style={{ gridColumn: "span 2" }}>
-                                    <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: UI.sub, fontWeight: 900 }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={st.assign.useDefaultHelper}
-                                        onChange={(e) => st.setAssign((p: any) => ({ ...p, useDefaultHelper: e.target.checked }))}
-                                        disabled={!canEditProject}
-                                      />
-                                      Use default helper pairing (recommended)
-                                    </label>
-                                    <div style={{ marginTop: 6, fontSize: 12, color: UI.faint }}>
-                                      If enabled, helper may auto-fill based on the stage primary tech.
-                                    </div>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div style={{ marginTop: 10, fontSize: 13, color: UI.sub }}>
-                                  <div>
-                                    Primary: <strong>{effPrimary}</strong> • Helper: <strong>{effHelper}</strong>
-                                  </div>
-                                  <div style={{ marginTop: 4 }}>
-                                    Secondary: <strong>{effSecondary}</strong> • Secondary Helper: <strong>{effSecondaryHelper}</strong>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {!canEditProject ? (
-                          <div style={{ marginTop: 10, fontSize: 12, color: UI.faint }}>
-                            Stage details are read-only for your role.
-                          </div>
-                        ) : null}
-                      </div>
-
-                      {/* Trips */}
-                      <div
-                        style={{
-                          border: `1px solid ${UI.cardBorder}`,
-                          borderRadius: 16,
-                          padding: 14,
-                          background: "white",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                          <div style={{ fontWeight: 1000, color: UI.title }}>
-                            Trips <span style={{ color: UI.sub, fontWeight: 800 }}>({activeStageTrips.length})</span>
-                          </div>
-
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            {canEditProject ? (
-                              <>
-                                <Button variant="soft" onClick={() => addStageTrip(activeStageTab)}>
-                                  + Quick Add Trip
-                                </Button>
-                                <Button variant="primary" onClick={() => openCreateTrip(activeStageTab)}>
-                                  + Schedule New Trip
-                                </Button>
-                              </>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        {tripsLoading ? <p style={{ marginTop: 10 }}>Loading trips...</p> : null}
-                        {tripsError ? <p style={{ marginTop: 10, color: UI.dangerDark, fontWeight: 900 }}>{tripsError}</p> : null}
-
-                        {!tripsLoading && !tripsError && activeStageTrips.length === 0 ? (
-                          <div
-                            style={{
-                              marginTop: 12,
-                              border: `1px dashed ${UI.cardBorder}`,
-                              borderRadius: 14,
-                              padding: 12,
-                              background: UI.surface,
-                              color: UI.sub,
-                              fontWeight: 800,
-                              fontSize: 13,
-                            }}
-                          >
-                            No trips created for this stage yet. Click <strong>Sync Stage Trips</strong> to generate daily schedule blocks.
-                          </div>
-                        ) : null}
-
-                        {!tripsLoading && !tripsError && activeStageTrips.length > 0 ? (
-                          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                            {activeStageTrips.map((t) => {
-                              const canEditThis = canCurrentUserEditTrip(t);
-                              const cancelled = t.status === "cancelled" || t.active === false;
-
-                              const crew = t.crew || {};
-                              const tech = crew.primaryTechName || "Unassigned";
-                              const helper = crew.helperName ? ` • Helper: ${crew.helperName}` : "";
-                              const secondTech = crew.secondaryTechName ? ` • 2nd Tech: ${crew.secondaryTechName}` : "";
-                              const secondHelper = crew.secondaryHelperName ? ` • 2nd Helper: ${crew.secondaryHelperName}` : "";
-
-                              return (
-                                <div
-                                  key={t.id}
-                                  style={{
-                                    border: `1px solid ${UI.cardBorder}`,
-                                    borderRadius: 16,
-                                    padding: 14,
-                                    background: cancelled ? UI.surface : "white",
-                                  }}
-                                >
-                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
-                                    <div style={{ fontWeight: 1000, color: UI.title }}>
-                                      🗓 {t.date} • {formatTripWindow(String(t.timeWindow || "all_day"))} • {t.startTime}–{t.endTime}
-                                    </div>
-
-                                    <div
-                                      style={{
-                                        fontSize: 12,
-                                        fontWeight: 1000,
-                                        padding: "6px 10px",
-                                        borderRadius: 999,
-                                        border: `1px solid ${UI.cardBorder}`,
-                                        background: cancelled ? UI.dangerSoft : UI.primarySoft,
-                                        color: cancelled ? UI.dangerDark : UI.primaryDark,
-                                      }}
-                                    >
-                                      {cancelled ? "CANCELLED" : (t.status || "planned").replaceAll("_", " ").toUpperCase()}
-                                    </div>
-                                  </div>
-
-                                  <div style={{ marginTop: 8, fontSize: 13, color: UI.sub }}>
-                                    Crew: <strong>{tech}</strong>
-                                    {helper}
-                                    {secondTech}
-                                    {secondHelper}
-                                  </div>
-
-                                  {t.notes ? (
-                                    <div style={{ marginTop: 8, fontSize: 13, color: UI.sub, whiteSpace: "pre-wrap" }}>{t.notes}</div>
-                                  ) : null}
-
-                                  {t.cancelReason ? (
-                                    <div style={{ marginTop: 8, fontSize: 12, color: UI.faint }}>
-                                      Cancel reason: {t.cancelReason}
-                                    </div>
-                                  ) : null}
-
-                                  <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                    <Button variant="soft" onClick={() => openEditTrip(t)} disabled={!canEditThis}>
-                                      Edit
-                                    </Button>
-
-                                    {canEditProject ? (
-                                      <>
-                                        <Button variant="ghost" onClick={() => cancelTrip(t)} disabled={cancelled}>
-                                          Cancel
-                                        </Button>
-
-                                        <Button variant="softDanger" onClick={() => removeTrip(t)}>
-                                          Delete
-                                        </Button>
-                                      </>
-                                    ) : null}
-
-                                    {!canEditThis ? (
-                                      <div style={{ fontSize: 12, color: UI.faint, fontWeight: 700 }}>
-                                        Techs can edit trips they are assigned to. Admin/Dispatcher/Manager can edit any trip.
-                                      </div>
-                                    ) : null}
-                                  </div>
-
-                                  <div style={{ marginTop: 10, fontSize: 11, color: "rgba(2,6,23,0.35)" }}>Trip ID: {t.id}</div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </Card>
-            ) : (
-              <Card
-                title="Project Trips"
-                subtitle="This project type has no stages. Trips here are the schedule blocks for this project."
-                right={
-                  canEditProject ? (
-                    <Button variant="primary" onClick={() => openCreateTrip(null)}>
-                      + Schedule New Trip
-                    </Button>
-                  ) : null
-                }
-              >
-                {tripsLoading ? <p>Loading trips...</p> : null}
-                {tripsError ? <p style={{ color: UI.dangerDark, fontWeight: 900 }}>{tripsError}</p> : null}
-
-                {!tripsLoading && !tripsError && nonStageProjectTrips.length === 0 ? (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      border: `1px dashed ${UI.cardBorder}`,
-                      borderRadius: 14,
-                      padding: 12,
-                      background: UI.surface,
-                      color: UI.sub,
-                      fontWeight: 800,
-                      fontSize: 13,
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(2, minmax(0, 1fr))",
+                      },
                     }}
                   >
-                    No project trips yet.
-                  </div>
-                ) : null}
-
-                {!tripsLoading && !tripsError && nonStageProjectTrips.length > 0 ? (
-                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                    {nonStageProjectTrips.map((t) => {
-                      const canEditThis = canCurrentUserEditTrip(t);
-                      const cancelled = t.status === "cancelled" || t.active === false;
-
-                      const crew = t.crew || {};
-                      const tech = crew.primaryTechName || "Unassigned";
-                      const helper = crew.helperName ? ` • Helper: ${crew.helperName}` : "";
-                      const secondTech = crew.secondaryTechName ? ` • 2nd Tech: ${crew.secondaryTechName}` : "";
-                      const secondHelper = crew.secondaryHelperName ? ` • 2nd Helper: ${crew.secondaryHelperName}` : "";
-
-                      return (
-                        <div
-                          key={t.id}
-                          style={{
-                            border: `1px solid ${UI.cardBorder}`,
-                            borderRadius: 16,
-                            padding: 14,
-                            background: cancelled ? UI.surface : "white",
-                          }}
-                        >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
-                            <div style={{ fontWeight: 1000, color: UI.title }}>
-                              🗓 {t.date} • {formatTripWindow(String(t.timeWindow || "all_day"))} • {t.startTime}–{t.endTime}
-                            </div>
-
-                            <div
-                              style={{
-                                fontSize: 12,
-                                fontWeight: 1000,
-                                padding: "6px 10px",
-                                borderRadius: 999,
-                                border: `1px solid ${UI.cardBorder}`,
-                                background: cancelled ? UI.dangerSoft : UI.primarySoft,
-                                color: cancelled ? UI.dangerDark : UI.primaryDark,
-                              }}
-                            >
-                              {cancelled ? "CANCELLED" : (t.status || "planned").replaceAll("_", " ").toUpperCase()}
-                            </div>
-                          </div>
-
-                          <div style={{ marginTop: 8, fontSize: 13, color: UI.sub }}>
-                            Crew: <strong>{tech}</strong>
-                            {helper}
-                            {secondTech}
-                            {secondHelper}
-                          </div>
-
-                          {t.notes ? (
-                            <div style={{ marginTop: 8, fontSize: 13, color: UI.sub, whiteSpace: "pre-wrap" }}>{t.notes}</div>
-                          ) : null}
-
-                          {t.cancelReason ? (
-                            <div style={{ marginTop: 8, fontSize: 12, color: UI.faint }}>
-                              Cancel reason: {t.cancelReason}
-                            </div>
-                          ) : null}
-
-                          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <Button variant="soft" onClick={() => openEditTrip(t)} disabled={!canEditThis}>
-                              Edit
-                            </Button>
-
-                            {canEditProject ? (
-                              <>
-                                <Button variant="ghost" onClick={() => cancelTrip(t)} disabled={cancelled}>
-                                  Cancel
-                                </Button>
-
-                                <Button variant="softDanger" onClick={() => removeTrip(t)}>
-                                  Delete
-                                </Button>
-                              </>
-                            ) : null}
-                          </div>
-
-                          <div style={{ marginTop: 10, fontSize: 11, color: "rgba(2,6,23,0.35)" }}>Trip ID: {t.id}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-              </Card>
-            )}
-
-            {/* Update Project (tight + still saves stage fields too) */}
-            <Card title="Update Project" subtitle="This saves project defaults, stage status/schedule/crew overrides, and internal notes.">
-              {techLoading ? <p>Loading technicians...</p> : null}
-              {techError ? <p style={{ color: UI.dangerDark, fontWeight: 900 }}>{techError}</p> : null}
-              {profilesLoading ? <p>Loading employee profiles...</p> : null}
-              {profilesError ? <p style={{ color: UI.dangerDark, fontWeight: 900 }}>{profilesError}</p> : null}
-
-              <form onSubmit={handleSaveUpdates} style={{ display: "grid", gap: 12, maxWidth: 980 }}>
-                <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(260px, 1fr))" }}>
-                  <div>
-                    <Label>Bid Status</Label>
-                    <Select value={bidStatus} onChange={(e) => setBidStatus(e.target.value as any)} disabled={!canEditProject}>
-                      <option value="draft">Draft</option>
-                      <option value="submitted">Submitted</option>
-                      <option value="won">Won</option>
-                      <option value="lost">Lost</option>
-                    </Select>
-                  </div>
-
-                  <div />
-                </div>
-
-                <div
-                  style={{
-                    border: `1px solid ${UI.cardBorder}`,
-                    borderRadius: 16,
-                    padding: 14,
-                    background: UI.surface,
-                  }}
-                >
-                  <div style={{ fontWeight: 1000, color: UI.title, marginBottom: 10 }}>Default Crew (Project-level)</div>
-
-                  <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(260px, 1fr))" }}>
-                    <div>
-                      <Label>Primary Technician</Label>
+                    <FormControl fullWidth>
+                      <InputLabel>Primary Tech</InputLabel>
                       <Select
-                        value={projectPrimaryUid}
-                        onChange={(e) => setProjectPrimaryUid(e.target.value)}
-                        disabled={!canEditProject}
+                        label="Primary Tech"
+                        value={tripModal.primaryTechUid}
+                        onChange={(e) =>
+                          setTripModal((m) => ({
+                            ...m,
+                            primaryTechUid: e.target.value,
+                          }))
+                        }
+                        disabled={tripModalBusy}
+                        {...selectMenuProps()}
                       >
-                        <option value="">Unassigned</option>
+                        <MenuItem value="">Select a technician...</MenuItem>
                         {technicians.map((t) => (
-                          <option key={t.uid} value={t.uid}>
+                          <MenuItem key={t.uid} value={t.uid}>
                             {t.displayName}
-                          </option>
+                          </MenuItem>
                         ))}
                       </Select>
-                    </div>
+                    </FormControl>
 
-                    <div>
-                      <Label>Helper</Label>
+                    <FormControl fullWidth>
+                      <InputLabel>Helper</InputLabel>
                       <Select
-                        value={projectHelperUid}
-                        onChange={(e) => {
-                          setProjectUseDefaultHelper(false);
-                          setProjectHelperUid(e.target.value);
-                        }}
-                        disabled={!canEditProject}
+                        label="Helper"
+                        value={tripModal.helperUid}
+                        onChange={(e) =>
+                          setTripModal((m) => ({ ...m, helperUid: e.target.value }))
+                        }
+                        disabled={tripModalBusy}
+                        {...selectMenuProps()}
                       >
-                        <option value="">— None —</option>
+                        <MenuItem value="">— None —</MenuItem>
                         {helperCandidates.map((h) => (
-                          <option key={h.uid} value={h.uid}>
+                          <MenuItem key={h.uid} value={h.uid}>
                             {h.name} ({h.laborRole})
-                          </option>
+                          </MenuItem>
                         ))}
                       </Select>
-                      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 12, color: UI.sub, fontWeight: 900 }}>
-                        <input
-                          type="checkbox"
-                          checked={projectUseDefaultHelper}
-                          onChange={(e) => setProjectUseDefaultHelper(e.target.checked)}
-                          disabled={!canEditProject}
-                        />
-                        Use default helper pairing (recommended)
-                      </label>
-                    </div>
+                    </FormControl>
 
-                    <div>
-                      <Label>Secondary Technician</Label>
+                    <FormControl fullWidth>
+                      <InputLabel>Secondary Tech</InputLabel>
                       <Select
-                        value={projectSecondaryUid}
-                        onChange={(e) => setProjectSecondaryUid(e.target.value)}
-                        disabled={!canEditProject || !projectPrimaryUid}
+                        label="Secondary Tech"
+                        value={tripModal.secondaryTechUid}
+                        onChange={(e) =>
+                          setTripModal((m) => ({
+                            ...m,
+                            secondaryTechUid: e.target.value,
+                          }))
+                        }
+                        disabled={tripModalBusy || !tripModal.primaryTechUid}
+                        {...selectMenuProps()}
                       >
-                        <option value="">— None —</option>
+                        <MenuItem value="">— None —</MenuItem>
                         {technicians
-                          .filter((t) => t.uid !== projectPrimaryUid)
+                          .filter((t) => t.uid !== tripModal.primaryTechUid)
                           .map((t) => (
-                            <option key={t.uid} value={t.uid}>
+                            <MenuItem key={t.uid} value={t.uid}>
                               {t.displayName}
-                            </option>
+                            </MenuItem>
                           ))}
                       </Select>
-                    </div>
+                    </FormControl>
 
-                    <div>
-                      <Label>Secondary Helper</Label>
+                    <FormControl fullWidth>
+                      <InputLabel>Secondary Helper</InputLabel>
                       <Select
-                        value={projectSecondaryHelperUid}
-                        onChange={(e) => setProjectSecondaryHelperUid(e.target.value)}
-                        disabled={!canEditProject}
+                        label="Secondary Helper"
+                        value={tripModal.secondaryHelperUid}
+                        onChange={(e) =>
+                          setTripModal((m) => ({
+                            ...m,
+                            secondaryHelperUid: e.target.value,
+                          }))
+                        }
+                        disabled={tripModalBusy}
+                        {...selectMenuProps()}
                       >
-                        <option value="">— None —</option>
+                        <MenuItem value="">— None —</MenuItem>
                         {helperCandidates.map((h) => (
-                          <option key={h.uid} value={h.uid}>
+                          <MenuItem key={h.uid} value={h.uid}>
                             {h.name} ({h.laborRole})
-                          </option>
+                          </MenuItem>
                         ))}
                       </Select>
-                    </div>
-                  </div>
-                </div>
+                    </FormControl>
+                  </Box>
 
-                <div>
-                  <Label>Internal Notes</Label>
-                  <Textarea
-                    value={internalNotes}
-                    onChange={(e) => setInternalNotes(e.target.value)}
-                    rows={4}
-                    disabled={!canEditProject}
-                    placeholder="Internal notes for dispatch/admins..."
-                  />
-                </div>
+                  <Typography variant="caption" color="text.secondary">
+                    Adjusting crew here ensures trips show correctly on <strong>My Day</strong>{" "}
+                    and on the schedule.
+                  </Typography>
+                </Stack>
+              </Paper>
 
-                {saveError ? <div style={{ color: UI.dangerDark, fontWeight: 900 }}>{saveError}</div> : null}
-                {saveSuccess ? <div style={{ color: "#15803d", fontWeight: 900 }}>{saveSuccess}</div> : null}
+              <TextField
+                label="Trip Notes"
+                value={tripModal.notes}
+                onChange={(e) =>
+                  setTripModal((m) => ({ ...m, notes: e.target.value }))
+                }
+                multiline
+                minRows={4}
+                disabled={tripModalBusy}
+                placeholder="Optional notes for this trip..."
+                fullWidth
+              />
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <Button type="submit" variant="primary" disabled={saving || !canEditProject}>
-                    {saving ? "Saving..." : canEditProject ? "Save Project Updates" : "Read Only"}
+              {tripModalErr ? <Alert severity="error">{tripModalErr}</Alert> : null}
+              {tripModalOk ? <Alert severity="success">{tripModalOk}</Alert> : null}
+            </Stack>
+          </DialogContent>
+
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            {tripModal.mode === "edit" && canEditProject && tripModal.tripId ? (
+              <Button
+                color="error"
+                onClick={() => {
+                  const t = projectTrips.find((x) => x.id === tripModal.tripId);
+                  if (t) removeTrip(t);
+                }}
+                disabled={tripModalBusy}
+              >
+                Delete
+              </Button>
+            ) : null}
+
+            <Box sx={{ flex: 1 }} />
+
+            <Button onClick={closeTripModal} disabled={tripModalBusy}>
+              Cancel
+            </Button>
+            <Button variant="contained" onClick={saveTripModal} disabled={tripModalBusy}>
+              {tripModalBusy ? "Saving..." : "Save Changes"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Box
+          sx={{
+            minHeight: "100%",
+            bgcolor: "background.default",
+            px: { xs: 1, sm: 2, md: 3 },
+            py: { xs: 2, md: 3 },
+          }}
+        >
+          {loading ? <Typography>Loading project...</Typography> : null}
+          {error ? <Alert severity="error">{error}</Alert> : null}
+
+          {!loading && !error && project ? (
+            <Stack spacing={2.5}>
+              <Paper
+                elevation={0}
+                sx={{
+                  p: { xs: 2, sm: 3 },
+                  borderRadius: 4,
+                  border: (theme) => `1px solid ${theme.palette.divider}`,
+                  background:
+                    theme.palette.mode === "light"
+                      ? `linear-gradient(180deg, ${alpha(
+                          theme.palette.primary.main,
+                          0.06
+                        )}, ${alpha(theme.palette.primary.main, 0.01)})`
+                      : undefined,
+                }}
+              >
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  spacing={2}
+                  justifyContent="space-between"
+                  alignItems={{ xs: "flex-start", md: "center" }}
+                >
+                  <Stack spacing={1}>
+                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                      <Chip
+                        icon={<WorkRoundedIcon />}
+                        label={project.projectType}
+                        variant="outlined"
+                        size="small"
+                      />
+                      <Chip
+                        label={formatBidStatus(project.bidStatus)}
+                        color={statusChipColor(project.bidStatus)}
+                        variant="outlined"
+                        size="small"
+                      />
+                    </Stack>
+
+                    <Typography variant="h4" sx={{ fontWeight: 900 }}>
+                      {project.projectName}
+                    </Typography>
+
+                    <Typography variant="body2" color="text.secondary">
+                      Project ID:{" "}
+                      <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 700 }}>
+                        {projectId}
+                      </Box>
+                    </Typography>
+                  </Stack>
+
+                  <Button
+                    component={Link}
+                    href="/projects"
+                    variant="outlined"
+                    startIcon={<ArrowBackRoundedIcon />}
+                  >
+                    Back to Projects
                   </Button>
+                </Stack>
+              </Paper>
 
-                  {!canEditProject ? (
-                    <div style={{ fontSize: 12, color: UI.faint, fontWeight: 800 }}>
-                      Only Admin/Dispatcher/Manager can edit projects.
-                    </div>
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 2,
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    md: "repeat(2, minmax(0, 1fr))",
+                  },
+                }}
+              >
+                <SectionCard
+                  title="Customer"
+                  subtitle="Linked customer on this project"
+                  icon={<GroupRoundedIcon color="primary" />}
+                >
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(2, minmax(0, 1fr))",
+                      },
+                    }}
+                  >
+                    <InfoField
+                      label="Customer"
+                      value={project.customerDisplayName || "—"}
+                    />
+                    <InfoField label="Customer ID" value={project.customerId || "—"} />
+                  </Box>
+                </SectionCard>
+
+                <SectionCard
+                  title="Project Address"
+                  subtitle="Primary service location"
+                  icon={<HomeWorkRoundedIcon color="primary" />}
+                >
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(2, minmax(0, 1fr))",
+                      },
+                    }}
+                  >
+                    <InfoField label="Label" value={project.serviceAddressLabel || "—"} />
+                    <InfoField label="Address 1" value={project.serviceAddressLine1 || "—"} />
+                    <InfoField label="Address 2" value={project.serviceAddressLine2 || "—"} />
+                    <InfoField
+                      label="City / State / ZIP"
+                      value={`${project.serviceCity || "—"}, ${project.serviceState || "—"} ${
+                        project.servicePostalCode || ""
+                      }`}
+                    />
+                  </Box>
+                </SectionCard>
+              </Box>
+
+              <SectionCard
+                title="Project Overview"
+                subtitle="Project defaults are used as stage fallback and can still be overridden per stage or per trip."
+                icon={<InfoRoundedIcon color="primary" />}
+              >
+                <Stack spacing={2}>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(3, minmax(0, 1fr))",
+                      },
+                    }}
+                  >
+                    <InfoField label="Project Type" value={project.projectType} />
+                    <InfoField label="Bid Status" value={formatBidStatus(project.bidStatus)} />
+                    <InfoField
+                      label="Total Bid"
+                      value={`$${Number(project.totalBidAmount || 0).toFixed(2)}`}
+                    />
+                  </Box>
+
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      borderRadius: 4,
+                    }}
+                  >
+                    <Stack spacing={1.25}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                        Default Crew
+                      </Typography>
+
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 1.5,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            sm: "repeat(2, minmax(0, 1fr))",
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Primary Tech:</strong> {projectPrimaryName || "Unassigned"}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Helper:</strong> {projectHelperName || "—"}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Secondary Tech:</strong> {projectSecondaryName || "—"}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Secondary Helper:</strong> {projectSecondaryHelperName || "—"}
+                        </Typography>
+                      </Box>
+
+                      <Typography variant="caption" color="text.secondary">
+                        You can still override crew per-stage and per-trip.
+                      </Typography>
+                    </Stack>
+                  </Paper>
+
+                  {project.description ? (
+                    <>
+                      <Divider />
+                      <Stack spacing={1}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          Description
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {project.description}
+                        </Typography>
+                      </Stack>
+                    </>
                   ) : null}
-                </div>
-              </form>
-            </Card>
+                </Stack>
+              </SectionCard>
 
-            {/* System */}
-            <Card title="System">
-              <div style={{ display: "grid", gap: 6, fontSize: 13, color: UI.sub }}>
-                <div>
-                  <strong>Active:</strong> {String(project.active)}
-                </div>
-                <div>
-                  <strong>Created At:</strong> {project.createdAt || "—"}
-                </div>
-                <div>
-                  <strong>Updated At:</strong> {project.updatedAt || "—"}
-                </div>
-              </div>
-            </Card>
-          </div>
-        ) : null}
+              {hasStages ? (
+                <SectionCard
+                  title="Stages"
+                  subtitle="Stage details and stage trips are managed together."
+                  icon={<ConstructionRoundedIcon color="primary" />}
+                  action={
+                    canEditProject ? (
+                      <>
+                        <Button
+                          variant="outlined"
+                          startIcon={<SyncRoundedIcon />}
+                          onClick={() => syncStageTrips(activeStageTab)}
+                        >
+                          Sync Stage Trips
+                        </Button>
+                        <Button
+                          variant="contained"
+                          startIcon={<EditCalendarRoundedIcon />}
+                          onClick={() => openCreateTrip(activeStageTab)}
+                        >
+                          Schedule New Trip
+                        </Button>
+                      </>
+                    ) : (
+                      <Chip label="Read only" variant="outlined" size="small" />
+                    )
+                  }
+                >
+                  <Tabs
+                    value={activeStageTab}
+                    onChange={(_, value) => setActiveStageTab(value)}
+                    variant="scrollable"
+                    scrollButtons="auto"
+                    sx={{ mb: 2 }}
+                  >
+                    {enabledStages.map((k) => (
+                      <Tab key={k} value={k} label={stageLabel(k)} />
+                    ))}
+                  </Tabs>
+
+                  {(() => {
+                    const st = stageStateForKey(activeStageTab);
+                    const effective = getEffectiveCrewForStage(activeStageTab);
+
+                    const effPrimary = effective.primary
+                      ? findTechName(effective.primary)
+                      : "Unassigned";
+                    const effHelper = effective.helper
+                      ? findHelperName(effective.helper)
+                      : "—";
+                    const effSecondary = effective.secondary
+                      ? findTechName(effective.secondary)
+                      : "—";
+                    const effSecondaryHelper = effective.secondaryHelper
+                      ? findHelperName(effective.secondaryHelper)
+                      : "—";
+
+                    return (
+                      <Stack spacing={2}>
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: { xs: 2, sm: 2.5 },
+                            borderRadius: 4,
+                            bgcolor: alpha(theme.palette.primary.main, 0.03),
+                          }}
+                        >
+                          <Stack spacing={2}>
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              justifyContent="space-between"
+                              spacing={1}
+                              alignItems={{ xs: "flex-start", sm: "center" }}
+                            >
+                              <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                Stage Details
+                              </Typography>
+                              <Chip
+                                label={formatStageStatus(st.status)}
+                                color={statusChipColor(st.status)}
+                                variant="outlined"
+                                size="small"
+                              />
+                            </Stack>
+
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gap: 2,
+                                gridTemplateColumns: {
+                                  xs: "1fr",
+                                  sm: "repeat(2, minmax(0, 1fr))",
+                                  lg: "repeat(4, minmax(0, 1fr))",
+                                },
+                              }}
+                            >
+                              <FormControl fullWidth>
+                                <InputLabel>Status</InputLabel>
+                                <Select
+                                  label="Status"
+                                  value={st.status}
+                                  onChange={(e) => st.setStatus(e.target.value as any)}
+                                  disabled={!canEditProject}
+                                  {...selectMenuProps()}
+                                >
+                                  <MenuItem value="not_started">Not Started</MenuItem>
+                                  <MenuItem value="scheduled">Scheduled</MenuItem>
+                                  <MenuItem value="in_progress">In Progress</MenuItem>
+                                  <MenuItem value="complete">Complete</MenuItem>
+                                </Select>
+                              </FormControl>
+
+                              <TextField
+                                label="Scheduled Start"
+                                type="date"
+                                value={st.start}
+                                onChange={(e) => st.setStart(e.target.value)}
+                                InputLabelProps={{ shrink: true }}
+                                disabled={!canEditProject}
+                                fullWidth
+                              />
+
+                              <TextField
+                                label="Scheduled End"
+                                type="date"
+                                value={st.end}
+                                onChange={(e) => st.setEnd(e.target.value)}
+                                InputLabelProps={{ shrink: true }}
+                                disabled={!canEditProject}
+                                fullWidth
+                              />
+
+                              <TextField
+                                label="Completed Date"
+                                type="date"
+                                value={st.done}
+                                onChange={(e) => st.setDone(e.target.value)}
+                                InputLabelProps={{ shrink: true }}
+                                disabled={!canEditProject}
+                                fullWidth
+                              />
+                            </Box>
+
+                            <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
+                              <Stack spacing={2}>
+                                <Stack
+                                  direction={{ xs: "column", sm: "row" }}
+                                  spacing={1}
+                                  justifyContent="space-between"
+                                  alignItems={{ xs: "flex-start", sm: "center" }}
+                                >
+                                  <Box>
+                                    <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                      Stage Crew
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {st.assign.overrideEnabled
+                                        ? "Using stage override"
+                                        : "Using project defaults"}
+                                    </Typography>
+                                  </Box>
+
+                                  <FormControlLabel
+                                    control={
+                                      <Switch
+                                        checked={st.assign.overrideEnabled}
+                                        onChange={(e) =>
+                                          st.setAssign((p: any) => ({
+                                            ...p,
+                                            overrideEnabled: e.target.checked,
+                                          }))
+                                        }
+                                        disabled={!canEditProject}
+                                      />
+                                    }
+                                    label="Override for this stage"
+                                  />
+                                </Stack>
+
+                                {st.assign.overrideEnabled ? (
+                                  <Stack spacing={2}>
+                                    <Box
+                                      sx={{
+                                        display: "grid",
+                                        gap: 2,
+                                        gridTemplateColumns: {
+                                          xs: "1fr",
+                                          sm: "repeat(2, minmax(0, 1fr))",
+                                        },
+                                      }}
+                                    >
+                                      <FormControl fullWidth>
+                                        <InputLabel>Primary Tech</InputLabel>
+                                        <Select
+                                          label="Primary Tech"
+                                          value={st.assign.primaryUid}
+                                          onChange={(e) =>
+                                            st.setAssign((p: any) => ({
+                                              ...p,
+                                              primaryUid: e.target.value,
+                                            }))
+                                          }
+                                          disabled={!canEditProject}
+                                          {...selectMenuProps()}
+                                        >
+                                          <MenuItem value="">Unassigned</MenuItem>
+                                          {technicians.map((t) => (
+                                            <MenuItem key={t.uid} value={t.uid}>
+                                              {t.displayName}
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+
+                                      <FormControl fullWidth>
+                                        <InputLabel>Helper</InputLabel>
+                                        <Select
+                                          label="Helper"
+                                          value={st.assign.helperUid}
+                                          onChange={(e) =>
+                                            st.setAssign((p: any) => ({
+                                              ...p,
+                                              helperUid: e.target.value,
+                                              useDefaultHelper: false,
+                                            }))
+                                          }
+                                          disabled={!canEditProject}
+                                          {...selectMenuProps()}
+                                        >
+                                          <MenuItem value="">— None —</MenuItem>
+                                          {helperCandidates.map((h) => (
+                                            <MenuItem key={h.uid} value={h.uid}>
+                                              {h.name} ({h.laborRole})
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+
+                                      <FormControl fullWidth>
+                                        <InputLabel>Secondary Tech</InputLabel>
+                                        <Select
+                                          label="Secondary Tech"
+                                          value={st.assign.secondaryUid}
+                                          onChange={(e) =>
+                                            st.setAssign((p: any) => ({
+                                              ...p,
+                                              secondaryUid: e.target.value,
+                                            }))
+                                          }
+                                          disabled={!canEditProject || !st.assign.primaryUid}
+                                          {...selectMenuProps()}
+                                        >
+                                          <MenuItem value="">— None —</MenuItem>
+                                          {technicians
+                                            .filter((t) => t.uid !== st.assign.primaryUid)
+                                            .map((t) => (
+                                              <MenuItem key={t.uid} value={t.uid}>
+                                                {t.displayName}
+                                              </MenuItem>
+                                            ))}
+                                        </Select>
+                                      </FormControl>
+
+                                      <FormControl fullWidth>
+                                        <InputLabel>Secondary Helper</InputLabel>
+                                        <Select
+                                          label="Secondary Helper"
+                                          value={st.assign.secondaryHelperUid}
+                                          onChange={(e) =>
+                                            st.setAssign((p: any) => ({
+                                              ...p,
+                                              secondaryHelperUid: e.target.value,
+                                              useDefaultHelper: false,
+                                            }))
+                                          }
+                                          disabled={!canEditProject}
+                                          {...selectMenuProps()}
+                                        >
+                                          <MenuItem value="">— None —</MenuItem>
+                                          {helperCandidates.map((h) => (
+                                            <MenuItem key={h.uid} value={h.uid}>
+                                              {h.name} ({h.laborRole})
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+                                    </Box>
+
+                                    <FormControlLabel
+                                      control={
+                                        <Switch
+                                          checked={st.assign.useDefaultHelper}
+                                          onChange={(e) =>
+                                            st.setAssign((p: any) => ({
+                                              ...p,
+                                              useDefaultHelper: e.target.checked,
+                                            }))
+                                          }
+                                          disabled={!canEditProject}
+                                        />
+                                      }
+                                      label="Use default helper pairing (recommended)"
+                                    />
+                                  </Stack>
+                                ) : (
+                                  <Box
+                                    sx={{
+                                      display: "grid",
+                                      gap: 1.5,
+                                      gridTemplateColumns: {
+                                        xs: "1fr",
+                                        sm: "repeat(2, minmax(0, 1fr))",
+                                      },
+                                    }}
+                                  >
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>Primary:</strong> {effPrimary}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>Helper:</strong> {effHelper}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>Secondary:</strong> {effSecondary}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>Secondary Helper:</strong> {effSecondaryHelper}
+                                    </Typography>
+                                  </Box>
+                                )}
+                              </Stack>
+                            </Paper>
+
+                            {!canEditProject ? (
+                              <Typography variant="caption" color="text.secondary">
+                                Stage details are read-only for your role.
+                              </Typography>
+                            ) : null}
+                          </Stack>
+                        </Paper>
+
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: { xs: 2, sm: 2.5 },
+                            borderRadius: 4,
+                          }}
+                        >
+                          <Stack spacing={2}>
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={1.5}
+                              justifyContent="space-between"
+                              alignItems={{ xs: "flex-start", sm: "center" }}
+                            >
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <RouteRoundedIcon color="primary" />
+                                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                  Trips
+                                </Typography>
+                                <Chip
+                                  label={activeStageTrips.length}
+                                  size="small"
+                                  variant="outlined"
+                                />
+                              </Stack>
+
+                              {canEditProject ? (
+                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                  <Button
+                                    variant="outlined"
+                                    onClick={() => addStageTrip(activeStageTab)}
+                                  >
+                                    Quick Add Trip
+                                  </Button>
+                                  <Button
+                                    variant="contained"
+                                    onClick={() => openCreateTrip(activeStageTab)}
+                                  >
+                                    Schedule New Trip
+                                  </Button>
+                                </Stack>
+                              ) : null}
+                            </Stack>
+
+                            {tripsLoading ? <Typography>Loading trips...</Typography> : null}
+                            {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
+
+                            {!tripsLoading && !tripsError && activeStageTrips.length === 0 ? (
+                              <Alert severity="info" variant="outlined">
+                                No trips created for this stage yet. Use <strong>Sync Stage Trips</strong>{" "}
+                                to generate daily schedule blocks.
+                              </Alert>
+                            ) : null}
+
+                            {!tripsLoading && !tripsError && activeStageTrips.length > 0 ? (
+                              <Stack spacing={1.5}>
+                                {activeStageTrips.map((t) => (
+                                  <TripRow key={t.id} t={t} />
+                                ))}
+                              </Stack>
+                            ) : null}
+                          </Stack>
+                        </Paper>
+                      </Stack>
+                    );
+                  })()}
+                </SectionCard>
+              ) : (
+                <SectionCard
+                  title="Project Trips"
+                  subtitle="This project type has no stages. Trips here are the schedule blocks for this project."
+                  icon={<RouteRoundedIcon color="primary" />}
+                  action={
+                    canEditProject ? (
+                      <Button
+                        variant="contained"
+                        onClick={() => openCreateTrip(null)}
+                        startIcon={<EditCalendarRoundedIcon />}
+                      >
+                        Schedule New Trip
+                      </Button>
+                    ) : null
+                  }
+                >
+                  <Stack spacing={2}>
+                    {tripsLoading ? <Typography>Loading trips...</Typography> : null}
+                    {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
+
+                    {!tripsLoading && !tripsError && nonStageProjectTrips.length === 0 ? (
+                      <Alert severity="info" variant="outlined">
+                        No project trips yet.
+                      </Alert>
+                    ) : null}
+
+                    {!tripsLoading && !tripsError && nonStageProjectTrips.length > 0 ? (
+                      <Stack spacing={1.5}>
+                        {nonStageProjectTrips.map((t) => (
+                          <TripRow key={t.id} t={t} />
+                        ))}
+                      </Stack>
+                    ) : null}
+                  </Stack>
+                </SectionCard>
+              )}
+
+              <SectionCard
+                title="Update Project"
+                subtitle="Saves project defaults, stage status/schedule/crew overrides, and internal notes."
+                icon={<NoteAltRoundedIcon color="primary" />}
+              >
+                <Stack spacing={1.5} sx={{ mb: 2 }}>
+                  {techLoading ? <Typography>Loading technicians...</Typography> : null}
+                  {techError ? <Alert severity="error">{techError}</Alert> : null}
+                  {profilesLoading ? <Typography>Loading employee profiles...</Typography> : null}
+                  {profilesError ? <Alert severity="error">{profilesError}</Alert> : null}
+                </Stack>
+
+                <Box component="form" onSubmit={handleSaveUpdates}>
+                  <Stack spacing={2}>
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          sm: "repeat(2, minmax(0, 1fr))",
+                        },
+                      }}
+                    >
+                      <FormControl fullWidth>
+                        <InputLabel>Bid Status</InputLabel>
+                        <Select
+                          label="Bid Status"
+                          value={bidStatus}
+                          onChange={(e) => setBidStatus(e.target.value as any)}
+                          disabled={!canEditProject}
+                          {...selectMenuProps()}
+                        >
+                          <MenuItem value="draft">Draft</MenuItem>
+                          <MenuItem value="submitted">Submitted</MenuItem>
+                          <MenuItem value="won">Won</MenuItem>
+                          <MenuItem value="lost">Lost</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Box>
+
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 4,
+                        bgcolor: alpha(theme.palette.primary.main, 0.03),
+                      }}
+                    >
+                      <Stack spacing={2}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          Default Crew (Project-level)
+                        </Typography>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              sm: "repeat(2, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          <FormControl fullWidth>
+                            <InputLabel>Primary Technician</InputLabel>
+                            <Select
+                              label="Primary Technician"
+                              value={projectPrimaryUid}
+                              onChange={(e) => setProjectPrimaryUid(e.target.value)}
+                              disabled={!canEditProject}
+                              {...selectMenuProps()}
+                            >
+                              <MenuItem value="">Unassigned</MenuItem>
+                              {technicians.map((t) => (
+                                <MenuItem key={t.uid} value={t.uid}>
+                                  {t.displayName}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+
+                          <Box>
+                            <FormControl fullWidth>
+                              <InputLabel>Helper</InputLabel>
+                              <Select
+                                label="Helper"
+                                value={projectHelperUid}
+                                onChange={(e) => {
+                                  setProjectUseDefaultHelper(false);
+                                  setProjectHelperUid(e.target.value);
+                                }}
+                                disabled={!canEditProject}
+                                {...selectMenuProps()}
+                              >
+                                <MenuItem value="">— None —</MenuItem>
+                                {helperCandidates.map((h) => (
+                                  <MenuItem key={h.uid} value={h.uid}>
+                                    {h.name} ({h.laborRole})
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+
+                            <FormControlLabel
+                              sx={{ mt: 1 }}
+                              control={
+                                <Switch
+                                  checked={projectUseDefaultHelper}
+                                  onChange={(e) =>
+                                    setProjectUseDefaultHelper(e.target.checked)
+                                  }
+                                  disabled={!canEditProject}
+                                />
+                              }
+                              label="Use default helper pairing (recommended)"
+                            />
+                          </Box>
+
+                          <FormControl fullWidth>
+                            <InputLabel>Secondary Technician</InputLabel>
+                            <Select
+                              label="Secondary Technician"
+                              value={projectSecondaryUid}
+                              onChange={(e) => setProjectSecondaryUid(e.target.value)}
+                              disabled={!canEditProject || !projectPrimaryUid}
+                              {...selectMenuProps()}
+                            >
+                              <MenuItem value="">— None —</MenuItem>
+                              {technicians
+                                .filter((t) => t.uid !== projectPrimaryUid)
+                                .map((t) => (
+                                  <MenuItem key={t.uid} value={t.uid}>
+                                    {t.displayName}
+                                  </MenuItem>
+                                ))}
+                            </Select>
+                          </FormControl>
+
+                          <FormControl fullWidth>
+                            <InputLabel>Secondary Helper</InputLabel>
+                            <Select
+                              label="Secondary Helper"
+                              value={projectSecondaryHelperUid}
+                              onChange={(e) =>
+                                setProjectSecondaryHelperUid(e.target.value)
+                              }
+                              disabled={!canEditProject}
+                              {...selectMenuProps()}
+                            >
+                              <MenuItem value="">— None —</MenuItem>
+                              {helperCandidates.map((h) => (
+                                <MenuItem key={h.uid} value={h.uid}>
+                                  {h.name} ({h.laborRole})
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </Box>
+                      </Stack>
+                    </Paper>
+
+                    <TextField
+                      label="Internal Notes"
+                      value={internalNotes}
+                      onChange={(e) => setInternalNotes(e.target.value)}
+                      multiline
+                      minRows={4}
+                      disabled={!canEditProject}
+                      placeholder="Internal notes for dispatch / admins..."
+                      fullWidth
+                    />
+
+                    {saveError ? <Alert severity="error">{saveError}</Alert> : null}
+                    {saveSuccess ? <Alert severity="success">{saveSuccess}</Alert> : null}
+
+                    <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
+                      <Button
+                        type="submit"
+                        variant="contained"
+                        disabled={saving || !canEditProject}
+                      >
+                        {saving
+                          ? "Saving..."
+                          : canEditProject
+                          ? "Save Project Updates"
+                          : "Read Only"}
+                      </Button>
+
+                      {!canEditProject ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Only Admin / Dispatcher / Manager can edit projects.
+                        </Typography>
+                      ) : null}
+                    </Stack>
+                  </Stack>
+                </Box>
+              </SectionCard>
+
+              <SectionCard
+                title="System"
+                subtitle="Project metadata"
+                icon={<CalendarMonthRoundedIcon color="primary" />}
+              >
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                    gridTemplateColumns: {
+                      xs: "1fr",
+                      sm: "repeat(3, minmax(0, 1fr))",
+                    },
+                  }}
+                >
+                  <InfoField label="Active" value={String(project.active)} />
+                  <InfoField label="Created At" value={project.createdAt || "—"} />
+                  <InfoField label="Updated At" value={project.updatedAt || "—"} />
+                </Box>
+              </SectionCard>
+            </Stack>
+          ) : null}
+        </Box>
       </AppShell>
     </ProtectedPage>
   );

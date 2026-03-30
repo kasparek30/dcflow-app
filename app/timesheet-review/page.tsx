@@ -1,9 +1,29 @@
-// app/timesheet-review/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Card,
+  CardActionArea,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Container,
+  MenuItem,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import AssignmentTurnedInRoundedIcon from "@mui/icons-material/AssignmentTurnedInRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import HourglassTopRoundedIcon from "@mui/icons-material/HourglassTopRounded";
+import PublishRoundedIcon from "@mui/icons-material/PublishRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -27,19 +47,61 @@ function formatStatus(status: WeeklyTimesheet["status"]) {
   }
 }
 
+function getStatusTone(status: WeeklyTimesheet["status"]) {
+  switch (status) {
+    case "submitted":
+      return {
+        label: "Submitted",
+        color: "warning" as const,
+        icon: <HourglassTopRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "approved":
+      return {
+        label: "Approved",
+        color: "success" as const,
+        icon: <CheckCircleRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "rejected":
+      return {
+        label: "Rejected",
+        color: "error" as const,
+        icon: <ErrorOutlineRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "exported_to_quickbooks":
+      return {
+        label: "Exported",
+        color: "info" as const,
+        icon: <PublishRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+    case "draft":
+    default:
+      return {
+        label: "Draft",
+        color: "default" as const,
+        icon: <ScheduleRoundedIcon sx={{ fontSize: 16 }} />,
+      };
+  }
+}
+
 export default function TimesheetReviewQueuePage() {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [timesheets, setTimesheets] = useState<WeeklyTimesheet[]>([]);
   const [error, setError] = useState("");
 
-  const [statusFilter, setStatusFilter] = useState<"all" | WeeklyTimesheet["status"]>("submitted");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | WeeklyTimesheet["status"]
+  >("submitted");
 
   useEffect(() => {
     setError("");
 
-    const q = query(collection(db, "weeklyTimesheets"), orderBy("weekStartDate", "desc"));
+    const q = query(
+      collection(db, "weeklyTimesheets"),
+      orderBy("weekStartDate", "desc")
+    );
 
     const unsub = onSnapshot(
       q,
@@ -55,12 +117,19 @@ export default function TimesheetReviewQueuePage() {
             weekEndDate: data.weekEndDate ?? "",
             timeEntryIds: Array.isArray(data.timeEntryIds) ? data.timeEntryIds : [],
             totalHours: typeof data.totalHours === "number" ? data.totalHours : 0,
-            regularHours: typeof data.regularHours === "number" ? data.regularHours : 0,
-            overtimeHours: typeof data.overtimeHours === "number" ? data.overtimeHours : 0,
+            regularHours:
+              typeof data.regularHours === "number" ? data.regularHours : 0,
+            overtimeHours:
+              typeof data.overtimeHours === "number" ? data.overtimeHours : 0,
             ptoHours: typeof data.ptoHours === "number" ? data.ptoHours : 0,
-            holidayHours: typeof data.holidayHours === "number" ? data.holidayHours : 0,
-            billableHours: typeof data.billableHours === "number" ? data.billableHours : 0,
-            nonBillableHours: typeof data.nonBillableHours === "number" ? data.nonBillableHours : 0,
+            holidayHours:
+              typeof data.holidayHours === "number" ? data.holidayHours : 0,
+            billableHours:
+              typeof data.billableHours === "number" ? data.billableHours : 0,
+            nonBillableHours:
+              typeof data.nonBillableHours === "number"
+                ? data.nonBillableHours
+                : 0,
             status: data.status ?? "draft",
             submittedAt: data.submittedAt ?? undefined,
             submittedById: data.submittedById ?? undefined,
@@ -100,73 +169,260 @@ export default function TimesheetReviewQueuePage() {
   return (
     <ProtectedPage fallbackTitle="Timesheet Review">
       <AppShell appUser={appUser}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0 }}>Timesheet Review</h1>
-            <p style={{ marginTop: 6, color: "#666", fontSize: 13 }}>
-              Review submitted weekly timesheets and approve or reject them.
-            </p>
-          </div>
-        </div>
+        <Container maxWidth="lg" disableGutters>
+          <Stack spacing={3}>
+            <Box
+              sx={{
+                px: { xs: 2, md: 3 },
+                py: { xs: 2.5, md: 3 },
+                borderRadius: 5,
+                background: `linear-gradient(135deg, ${alpha(
+                  theme.palette.primary.main,
+                  0.12
+                )} 0%, ${alpha(theme.palette.secondary.main, 0.08)} 100%)`,
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+              }}
+            >
+              <Stack spacing={1.25}>
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1.25}
+                  alignItems={{ xs: "flex-start", sm: "center" }}
+                >
+                  <Chip
+                    icon={<AssignmentTurnedInRoundedIcon />}
+                    label="Payroll Review"
+                    color="primary"
+                    variant="filled"
+                  />
+                  <Chip
+                    label={`${visibleTimesheets.length} shown`}
+                    variant="outlined"
+                  />
+                </Stack>
 
-        <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fafafa", maxWidth: 420 }}>
-          <label style={{ fontWeight: 700 }}>Filter by Status</label>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 10, border: "1px solid #ccc", background: "white" }}
-          >
-            <option value="submitted">Submitted</option>
-            <option value="all">All Statuses</option>
-            <option value="draft">Draft</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-            <option value="exported_to_quickbooks">Exported to QuickBooks</option>
-          </select>
+                <Typography variant="h4" fontWeight={800} letterSpacing={-0.4}>
+                  Timesheet Review
+                </Typography>
 
-          <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-            Showing {visibleTimesheets.length} timesheet{visibleTimesheets.length === 1 ? "" : "s"}.
-          </div>
-        </div>
+                <Typography
+                  variant="body1"
+                  color="text.secondary"
+                  sx={{ maxWidth: 760 }}
+                >
+                  Review weekly employee timesheets, filter by status, and open a
+                  detailed review page to approve, reject, or adjust hours.
+                </Typography>
+              </Stack>
+            </Box>
 
-        {loading ? <p>Loading review queue...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+            <Card
+              elevation={0}
+              sx={{
+                borderRadius: 5,
+                border: `1px solid ${theme.palette.divider}`,
+              }}
+            >
+              <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                <Stack spacing={2}>
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={2}
+                    alignItems={{ xs: "stretch", md: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={700}>
+                        Queue filters
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Narrow the review queue to the timesheets you want to work
+                        through.
+                      </Typography>
+                    </Box>
 
-        {!loading && !error && visibleTimesheets.length === 0 ? <p>No timesheets found for this filter.</p> : null}
+                    <TextField
+                      select
+                      label="Status"
+                      value={statusFilter}
+                      onChange={(e) =>
+                        setStatusFilter(
+                          e.target.value as "all" | WeeklyTimesheet["status"]
+                        )
+                      }
+                      sx={{ minWidth: { xs: "100%", md: 260 } }}
+                    >
+                      <MenuItem value="submitted">Submitted</MenuItem>
+                      <MenuItem value="all">All Statuses</MenuItem>
+                      <MenuItem value="draft">Draft</MenuItem>
+                      <MenuItem value="approved">Approved</MenuItem>
+                      <MenuItem value="rejected">Rejected</MenuItem>
+                      <MenuItem value="exported_to_quickbooks">
+                        Exported to QuickBooks
+                      </MenuItem>
+                    </TextField>
+                  </Stack>
 
-        {!loading && !error && visibleTimesheets.length > 0 ? (
-          <div style={{ display: "grid", gap: 12 }}>
-            {visibleTimesheets.map((ts) => (
-              <Link
-                key={ts.id}
-                href={`/timesheet-review/${ts.id}`}
-                style={{ display: "block", border: "1px solid #ddd", borderRadius: 12, padding: 12, textDecoration: "none", color: "inherit", background: "white" }}
+                  <Typography variant="body2" color="text.secondary">
+                    Showing {visibleTimesheets.length} timesheet
+                    {visibleTimesheets.length === 1 ? "" : "s"}.
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
+
+            {loading ? (
+              <Card
+                elevation={0}
+                sx={{
+                  borderRadius: 5,
+                  border: `1px solid ${theme.palette.divider}`,
+                }}
               >
-                <div style={{ fontWeight: 900, fontSize: 16 }}>
-                  {ts.employeeName} <span style={{ color: "#666", fontWeight: 800 }}>({ts.employeeRole})</span>
-                </div>
+                <CardContent sx={{ py: 5 }}>
+                  <Stack spacing={2} alignItems="center" justifyContent="center">
+                    <CircularProgress />
+                    <Typography variant="body2" color="text.secondary">
+                      Loading review queue...
+                    </Typography>
+                  </Stack>
+                </CardContent>
+              </Card>
+            ) : null}
 
-                <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
-                  Week: {ts.weekStartDate} → {ts.weekEndDate}
-                </div>
+            {error ? <Alert severity="error">{error}</Alert> : null}
 
-                <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
-                  Status: <strong>{formatStatus(ts.status)}</strong>
-                </div>
+            {!loading && !error && visibleTimesheets.length === 0 ? (
+              <Card
+                elevation={0}
+                sx={{
+                  borderRadius: 5,
+                  border: `1px solid ${theme.palette.divider}`,
+                }}
+              >
+                <CardContent sx={{ py: 5 }}>
+                  <Stack spacing={1.5} alignItems="center">
+                    <AssignmentTurnedInRoundedIcon
+                      sx={{ fontSize: 40, color: "text.secondary" }}
+                    />
+                    <Typography variant="h6" fontWeight={700}>
+                      No timesheets found
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      There are no timesheets matching the current filter.
+                    </Typography>
+                  </Stack>
+                </CardContent>
+              </Card>
+            ) : null}
 
-                <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                  Total Paid: {ts.totalHours.toFixed(2)} hr • Regular: {ts.regularHours.toFixed(2)} • OT: {ts.overtimeHours.toFixed(2)}
-                </div>
+            {!loading && !error && visibleTimesheets.length > 0 ? (
+              <Stack spacing={2}>
+                {visibleTimesheets.map((ts) => {
+                  const tone = getStatusTone(ts.status);
 
-                {ts.submittedAt ? (
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                    Submitted At: {ts.submittedAt}
-                  </div>
-                ) : null}
-              </Link>
-            ))}
-          </div>
-        ) : null}
+                  return (
+                    <Card
+                      key={ts.id}
+                      elevation={0}
+                      sx={{
+                        borderRadius: 5,
+                        border: `1px solid ${theme.palette.divider}`,
+                        overflow: "hidden",
+                        transition: "transform 160ms ease, box-shadow 160ms ease",
+                        "&:hover": {
+                          transform: "translateY(-1px)",
+                          boxShadow: theme.shadows[2],
+                        },
+                      }}
+                    >
+                      <CardActionArea
+                        component={Link}
+                        href={`/timesheet-review/${ts.id}`}
+                        sx={{ alignItems: "stretch" }}
+                      >
+                        <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                          <Stack spacing={1.75}>
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={1.25}
+                              justifyContent="space-between"
+                              alignItems={{ xs: "flex-start", sm: "center" }}
+                            >
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography
+                                  variant="h6"
+                                  fontWeight={800}
+                                  sx={{ lineHeight: 1.2 }}
+                                >
+                                  {ts.employeeName || "Unnamed Employee"}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {ts.employeeRole || "No role set"}
+                                </Typography>
+                              </Box>
+
+                              <Chip
+                                icon={tone.icon}
+                                label={tone.label}
+                                color={tone.color}
+                                variant={tone.color === "default" ? "outlined" : "filled"}
+                              />
+                            </Stack>
+
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={1.25}
+                              useFlexGap
+                              flexWrap="wrap"
+                            >
+                              <Chip
+                                variant="outlined"
+                                label={`Week: ${ts.weekStartDate} → ${ts.weekEndDate}`}
+                              />
+                              <Chip
+                                variant="outlined"
+                                label={`Total Paid: ${ts.totalHours.toFixed(2)} hr`}
+                              />
+                              <Chip
+                                variant="outlined"
+                                label={`Regular: ${ts.regularHours.toFixed(2)} hr`}
+                              />
+                              <Chip
+                                variant="outlined"
+                                label={`OT: ${ts.overtimeHours.toFixed(2)} hr`}
+                              />
+                            </Stack>
+
+                            <Stack spacing={0.5}>
+                              {ts.submittedAt ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  Submitted: {ts.submittedAt}
+                                </Typography>
+                              ) : null}
+
+                              {ts.approvedAt ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  Approved: {ts.approvedAt}
+                                </Typography>
+                              ) : null}
+
+                              {ts.rejectedAt ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  Rejected: {ts.rejectedAt}
+                                </Typography>
+                              ) : null}
+                            </Stack>
+                          </Stack>
+                        </CardContent>
+                      </CardActionArea>
+                    </Card>
+                  );
+                })}
+              </Stack>
+            ) : null}
+          </Stack>
+        </Container>
       </AppShell>
     </ProtectedPage>
   );

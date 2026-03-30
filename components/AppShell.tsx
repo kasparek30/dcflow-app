@@ -1,4 +1,3 @@
-// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -121,7 +120,7 @@ type NavEntry = {
 
 const DESKTOP_DRAWER_WIDTH = 296;
 const MOBILE_BOTTOM_NAV_HEIGHT = 68;
-const MOBILE_ACTIVE_TRIP_HEIGHT = 76;
+const MOBILE_ACTIVE_TRIP_HEIGHT = 120;
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
@@ -534,7 +533,8 @@ export default function AppShell({
     role === "admin" ||
     role === "dispatcher" ||
     role === "manager" ||
-    role === "office_display";
+    role === "office_display" ||
+    role === "technician";
 
   const showOfficeDisplay =
     role === "admin" ||
@@ -543,7 +543,10 @@ export default function AppShell({
     role === "office_display";
 
   const showProjects =
-    role === "admin" || role === "dispatcher" || role === "manager";
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "technician";
 
   const showWorkload = false;
 
@@ -884,31 +887,57 @@ export default function AppShell({
       ? [{ href: "/projects", label: "Projects", icon: <FolderRoundedIcon /> }]
       : []),
     ...(showWorkload
-      ? [{ href: "/technician-workload", label: "Technician Workload", icon: <AssignmentRoundedIcon /> }]
+      ? [
+          {
+            href: "/technician-workload",
+            label: "Technician Workload",
+            icon: <AssignmentRoundedIcon />,
+          },
+        ]
       : []),
     { href: "/customers", label: "Customers", icon: <PeopleAltRoundedIcon /> },
-    { href: "/service-tickets", label: "Service Tickets", icon: <ReceiptLongRoundedIcon /> },
+    {
+      href: "/service-tickets",
+      label: "Service Tickets",
+      icon: <ReceiptLongRoundedIcon />,
+    },
     ...(showTimeEntries
-      ? [{ href: "/time-entries", label: "Time Entries", icon: <AccessTimeFilledRoundedIcon /> }]
+      ? [
+          {
+            href: "/time-entries",
+            label: "Time Entries",
+            icon: <AccessTimeFilledRoundedIcon />,
+          },
+        ]
       : []),
     ...(showWeeklyTimesheet
-      ? [{ href: "/weekly-timesheet", label: "Weekly Timesheet", icon: <ViewWeekRoundedIcon /> }]
+      ? [
+          {
+            href: "/weekly-timesheet",
+            label: "Weekly Timesheet",
+            icon: <ViewWeekRoundedIcon />,
+          },
+        ]
       : []),
     ...(showPTORequests
-      ? [{
-          href: "/pto-requests",
-          label: "PTO Requests",
-          icon: <BeachAccessRoundedIcon />,
-          badgeCount: pendingPtoCount,
-        }]
+      ? [
+          {
+            href: "/pto-requests",
+            label: "PTO Requests",
+            icon: <BeachAccessRoundedIcon />,
+            badgeCount: pendingPtoCount,
+          },
+        ]
       : []),
     ...(showTimesheetReview
-      ? [{
-          href: "/timesheet-review",
-          label: "Timesheet Review",
-          icon: <TaskAltRoundedIcon />,
-          badgeCount: pendingReviewCount,
-        }]
+      ? [
+          {
+            href: "/timesheet-review",
+            label: "Timesheet Review",
+            icon: <TaskAltRoundedIcon />,
+            badgeCount: pendingReviewCount,
+          },
+        ]
       : []),
   ];
 
@@ -918,12 +947,40 @@ export default function AppShell({
       : []),
   ];
 
+  const mobilePrimaryNav = useMemo<NavEntry[]>(() => {
+    const items: NavEntry[] = [];
+
+    if (showMyDay) {
+      items.push({
+        href: "/technician/my-day",
+        label: "My Day",
+        icon: <EventNoteRoundedIcon />,
+      });
+    }
+
+    if (showSchedule) {
+      items.push({
+        href: "/schedule",
+        label: "Schedule",
+        icon: <CalendarMonthRoundedIcon />,
+      });
+    }
+
+    items.push({
+      href: "/service-tickets",
+      label: "Tickets",
+      icon: <ReceiptLongRoundedIcon />,
+    });
+
+    return items.slice(0, 3);
+  }, [showMyDay, showSchedule]);
+
   const mobileBottomNavValue = useMemo(() => {
-    if (isActivePath(pathname, "/technician/my-day")) return "/technician/my-day";
-    if (isActivePath(pathname, "/schedule")) return "/schedule";
-    if (isActivePath(pathname, "/service-tickets")) return "/service-tickets";
-    return "more";
-  }, [pathname]);
+    const activeItem = mobilePrimaryNav.find((item) =>
+      isActivePath(pathname, item.href)
+    );
+    return activeItem?.href ?? "more";
+  }, [pathname, mobilePrimaryNav]);
 
   const mobileBottomPadding =
     MOBILE_BOTTOM_NAV_HEIGHT +
@@ -1018,7 +1075,10 @@ export default function AppShell({
             />
           </Box>
 
-          <Typography variant="caption" sx={{ mt: 1, display: "block", color: "text.secondary" }}>
+          <Typography
+            variant="caption"
+            sx={{ mt: 1, display: "block", color: "text.secondary" }}
+          >
             {appUser?.displayName || "Unknown User"} • {appUser?.role || "No Role"}
           </Typography>
         </Paper>
@@ -1064,54 +1124,88 @@ export default function AppShell({
 
   const activeTripSurface = isMobile && activeTripCard ? (
     <Paper
-      elevation={0}
+      elevation={4}
       sx={{
         position: "fixed",
-        left: 12,
-        right: 12,
-        bottom: MOBILE_BOTTOM_NAV_HEIGHT + 12,
+        left: 16,
+        right: 16,
+        bottom: MOBILE_BOTTOM_NAV_HEIGHT + 16,
         zIndex: 1201,
-        borderRadius: 2,
+        borderRadius: 3,
         overflow: "hidden",
-        border: `1px solid ${
-          isPaused
-            ? alpha(theme.palette.warning.main, 0.24)
-            : alpha(theme.palette.success.main, 0.24)
-        }`,
-        backgroundColor: isPaused
-          ? alpha(theme.palette.warning.main, 0.12)
-          : alpha(theme.palette.success.main, 0.12),
+        bgcolor: "background.paper",
+        backgroundImage: "none",
+        border: "1px solid",
+        borderColor: "divider",
+        boxShadow: theme.shadows[8],
       }}
     >
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 1.25, py: 1 }}>
-        <Box
-          onClick={() => router.push(activeTripCard.href)}
-          sx={{
-            minWidth: 0,
-            flex: 1,
-            display: "flex",
-            gap: 1,
-            alignItems: "center",
-            color: "inherit",
-            cursor: "pointer",
-          }}
-        >
-          <DirectionsRunRoundedIcon
-            sx={{
-              fontSize: 18,
-              color: isPaused ? "#FFD89C" : "#CFFFE0",
-              flexShrink: 0,
-            }}
-          />
+      <Box
+        sx={{
+          height: 4,
+          bgcolor: isPaused ? "warning.main" : "primary.main",
+        }}
+      />
 
-          <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography variant="caption" sx={{ display: "block", color: "text.secondary" }}>
-              {activeTripCard.statusLabel} • {liveMinutes} min
-            </Typography>
+      <Stack spacing={0}>
+        <Stack
+          direction="row"
+          spacing={1.25}
+          alignItems="flex-start"
+          sx={{ px: 1.5, pt: 1.5, pb: 1.25 }}
+        >
+          <Box
+            sx={{
+              width: 44,
+              height: 44,
+              borderRadius: 2,
+              display: "grid",
+              placeItems: "center",
+              flexShrink: 0,
+              bgcolor: isPaused
+                ? alpha(theme.palette.warning.main, 0.14)
+                : alpha(theme.palette.primary.main, 0.14),
+              color: isPaused ? "warning.main" : "primary.main",
+            }}
+          >
+            <DirectionsRunRoundedIcon sx={{ fontSize: 20 }} />
+          </Box>
+
+          <Box
+            onClick={() => router.push(activeTripCard.href)}
+            sx={{
+              minWidth: 0,
+              flex: 1,
+              cursor: "pointer",
+            }}
+          >
+            <Chip
+              size="small"
+              label={`${activeTripCard.statusLabel} • ${liveMinutes} min`}
+              sx={{
+                mb: 0.875,
+                height: 24,
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                color: isPaused ? "warning.main" : "primary.main",
+                bgcolor: isPaused
+                  ? alpha(theme.palette.warning.main, 0.12)
+                  : alpha(theme.palette.primary.main, 0.12),
+                border: `1px solid ${
+                  isPaused
+                    ? alpha(theme.palette.warning.main, 0.24)
+                    : alpha(theme.palette.primary.main, 0.24)
+                }`,
+              }}
+            />
 
             <Typography
               variant="subtitle2"
               sx={{
+                fontWeight: 700,
+                lineHeight: 1.25,
+                color: "text.primary",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -1123,51 +1217,87 @@ export default function AppShell({
             <Typography
               variant="caption"
               sx={{
+                mt: 0.375,
                 display: "block",
+                color: "text.secondary",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
-                color: "text.secondary",
               }}
             >
               {activeTripCard.secondaryLine}
             </Typography>
           </Box>
-        </Box>
 
-        {canQuickAct ? (
-          isPaused ? (
-            <IconButton
-              onClick={handleQuickResume}
-              disabled={pillActionBusy}
-              sx={{
-                width: 40,
-                height: 40,
-                borderRadius: 1.5,
-                color: "text.primary",
-                border: `1px solid ${alpha("#FFFFFF", 0.12)}`,
-                backgroundColor: alpha("#FFFFFF", 0.05),
-              }}
-            >
-              <PlayArrowRoundedIcon />
-            </IconButton>
-          ) : (
-            <IconButton
-              onClick={handleQuickPause}
-              disabled={pillActionBusy}
-              sx={{
-                width: 40,
-                height: 40,
-                borderRadius: 1.5,
-                color: "text.primary",
-                border: `1px solid ${alpha("#FFFFFF", 0.12)}`,
-                backgroundColor: alpha("#FFFFFF", 0.05),
-              }}
-            >
-              <PauseRoundedIcon />
-            </IconButton>
-          )
-        ) : null}
+          {canQuickAct ? (
+            isPaused ? (
+              <IconButton
+                onClick={handleQuickResume}
+                disabled={pillActionBusy}
+                aria-label="Resume active trip"
+                sx={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  color: "warning.main",
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: "background.paper",
+                }}
+              >
+                <PlayArrowRoundedIcon />
+              </IconButton>
+            ) : (
+              <IconButton
+                onClick={handleQuickPause}
+                disabled={pillActionBusy}
+                aria-label="Pause active trip"
+                sx={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  color: "primary.main",
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: "background.paper",
+                }}
+              >
+                <PauseRoundedIcon />
+              </IconButton>
+            )
+          ) : null}
+        </Stack>
+
+        <Divider />
+
+        <Box
+          sx={{
+            px: 1.25,
+            py: 1.25,
+            bgcolor: alpha(
+              theme.palette.primary.main,
+              theme.palette.mode === "dark" ? 0.08 : 0.04
+            ),
+          }}
+        >
+          <Button
+            fullWidth
+            variant="contained"
+            startIcon={<ReceiptLongRoundedIcon />}
+            onClick={() => router.push(activeTripCard.href)}
+            sx={{
+              minHeight: 40,
+              borderRadius: 999,
+              textTransform: "none",
+              fontWeight: 700,
+              boxShadow: "none",
+            }}
+          >
+            Open trip
+          </Button>
+        </Box>
       </Stack>
     </Paper>
   ) : null;
@@ -1337,21 +1467,15 @@ export default function AppShell({
             background: "transparent",
           }}
         >
-          <BottomNavigationAction
-            label="My Day"
-            value="/technician/my-day"
-            icon={<EventNoteRoundedIcon />}
-          />
-          <BottomNavigationAction
-            label="Schedule"
-            value="/schedule"
-            icon={<CalendarMonthRoundedIcon />}
-          />
-          <BottomNavigationAction
-            label="Tickets"
-            value="/service-tickets"
-            icon={<ReceiptLongRoundedIcon />}
-          />
+          {mobilePrimaryNav.map((item) => (
+            <BottomNavigationAction
+              key={item.href}
+              label={item.label}
+              value={item.href}
+              icon={item.icon}
+            />
+          ))}
+
           <BottomNavigationAction
             label="More"
             value="more"

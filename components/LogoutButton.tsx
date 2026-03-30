@@ -1,7 +1,5 @@
-// components/LogoutButton.tsx
 "use client";
 
-import { useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
 import { auth } from "../src/lib/firebase";
 import React, { useState } from "react";
@@ -9,18 +7,20 @@ import { Button } from "@mui/material";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 
 export default function LogoutButton() {
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
 
   async function handleLogout() {
     if (busy) return;
     setBusy(true);
+
     try {
       await signOut(auth);
-      router.push("/login");
+
+      // Use a hard redirect so auth guards on the current page
+      // cannot race and send the user to /login first.
+      window.location.replace("/");
     } catch (e: any) {
       alert(e?.message || "Failed to log out.");
-    } finally {
       setBusy(false);
     }
   }

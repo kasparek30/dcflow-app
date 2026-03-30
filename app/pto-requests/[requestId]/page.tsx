@@ -12,6 +12,30 @@ import {
   query,
   updateDoc,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  Divider,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import EventAvailableRoundedIcon from "@mui/icons-material/EventAvailableRounded";
+import EventBusyRoundedIcon from "@mui/icons-material/EventBusyRounded";
+import HourglassTopRoundedIcon from "@mui/icons-material/HourglassTopRounded";
+import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -62,6 +86,34 @@ function formatStatus(status: PTORequest["status"]) {
   }
 }
 
+function getStatusChipColor(
+  status: PTORequest["status"]
+): "default" | "success" | "error" | "warning" {
+  switch (status) {
+    case "approved":
+      return "success";
+    case "rejected":
+      return "error";
+    case "pending":
+      return "warning";
+    default:
+      return "default";
+  }
+}
+
+function getStatusIcon(status: PTORequest["status"]) {
+  switch (status) {
+    case "approved":
+      return <CheckCircleRoundedIcon fontSize="small" />;
+    case "rejected":
+      return <EventBusyRoundedIcon fontSize="small" />;
+    case "pending":
+      return <HourglassTopRoundedIcon fontSize="small" />;
+    default:
+      return <InfoRoundedIcon fontSize="small" />;
+  }
+}
+
 function getWeekdayDates(startDate: string, endDate: string) {
   const start = new Date(`${startDate}T12:00:00`);
   const end = new Date(`${endDate}T12:00:00`);
@@ -86,6 +138,7 @@ function getWeekdayDates(startDate: string, endDate: string) {
 }
 
 export default function PTORequestDetailPage({ params }: Props) {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -180,7 +233,6 @@ export default function PTORequestDetailPage({ params }: Props) {
     try {
       const nowIso = new Date().toISOString();
 
-      // Pull holidays, existing timeEntries (for dedupe), and existing unavailability (for dedupe)
       const [holidaySnap, timeEntriesSnap, unavailSnap] = await Promise.all([
         getDocs(query(collection(db, "companyHolidays"))),
         getDocs(query(collection(db, "timeEntries"))),
@@ -228,12 +280,8 @@ export default function PTORequestDetailPage({ params }: Props) {
       let createdUnavailabilityCount = 0;
 
       for (const entryDate of weekdayDates) {
-        // Skip company holidays (so we don't double-pay PTO + Holiday)
         if (activeHolidayDates.has(entryDate)) continue;
 
-        // ----------------------------
-        // 1) DEDUPE + CREATE PTO timeEntry
-        // ----------------------------
         const notesPrefix = `AUTO_PTO:${requestItem.id}:${entryDate}`;
 
         const alreadyHasTimeEntry = allTimeEntries.find((entry) => {
@@ -291,20 +339,17 @@ export default function PTORequestDetailPage({ params }: Props) {
           createdTimeEntryCount += 1;
         }
 
-        // ----------------------------
-        // 2) DEDUPE + CREATE employeeUnavailability block
-        // ----------------------------
         const alreadyHasUnavailability = allUnavailability.find((u) => {
           if (u.uid !== requestItem.employeeId) return false;
           if (u.date !== entryDate) return false;
           if (u.active === false) return false;
 
-          // If it was created from this request already, definitely skip
           if ((u.ptoRequestId || "") === requestItem.id) return true;
 
-          // Otherwise: skip if it's already a PTO-type block created by system/admin override.
-          // (prevents duplicate blocking)
-          if (u.type === "pto" && (u.source === "pto_request_approved" || u.source === "admin_override")) {
+          if (
+            u.type === "pto" &&
+            (u.source === "pto_request_approved" || u.source === "admin_override")
+          ) {
             return true;
           }
 
@@ -323,7 +368,6 @@ export default function PTORequestDetailPage({ params }: Props) {
             type: "pto",
             reason: (managerNote.trim() || requestItem.notes || "").trim() || null,
 
-            // This tells us it came from approving a PTO request (not admin override)
             source: "pto_request_approved",
             ptoRequestId: requestItem.id,
 
@@ -351,7 +395,6 @@ export default function PTORequestDetailPage({ params }: Props) {
         }
       }
 
-      // Finally: mark the PTO request approved
       await updateDoc(doc(db, "ptoRequests", requestItem.id), {
         status: "approved",
         approvedAt: nowIso,
@@ -374,7 +417,7 @@ export default function PTORequestDetailPage({ params }: Props) {
       });
 
       setSaveMsg(
-        `✅ PTO request approved. Created ${createdTimeEntryCount} PTO time entr${
+        `PTO request approved. Created ${createdTimeEntryCount} PTO time entr${
           createdTimeEntryCount === 1 ? "y" : "ies"
         } and ${createdUnavailabilityCount} unavailability block${
           createdUnavailabilityCount === 1 ? "" : "s"
@@ -432,243 +475,528 @@ export default function PTORequestDetailPage({ params }: Props) {
   return (
     <ProtectedPage fallbackTitle="PTO Request Detail">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: "12px",
-            flexWrap: "wrap",
-            alignItems: "flex-start",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>
-              PTO Request Detail
-            </h1>
-            <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-              Review PTO request details and approve or reject when ready.
-            </p>
-          </div>
-
-          <Link
-            href="/pto-requests"
-            style={{
-              padding: "8px 12px",
-              border: "1px solid #ccc",
-              borderRadius: "10px",
-              textDecoration: "none",
-              color: "inherit",
-              background: "white",
-              height: "fit-content",
-            }}
-          >
-            Back to PTO Requests
-          </Link>
-        </div>
-
-        {loading ? <p style={{ marginTop: "16px" }}>Loading PTO request...</p> : null}
-        {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
-        {saveMsg ? <p style={{ marginTop: "16px", color: "green" }}>{saveMsg}</p> : null}
-
-        {!loading && requestItem ? (
-          <>
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "920px",
-                display: "grid",
-                gap: "8px",
+        <Box sx={{ maxWidth: 1200, mx: "auto", pb: 4 }}>
+          <Stack spacing={3}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: { xs: 2.5, md: 3 },
+                borderRadius: 5,
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: theme.palette.background.paper,
               }}
             >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>
-                {requestItem.employeeName} ({requestItem.employeeRole})
-              </div>
+              <Stack
+                direction={{ xs: "column", md: "row" }}
+                spacing={2}
+                alignItems={{ xs: "flex-start", md: "center" }}
+                justifyContent="space-between"
+              >
+                <Box>
+                  <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: -0.4 }}>
+                    PTO Request Detail
+                  </Typography>
+                  <Typography variant="body1" color="text.secondary" sx={{ mt: 0.75 }}>
+                    Review the request, verify generated PTO dates, and approve or reject
+                    when ready.
+                  </Typography>
+                </Box>
 
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Request: {requestItem.startDate} through {requestItem.endDate}
-              </div>
+                <Button
+                  component={Link}
+                  href="/pto-requests"
+                  variant="outlined"
+                  startIcon={<ArrowBackRoundedIcon />}
+                  sx={{ borderRadius: 999 }}
+                >
+                  Back to PTO Requests
+                </Button>
+              </Stack>
+            </Paper>
 
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Status: {formatStatus(requestItem.status)}
-              </div>
-
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Hours Per Day: {requestItem.hoursPerDay.toFixed(2)}
-              </div>
-
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Total Requested Hours: {requestItem.totalRequestedHours.toFixed(2)}
-              </div>
-
-              <div style={{ fontSize: "12px", color: "#666" }}>
-                PTO Request ID: {requestId}
-              </div>
-            </div>
-
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "920px",
-              }}
-            >
-              <div style={{ fontWeight: 800, marginBottom: "8px" }}>
-                PTO Dates That Will Generate
-              </div>
-
-              {weekdayDates.length === 0 ? (
-                <div style={{ fontSize: "13px", color: "#666" }}>
-                  No weekdays in this request.
-                </div>
-              ) : (
-                <div style={{ display: "grid", gap: "6px" }}>
-                  {weekdayDates.map((date) => (
-                    <div key={date} style={{ fontSize: "13px", color: "#555" }}>
-                      {date} • {requestItem.hoursPerDay.toFixed(2)} hr
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
-                Weekends are skipped. Active company holidays are also skipped to avoid
-                double-counting PTO + holiday pay on the same day.
-              </div>
-            </div>
-
-            {requestItem.notes ? (
-              <div
-                style={{
-                  marginTop: "16px",
-                  border: "1px solid #ddd",
-                  borderRadius: "12px",
-                  padding: "16px",
-                  background: "#fafafa",
-                  maxWidth: "920px",
+            {loading ? (
+              <Paper
+                elevation={0}
+                sx={{
+                  p: 2.5,
+                  borderRadius: 4,
+                  border: `1px solid ${theme.palette.divider}`,
                 }}
               >
-                <div style={{ fontWeight: 800, marginBottom: "8px" }}>
-                  Employee Note
-                </div>
-                <div style={{ fontSize: "13px", color: "#555", whiteSpace: "pre-wrap" }}>
-                  {requestItem.notes}
-                </div>
-              </div>
+                <Typography variant="body2" color="text.secondary">
+                  Loading PTO request...
+                </Typography>
+              </Paper>
             ) : null}
 
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "920px",
-                display: "grid",
-                gap: "12px",
-              }}
-            >
-              <div style={{ fontWeight: 900, fontSize: "18px" }}>
-                Manager Review
-              </div>
+            {error ? (
+              <Alert severity="error" sx={{ borderRadius: 3 }}>
+                {error}
+              </Alert>
+            ) : null}
 
-              <div>
-                <label style={{ fontWeight: 700 }}>Manager Note</label>
-                <textarea
-                  value={managerNote}
-                  onChange={(e) => setManagerNote(e.target.value)}
-                  rows={4}
-                  disabled={!canTakeAction || saving}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                    background: canTakeAction ? "white" : "#f1f1f1",
-                  }}
-                />
-              </div>
+            {saveMsg ? (
+              <Alert severity="success" sx={{ borderRadius: 3 }}>
+                {saveMsg}
+              </Alert>
+            ) : null}
 
-              <div>
-                <label style={{ fontWeight: 700 }}>Rejection Reason</label>
-                <textarea
-                  value={rejectionReason}
-                  onChange={(e) => setRejectionReason(e.target.value)}
-                  rows={3}
-                  disabled={!canTakeAction || saving}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                    background: canTakeAction ? "white" : "#f1f1f1",
-                  }}
-                />
-              </div>
-
-              {canTakeAction ? (
-                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={handleApprove}
-                    disabled={saving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                    }}
-                  >
-                    {saving ? "Saving..." : "Approve PTO Request"}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleReject}
-                    disabled={saving}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                    }}
-                  >
-                    {saving ? "Saving..." : "Reject PTO Request"}
-                  </button>
-                </div>
-              ) : (
-                <span
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: "10px",
-                    border: "1px solid #ddd",
-                    background: "#f1f1f1",
-                    color: "#777",
-                    width: "fit-content",
-                    fontWeight: 800,
-                  }}
+            {!loading && requestItem ? (
+              <>
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={2}
+                  useFlexGap
+                  flexWrap="wrap"
                 >
-                  Review Locked
-                </span>
-              )}
-            </div>
-          </>
-        ) : null}
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      flex: "1 1 220px",
+                      minWidth: 0,
+                      p: 2,
+                      borderRadius: 4,
+                      border: `1px solid ${theme.palette.divider}`,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.06),
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.5} alignItems="center">
+                      <PersonRoundedIcon sx={{ color: "primary.main" }} />
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          Employee
+                        </Typography>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                          {requestItem.employeeName}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {requestItem.employeeRole}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Paper>
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      flex: "1 1 220px",
+                      minWidth: 0,
+                      p: 2,
+                      borderRadius: 4,
+                      border: `1px solid ${theme.palette.divider}`,
+                      backgroundColor: alpha(theme.palette.warning.main, 0.06),
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.5} alignItems="center">
+                      <CalendarMonthRoundedIcon sx={{ color: "warning.main" }} />
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          Date Range
+                        </Typography>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                          {requestItem.startDate} → {requestItem.endDate}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Paper>
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      flex: "1 1 220px",
+                      minWidth: 0,
+                      p: 2,
+                      borderRadius: 4,
+                      border: `1px solid ${theme.palette.divider}`,
+                      backgroundColor: alpha(theme.palette.secondary.main, 0.06),
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.5} alignItems="center">
+                      <ScheduleRoundedIcon sx={{ color: "secondary.main" }} />
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          Requested Hours
+                        </Typography>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                          {requestItem.totalRequestedHours.toFixed(2)} total
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {requestItem.hoursPerDay.toFixed(2)} hrs/day
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Paper>
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      flex: "1 1 220px",
+                      minWidth: 0,
+                      p: 2,
+                      borderRadius: 4,
+                      border: `1px solid ${theme.palette.divider}`,
+                      backgroundColor:
+                        requestItem.status === "approved"
+                          ? alpha(theme.palette.success.main, 0.07)
+                          : requestItem.status === "rejected"
+                            ? alpha(theme.palette.error.main, 0.07)
+                            : alpha(theme.palette.warning.main, 0.07),
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.5} alignItems="center">
+                      {getStatusIcon(requestItem.status)}
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          Status
+                        </Typography>
+                        <Chip
+                          label={formatStatus(requestItem.status)}
+                          color={getStatusChipColor(requestItem.status)}
+                          size="small"
+                          sx={{ mt: 0.5, borderRadius: 999, fontWeight: 600 }}
+                        />
+                      </Box>
+                    </Stack>
+                  </Paper>
+                </Stack>
+
+                <Stack direction={{ xs: "column", xl: "row" }} spacing={3} alignItems="stretch">
+                  <Stack spacing={3} sx={{ flex: 1.05, minWidth: 0 }}>
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        p: { xs: 2, md: 3 },
+                        borderRadius: 5,
+                        border: `1px solid ${theme.palette.divider}`,
+                        backgroundColor: theme.palette.background.paper,
+                      }}
+                    >
+                      <Stack spacing={2}>
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            Request Overview
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                            Core PTO request details and tracking metadata.
+                          </Typography>
+                        </Box>
+
+                        <Divider />
+
+                        <Stack spacing={1.25}>
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            useFlexGap
+                            flexWrap="wrap"
+                          >
+                            <Chip
+                              icon={<PersonRoundedIcon />}
+                              label={`${requestItem.employeeName} (${requestItem.employeeRole})`}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
+                            <Chip
+                              icon={<CalendarMonthRoundedIcon />}
+                              label={`${requestItem.startDate} → ${requestItem.endDate}`}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
+                            <Chip
+                              icon={<ScheduleRoundedIcon />}
+                              label={`${requestItem.hoursPerDay.toFixed(2)} hrs/day`}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
+                            <Chip
+                              icon={<EventAvailableRoundedIcon />}
+                              label={`${requestItem.totalRequestedHours.toFixed(2)} total hrs`}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
+                          </Stack>
+
+                          <Typography variant="body2" color="text.secondary">
+                            PTO Request ID: {requestId}
+                          </Typography>
+
+                          {requestItem.approvedAt ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Approved at: {requestItem.approvedAt}
+                            </Typography>
+                          ) : null}
+
+                          {requestItem.approvedByName ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Approved by: {requestItem.approvedByName}
+                            </Typography>
+                          ) : null}
+
+                          {requestItem.rejectedAt ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Rejected at: {requestItem.rejectedAt}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      </Stack>
+                    </Paper>
+
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        p: { xs: 2, md: 3 },
+                        borderRadius: 5,
+                        border: `1px solid ${theme.palette.divider}`,
+                        backgroundColor: theme.palette.background.paper,
+                      }}
+                    >
+                      <Stack spacing={2}>
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            PTO Dates That Will Generate
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                            These weekday dates are eligible for PTO generation from this request.
+                          </Typography>
+                        </Box>
+
+                        <Divider />
+
+                        {weekdayDates.length === 0 ? (
+                          <Paper
+                            elevation={0}
+                            sx={{
+                              p: 2,
+                              borderRadius: 3,
+                              border: `1px dashed ${theme.palette.divider}`,
+                              backgroundColor: alpha(theme.palette.text.primary, 0.02),
+                            }}
+                          >
+                            <Typography variant="body2" color="text.secondary">
+                              No weekdays fall within this request range.
+                            </Typography>
+                          </Paper>
+                        ) : (
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            useFlexGap
+                            flexWrap="wrap"
+                          >
+                            {weekdayDates.map((date) => (
+                              <Chip
+                                key={date}
+                                icon={<CalendarMonthRoundedIcon />}
+                                label={`${date} • ${requestItem.hoursPerDay.toFixed(2)} hr`}
+                                variant="outlined"
+                                sx={{ borderRadius: 999 }}
+                              />
+                            ))}
+                          </Stack>
+                        )}
+
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            p: 2,
+                            borderRadius: 3,
+                            border: `1px solid ${theme.palette.divider}`,
+                            backgroundColor: alpha(theme.palette.info.main, 0.06),
+                          }}
+                        >
+                          <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                            <InfoRoundedIcon sx={{ color: "info.main", mt: "2px" }} />
+                            <Typography variant="body2" color="text.secondary">
+                              Weekends are skipped. Active company holidays are also skipped to
+                              avoid double-counting PTO and holiday pay on the same day.
+                            </Typography>
+                          </Stack>
+                        </Paper>
+                      </Stack>
+                    </Paper>
+
+                    {requestItem.notes ? (
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          p: { xs: 2, md: 3 },
+                          borderRadius: 5,
+                          border: `1px solid ${theme.palette.divider}`,
+                          backgroundColor: theme.palette.background.paper,
+                        }}
+                      >
+                        <Stack spacing={2}>
+                          <Box>
+                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                              Employee Note
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                              Additional context provided by the employee.
+                            </Typography>
+                          </Box>
+
+                          <Divider />
+
+                          <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                            <NotesRoundedIcon
+                              sx={{ color: "text.secondary", mt: "2px", flexShrink: 0 }}
+                            />
+                            <Typography
+                              variant="body1"
+                              sx={{ whiteSpace: "pre-wrap", color: "text.primary" }}
+                            >
+                              {requestItem.notes}
+                            </Typography>
+                          </Stack>
+                        </Stack>
+                      </Paper>
+                    ) : null}
+                  </Stack>
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      flex: 0.95,
+                      p: { xs: 2, md: 3 },
+                      borderRadius: 5,
+                      border: `1px solid ${theme.palette.divider}`,
+                      backgroundColor: theme.palette.background.paper,
+                      minWidth: 0,
+                    }}
+                  >
+                    <Stack spacing={2.5}>
+                      <Box>
+                        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                          Manager Review
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          Add review notes and approve or reject this PTO request.
+                        </Typography>
+                      </Box>
+
+                      <Divider />
+
+                      <TextField
+                        label="Manager Note"
+                        value={managerNote}
+                        onChange={(e) => setManagerNote(e.target.value)}
+                        multiline
+                        minRows={5}
+                        disabled={!canTakeAction || saving}
+                        fullWidth
+                        placeholder="Optional internal note for context or documentation"
+                      />
+
+                      <TextField
+                        label="Rejection Reason"
+                        value={rejectionReason}
+                        onChange={(e) => setRejectionReason(e.target.value)}
+                        multiline
+                        minRows={4}
+                        disabled={!canTakeAction || saving}
+                        fullWidth
+                        placeholder="Required when rejecting this request"
+                      />
+
+                      {requestItem.managerNote && !canTakeAction ? (
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            p: 2,
+                            borderRadius: 3,
+                            border: `1px solid ${theme.palette.divider}`,
+                            backgroundColor: alpha(theme.palette.secondary.main, 0.05),
+                          }}
+                        >
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.75 }}>
+                            Saved Manager Note
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ whiteSpace: "pre-wrap" }}
+                          >
+                            {requestItem.managerNote}
+                          </Typography>
+                        </Paper>
+                      ) : null}
+
+                      {requestItem.rejectionReason ? (
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            p: 2,
+                            borderRadius: 3,
+                            border: `1px solid ${theme.palette.divider}`,
+                            backgroundColor: alpha(theme.palette.error.main, 0.05),
+                          }}
+                        >
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.75 }}>
+                            Rejection Reason
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ whiteSpace: "pre-wrap" }}
+                          >
+                            {requestItem.rejectionReason}
+                          </Typography>
+                        </Paper>
+                      ) : null}
+
+                      {canTakeAction ? (
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+                          <Button
+                            type="button"
+                            onClick={handleApprove}
+                            disabled={saving}
+                            variant="contained"
+                            startIcon={<CheckCircleRoundedIcon />}
+                            size="large"
+                            sx={{ borderRadius: 999, px: 2.5 }}
+                          >
+                            {saving ? "Saving..." : "Approve PTO Request"}
+                          </Button>
+
+                          <Button
+                            type="button"
+                            onClick={handleReject}
+                            disabled={saving}
+                            variant="outlined"
+                            color="error"
+                            startIcon={<CloseRoundedIcon />}
+                            size="large"
+                            sx={{ borderRadius: 999, px: 2.5 }}
+                          >
+                            {saving ? "Saving..." : "Reject PTO Request"}
+                          </Button>
+                        </Stack>
+                      ) : (
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            p: 2,
+                            borderRadius: 3,
+                            border: `1px solid ${theme.palette.divider}`,
+                            backgroundColor: alpha(theme.palette.text.primary, 0.04),
+                          }}
+                        >
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Review Locked
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                            This request is no longer in a pending state, or your role does not
+                            have review permission.
+                          </Typography>
+                        </Paper>
+                      )}
+                    </Stack>
+                  </Paper>
+                </Stack>
+              </>
+            ) : null}
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );
