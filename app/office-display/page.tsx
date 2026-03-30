@@ -1174,6 +1174,8 @@ export default function OfficeDisplayPage() {
             {days.map(({ d, iso }) => {
               const ptoNames = ptoNamesByDate[iso] || [];
               const holidays = holidaysByDate[iso] || [];
+              const holidayLabel =
+                holidays.length === 1 ? holidays[0].name : `${holidays.length} Holidays`;
 
               return (
                 <Box
@@ -1190,32 +1192,45 @@ export default function OfficeDisplayPage() {
                       direction="row"
                       justifyContent="space-between"
                       spacing={1}
-                      alignItems="baseline"
+                      alignItems="center"
                     >
-                      <Typography variant="subtitle2">{formatDowShort(d)}</Typography>
+                      <Stack
+                        direction="row"
+                        spacing={0.75}
+                        alignItems="center"
+                        sx={{ minWidth: 0, flex: 1, overflow: "hidden" }}
+                      >
+                        <Typography variant="subtitle2" sx={{ flexShrink: 0 }}>
+                          {formatDowShort(d)}
+                        </Typography>
 
-                      <Typography variant="caption" color="text.secondary">
+                        {holidays.length ? (
+                          <Chip
+                            size="small"
+                            icon={<CelebrationRoundedIcon sx={{ fontSize: 15 }} />}
+                            label={holidayLabel}
+                            variant="outlined"
+                            sx={{
+                              maxWidth: "100%",
+                              borderRadius: 1.25,
+                              fontWeight: 600,
+                              color: "#FFE6A7",
+                              backgroundColor: "rgba(245,158,11,0.10)",
+                              border: "1px solid rgba(245,158,11,0.24)",
+                              "& .MuiChip-label": {
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              },
+                            }}
+                          />
+                        ) : null}
+                      </Stack>
+
+                      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
                         {formatIsoMDY(iso)}
                       </Typography>
                     </Stack>
-
-                    {holidays.map((holiday) => (
-                      <Chip
-                        key={holiday.id}
-                        size="small"
-                        icon={<CelebrationRoundedIcon sx={{ fontSize: 15 }} />}
-                        label={holiday.name}
-                        variant="outlined"
-                        sx={{
-                          width: "fit-content",
-                          borderRadius: 1.25,
-                          fontWeight: 600,
-                          color: "#FFE6A7",
-                          backgroundColor: "rgba(245,158,11,0.10)",
-                          border: "1px solid rgba(245,158,11,0.24)",
-                        }}
-                      />
-                    ))}
 
                     {ptoNames.length ? (
                       <Chip
@@ -1345,24 +1360,6 @@ export default function OfficeDisplayPage() {
                             borderRadius: 1.25,
                             fontWeight: 500,
                             flexShrink: 0,
-                          }}
-                        />
-                      ) : null}
-
-                      {!pto && isHoliday ? (
-                        <Chip
-                          size="small"
-                          icon={<CelebrationRoundedIcon sx={{ fontSize: 15 }} />}
-                          label={holidays.length === 1 ? holidays[0].name : `${holidays.length} holidays`}
-                          variant="outlined"
-                          sx={{
-                            width: "fit-content",
-                            borderRadius: 1.25,
-                            fontWeight: 600,
-                            flexShrink: 0,
-                            color: "#FFE6A7",
-                            backgroundColor: "rgba(245,158,11,0.10)",
-                            border: "1px solid rgba(245,158,11,0.24)",
                           }}
                         />
                       ) : null}

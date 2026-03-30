@@ -242,7 +242,7 @@ export default function ServiceTicketsPage() {
   const [assignedFilter, setAssignedFilter] = useState<"all" | "assigned" | "unassigned">("all");
   const [scheduleFilter, setScheduleFilter] = useState<"all" | "scheduled" | "unscheduled">("all");
   const [hideCompleted, setHideCompleted] = useState<boolean>(defaultHideCompleted);
-  const [availableOnly, setAvailableOnly] = useState<boolean>(false);
+  const [availableOnly, setAvailableOnly] = useState<boolean>(true);
 
   useEffect(() => {
     async function loadTickets() {
