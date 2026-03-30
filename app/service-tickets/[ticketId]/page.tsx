@@ -1,4 +1,3 @@
-// app/service-tickets/[ticketId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -16,6 +15,49 @@ import {
   orderBy,
   runTransaction,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  Checkbox,
+  Chip,
+  Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  Fab,
+  FormControlLabel,
+  IconButton,
+  MenuItem,
+  Paper,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import type { SxProps, Theme } from "@mui/material/styles";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
+import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
+import AlternateEmailRoundedIcon from "@mui/icons-material/AlternateEmailRounded";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
+import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import AssignmentTurnedInRoundedIcon from "@mui/icons-material/AssignmentTurnedInRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
+import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -42,7 +84,7 @@ type EmployeeProfileOption = {
   userUid?: string | null;
   displayName?: string;
   employmentStatus?: string;
-  laborRole?: string; // helper/apprentice/technician/etc
+  laborRole?: string;
   defaultPairedTechUid?: string | null;
 };
 
@@ -75,24 +117,20 @@ type TripDoc = {
   id: string;
   active: boolean;
   type: "service" | "project";
-  status: string; // planned | in_progress | complete | cancelled
+  status: string;
   date: string;
   timeWindow: TripTimeWindow | string;
   startTime: string;
   endTime: string;
-
   crew?: TripCrew;
-
   link?: {
     serviceTicketId?: string | null;
     projectId?: string | null;
     projectStageKey?: string | null;
   };
-
   sourceKey?: string;
   notes?: string | null;
   cancelReason?: string | null;
-
   timerState?: "not_started" | "running" | "paused" | "complete" | string;
   actualStartAt?: string | null;
   actualEndAt?: string | null;
@@ -100,17 +138,13 @@ type TripDoc = {
   endedByUid?: string | null;
   pauseBlocks?: PauseBlock[];
   actualMinutes?: number | null;
-
   workNotes?: string | null;
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
-
   crewConfirmed?: TripCrew | null;
   materials?: TripMaterial[] | null;
-
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
-
   createdAt?: string;
   createdByUid?: string | null;
   updatedAt?: string;
@@ -121,12 +155,10 @@ type BillingPacket = {
   status: "not_ready" | "ready_to_bill" | "invoiced";
   readyToBillAt: string | null;
   readyToBillTripId: string | null;
-
   resolutionNotes: string | null;
   workNotes: string | null;
-
   labor: {
-    totalHours: number; // customer billed hours
+    totalHours: number;
     byCrew: Array<{
       uid: string;
       name: string;
@@ -134,10 +166,8 @@ type BillingPacket = {
       hours: number;
     }>;
   };
-
   materials: TripMaterial[];
   photos: Array<{ url: string; caption?: string }>;
-
   updatedAt: string;
 };
 
@@ -155,9 +185,6 @@ type TicketStatus =
 
 type FinishMode = "none" | "follow_up" | "resolved";
 
-// -----------------------------
-// Helpers
-// -----------------------------
 function safeText(x: unknown) {
   return String(x ?? "").trim();
 }
@@ -318,7 +345,6 @@ function buildMapsUrl(address: string) {
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 
-// Google maps embed (no API key)
 function buildMapsEmbedUrl(address: string) {
   const q = encodeURIComponent(address);
   return `https://www.google.com/maps?q=${q}&output=embed`;
@@ -353,21 +379,6 @@ function formatTicketStatus(value: ServiceTicket["status"]) {
   }
 }
 
-// Mobile helper
-function useIsMobile(breakpointPx = 900) {
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    function onResize() {
-      setIsMobile(window.innerWidth < breakpointPx);
-    }
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [breakpointPx]);
-  return isMobile;
-}
-
-// ---- Weekly Timesheets + TimeEntries helpers ----
 function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
@@ -401,11 +412,9 @@ async function upsertWeeklyTimesheetHeader(args: {
       employeeRole,
       weekStartDate,
       weekEndDate,
-
       status: "draft",
       submittedAt: null,
       submittedByUid: null,
-
       createdAt: now,
       createdByUid: createdByUid || null,
       updatedAt: now,
@@ -426,7 +435,6 @@ async function upsertTimeEntryFromTrip(args: {
   weekEndDate: string;
   timesheetId: string;
   createdByUid: string | null;
-
   displayTitle: string;
   displaySubtitle: string;
   outcomeLabel: string;
@@ -472,33 +480,26 @@ async function upsertTimeEntryFromTrip(args: {
       employeeId: member.uid,
       employeeName: member.name,
       employeeRole: member.role,
-
       entryDate,
       weekStartDate,
       weekEndDate,
       timesheetId,
-
       category: trip.type === "project" ? "project_stage" : "service_ticket",
       payType: "regular",
       billable: true,
       source: "trip_completion",
-
       hours: hoursToWrite,
       hoursSource: hoursGenerated,
       hoursLocked: hoursLocked || false,
-
       tripId: trip.id,
       serviceTicketId: trip.link?.serviceTicketId || null,
       projectId: trip.link?.projectId || null,
       projectStageKey: trip.link?.projectStageKey || null,
-
       displayTitle: displayTitle || null,
       displaySubtitle: displaySubtitle || null,
       outcome: outcomeLabel ? outcomeLabel.toLowerCase().replaceAll(" ", "_") : null,
-
       entryStatus: "draft",
       notes: notes || null,
-
       createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
       createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : createdByUid || null,
       updatedAt: now,
@@ -533,124 +534,126 @@ function validateMaterialsForResolved(
   return { ok: true, cleaned };
 }
 
-// -----------------------------
-// Lightweight UI atoms (inline styles only)
-// -----------------------------
-function Pill(props: { text: string; tone?: "neutral" | "green" | "yellow" | "red" | "blue" }) {
-  const tone = props.tone || "neutral";
-  const map: Record<string, { bg: string; border: string; text: string }> = {
-    neutral: { bg: "#f3f4f6", border: "#e5e7eb", text: "#111827" },
-    green: { bg: "#eaffea", border: "#b7e3c2", text: "#14532d" },
-    yellow: { bg: "#fff7ed", border: "#fed7aa", text: "#7c2d12" },
-    red: { bg: "#fff1f2", border: "#fecdd3", text: "#7f1d1d" },
-    blue: { bg: "#eff6ff", border: "#bfdbfe", text: "#1e3a8a" },
-  };
-  const c = map[tone] || map.neutral;
-
+function SectionCard(props: {
+  title: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "6px 10px",
-        borderRadius: 999,
-        background: c.bg,
-        border: `1px solid ${c.border}`,
-        color: c.text,
-        fontWeight: 900,
-        fontSize: 12,
-        lineHeight: "12px",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {props.text}
-    </span>
-  );
-}
-
-function Card(props: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        border: "1px solid #e5e7eb",
-        borderRadius: 16,
-        background: "white",
-        boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
+    <Card
+      variant="outlined"
+      sx={{
+        borderRadius: 4,
+        borderColor: "divider",
         overflow: "hidden",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
       }}
     >
-      <div
-        style={{
-          padding: "14px 16px",
-          borderBottom: "1px solid #f1f5f9",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 12,
-        }}
-      >
-        <div style={{ fontSize: 15, fontWeight: 1000 }}>{props.title}</div>
-        {props.right ? <div>{props.right}</div> : null}
-      </div>
-      <div style={{ padding: 16 }}>{props.children}</div>
-    </div>
+      <CardHeader
+        avatar={props.icon ? props.icon : undefined}
+        title={
+          <Typography variant="h6" fontWeight={700}>
+            {props.title}
+          </Typography>
+        }
+        action={props.action}
+        sx={{ pb: 1.5 }}
+      />
+      <Divider />
+      <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>{props.children}</CardContent>
+    </Card>
   );
 }
 
-function Divider() {
-  return <div style={{ height: 1, background: "#f1f5f9", margin: "12px 0" }} />;
-}
+function StatusPill(props: { text: string; tone?: "neutral" | "green" | "yellow" | "red" | "blue" }) {
+  const tone = props.tone || "neutral";
 
-function PrimaryButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "green" | "blue" | "gray" }) {
-  const tone = props.tone || "gray";
-  const colors =
+  const chipProps =
     tone === "green"
-      ? { bg: "#1f8f3a", border: "#166534", text: "white" }
-      : tone === "blue"
-        ? { bg: "#2563eb", border: "#1e40af", text: "white" }
-        : { bg: "white", border: "#d1d5db", text: "#111827" };
+      ? { color: "success" as const, variant: "filled" as const }
+      : tone === "yellow"
+        ? { color: "warning" as const, variant: "filled" as const }
+        : tone === "red"
+          ? { color: "error" as const, variant: "filled" as const }
+          : tone === "blue"
+            ? { color: "info" as const, variant: "filled" as const }
+            : { color: "default" as const, variant: "outlined" as const };
+
+  return <Chip size="small" label={props.text} {...chipProps} sx={{ fontWeight: 700 }} />;
+}
+
+function sxArray(sx?: SxProps<Theme>) {
+  if (!sx) return [];
+  return Array.isArray(sx) ? sx : [sx];
+}
+
+function M3Button({
+  tone = "gray",
+  sx,
+  ...props
+}: React.ComponentProps<typeof Button> & { tone?: "green" | "blue" | "gray" }) {
+  const color = tone === "green" ? "success" : tone === "blue" ? "primary" : "inherit";
+  const variant = tone === "gray" ? "outlined" : "contained";
 
   return (
-    <button
+    <Button
       {...props}
-      style={{
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: `1px solid ${colors.border}`,
-        background: colors.bg,
-        color: colors.text,
-        cursor: props.disabled ? "not-allowed" : "pointer",
-        fontWeight: 1000,
-        ...props.style,
-      }}
+      color={color}
+      variant={variant}
+      sx={[
+        {
+          borderRadius: 999,
+          textTransform: "none",
+          fontWeight: 700,
+          boxShadow: variant === "contained" ? "none" : undefined,
+        },
+        ...sxArray(sx),
+      ]}
     />
   );
 }
 
-function GhostButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+function QuietButton({ sx, ...props }: React.ComponentProps<typeof Button>) {
   return (
-    <button
+    <Button
       {...props}
-      style={{
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: "1px solid #e5e7eb",
-        background: "#f8fafc",
-        cursor: props.disabled ? "not-allowed" : "pointer",
-        fontWeight: 900,
-        ...props.style,
-      }}
+      variant="outlined"
+      color="inherit"
+      sx={[
+        {
+          borderRadius: 999,
+          textTransform: "none",
+          fontWeight: 700,
+        },
+        ...sxArray(sx),
+      ]}
     />
   );
 }
 
-// -----------------------------
-// Page
-// -----------------------------
+function getTicketTone(status?: string): "neutral" | "green" | "yellow" | "red" | "blue" {
+  const s = String(status || "").toLowerCase();
+  if (s === "completed") return "green";
+  if (s === "in_progress") return "blue";
+  if (s === "scheduled") return "yellow";
+  if (s === "cancelled") return "red";
+  return "neutral";
+}
+
+function getTripStatusTone(status?: string): "neutral" | "green" | "yellow" | "red" | "blue" {
+  const s = String(status || "").toLowerCase();
+  if (s === "complete") return "green";
+  if (s === "in_progress") return "blue";
+  if (s === "planned") return "yellow";
+  if (s === "cancelled") return "red";
+  return "neutral";
+}
+
 export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailPageProps) {
   const { appUser } = useAuthContext();
-  const isMobile = useIsMobile(900);
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
 
   const canDispatch =
     appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
@@ -661,7 +664,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     appUser?.role === "helper" ||
     appUser?.role === "apprentice";
 
-  // Start Trip should be admin + dispatcher + manager + technician (NOT helper/apprentice)
   const canStartTripRole =
     appUser?.role === "admin" ||
     appUser?.role === "dispatcher" ||
@@ -681,11 +683,9 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
 
-  // customer contact (from /customers/{customerId})
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
 
-  // editable ticket overview fields (admin/dispatch/manager)
   const [ticketEditSaving, setTicketEditSaving] = useState(false);
   const [ticketEditErr, setTicketEditErr] = useState("");
   const [ticketEditOk, setTicketEditOk] = useState("");
@@ -701,12 +701,10 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
   const [profilesError, setProfilesError] = useState("");
 
-  // Trips list state
   const [tripsLoading, setTripsLoading] = useState(true);
   const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
 
-  // Schedule Trip form (create)
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
   const [tripDate, setTripDate] = useState(isoTodayLocal());
@@ -728,7 +726,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [tripSaveError, setTripSaveError] = useState("");
   const [tripSaveSuccess, setTripSaveSuccess] = useState("");
 
-  // Per-trip work state (local UI state keyed by tripId)
   const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>({});
   const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>({});
   const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>({});
@@ -737,15 +734,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>({});
   const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>({});
 
-  // Finish UX state
   const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>({});
   const [hoursOverrideByTrip, setHoursOverrideByTrip] = useState<Record<string, number>>({});
   const [helperConfirmedByTrip, setHelperConfirmedByTrip] = useState<Record<string, boolean>>({});
 
-  // Mobile slide-up finish panel state
   const [mobileFinishOpen, setMobileFinishOpen] = useState(false);
 
-  // Trip edit modal
   const [editTripId, setEditTripId] = useState<string | null>(null);
   const [editTripSaving, setEditTripSaving] = useState(false);
   const [editTripErr, setEditTripErr] = useState("");
@@ -757,18 +751,14 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [editTripEndTime, setEditTripEndTime] = useState<string>("12:00");
   const [editTripNotes, setEditTripNotes] = useState<string>("");
 
-  // Billing UI
   const [billingSaving, setBillingSaving] = useState(false);
   const [billingErr, setBillingErr] = useState("");
   const [billingOk, setBillingOk] = useState("");
 
-  // Ensure ticket in_progress helper (always in scope)
   async function ensureTicketInProgressIfNeeded(args: { now: string; reason?: string }) {
     if (!ticket?.id) return;
     if (isTerminalTicketStatus(ticket.status)) return;
     if (String(ticket.status || "") === "in_progress") return;
-
-    // Don't override follow_up/completed/cancelled
     if (isAlreadyInProgressOrBeyond(ticket.status)) return;
 
     await updateDoc(doc(db, "serviceTickets", ticket.id), {
@@ -780,9 +770,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     setTicketStatusEdit("in_progress");
   }
 
-  // -----------------------------
-  // Load Ticket
-  // -----------------------------
   useEffect(() => {
     async function loadTicket() {
       try {
@@ -816,30 +803,23 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           issueDetails: data.issueDetails ?? undefined,
           status: data.status ?? "new",
           estimatedDurationMinutes: data.estimatedDurationMinutes ?? 0,
-
           scheduledDate: data.scheduledDate ?? undefined,
           scheduledStartTime: data.scheduledStartTime ?? undefined,
           scheduledEndTime: data.scheduledEndTime ?? undefined,
-
           assignedTechnicianId: data.assignedTechnicianId ?? undefined,
           assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-
           primaryTechnicianId: data.primaryTechnicianId ?? undefined,
           assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
             ? data.assignedTechnicianIds.filter(Boolean)
             : undefined,
-
           secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
           secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-
           helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
           helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-
           internalNotes: data.internalNotes ?? undefined,
           active: data.active ?? true,
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
-
           billing: data.billing ?? null,
         };
 
@@ -858,7 +838,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadTicket();
   }, [params]);
 
-  // Load Customer Contact (phone/email) from /customers
   useEffect(() => {
     async function loadCustomerContact() {
       const customerId = String(ticket?.customerId || "").trim();
@@ -888,7 +867,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadCustomerContact();
   }, [ticket?.customerId]);
 
-  // Load Technicians
   useEffect(() => {
     async function loadTechnicians() {
       try {
@@ -918,7 +896,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadTechnicians();
   }, []);
 
-  // Load Employee Profiles (for helpers)
   useEffect(() => {
     async function loadProfiles() {
       setProfilesLoading(true);
@@ -983,7 +960,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     return h?.name || "";
   }
 
-  // Load Trips for this Ticket
   useEffect(() => {
     async function loadTrips() {
       if (!ticketId) return;
@@ -1016,7 +992,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
             sourceKey: d.sourceKey ?? undefined,
             notes: d.notes ?? null,
             cancelReason: d.cancelReason ?? null,
-
             timerState: d.timerState ?? undefined,
             actualStartAt: d.actualStartAt ?? null,
             actualEndAt: d.actualEndAt ?? null,
@@ -1024,16 +999,13 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
             endedByUid: d.endedByUid ?? null,
             pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : undefined,
             actualMinutes: typeof d.actualMinutes === "number" ? d.actualMinutes : null,
-
             workNotes: d.workNotes ?? null,
             resolutionNotes: d.resolutionNotes ?? null,
             followUpNotes: d.followUpNotes ?? null,
             crewConfirmed: d.crewConfirmed ?? null,
             materials: Array.isArray(d.materials) ? d.materials : null,
-
             outcome: d.outcome ?? null,
             readyToBillAt: d.readyToBillAt ?? null,
-
             createdAt: d.createdAt ?? undefined,
             createdByUid: d.createdByUid ?? null,
             updatedAt: d.updatedAt ?? undefined,
@@ -1043,7 +1015,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         setTrips(items);
 
-        // Seed UI state
         const nextWork: Record<string, string> = {};
         const nextRes: Record<string, string> = {};
         const nextFollow: Record<string, string> = {};
@@ -1086,7 +1057,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     loadTrips();
   }, [ticketId]);
 
-  // Auto times from timeWindow
   useEffect(() => {
     const { start, end } = windowToTimes(tripTimeWindow);
     if (tripTimeWindow !== "custom") {
@@ -1095,7 +1065,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }, [tripTimeWindow]);
 
-  // Auto default helper pairing
   const defaultHelperForPrimary = useMemo(() => {
     const techUid = tripPrimaryTechUid.trim();
     if (!techUid) return "";
@@ -1113,7 +1082,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     setTripHelperUid(defaultHelperForPrimary);
   }, [tripUseDefaultHelper, tripPrimaryTechUid, defaultHelperForPrimary]);
 
-  // Ticket Overview Save
   async function handleSaveTicketOverview() {
     if (!canDispatch) return;
     if (!ticket?.id) return;
@@ -1153,7 +1121,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           : prev
       );
 
-      setTicketEditOk("✅ Ticket updated.");
+      setTicketEditOk("Ticket updated.");
     } catch (err: unknown) {
       setTicketEditErr(err instanceof Error ? err.message : "Failed to update ticket.");
     } finally {
@@ -1161,7 +1129,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Create Trip (Dispatch)
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!ticket) return;
@@ -1212,43 +1179,33 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       const tripPayload = {
         active: true,
         cancelReason: null,
-
         createdAt: now,
         createdByUid: appUser?.uid || null,
         updatedAt: now,
         updatedByUid: appUser?.uid || null,
-
         crew: {
           primaryTechUid: primaryUid,
           primaryTechName: primaryName,
-
           helperUid: helperUid || null,
           helperName: helperName,
-
           secondaryTechUid: secondaryTechUid || null,
           secondaryTechName: secondaryTechName,
-
           secondaryHelperUid: secondaryHelperUid || null,
           secondaryHelperName: secondaryHelperName,
         },
-
         date,
         startTime,
         endTime,
         timeWindow: tripTimeWindow,
-
         link: {
           projectId: null,
           projectStageKey: null,
           serviceTicketId: ticket.id,
         },
-
         notes: tripNotes.trim() || null,
         sourceKey,
-
         status: "planned",
         type: "service",
-
         timerState: "not_started",
         actualStartAt: null,
         actualEndAt: null,
@@ -1256,7 +1213,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         endedByUid: null,
         pauseBlocks: [],
         actualMinutes: null,
-
         workNotes: null,
         resolutionNotes: null,
         followUpNotes: null,
@@ -1268,7 +1224,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       const createdTripRef = await addDoc(collection(db, "trips"), tripPayload as any);
 
-      // Update ticket staffing pointers
       const helperIds = helperUid ? [helperUid] : [];
       const helperNames = helperName ? [helperName] : [];
 
@@ -1286,17 +1241,14 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         status: nextStatus,
-
         assignedTechnicianId: primaryUid,
         assignedTechnicianName: primaryName,
-
         primaryTechnicianId: primaryUid,
         secondaryTechnicianId: secondaryTechUid || null,
         secondaryTechnicianName: secondaryTechUid ? secondaryTechName : null,
         helperIds: helperIds.length ? helperIds : null,
         helperNames: helperNames.length ? helperNames : null,
         assignedTechnicianIds: assignedTechnicianIds.length ? assignedTechnicianIds : null,
-
         updatedAt: now,
       });
 
@@ -1340,7 +1292,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
 
-      setTripSaveSuccess(`✅ Trip scheduled (${formatTripWindow(tripTimeWindow)}).`);
+      setTripSaveSuccess(`Trip scheduled (${formatTripWindow(tripTimeWindow)}).`);
       setTripNotes("");
       setScheduleOpen(false);
     } catch (err: unknown) {
@@ -1350,7 +1302,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip Actions helpers
   function setTripSavingFlag(tripId: string, value: boolean) {
     setTripActionSaving((prev) => ({ ...prev, [tripId]: value }));
   }
@@ -1409,15 +1360,13 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     return computed;
   }
 
-  // UI helpers
   function canCurrentUserActOnTrip(trip: TripDoc) {
     if (!myUid) return false;
     if (appUser?.role === "admin") return true;
     return isUidOnTripCrew(myUid, trip.crew || null);
   }
 
-  // Trip: Start
-  async function handleStartTrip(trip: TripDoc) {
+    async function handleStartTrip(trip: TripDoc) {
     if (!canStartTripRole) return;
     if (!myUid) return;
 
@@ -1441,7 +1390,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         startedByUid: trip.startedByUid || myUid,
         updatedAt: now,
         updatedByUid: myUid,
-
         crewConfirmed: trip.crew || null,
         pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
       });
@@ -1467,12 +1415,11 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
 
-      // Always ensure ticket goes to in_progress (unless follow_up/completed/cancelled)
       if (ticket?.id && !isTerminalTicketStatus(ticket.status) && !isAlreadyInProgressOrBeyond(ticket.status)) {
         await ensureTicketInProgressIfNeeded({ now, reason: "start_trip" });
       }
 
-      setTripOk(trip.id, "✅ Trip started.");
+      setTripOk(trip.id, "Trip started.");
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to start trip.");
     } finally {
@@ -1480,7 +1427,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip: Pause
   async function handlePauseTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1511,7 +1457,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         prev.map((t) => (t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks: curBlocks } : t))
       );
 
-      setTripOk(trip.id, "⏸ Paused.");
+      setTripOk(trip.id, "Paused.");
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to pause trip.");
     } finally {
@@ -1519,7 +1465,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip: Resume
   async function handleResumeTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1558,7 +1503,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         prev.map((t) => (t.id === trip.id ? { ...t, timerState: "running", pauseBlocks: curBlocks } : t))
       );
 
-      setTripOk(trip.id, "▶ Resumed.");
+      setTripOk(trip.id, "Resumed.");
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to resume trip.");
     } finally {
@@ -1566,7 +1511,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip: Save Work Notes
   async function handleSaveWorkNotes(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1585,9 +1529,11 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         updatedByUid: myUid,
       });
 
-      setTrips((prev) => prev.map((t) => (t.id === trip.id ? { ...t, workNotes: notes || null } : t)));
+      setTrips((prev) =>
+        prev.map((t) => (t.id === trip.id ? { ...t, workNotes: notes || null } : t))
+      );
 
-      setTripOk(trip.id, "💾 Notes saved.");
+      setTripOk(trip.id, "Notes saved.");
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to save notes.");
     } finally {
@@ -1595,8 +1541,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip: Resolve
-  async function handleResolveTrip(trip: TripDoc) {
+    async function handleResolveTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
 
@@ -1620,7 +1565,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         return;
       }
 
-      // finalize pause if currently paused
       let pauseBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
       for (let i = pauseBlocks.length - 1; i >= 0; i--) {
         const b = pauseBlocks[i];
@@ -1665,16 +1609,13 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           endedByUid: myUid,
           pauseBlocks,
           actualMinutes,
-
           workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
           resolutionNotes: resolution,
           followUpNotes: null,
           outcome: "resolved",
           readyToBillAt: now,
-
           materials: matCheck.cleaned,
           crewConfirmed: crewConfirmed || crewFallback || null,
-
           updatedAt: now,
           updatedByUid: myUid,
         }) as any
@@ -1708,7 +1649,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           weekEndDate,
           timesheetId,
           createdByUid: myUid || null,
-
           displayTitle: ticket?.customerDisplayName || "Customer",
           displaySubtitle: ticket?.issueSummary || "Service Ticket",
           outcomeLabel: "Resolved",
@@ -1716,7 +1656,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         });
       }
 
-      // Billing packet write (bill ONLY primary tech hours)
       if (ticket?.id) {
         const primaryUid = crewConfirmed?.primaryTechUid || crewFallback?.primaryTechUid || "";
         const primaryName =
@@ -1729,10 +1668,8 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           status: "ready_to_bill",
           readyToBillAt: now,
           readyToBillTripId: trip.id,
-
           resolutionNotes: resolution,
           workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-
           labor: {
             totalHours: hoursToUse,
             byCrew: primaryUid
@@ -1746,7 +1683,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                 ]
               : [],
           },
-
           materials: matCheck.cleaned,
           photos: [],
           updatedAt: now,
@@ -1788,7 +1724,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
       setMobileFinishOpen(false);
 
-      setTripOk(trip.id, `✅ Resolved. Hours: ${hoursToUse}. Time entries: ${crewMembers.length}`);
+      setTripOk(trip.id, `Resolved. Hours: ${hoursToUse}. Time entries: ${crewMembers.length}`);
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to resolve trip.");
     } finally {
@@ -1796,7 +1732,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip: Follow Up
   async function handleFollowUpTrip(trip: TripDoc) {
     if (!canWorkTrip) return;
     if (!myUid) return;
@@ -1814,7 +1749,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         return;
       }
 
-      // close open pause if exists
       let pauseBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
       for (let i = pauseBlocks.length - 1; i >= 0; i--) {
         const b = pauseBlocks[i];
@@ -1857,15 +1791,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         endedByUid: myUid,
         pauseBlocks,
         actualMinutes,
-
         workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
         resolutionNotes: null,
         followUpNotes: follow,
         outcome: "follow_up",
         readyToBillAt: null,
-
         crewConfirmed: crewConfirmed || crewFallback || null,
-
         updatedAt: now,
         updatedByUid: myUid,
       });
@@ -1898,7 +1829,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           weekEndDate,
           timesheetId,
           createdByUid: myUid || null,
-
           displayTitle: ticket?.customerDisplayName || "Customer",
           displaySubtitle: ticket?.issueSummary || "Service Ticket",
           outcomeLabel: "Follow Up",
@@ -1906,7 +1836,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         });
       }
 
-      // ticket status to follow_up
       if (ticket?.id) {
         await updateDoc(doc(db, "serviceTickets", ticket.id), {
           status: "follow_up",
@@ -1941,7 +1870,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
       setMobileFinishOpen(false);
 
-      setTripOk(trip.id, `🟡 Follow Up logged. Hours: ${hoursToUse}. Time entries: ${crewMembers.length}`);
+      setTripOk(trip.id, `Follow Up logged. Hours: ${hoursToUse}. Time entries: ${crewMembers.length}`);
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to complete follow-up.");
     } finally {
@@ -1949,8 +1878,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Trip Edit Modal
-  function openEditTrip(t: TripDoc) {
+    function openEditTrip(t: TripDoc) {
     setEditTripErr("");
     setEditTripOk("");
     setEditTripId(t.id);
@@ -2026,7 +1954,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         )
       );
 
-      setEditTripOk("✅ Trip updated.");
+      setEditTripOk("Trip updated.");
       setTimeout(() => closeEditTrip(), 650);
     } catch (err: unknown) {
       setEditTripErr(err instanceof Error ? err.message : "Failed to update trip.");
@@ -2035,7 +1963,6 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // NEW: Soft delete trip (safe)
   async function handleSoftDeleteTrip(t: TripDoc) {
     if (!canDispatch) return;
 
@@ -2083,7 +2010,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         )
       );
 
-      setTripOk(t.id, "🗑 Trip removed (soft delete).");
+      setTripOk(t.id, "Trip removed (soft delete).");
     } catch (err: unknown) {
       setTripErr(t.id, err instanceof Error ? err.message : "Failed to delete trip.");
     } finally {
@@ -2091,14 +2018,18 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Claim & Start (unchanged logic)
   async function handleClaimAndStartTrip() {
     if (!ticket?.id) return;
     if (!myUid) return;
 
     const role = String(appUser?.role || "");
     const canSelfDispatch =
-      role === "technician" || role === "helper" || role === "apprentice" || role === "admin" || role === "dispatcher" || role === "manager";
+      role === "technician" ||
+      role === "helper" ||
+      role === "apprentice" ||
+      role === "admin" ||
+      role === "dispatcher" ||
+      role === "manager";
 
     if (!canSelfDispatch) {
       alert("You do not have permission to claim tickets.");
@@ -2122,9 +2053,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     const startTime = hhmmLocal(now);
     const endTime = hhmmLocal(addMinutes(now, 60));
 
-    const defaultHelperUid = helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
+    const defaultHelperUid =
+      helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
     const helperUid = defaultHelperUid || "";
-    const helperName = helperUid ? (helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper") : null;
+    const helperName = helperUid
+      ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
+      : null;
 
     try {
       const ticketRef = doc(db, "serviceTickets", ticket.id);
@@ -2140,49 +2074,45 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
 
         const liveStatus = String(live.status || "").toLowerCase();
-        if (liveStatus === "completed" || liveStatus === "cancelled") throw new Error("Ticket is not claimable.");
+        if (liveStatus === "completed" || liveStatus === "cancelled") {
+          throw new Error("Ticket is not claimable.");
+        }
 
         tx.set(newTripRef, {
           active: true,
           type: "service",
           status: "in_progress",
-
           date,
           timeWindow: "custom",
           startTime,
           endTime,
-
           crew: {
             primaryTechUid: myUid,
             primaryTechName: appUser?.displayName || "Technician",
             helperUid: helperUid || null,
-            helperName: helperName,
+            helperName,
             secondaryTechUid: null,
             secondaryTechName: null,
             secondaryHelperUid: null,
             secondaryHelperName: null,
           },
-
           crewConfirmed: {
             primaryTechUid: myUid,
             primaryTechName: appUser?.displayName || "Technician",
             helperUid: helperUid || null,
-            helperName: helperName,
+            helperName,
             secondaryTechUid: null,
             secondaryTechName: null,
             secondaryHelperUid: null,
             secondaryHelperName: null,
           },
-
           link: {
             serviceTicketId: ticket.id,
             projectId: null,
             projectStageKey: null,
           },
-
           notes: null,
           cancelReason: null,
-
           timerState: "running",
           actualStartAt: nowIsoStr,
           actualEndAt: null,
@@ -2190,15 +2120,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           endedByUid: null,
           pauseBlocks: [],
           actualMinutes: null,
-
           workNotes: null,
           resolutionNotes: null,
           followUpNotes: null,
           materials: null,
-
           outcome: null,
           readyToBillAt: null,
-
           createdAt: nowIsoStr,
           createdByUid: myUid,
           updatedAt: nowIsoStr,
@@ -2207,31 +2134,27 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         tx.update(ticketRef, {
           status: "in_progress",
-
           assignedTechnicianId: myUid,
           assignedTechnicianName: appUser?.displayName || "Technician",
-
           primaryTechnicianId: myUid,
           secondaryTechnicianId: null,
           secondaryTechnicianName: null,
-
           helperIds: helperUid ? [helperUid] : null,
           helperNames: helperName ? [helperName] : null,
           assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
-
           updatedAt: nowIsoStr,
         });
       });
 
-      alert("✅ Claimed and started trip.");
+      alert("Claimed and started trip.");
       window.location.reload();
     } catch (e: any) {
       alert(e?.message || "Failed to claim ticket.");
     }
   }
 
-  // Billing Panel Actions
   const billing = ticket?.billing ?? null;
+  const showFullBillingPanel = Boolean(billing);
 
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
     if (!ticket?.id) return;
@@ -2275,7 +2198,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       });
 
       setTicket((prev) => (prev ? { ...prev, billing: next, updatedAt: now } : prev));
-      setBillingOk(`✅ Billing status updated: ${nextStatus.replaceAll("_", " ")}`);
+      setBillingOk(`Billing status updated: ${nextStatus.replaceAll("_", " ")}`);
     } catch (err: unknown) {
       setBillingErr(err instanceof Error ? err.message : "Failed to update billing status.");
     } finally {
@@ -2283,988 +2206,679 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  // Render helpers
-  const addressFull = `${ticket?.serviceAddressLine1 || ""} ${ticket?.serviceAddressLine2 || ""}, ${
-    ticket?.serviceCity || ""
-  }, ${ticket?.serviceState || ""} ${ticket?.servicePostalCode || ""}`.trim();
+  const mainColumnsSx = {
+    display: "grid",
+    gap: 2.5,
+    gridTemplateColumns: {
+      xs: "1fr",
+      md: "minmax(0, 1.25fr) minmax(340px, 0.95fr)",
+    },
+    alignItems: "start",
+  } as const;
 
-  const mapsUrl = addressFull ? buildMapsUrl(addressFull) : "";
-  const mapsEmbedUrl = addressFull ? buildMapsEmbedUrl(addressFull) : "";
+  const twoColSx = {
+    display: "grid",
+    gap: 2,
+    gridTemplateColumns: {
+      xs: "1fr",
+      md: "1fr 1fr",
+    },
+  } as const;
 
-  const statusTone: "neutral" | "green" | "yellow" | "red" | "blue" = useMemo(() => {
-    const s = String(ticket?.status || "").toLowerCase();
-    if (s === "completed") return "green";
-    if (s === "in_progress") return "blue";
-    if (s === "scheduled") return "yellow";
-    if (s === "cancelled") return "red";
-    return "neutral";
-  }, [ticket?.status]);
+  const customerAddressSx = {
+    display: "grid",
+    gap: 2,
+    gridTemplateColumns: {
+      xs: "1fr",
+      md: "minmax(0, 0.95fr) minmax(0, 1.25fr)",
+    },
+  } as const;
 
-  const inProgressTrip = useMemo(() => {
-    return trips.find((t) => String(t.status || "") === "in_progress") || null;
-  }, [trips]);
+  const materialsTwoColSx = {
+    display: "grid",
+    gap: 1,
+    gridTemplateColumns: {
+      xs: "1fr 1fr",
+      sm: "1fr 1fr",
+    },
+  } as const;
 
-  // Safety net: if any trip is in_progress, force ticket status to in_progress (unless follow_up/completed/cancelled)
-  useEffect(() => {
-    async function syncTicketStatusFromTrips() {
-      if (!ticket?.id) return;
-      if (!Array.isArray(trips) || trips.length === 0) return;
-
-      const hasInProgress = trips.some((t) => String(t.status || "") === "in_progress");
-      if (!hasInProgress) return;
-
-      if (isTerminalTicketStatus(ticket.status)) return;
-      if (String(ticket.status || "") === "in_progress") return;
-      if (isAlreadyInProgressOrBeyond(ticket.status)) return;
-
-      const now = nowIso();
-      try {
-        await updateDoc(doc(db, "serviceTickets", ticket.id), {
-          status: "in_progress",
-          updatedAt: now,
-        });
-        setTicket((prev) => (prev ? { ...prev, status: "in_progress", updatedAt: now } : prev));
-        setTicketStatusEdit("in_progress");
-      } catch {
-        // best-effort only
-      }
-    }
-
-    syncTicketStatusFromTrips();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticket?.id, ticket?.status, trips.length]);
-
-  const startableTrip = useMemo(() => {
-    const candidates = trips.filter((t) => {
-      const status = String(t.status || "");
-      const cancelled = status === "cancelled";
-      const complete = status === "complete";
-      const inProg = status === "in_progress";
-      if (cancelled || complete || inProg) return false;
-      if (!canStartTripRole) return false;
-      const canAct = canCurrentUserActOnTrip(t);
-      return canAct;
-    });
-
-    const today = isoTodayLocal();
-    const todayPick = candidates.find((t) => String(t.date || "") === today);
-    return todayPick || candidates[0] || null;
-  }, [trips, canStartTripRole, myUid, appUser?.role]);
-
-  // Sticky start CTA (mobile only)
-  const stickyStartCta =
-    isMobile && startableTrip ? (
-      <div
-        style={{
-          position: "sticky",
-          top: 10,
-          zIndex: 50,
-          borderRadius: 14,
-          border: "1px solid #2e7d32",
-          background: "#eaffea",
-          padding: 12,
-          boxShadow: "0 10px 25px rgba(0,0,0,0.10)",
-        }}
-      >
-        <div style={{ fontWeight: 950, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-          <div>
-            🚀 Ready to start?
-            <div style={{ marginTop: 4, fontSize: 12, color: "#1f6b1f", fontWeight: 800 }}>
-              Trip: {startableTrip.date} • {formatTripWindow(String(startableTrip.timeWindow || ""))} • {startableTrip.startTime}-{startableTrip.endTime}
-            </div>
-          </div>
-
-          <PrimaryButton type="button" onClick={() => handleStartTrip(startableTrip)} tone="green">
-            Start Trip
-          </PrimaryButton>
-        </div>
-      </div>
-    ) : null;
-
-  // Mobile sticky in-progress bar (unchanged concept)
-  const stickyInProgressBar =
-    isMobile && inProgressTrip ? (
-      (() => {
-        const trip = inProgressTrip;
-
-        const finishMode = finishModeByTrip[trip.id] || "none";
-        const showPanel = mobileFinishOpen && finishMode !== "none";
-
-        const timerState = String(trip.timerState || (trip.status === "in_progress" ? "running" : "not_started"));
-        const isPaused = timerState === "paused";
-
-        const pausedMins = sumPausedMinutes(trip.pauseBlocks);
-        const liveGrossMins =
-          trip.actualStartAt && !trip.actualEndAt
-            ? minutesBetweenIso(trip.actualStartAt, nowIso())
-            : trip.actualStartAt && trip.actualEndAt
-              ? minutesBetweenIso(trip.actualStartAt, trip.actualEndAt)
-              : 0;
-
-        const computedBillable = Math.max(0, liveGrossMins - pausedMins);
-        const computedHours = roundToHalf(computedBillable / 60);
-
-        const hoursToUse =
-          typeof hoursOverrideByTrip[trip.id] === "number"
-            ? roundToHalf(hoursOverrideByTrip[trip.id])
-            : computedHours;
-
-        const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
-
-        const savingThis = Boolean(tripActionSaving[trip.id]);
-        const canAct = canCurrentUserActOnTrip(trip);
-
-        return (
-          <div
-            style={{
-              position: "fixed",
-              left: 12,
-              right: 12,
-              bottom: 64 + 66 + 18,
-              zIndex: 60,
-              borderRadius: 14,
-              border: "1px solid #c6dbff",
-              background: "white",
-              padding: 10,
-              boxShadow: "0 12px 28px rgba(0,0,0,0.18)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ fontWeight: 950 }}>
-                🧳 Trip in progress
-                <div style={{ marginTop: 2, fontSize: 12, color: "#666", fontWeight: 800 }}>
-                  {trip.date} • {formatTripWindow(String(trip.timeWindow || ""))} • {trip.startTime}-{trip.endTime}
-                </div>
-                <div style={{ marginTop: 2, fontSize: 12, color: "#777" }}>
-                  Timer: <strong>{timerState}</strong> • Minutes: <strong>{computedBillable}</strong>{" "}
-                  <span style={{ color: "#aaa" }}>(gross {liveGrossMins} - paused {pausedMins})</span>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {isPaused ? (
-                  <GhostButton type="button" onClick={() => handleResumeTrip(trip)} disabled={!canAct || savingThis}>
-                    ▶ Resume
-                  </GhostButton>
-                ) : (
-                  <GhostButton type="button" onClick={() => handlePauseTrip(trip)} disabled={!canAct || savingThis}>
-                    ❚❚ Pause
-                  </GhostButton>
-                )}
-
-                <GhostButton
-                  type="button"
-                  onClick={() => {
-                    setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "follow_up" }));
-                    setMobileFinishOpen(true);
-                  }}
-                  disabled={!canAct || savingThis}
-                >
-                  🟡 Follow-Up
-                </GhostButton>
-
-                <GhostButton
-                  type="button"
-                  onClick={() => {
-                    setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "resolved" }));
-                    setMobileFinishOpen(true);
-                  }}
-                  disabled={!canAct || savingThis}
-                >
-                  ✅ Resolved
-                </GhostButton>
-
-                {finishMode !== "none" ? (
-                  <>
-                    <GhostButton
-                      type="button"
-                      onClick={() => setMobileFinishOpen((v) => !v)}
-                      disabled={!canAct || savingThis}
-                    >
-                      {showPanel ? "Hide" : "Show"} Fields
-                    </GhostButton>
-
-                    <GhostButton
-                      type="button"
-                      onClick={() => {
-                        setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-                        setMobileFinishOpen(false);
-                      }}
-                      disabled={!canAct || savingThis}
-                    >
-                      Clear
-                    </GhostButton>
-                  </>
-                ) : null}
-              </div>
-            </div>
-
-            {/* Slide-up finish fields */}
-            <div
-              style={{
-                marginTop: showPanel ? 10 : 0,
-                overflow: "hidden",
-                maxHeight: showPanel ? 1200 : 0,
-                transition: "max-height 220ms ease, margin-top 220ms ease",
-                borderTop: showPanel ? "1px solid #eee" : "none",
-                paddingTop: showPanel ? 10 : 0,
-              }}
-            >
-              {showPanel ? (
-                <div
-                  style={{
-                    border: finishMode === "resolved" ? "1px solid #b7e3c2" : "1px solid #d7b6ff",
-                    background: finishMode === "resolved" ? "#f2fff6" : "#fbf5ff",
-                    borderRadius: 12,
-                    padding: 12,
-                  }}
-                >
-                  <div style={{ fontWeight: 1000 }}>
-                    {finishMode === "resolved" ? "✅ Finish Trip: Resolved" : "🟡 Finish Trip: Follow-Up"}
-                  </div>
-
-                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 900 }}>Hours (override)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        value={hoursToUse}
-                        onChange={(e) =>
-                          setHoursOverrideByTrip((prev) => ({
-                            ...prev,
-                            [trip.id]: Number(e.target.value),
-                          }))
-                        }
-                        disabled={!canAct || savingThis}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: "10px 12px",
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                          marginTop: 6,
-                        }}
-                      />
-                      <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                        Timer default: <strong>{computedHours}</strong> hr
-                      </div>
-                    </div>
-
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 900 }}>Helper confirmed?</label>
-                      <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
-                        <input
-                          type="checkbox"
-                          checked={helperConfirmedByTrip[trip.id] ?? true}
-                          onChange={(e) =>
-                            setHelperConfirmedByTrip((prev) => ({
-                              ...prev,
-                              [trip.id]: e.target.checked,
-                            }))
-                          }
-                          disabled={!canAct || savingThis}
-                        />
-                        <span style={{ fontSize: 13, fontWeight: 900 }}>Include helper in payroll</span>
-                      </label>
-                    </div>
-
-                    {finishMode === "follow_up" ? (
-                      <div>
-                        <div style={{ fontWeight: 950, marginBottom: 6, color: "#5b21b6" }}>Follow-Up Notes (required)</div>
-                        <textarea
-                          value={tripFollowUpNotes[trip.id] ?? ""}
-                          onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
-                          rows={4}
-                          disabled={!canAct || savingThis}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                        <PrimaryButton
-                          type="button"
-                          onClick={() => handleFollowUpTrip(trip)}
-                          disabled={!canAct || savingThis}
-                          style={{ width: "100%", marginTop: 10 }}
-                          tone="blue"
-                        >
-                          🟡 Complete as Follow-Up
-                        </PrimaryButton>
-                      </div>
-                    ) : null}
-
-                    {finishMode === "resolved" ? (
-                      <>
-                        <div>
-                          <div style={{ fontWeight: 950, marginBottom: 6, color: "#1f6b1f" }}>Resolution Notes (required)</div>
-                          <textarea
-                            value={tripResolutionNotes[trip.id] ?? ""}
-                            onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
-                            rows={4}
-                            disabled={!canAct || savingThis}
-                            style={{
-                              display: "block",
-                              width: "100%",
-                              padding: "10px",
-                              borderRadius: 12,
-                              border: "1px solid #ccc",
-                            }}
-                          />
-                        </div>
-
-                        <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 12 }}>
-                          <div style={{ fontWeight: 950 }}>Materials (required)</div>
-
-                          {mats.length === 0 ? (
-                            <div
-                              style={{
-                                marginTop: 10,
-                                border: "1px dashed #ccc",
-                                borderRadius: 12,
-                                padding: 10,
-                                background: "white",
-                                color: "#666",
-                                fontSize: 13,
-                              }}
-                            >
-                              No materials added yet.
-                            </div>
-                          ) : (
-                            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                              {mats.map((m, idx) => (
-                                <div
-                                  key={`mobile-mat-${idx}`}
-                                  style={{
-                                    border: "1px solid #eee",
-                                    borderRadius: 12,
-                                    padding: 10,
-                                    background: "white",
-                                    display: "grid",
-                                    gap: 8,
-                                  }}
-                                >
-                                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
-                                    <div>
-                                      <label style={{ fontSize: 12, fontWeight: 900 }}>Name</label>
-                                      <input
-                                        value={m.name}
-                                        onChange={(e) => updateMaterialRow(trip.id, idx, { name: e.target.value })}
-                                        disabled={!canAct || savingThis}
-                                        style={{
-                                          display: "block",
-                                          width: "100%",
-                                          padding: "10px 12px",
-                                          borderRadius: 12,
-                                          border: "1px solid #ccc",
-                                          marginTop: 6,
-                                        }}
-                                      />
-                                    </div>
-                                    <div>
-                                      <label style={{ fontSize: 12, fontWeight: 900 }}>Qty</label>
-                                      <input
-                                        type="number"
-                                        min="0.01"
-                                        step="0.01"
-                                        value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                        onChange={(e) => updateMaterialRow(trip.id, idx, { qty: Number(e.target.value) })}
-                                        disabled={!canAct || savingThis}
-                                        style={{
-                                          display: "block",
-                                          width: "100%",
-                                          padding: "10px 12px",
-                                          borderRadius: 12,
-                                          border: "1px solid #ccc",
-                                          marginTop: 6,
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-
-                                  <GhostButton
-                                    type="button"
-                                    onClick={() => removeMaterialRow(trip.id, idx)}
-                                    disabled={!canAct || savingThis}
-                                    style={{ width: "fit-content" }}
-                                  >
-                                    Remove
-                                  </GhostButton>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          <GhostButton
-                            type="button"
-                            onClick={() => addMaterialRow(trip.id)}
-                            disabled={!canAct || savingThis}
-                            style={{ width: "100%", marginTop: 10 }}
-                          >
-                            + Add Material
-                          </GhostButton>
-                        </div>
-
-                        <PrimaryButton
-                          type="button"
-                          onClick={() => handleResolveTrip(trip)}
-                          disabled={!canAct || savingThis}
-                          style={{ width: "100%", marginTop: 10 }}
-                          tone="green"
-                        >
-                          ✅ Complete as Resolved — Ready to Bill
-                        </PrimaryButton>
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        );
-      })()
-    ) : null;
-
-  // Billing rendering: only show the “big” billing UI when billing exists
-  const showFullBillingPanel = Boolean(billing);
+  const materialsFourSx = {
+    display: "grid",
+    gap: 1,
+    gridTemplateColumns: {
+      xs: "1fr",
+      sm: "1fr 1fr",
+    },
+  } as const;
 
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
       <AppShell appUser={appUser}>
-        {loading ? <p>Loading service ticket...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+        {loading ? <Alert severity="info">Loading service ticket…</Alert> : null}
+        {error ? <Alert severity="error">{error}</Alert> : null}
 
         {!loading && !error && ticket ? (
-          <div style={{ display: "grid", gap: 16 }}>
-            {stickyStartCta}
+          <Box sx={{ display: "grid", gap: 3 }}>
+            {isMobile && (() => {
+              const startableTrip = trips
+                .filter((t) => {
+                  const status = String(t.status || "");
+                  const cancelled = status === "cancelled";
+                  const complete = status === "complete";
+                  const inProg = status === "in_progress";
+                  if (cancelled || complete || inProg) return false;
+                  if (!canStartTripRole) return false;
+                  return canCurrentUserActOnTrip(t);
+                })
+                .find((t) => String(t.date || "") === isoTodayLocal()) ||
+                trips.find((t) => {
+                  const status = String(t.status || "");
+                  const cancelled = status === "cancelled";
+                  const complete = status === "complete";
+                  const inProg = status === "in_progress";
+                  if (cancelled || complete || inProg) return false;
+                  if (!canStartTripRole) return false;
+                  return canCurrentUserActOnTrip(t);
+                }) ||
+                null;
 
-            {/* Header */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: 12,
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <h1 style={{ fontSize: 26, fontWeight: 1000, margin: 0 }}>{ticket.issueSummary}</h1>
-                  <Pill text={formatTicketStatus(ticket.status)} tone={statusTone} />
-                </div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280" }}>
-                  <span style={{ fontSize: 13, fontWeight: 900 }}>Ticket ID:</span>
-                  <span style={{ fontSize: 13 }}>{ticketId}</span>
-                  <GhostButton
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(ticketId);
-                      } catch {}
-                    }}
-                    style={{ padding: "6px 10px", borderRadius: 10, fontSize: 12 }}
-                  >
-                    Copy
-                  </GhostButton>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                {!ticket.assignedTechnicianId ? (
-                  <PrimaryButton type="button" onClick={handleClaimAndStartTrip} tone="green">
-                    ✅ Claim & Start Trip
-                  </PrimaryButton>
-                ) : null}
-
-                <Link
-                  href="/service-tickets"
-                  style={{
-                    padding: "10px 12px",
-                    border: "1px solid #d1d5db",
-                    borderRadius: 12,
-                    textDecoration: "none",
-                    color: "inherit",
-                    whiteSpace: "nowrap",
-                    fontWeight: 900,
-                    background: "white",
+              return startableTrip ? (
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    position: "sticky",
+                    top: 12,
+                    zIndex: 10,
+                    p: 1.5,
+                    borderRadius: 4,
+                    borderColor: alpha(theme.palette.primary.main, 0.28),
+                    backgroundColor: alpha(theme.palette.primary.main, 0.06),
                   }}
                 >
-                  Back to Tickets
-                </Link>
-              </div>
-            </div>
+                  <Stack direction="row" spacing={1.25} alignItems="center" justifyContent="space-between" flexWrap="wrap">
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={700}>
+                        Ready to start?
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {startableTrip.date} • {formatTripWindow(String(startableTrip.timeWindow || ""))} • {startableTrip.startTime}-{startableTrip.endTime}
+                      </Typography>
+                    </Box>
 
-            {/* Main layout */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: isMobile ? "1fr" : "1.15fr 0.85fr",
-                gap: 16,
-                alignItems: "start",
-              }}
+                    <Fab
+                      variant="extended"
+                      color="primary"
+                      size="medium"
+                      onClick={() => handleStartTrip(startableTrip)}
+                      sx={{ boxShadow: "none" }}
+                    >
+                      <PlayArrowRoundedIcon sx={{ mr: 0.75 }} />
+                      Start Trip
+                    </Fab>
+                  </Stack>
+                </Paper>
+              ) : null;
+            })()}
+
+            <Stack
+              direction={{ xs: "column", md: "row" }}
+              spacing={2}
+              alignItems={{ xs: "flex-start", md: "center" }}
+              justifyContent="space-between"
             >
-              {/* LEFT COLUMN */}
-              <div style={{ display: "grid", gap: 16 }}>
-                {/* Customer + Address + Map */}
-                <Card
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Typography variant="h4" fontWeight={800}>
+                    {ticket.issueSummary}
+                  </Typography>
+                  <StatusPill text={formatTicketStatus(ticket.status)} tone={getTicketTone(ticket.status)} />
+                </Stack>
+
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Chip
+                    variant="outlined"
+                    label={`Ticket ID: ${ticketId}`}
+                    sx={{ borderRadius: 999, fontWeight: 700 }}
+                  />
+                  <Tooltip title="Copy ticket ID">
+                    <IconButton
+                      size="small"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(ticketId);
+                        } catch {}
+                      }}
+                    >
+                      <ContentCopyRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
+              </Stack>
+
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap">
+                {!ticket.assignedTechnicianId ? (
+                  <M3Button tone="green" onClick={handleClaimAndStartTrip} startIcon={<PlayArrowRoundedIcon />}>
+                    Claim & Start Trip
+                  </M3Button>
+                ) : null}
+
+                <Link href="/service-tickets" style={{ textDecoration: "none" }}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<ArrowBackRoundedIcon />}
+                    sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
+                  >
+                    Back to Tickets
+                  </Button>
+                </Link>
+              </Stack>
+            </Stack>
+
+            <Box sx={mainColumnsSx}>
+              <Stack spacing={2.5}>
+                <SectionCard
                   title="Customer & Service Address"
-                  right={
-                    mapsUrl ? (
-                      <a
-                        href={mapsUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{
-                          textDecoration: "none",
-                        }}
-                      >
-                        <Pill text="📍 Open in Maps" tone="blue" />
-                      </a>
+                  icon={<PlaceOutlinedIcon color="primary" />}
+                  action={
+                    buildMapsUrl(
+                      `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+                    ) ? (
+ <a
+  href={buildMapsUrl(
+    `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+  )}
+  target="_blank"
+  rel="noreferrer"
+  style={{ textDecoration: "none" }}
+>
+  <Button
+    variant="text"
+    sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
+  >
+    Open in Maps
+  </Button>
+</a>
                     ) : null
                   }
                 >
-                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1.15fr", gap: 14 }}>
-                    <div style={{ display: "grid", gap: 12 }}>
-                      <div>
-                        <div style={{ fontWeight: 1000, marginBottom: 8 }}>Customer</div>
-                        <div style={{ fontSize: 14 }}>
-                          <strong>Name:</strong> {ticket.customerDisplayName || "—"}
-                        </div>
-                        <div style={{ fontSize: 14, marginTop: 6 }}>
-                          <strong>Phone:</strong>{" "}
-                          {customerPhone ? (
-                            <a href={`tel:${customerPhone}`} style={{ color: "inherit" }}>
-                              {customerPhone}
-                            </a>
-                          ) : (
-                            "—"
-                          )}
-                        </div>
-                        <div style={{ fontSize: 14, marginTop: 6 }}>
-                          <strong>Email:</strong>{" "}
-                          {customerEmail ? (
-                            <a href={`mailto:${customerEmail}`} style={{ color: "inherit" }}>
-                              {customerEmail}
-                            </a>
-                          ) : (
-                            "—"
-                          )}
-                        </div>
-                      </div>
+                  <Box sx={customerAddressSx}>
+                    <Stack spacing={2}>
+                      <Box>
+                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                          Customer
+                        </Typography>
+
+                        <Stack spacing={1.25}>
+                          <Typography variant="body1">
+                            <strong>Name:</strong> {ticket.customerDisplayName || "—"}
+                          </Typography>
+
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <PhoneOutlinedIcon fontSize="small" color="action" />
+                            <Typography variant="body1">
+                              {customerPhone ? (
+                                <a href={`tel:${customerPhone}`} style={{ color: "inherit" }}>
+                                  {customerPhone}
+                                </a>
+                              ) : (
+                                "—"
+                              )}
+                            </Typography>
+                          </Stack>
+
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <AlternateEmailRoundedIcon fontSize="small" color="action" />
+                            <Typography variant="body1">
+                              {customerEmail ? (
+                                <a href={`mailto:${customerEmail}`} style={{ color: "inherit" }}>
+                                  {customerEmail}
+                                </a>
+                              ) : (
+                                "—"
+                              )}
+                            </Typography>
+                          </Stack>
+                        </Stack>
+                      </Box>
 
                       <Divider />
 
-                      <div>
-                        <div style={{ fontWeight: 1000, marginBottom: 8 }}>Service Address</div>
-                        <div style={{ fontSize: 14 }}>
-                          <strong>Label:</strong> {ticket.serviceAddressLabel || "—"}
-                        </div>
+                      <Box>
+                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                          Service Address
+                        </Typography>
 
-                        <div style={{ marginTop: 8, fontSize: 14 }}>{ticket.serviceAddressLine1 || "—"}</div>
-                        {ticket.serviceAddressLine2 ? <div style={{ fontSize: 14 }}>{ticket.serviceAddressLine2}</div> : null}
-                        <div style={{ marginTop: 6, fontSize: 14 }}>
-                          {ticket.serviceCity || "—"}, {ticket.serviceState || "—"} {ticket.servicePostalCode || ""}
-                        </div>
+                        <Stack spacing={0.75}>
+                          <Typography variant="body1">
+                            <strong>Label:</strong> {ticket.serviceAddressLabel || "—"}
+                          </Typography>
+                          <Typography variant="body1">{ticket.serviceAddressLine1 || "—"}</Typography>
+                          {ticket.serviceAddressLine2 ? (
+                            <Typography variant="body1">{ticket.serviceAddressLine2}</Typography>
+                          ) : null}
+                          <Typography variant="body1">
+                            {ticket.serviceCity || "—"}, {ticket.serviceState || "—"} {ticket.servicePostalCode || ""}
+                          </Typography>
+                        </Stack>
 
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                          <GhostButton
-                            type="button"
+                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
+                          <QuietButton
+                            startIcon={<ContentCopyRoundedIcon />}
                             onClick={async () => {
                               try {
-                                await navigator.clipboard.writeText(addressFull);
+                                await navigator.clipboard.writeText(
+                                  `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+                                );
                               } catch {}
                             }}
                           >
                             Copy Address
-                          </GhostButton>
+                          </QuietButton>
 
-                          {mapsUrl ? (
-                            <a
-                              href={mapsUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{
-                                display: "inline-block",
-                                textDecoration: "none",
-                              }}
-                            >
-                              <GhostButton type="button">Open Maps</GhostButton>
-                            </a>
+                          {buildMapsUrl(
+                            `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+                          ) ? (
+<a
+  href={buildMapsUrl(
+    `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+  )}
+  target="_blank"
+  rel="noreferrer"
+  style={{ textDecoration: "none" }}
+>
+  <QuietButton startIcon={<PlaceOutlinedIcon />}>
+    Open Maps
+  </QuietButton>
+</a>
                           ) : null}
-                        </div>
-                      </div>
-                    </div>
+                        </Stack>
+                      </Box>
+                    </Stack>
 
-                    {/* Map */}
-                    <div
-                      style={{
-                        border: "1px solid #e5e7eb",
-                        borderRadius: 14,
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        borderRadius: 4,
                         overflow: "hidden",
-                        background: "#f8fafc",
-                        minHeight: isMobile ? 220 : 320,
+                        minHeight: { xs: 240, md: 340 },
+                        bgcolor: "action.hover",
                       }}
                     >
-                      {mapsEmbedUrl ? (
+                      {buildMapsEmbedUrl(
+                        `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+                      ) ? (
                         <iframe
                           title="Map"
-                          src={mapsEmbedUrl}
-                          style={{ width: "100%", height: isMobile ? 220 : 320, border: "none" }}
+                          src={buildMapsEmbedUrl(
+                            `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
+                          )}
                           loading="lazy"
                           referrerPolicy="no-referrer-when-downgrade"
-                        />
-                      ) : (
-                        <div style={{ padding: 14, color: "#6b7280", fontSize: 13 }}>
-                          No address available to show a map.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </Card>
-
-                {/* Ticket Overview */}
-                <Card title="Ticket Overview">
-                  {canDispatch ? (
-                    <div style={{ display: "grid", gap: 12 }}>
-                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-                        <div>
-                          <label style={{ fontWeight: 900, fontSize: 13 }}>Status</label>
-                          <select
-                            value={ticketStatusEdit}
-                            onChange={(e) => setTicketStatusEdit(e.target.value as TicketStatus)}
-                            disabled={ticketEditSaving}
-                            style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
-                          >
-                            <option value="new">New</option>
-                            <option value="scheduled">Scheduled</option>
-                            <option value="in_progress">In Progress</option>
-                            <option value="follow_up">Follow Up</option>
-                            <option value="completed">Completed</option>
-                            <option value="cancelled">Cancelled</option>
-                          </select>
-                          <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-                            Current: <strong>{formatTicketStatus(ticket.status)}</strong>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label style={{ fontWeight: 900, fontSize: 13 }}>Estimated Duration (minutes)</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={ticketEstimatedMinutesEdit}
-                            onChange={(e) => setTicketEstimatedMinutesEdit(e.target.value)}
-                            disabled={ticketEditSaving}
-                            style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12, border: "1px solid #d1d5db" }}
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 13 }}>Issue Details</label>
-                        <textarea
-                          value={ticketIssueDetailsEdit}
-                          onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
-                          rows={4}
-                          disabled={ticketEditSaving}
-                          placeholder="Add or update issue details for the tech..."
                           style={{
-                            display: "block",
                             width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #d1d5db",
+                            height: isMobile ? 240 : 340,
+                            border: 0,
+                            display: "block",
                           }}
                         />
-                      </div>
+                      ) : (
+                        <Box sx={{ p: 2 }}>
+                          <Typography variant="body2" color="text.secondary">
+                            No address available to show a map.
+                          </Typography>
+                        </Box>
+                      )}
+                    </Paper>
+                  </Box>
+                </SectionCard>
 
-                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        <PrimaryButton type="button" onClick={handleSaveTicketOverview} disabled={ticketEditSaving} tone="blue">
+                <SectionCard title="Ticket Overview" icon={<AssignmentTurnedInRoundedIcon color="primary" />}>
+                  {canDispatch ? (
+                    <Stack spacing={2}>
+                      <Box sx={twoColSx}>
+                        <TextField
+                          select
+                          fullWidth
+                          size="small"
+                          label="Status"
+                          value={ticketStatusEdit}
+                          onChange={(e) => setTicketStatusEdit(e.target.value as TicketStatus)}
+                          disabled={ticketEditSaving}
+                        >
+                          <MenuItem value="new">New</MenuItem>
+                          <MenuItem value="scheduled">Scheduled</MenuItem>
+                          <MenuItem value="in_progress">In Progress</MenuItem>
+                          <MenuItem value="follow_up">Follow Up</MenuItem>
+                          <MenuItem value="completed">Completed</MenuItem>
+                          <MenuItem value="cancelled">Cancelled</MenuItem>
+                        </TextField>
+
+                        <TextField
+                          fullWidth
+                          size="small"
+                          type="number"
+                          label="Estimated Duration (minutes)"
+                          inputProps={{ min: 1 }}
+                          value={ticketEstimatedMinutesEdit}
+                          onChange={(e) => setTicketEstimatedMinutesEdit(e.target.value)}
+                          disabled={ticketEditSaving}
+                        />
+                      </Box>
+
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={4}
+                        label="Issue Details"
+                        value={ticketIssueDetailsEdit}
+                        onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+                        disabled={ticketEditSaving}
+                        placeholder="Add or update issue details for the tech..."
+                      />
+
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} alignItems={{ xs: "stretch", sm: "center" }}>
+                        <M3Button tone="blue" onClick={handleSaveTicketOverview} disabled={ticketEditSaving}>
                           {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
-                        </PrimaryButton>
+                        </M3Button>
 
-                        {ticketEditErr ? <span style={{ color: "#b91c1c", fontSize: 13 }}>{ticketEditErr}</span> : null}
-                        {ticketEditOk ? <span style={{ color: "#166534", fontSize: 13 }}>{ticketEditOk}</span> : null}
-                      </div>
-                    </div>
+                        {ticketEditErr ? <Alert severity="error" sx={{ py: 0 }}>{ticketEditErr}</Alert> : null}
+                        {ticketEditOk ? <Alert severity="success" sx={{ py: 0 }}>{ticketEditOk}</Alert> : null}
+                      </Stack>
+                    </Stack>
                   ) : (
-                    <div style={{ color: "#111827" }}>
-                      <div>
+                    <Stack spacing={1.25}>
+                      <Typography variant="body1">
                         <strong>Current Status:</strong> {formatTicketStatus(ticket.status)}
-                      </div>
-                      <div style={{ marginTop: 6 }}>
+                      </Typography>
+                      <Typography variant="body1">
                         <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
-                      </div>
-                      <div style={{ marginTop: 10 }}>
-                        <strong>Issue Details:</strong>
-                      </div>
-                      <div style={{ marginTop: 6 }}>{ticket.issueDetails || "No additional issue details."}</div>
-                    </div>
+                      </Typography>
+                      <Box>
+                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                          Issue Details
+                        </Typography>
+                        <Typography variant="body1">
+                          {ticket.issueDetails || "No additional issue details."}
+                        </Typography>
+                      </Box>
+                    </Stack>
                   )}
-                </Card>
-              </div>
+                </SectionCard>
+              </Stack>
 
-              {/* RIGHT COLUMN */}
-              <div style={{ display: "grid", gap: 16 }}>
-                {/* Trips */}
-                <Card
+              <Stack spacing={2.5}>
+                <SectionCard
                   title="Trips"
-                  right={
+                  icon={<ScheduleRoundedIcon color="primary" />}
+                  action={
                     canDispatch ? (
-                      <PrimaryButton type="button" onClick={() => setScheduleOpen((v) => !v)} tone="blue">
-                        {scheduleOpen ? "Close" : "+ Schedule New Trip"}
-                      </PrimaryButton>
+                      <M3Button
+                        tone="blue"
+                        onClick={() => setScheduleOpen((v) => !v)}
+                        startIcon={<AddRoundedIcon />}
+                      >
+                        {scheduleOpen ? "Close" : "Schedule New Trip"}
+                      </M3Button>
                     ) : null
                   }
                 >
-                  {tripsLoading ? <p style={{ color: "#6b7280" }}>Loading trips...</p> : null}
-                  {tripsError ? <p style={{ color: "#b91c1c" }}>{tripsError}</p> : null}
+                  <Stack spacing={1.5}>
+                    {tripsLoading ? <Alert severity="info">Loading trips…</Alert> : null}
+                    {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
 
-                  {!tripsLoading && !tripsError ? (
-                    <div style={{ display: "grid", gap: 12 }}>
-                      {trips.length === 0 ? (
-                        <div
-                          style={{
-                            border: "1px dashed #d1d5db",
-                            borderRadius: 12,
-                            padding: 12,
-                            background: "#f8fafc",
-                            color: "#6b7280",
-                            fontSize: 13,
-                            fontWeight: 800,
-                          }}
-                        >
-                          No trips scheduled yet.
-                        </div>
-                      ) : (
-                        trips.map((t) => {
-                          const crew = t.crew || {};
-                          const primary = crew.primaryTechName || "Unassigned";
-                          const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
-                          const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
-                          const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
+                    {!tripsLoading && !tripsError ? (
+                      <>
+                        {trips.length === 0 ? (
+                          <Alert severity="info" variant="outlined">
+                            No trips scheduled yet.
+                          </Alert>
+                        ) : (
+                          trips.map((t) => {
+                            const crew = t.crew || {};
+                            const primary = crew.primaryTechName || "Unassigned";
+                            const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
+                            const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
+                            const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
 
-                          const canAct = canCurrentUserActOnTrip(t);
-                          const savingThis = Boolean(tripActionSaving[t.id]);
-                          const errMsg = tripActionError[t.id] || "";
-                          const okMsg = tripActionSuccess[t.id] || "";
+                            const canAct = canCurrentUserActOnTrip(t);
+                            const savingThis = Boolean(tripActionSaving[t.id]);
+                            const errMsg = tripActionError[t.id] || "";
+                            const okMsg = tripActionSuccess[t.id] || "";
 
-                          const timerState = (t.timerState || (t.status === "in_progress" ? "running" : "not_started")) as string;
-                          const isRunning = timerState === "running";
-                          const isPaused = timerState === "paused";
-                          const isComplete = timerState === "complete" || t.status === "complete";
-                          const isInProgress = t.status === "in_progress";
-                          const isCancelled = t.status === "cancelled";
+                            const timerState = (t.timerState || (t.status === "in_progress" ? "running" : "not_started")) as string;
+                            const isRunning = timerState === "running";
+                            const isPaused = timerState === "paused";
+                            const isComplete = timerState === "complete" || t.status === "complete";
+                            const isInProgress = t.status === "in_progress";
+                            const isCancelled = t.status === "cancelled";
 
-                          const pausedMins = sumPausedMinutes(t.pauseBlocks);
-                          const liveGrossMins =
-                            t.actualStartAt && !t.actualEndAt
-                              ? minutesBetweenIso(t.actualStartAt, nowIso())
-                              : t.actualStartAt && t.actualEndAt
-                                ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
-                                : 0;
+                            const pausedMins = sumPausedMinutes(t.pauseBlocks);
+                            const liveGrossMins =
+                              t.actualStartAt && !t.actualEndAt
+                                ? minutesBetweenIso(t.actualStartAt, nowIso())
+                                : t.actualStartAt && t.actualEndAt
+                                  ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
+                                  : 0;
 
-                          const computedBillable = Math.max(0, liveGrossMins - pausedMins);
-                          const computedHours = roundToHalf(computedBillable / 60);
+                            const computedBillable = Math.max(0, liveGrossMins - pausedMins);
+                            const computedHours = roundToHalf(computedBillable / 60);
 
-                          const hoursToUse =
-                            typeof hoursOverrideByTrip[t.id] === "number"
-                              ? roundToHalf(hoursOverrideByTrip[t.id])
-                              : computedHours;
+                            const hoursToUse =
+                              typeof hoursOverrideByTrip[t.id] === "number"
+                                ? roundToHalf(hoursOverrideByTrip[t.id])
+                                : computedHours;
 
-                          const mats = Array.isArray(tripMaterials[t.id]) ? tripMaterials[t.id] : [];
+                            const mats = Array.isArray(tripMaterials[t.id]) ? tripMaterials[t.id] : [];
 
-                          const finishMode = finishModeByTrip[t.id] || "none";
-                          const showFinishPanel = isInProgress && finishMode !== "none";
-                          const showFollowUpField = showFinishPanel && finishMode === "follow_up";
-                          const showResolvedFields = showFinishPanel && finishMode === "resolved";
-                          const hideInlineFinishPanelOnMobile = isMobile && inProgressTrip?.id === t.id;
+                            const finishMode = finishModeByTrip[t.id] || "none";
+                            const showFinishPanel = isInProgress && finishMode !== "none";
+                            const showFollowUpField = showFinishPanel && finishMode === "follow_up";
+                            const showResolvedFields = showFinishPanel && finishMode === "resolved";
+                            const hideInlineFinishPanelOnMobile =
+                              isMobile &&
+                              trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id;
 
-                          return (
-                            <div
-                              key={t.id}
-                              style={{
-                                border: "1px solid #e5e7eb",
-                                borderRadius: 14,
-                                padding: 12,
-                                background: "white",
-                              }}
-                            >
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                                <div style={{ display: "grid", gap: 6 }}>
-                                  <div style={{ fontWeight: 1000 }}>
-                                    🧳 {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
-                                  </div>
+                            return (
+                              <Paper
+                                key={t.id}
+                                variant="outlined"
+                                sx={{
+                                  p: 1.5,
+                                  borderRadius: 4,
+                                  borderColor:
+                                    isInProgress
+                                      ? alpha(theme.palette.info.main, 0.28)
+                                      : isComplete
+                                        ? alpha(theme.palette.success.main, 0.28)
+                                        : "divider",
+                                  bgcolor:
+                                    isInProgress
+                                      ? alpha(theme.palette.info.main, 0.03)
+                                      : "background.paper",
+                                }}
+                              >
+                                <Stack spacing={1.25}>
+                                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start" flexWrap="wrap">
+                                    <Box>
+                                      <Typography variant="subtitle1" fontWeight={700}>
+                                        {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
+                                      </Typography>
 
-                                  <div style={{ fontSize: 12, color: "#6b7280" }}>
-                                    Status: <strong>{t.status}</strong> • Timer: <strong>{timerState}</strong>
-                                    {t.actualMinutes != null ? ` • Minutes: ${t.actualMinutes}` : ""}
-                                  </div>
+                                      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 0.75 }}>
+                                        <StatusPill text={oneLine(t.status)} tone={getTripStatusTone(t.status)} />
+                                        <StatusPill text={`Timer: ${timerState}`} tone={isPaused ? "yellow" : isInProgress ? "blue" : isComplete ? "green" : "neutral"} />
+                                      </Stack>
+                                    </Box>
 
-                                  <div style={{ fontSize: 12, color: "#6b7280" }}>
-                                    Tech: <strong>{primary}</strong>
-                                    {helper ? <div style={{ marginTop: 4 }}>{helper}</div> : null}
-                                    {secondary ? <div style={{ marginTop: 4 }}>{secondary}</div> : null}
-                                    {secondaryHelper ? <div style={{ marginTop: 4 }}>{secondaryHelper}</div> : null}
-                                  </div>
+                                    {canDispatch ? (
+                                      <Stack direction="row" spacing={1}>
+                                        <Tooltip title="Edit trip">
+                                          <span>
+                                            <IconButton onClick={() => openEditTrip(t)} disabled={savingThis || isCancelled}>
+                                              <EditRoundedIcon />
+                                            </IconButton>
+                                          </span>
+                                        </Tooltip>
 
-                                  <div style={{ fontSize: 12, color: "#6b7280" }}>
-                                    Timer minutes: <strong>{computedBillable}</strong>{" "}
-                                    <span style={{ color: "#9ca3af" }}>(gross {liveGrossMins} - paused {pausedMins})</span>
-                                  </div>
-                                </div>
-
-                                {canDispatch ? (
-                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                                    <GhostButton type="button" onClick={() => openEditTrip(t)} disabled={savingThis || isCancelled}>
-                                      Edit
-                                    </GhostButton>
-
-                                    <GhostButton
-                                      type="button"
-                                      onClick={() => handleSoftDeleteTrip(t)}
-                                      disabled={savingThis || isCancelled || isInProgress || isComplete}
-                                      style={{ borderColor: "#fecdd3", background: "#fff1f2" }}
-                                    >
-                                      Delete
-                                    </GhostButton>
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              <Divider />
-
-                              {/* Actions */}
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                {!isComplete && !isCancelled ? (
-                                  <>
-                                    {!isInProgress ? (
-                                      <PrimaryButton
-                                        type="button"
-                                        onClick={() => handleStartTrip(t)}
-                                        disabled={!canAct || savingThis || !canStartTripRole}
-                                        tone="green"
-                                      >
-                                        {savingThis ? "Working..." : "🚀 Start Trip"}
-                                      </PrimaryButton>
+                                        <Tooltip title="Delete trip">
+                                          <span>
+                                            <IconButton
+                                              onClick={() => handleSoftDeleteTrip(t)}
+                                              disabled={savingThis || isCancelled || isInProgress || isComplete}
+                                              color="error"
+                                            >
+                                              <DeleteOutlineRoundedIcon />
+                                            </IconButton>
+                                          </span>
+                                        </Tooltip>
+                                      </Stack>
                                     ) : null}
+                                  </Stack>
 
-                                    {isInProgress && isRunning ? (
-                                      <GhostButton type="button" onClick={() => handlePauseTrip(t)} disabled={!canAct || savingThis}>
-                                        ❚❚ Pause
-                                      </GhostButton>
-                                    ) : null}
+                                  <Stack spacing={0.5}>
+                                    <Typography variant="body2" color="text.secondary">
+                                      Tech: <strong>{primary}</strong>
+                                    </Typography>
+                                    {helper ? <Typography variant="body2" color="text.secondary">{helper}</Typography> : null}
+                                    {secondary ? <Typography variant="body2" color="text.secondary">{secondary}</Typography> : null}
+                                    {secondaryHelper ? <Typography variant="body2" color="text.secondary">{secondaryHelper}</Typography> : null}
+                                    <Typography variant="body2" color="text.secondary">
+                                      Timer minutes: <strong>{computedBillable}</strong> (gross {liveGrossMins} - paused {pausedMins})
+                                    </Typography>
+                                  </Stack>
 
-                                    {isInProgress && isPaused ? (
-                                      <GhostButton type="button" onClick={() => handleResumeTrip(t)} disabled={!canAct || savingThis}>
-                                        ▶ Resume
-                                      </GhostButton>
-                                    ) : null}
+                                  <Divider />
 
-                                    {isInProgress ? (
-                                      <div style={{ width: "100%", marginTop: 8, display: "grid", gap: 8 }}>
-                                        <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 900 }}>Finish mode</div>
-                                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                          <GhostButton
-                                            type="button"
-                                            onClick={() => {
-                                              setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "follow_up" }));
-                                              if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(true);
-                                            }}
-                                            disabled={!canAct || savingThis}
-                                            style={{ borderColor: "#d7b6ff", background: "#fbf5ff" }}
+                                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                    {!isComplete && !isCancelled ? (
+                                      <>
+                                        {!isInProgress ? (
+                                          <M3Button
+                                            tone="green"
+                                            onClick={() => handleStartTrip(t)}
+                                            disabled={!canAct || savingThis || !canStartTripRole}
+                                            startIcon={<PlayArrowRoundedIcon />}
                                           >
-                                            🟡 Follow-Up
-                                          </GhostButton>
+                                            {savingThis ? "Working..." : "Start Trip"}
+                                          </M3Button>
+                                        ) : null}
 
-                                          <GhostButton
-                                            type="button"
-                                            onClick={() => {
-                                              setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "resolved" }));
-                                              if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(true);
-                                            }}
+                                        {isInProgress && isRunning ? (
+                                          <QuietButton
+                                            onClick={() => handlePauseTrip(t)}
                                             disabled={!canAct || savingThis}
-                                            style={{ borderColor: "#b7e3c2", background: "#f2fff6" }}
+                                            startIcon={<PauseRoundedIcon />}
                                           >
-                                            ✅ Resolved
-                                          </GhostButton>
+                                            Pause
+                                          </QuietButton>
+                                        ) : null}
 
-                                          {finishMode !== "none" ? (
-                                            <GhostButton
-                                              type="button"
+                                        {isInProgress && isPaused ? (
+                                          <QuietButton
+                                            onClick={() => handleResumeTrip(t)}
+                                            disabled={!canAct || savingThis}
+                                            startIcon={<PlayArrowRoundedIcon />}
+                                          >
+                                            Resume
+                                          </QuietButton>
+                                        ) : null}
+
+                                        {isInProgress ? (
+                                          <>
+                                            <QuietButton
                                               onClick={() => {
-                                                setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "none" }));
-                                                if (isMobile && inProgressTrip?.id === t.id) setMobileFinishOpen(false);
+                                                setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "follow_up" }));
+                                                if (isMobile && trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id) {
+                                                  setMobileFinishOpen(true);
+                                                }
                                               }}
                                               disabled={!canAct || savingThis}
                                             >
-                                              Clear
-                                            </GhostButton>
-                                          ) : null}
-                                        </div>
-                                      </div>
-                                    ) : null}
-                                  </>
-                                ) : (
-                                  <div style={{ color: "#6b7280", fontSize: 12, fontWeight: 900 }}>
-                                    {isCancelled ? `🚫 Cancelled (${t.cancelReason || "No reason"})` : "✅ Complete"}
-                                  </div>
-                                )}
-                              </div>
+                                              Follow-Up
+                                            </QuietButton>
 
-                              {/* Work Notes */}
-                              <div style={{ marginTop: 12 }}>
-                                <div style={{ fontWeight: 900, marginBottom: 6 }}>Work Notes</div>
-                                <textarea
-                                  value={tripWorkNotes[t.id] ?? ""}
-                                  onChange={(e) => setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                  rows={3}
-                                  disabled={!canAct || savingThis || isCancelled}
-                                  style={{
-                                    display: "block",
-                                    width: "100%",
-                                    padding: 10,
-                                    borderRadius: 12,
-                                    border: "1px solid #d1d5db",
-                                  }}
-                                />
-                                <div style={{ marginTop: 8 }}>
-                                  <GhostButton type="button" onClick={() => handleSaveWorkNotes(t)} disabled={!canAct || savingThis || isCancelled}>
-                                    💾 Save Notes
-                                  </GhostButton>
-                                </div>
-                              </div>
+                                            <QuietButton
+                                              onClick={() => {
+                                                setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "resolved" }));
+                                                if (isMobile && trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id) {
+                                                  setMobileFinishOpen(true);
+                                                }
+                                              }}
+                                              disabled={!canAct || savingThis}
+                                            >
+                                              Resolved
+                                            </QuietButton>
 
-                              {/* Finish Panel (desktop + non-mobile in-progress trip only) */}
-                              {showFinishPanel && !hideInlineFinishPanelOnMobile ? (
-                                <div style={{ marginTop: 14 }}>
-                                  <div
-                                    style={{
-                                      border: finishMode === "resolved" ? "1px solid #b7e3c2" : "1px solid #d7b6ff",
-                                      background: finishMode === "resolved" ? "#f2fff6" : "#fbf5ff",
-                                      borderRadius: 14,
-                                      padding: 12,
-                                    }}
+                                            {finishMode !== "none" ? (
+                                              <QuietButton
+                                                onClick={() => {
+                                                  setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "none" }));
+                                                  if (isMobile && trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id) {
+                                                    setMobileFinishOpen(false);
+                                                  }
+                                                }}
+                                                disabled={!canAct || savingThis}
+                                              >
+                                                Clear
+                                              </QuietButton>
+                                            ) : null}
+                                          </>
+                                        ) : null}
+                                      </>
+                                    ) : (
+                                      <Alert severity={isCancelled ? "error" : "success"} variant="outlined" sx={{ py: 0 }}>
+                                        {isCancelled ? `Cancelled (${t.cancelReason || "No reason"})` : "Complete"}
+                                      </Alert>
+                                    )}
+                                  </Stack>
+
+                                  <TextField
+                                    label="Work Notes"
+                                    multiline
+                                    minRows={3}
+                                    fullWidth
+                                    value={tripWorkNotes[t.id] ?? ""}
+                                    onChange={(e) => setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                                    disabled={!canAct || savingThis || isCancelled}
+                                  />
+
+                                  <QuietButton
+                                    onClick={() => handleSaveWorkNotes(t)}
+                                    disabled={!canAct || savingThis || isCancelled}
+                                    startIcon={<NoteAltOutlinedIcon />}
                                   >
-                                    <div style={{ fontWeight: 1000 }}>
-                                      {finishMode === "resolved" ? "✅ Finish Trip: Resolved" : "🟡 Finish Trip: Follow-Up"}
-                                    </div>
+                                    Save Notes
+                                  </QuietButton>
 
-                                    <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10 }}>
-                                        <div>
-                                          <label style={{ fontSize: 12, fontWeight: 900 }}>Hours (override)</label>
-                                          <input
+                                  {showFinishPanel && !hideInlineFinishPanelOnMobile ? (
+                                    <Paper
+                                      variant="outlined"
+                                      sx={{
+                                        p: 1.5,
+                                        borderRadius: 3,
+                                        bgcolor:
+                                          finishMode === "resolved"
+                                            ? alpha(theme.palette.success.main, 0.06)
+                                            : alpha(theme.palette.warning.main, 0.08),
+                                        borderColor:
+                                          finishMode === "resolved"
+                                            ? alpha(theme.palette.success.main, 0.3)
+                                            : alpha(theme.palette.warning.main, 0.28),
+                                      }}
+                                    >
+                                      <Stack spacing={1.5}>
+                                        <Typography variant="subtitle1" fontWeight={700}>
+                                          {finishMode === "resolved" ? "Finish Trip: Resolved" : "Finish Trip: Follow-Up"}
+                                        </Typography>
+
+                                        <Box sx={twoColSx}>
+                                          <TextField
+                                            label="Hours (override)"
                                             type="number"
-                                            min="0"
-                                            step="0.5"
+                                            size="small"
+                                            fullWidth
+                                            inputProps={{ min: 0, step: 0.5 }}
                                             value={hoursToUse}
                                             onChange={(e) =>
                                               setHoursOverrideByTrip((prev) => ({
@@ -3273,570 +2887,457 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                               }))
                                             }
                                             disabled={!canAct || savingThis}
-                                            style={{
-                                              display: "block",
-                                              width: "100%",
-                                              padding: "10px 12px",
-                                              borderRadius: 12,
-                                              border: "1px solid #ccc",
-                                              marginTop: 6,
-                                            }}
+                                            helperText={`Timer default: ${computedHours} hr`}
                                           />
-                                          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                                            Timer default: <strong>{computedHours}</strong> hr
-                                          </div>
-                                        </div>
 
-                                        <div>
-                                          <label style={{ fontSize: 12, fontWeight: 900 }}>Helper confirmed?</label>
-                                          <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
-                                            <input
-                                              type="checkbox"
-                                              checked={helperConfirmedByTrip[t.id] ?? true}
-                                              onChange={(e) =>
-                                                setHelperConfirmedByTrip((prev) => ({
-                                                  ...prev,
-                                                  [t.id]: e.target.checked,
-                                                }))
-                                              }
+                                          <FormControlLabel
+                                            control={
+                                              <Checkbox
+                                                checked={helperConfirmedByTrip[t.id] ?? true}
+                                                onChange={(e) =>
+                                                  setHelperConfirmedByTrip((prev) => ({
+                                                    ...prev,
+                                                    [t.id]: e.target.checked,
+                                                  }))
+                                                }
+                                                disabled={!canAct || savingThis}
+                                              />
+                                            }
+                                            label="Include helper in payroll"
+                                          />
+                                        </Box>
+
+                                        {showFollowUpField ? (
+                                          <>
+                                            <TextField
+                                              label="Follow-Up Notes"
+                                              multiline
+                                              minRows={4}
+                                              fullWidth
+                                              value={tripFollowUpNotes[t.id] ?? ""}
+                                              onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
                                               disabled={!canAct || savingThis}
                                             />
-                                            <span style={{ fontSize: 13, fontWeight: 900 }}>Include helper in payroll</span>
-                                          </label>
-                                        </div>
-                                      </div>
+                                            <M3Button
+                                              tone="blue"
+                                              onClick={() => handleFollowUpTrip(t)}
+                                              disabled={!canAct || savingThis}
+                                            >
+                                              Complete as Follow-Up
+                                            </M3Button>
+                                          </>
+                                        ) : null}
 
-                                      {showFollowUpField ? (
-                                        <div>
-                                          <div style={{ fontWeight: 950, marginBottom: 6, color: "#5b21b6" }}>Follow-Up Notes (required)</div>
-                                          <textarea
-                                            value={tripFollowUpNotes[t.id] ?? ""}
-                                            onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                            rows={4}
-                                            disabled={!canAct || savingThis}
-                                            style={{
-                                              display: "block",
-                                              width: "100%",
-                                              padding: 10,
-                                              borderRadius: 12,
-                                              border: "1px solid #d1d5db",
-                                            }}
-                                          />
-                                          <PrimaryButton
-                                            type="button"
-                                            onClick={() => handleFollowUpTrip(t)}
-                                            disabled={!canAct || savingThis}
-                                            tone="blue"
-                                            style={{ marginTop: 10 }}
-                                          >
-                                            🟡 Complete as Follow-Up
-                                          </PrimaryButton>
-                                        </div>
-                                      ) : null}
-
-                                      {showResolvedFields ? (
-                                        <>
-                                          <div>
-                                            <div style={{ fontWeight: 950, marginBottom: 6, color: "#14532d" }}>Resolution Notes (required)</div>
-                                            <textarea
+                                        {showResolvedFields ? (
+                                          <>
+                                            <TextField
+                                              label="Resolution Notes"
+                                              multiline
+                                              minRows={4}
+                                              fullWidth
                                               value={tripResolutionNotes[t.id] ?? ""}
                                               onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                              rows={4}
                                               disabled={!canAct || savingThis}
-                                              style={{
-                                                display: "block",
-                                                width: "100%",
-                                                padding: 10,
-                                                borderRadius: 12,
-                                                border: "1px solid #d1d5db",
-                                              }}
                                             />
-                                          </div>
 
-                                          <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 12 }}>
-                                            <div style={{ fontWeight: 950 }}>Materials (required)</div>
+                                            <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                                              <Stack spacing={1.25}>
+                                                <Typography variant="subtitle1" fontWeight={700}>
+                                                  Materials
+                                                </Typography>
 
-                                            {mats.length === 0 ? (
-                                              <div
-                                                style={{
-                                                  marginTop: 10,
-                                                  border: "1px dashed #d1d5db",
-                                                  borderRadius: 12,
-                                                  padding: 10,
-                                                  background: "white",
-                                                  color: "#6b7280",
-                                                  fontSize: 13,
-                                                }}
-                                              >
-                                                No materials added yet.
-                                              </div>
-                                            ) : (
-                                              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                                                {mats.map((m, idx) => (
-                                                  <div
-                                                    key={`${t.id}-mat-${idx}`}
-                                                    style={{
-                                                      border: "1px solid #e5e7eb",
-                                                      borderRadius: 12,
-                                                      padding: 10,
-                                                      background: "white",
-                                                      display: "grid",
-                                                      gap: 8,
-                                                    }}
-                                                  >
-                                                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
-                                                      <div>
-                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Name</label>
-                                                        <input
-                                                          value={m.name}
-                                                          onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
-                                                          disabled={!canAct || savingThis}
-                                                          style={{
-                                                            display: "block",
-                                                            width: "100%",
-                                                            padding: "10px 12px",
-                                                            borderRadius: 12,
-                                                            border: "1px solid #ccc",
-                                                            marginTop: 6,
-                                                          }}
-                                                        />
-                                                      </div>
-                                                      <div>
-                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Qty</label>
-                                                        <input
-                                                          type="number"
-                                                          min="0.01"
-                                                          step="0.01"
-                                                          value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                                          onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
-                                                          disabled={!canAct || savingThis}
-                                                          style={{
-                                                            display: "block",
-                                                            width: "100%",
-                                                            padding: "10px 12px",
-                                                            borderRadius: 12,
-                                                            border: "1px solid #ccc",
-                                                            marginTop: 6,
-                                                          }}
-                                                        />
-                                                      </div>
-                                                    </div>
+                                                {mats.length === 0 ? (
+                                                  <Alert severity="info" variant="outlined">
+                                                    No materials added yet.
+                                                  </Alert>
+                                                ) : (
+                                                  <Stack spacing={1.25}>
+                                                    {mats.map((m, idx) => (
+                                                      <Paper key={`${t.id}-mat-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+                                                        <Stack spacing={1}>
+                                                          <Box sx={materialsTwoColSx}>
+                                                            <TextField
+                                                              label="Name"
+                                                              size="small"
+                                                              fullWidth
+                                                              value={m.name}
+                                                              onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
+                                                              disabled={!canAct || savingThis}
+                                                            />
+                                                            <TextField
+                                                              label="Qty"
+                                                              type="number"
+                                                              size="small"
+                                                              fullWidth
+                                                              inputProps={{ min: 0.01, step: 0.01 }}
+                                                              value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
+                                                              onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
+                                                              disabled={!canAct || savingThis}
+                                                            />
+                                                          </Box>
 
-                                                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                                                      <div>
-                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Unit (opt)</label>
-                                                        <input
-                                                          value={m.unit || ""}
-                                                          onChange={(e) => updateMaterialRow(t.id, idx, { unit: e.target.value })}
-                                                          disabled={!canAct || savingThis}
-                                                          style={{
-                                                            display: "block",
-                                                            width: "100%",
-                                                            padding: "10px 12px",
-                                                            borderRadius: 12,
-                                                            border: "1px solid #ccc",
-                                                            marginTop: 6,
-                                                          }}
-                                                        />
-                                                      </div>
-                                                      <div>
-                                                        <label style={{ fontSize: 12, fontWeight: 900 }}>Notes (opt)</label>
-                                                        <input
-                                                          value={m.notes || ""}
-                                                          onChange={(e) => updateMaterialRow(t.id, idx, { notes: e.target.value })}
-                                                          disabled={!canAct || savingThis}
-                                                          style={{
-                                                            display: "block",
-                                                            width: "100%",
-                                                            padding: "10px 12px",
-                                                            borderRadius: 12,
-                                                            border: "1px solid #ccc",
-                                                            marginTop: 6,
-                                                          }}
-                                                        />
-                                                      </div>
-                                                    </div>
+                                                          <QuietButton
+                                                            onClick={() => removeMaterialRow(t.id, idx)}
+                                                            disabled={!canAct || savingThis}
+                                                            startIcon={<DeleteOutlineRoundedIcon />}
+                                                          >
+                                                            Remove
+                                                          </QuietButton>
+                                                        </Stack>
+                                                      </Paper>
+                                                    ))}
+                                                  </Stack>
+                                                )}
 
-                                                    <GhostButton
-                                                      type="button"
-                                                      onClick={() => removeMaterialRow(t.id, idx)}
-                                                      disabled={!canAct || savingThis}
-                                                      style={{ width: "fit-content" }}
-                                                    >
-                                                      Remove
-                                                    </GhostButton>
-                                                  </div>
-                                                ))}
-                                              </div>
-                                            )}
+                                                <QuietButton
+                                                  onClick={() => addMaterialRow(t.id)}
+                                                  disabled={!canAct || savingThis}
+                                                  startIcon={<AddRoundedIcon />}
+                                                >
+                                                  Add Material
+                                                </QuietButton>
+                                              </Stack>
+                                            </Paper>
 
-                                            <GhostButton
-                                              type="button"
-                                              onClick={() => addMaterialRow(t.id)}
+                                            <M3Button
+                                              tone="green"
+                                              onClick={() => handleResolveTrip(t)}
                                               disabled={!canAct || savingThis}
-                                              style={{ marginTop: 10 }}
                                             >
-                                              + Add Material
-                                            </GhostButton>
-                                          </div>
+                                              Complete as Resolved — Ready to Bill
+                                            </M3Button>
+                                          </>
+                                        ) : null}
+                                      </Stack>
+                                    </Paper>
+                                  ) : null}
 
-                                          <PrimaryButton
-                                            type="button"
-                                            onClick={() => handleResolveTrip(t)}
-                                            disabled={!canAct || savingThis}
-                                            tone="green"
-                                            style={{ marginTop: 6 }}
-                                          >
-                                            ✅ Complete as Resolved — Ready to Bill
-                                          </PrimaryButton>
-                                        </>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                </div>
-                              ) : null}
+                                  {errMsg ? <Alert severity="error">{errMsg}</Alert> : null}
+                                  {okMsg ? <Alert severity="success">{okMsg}</Alert> : null}
 
-                              {errMsg ? <p style={{ marginTop: 10, color: "#b91c1c", fontWeight: 900 }}>{errMsg}</p> : null}
-                              {okMsg ? <p style={{ marginTop: 10, color: "#166534", fontWeight: 900 }}>{okMsg}</p> : null}
+                                  <Typography variant="caption" color="text.secondary">
+                                    Trip ID: {t.id}
+                                  </Typography>
+                                </Stack>
+                              </Paper>
+                            );
+                          })
+                        )}
 
-                              <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>Trip ID: {t.id}</div>
-                            </div>
-                          );
-                        })
-                      )}
+                        {canDispatch && scheduleOpen ? (
+                          <Paper
+                            variant="outlined"
+                            sx={{
+                              mt: 0.5,
+                              p: 2,
+                              borderRadius: 4,
+                              bgcolor: alpha(theme.palette.primary.main, 0.03),
+                            }}
+                          >
+                            <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>
+                              Schedule a Trip
+                            </Typography>
 
-                      {/* Schedule panel */}
-                      {canDispatch && scheduleOpen ? (
-                        <div
-                          style={{
-                            borderTop: "1px solid #f1f5f9",
-                            paddingTop: 12,
-                            marginTop: 6,
-                          }}
-                        >
-                          <div style={{ fontWeight: 1000, marginBottom: 10 }}>Schedule a Trip</div>
-
-                          <form onSubmit={handleCreateTrip} style={{ display: "grid", gap: 12 }}>
-                            <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
-                              <div>
-                                <label style={{ fontWeight: 900, fontSize: 13 }}>Date</label>
-                                <input
+                            <form onSubmit={handleCreateTrip} style={{ display: "grid", gap: 16 }}>
+                              <Box sx={twoColSx}>
+                                <TextField
+                                  fullWidth
+                                  size="small"
                                   type="date"
+                                  label="Date"
                                   value={tripDate}
                                   onChange={(e) => setTripDate(e.target.value)}
                                   disabled={tripSaving}
-                                  style={{
-                                    display: "block",
-                                    width: "100%",
-                                    padding: 10,
-                                    marginTop: 6,
-                                    borderRadius: 12,
-                                    border: "1px solid #d1d5db",
-                                  }}
+                                  InputLabelProps={{ shrink: true }}
                                 />
-                              </div>
 
-                              <div>
-                                <label style={{ fontWeight: 900, fontSize: 13 }}>Time Window</label>
-                                <select
+                                <TextField
+                                  select
+                                  fullWidth
+                                  size="small"
+                                  label="Time Window"
                                   value={tripTimeWindow}
                                   onChange={(e) => setTripTimeWindow(e.target.value as TripTimeWindow)}
                                   disabled={tripSaving}
-                                  style={{
-                                    display: "block",
-                                    width: "100%",
-                                    padding: 10,
-                                    marginTop: 6,
-                                    borderRadius: 12,
-                                  }}
                                 >
-                                  <option value="am">Morning (8:00–12:00)</option>
-                                  <option value="pm">Afternoon (1:00–5:00)</option>
-                                  <option value="all_day">All Day (8:00–5:00)</option>
-                                  <option value="custom">Custom</option>
-                                </select>
-                              </div>
-                            </div>
+                                  <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
+                                  <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
+                                  <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
+                                  <MenuItem value="custom">Custom</MenuItem>
+                                </TextField>
+                              </Box>
 
-                            {tripTimeWindow === "custom" ? (
-                              <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
-                                <div>
-                                  <label style={{ fontWeight: 900, fontSize: 13 }}>Start Time</label>
-                                  <input
+                              {tripTimeWindow === "custom" ? (
+                                <Box sx={twoColSx}>
+                                  <TextField
+                                    fullWidth
+                                    size="small"
                                     type="time"
+                                    label="Start Time"
                                     value={tripStartTime}
                                     onChange={(e) => setTripStartTime(e.target.value)}
                                     disabled={tripSaving}
-                                    style={{
-                                      display: "block",
-                                      width: "100%",
-                                      padding: 10,
-                                      marginTop: 6,
-                                      borderRadius: 12,
-                                      border: "1px solid #d1d5db",
-                                    }}
+                                    InputLabelProps={{ shrink: true }}
                                   />
-                                </div>
-                                <div>
-                                  <label style={{ fontWeight: 900, fontSize: 13 }}>End Time</label>
-                                  <input
+                                  <TextField
+                                    fullWidth
+                                    size="small"
                                     type="time"
+                                    label="End Time"
                                     value={tripEndTime}
                                     onChange={(e) => setTripEndTime(e.target.value)}
                                     disabled={tripSaving}
-                                    style={{
-                                      display: "block",
-                                      width: "100%",
-                                      padding: 10,
-                                      marginTop: 6,
-                                      borderRadius: 12,
-                                      border: "1px solid #d1d5db",
-                                    }}
+                                    InputLabelProps={{ shrink: true }}
                                   />
-                                </div>
-                              </div>
-                            ) : null}
+                                </Box>
+                              ) : null}
 
-                            {techniciansLoading ? <p style={{ color: "#6b7280" }}>Loading technicians...</p> : null}
-                            {techniciansError ? <p style={{ color: "#b91c1c" }}>{techniciansError}</p> : null}
+                              {techniciansLoading ? <Alert severity="info">Loading technicians…</Alert> : null}
+                              {techniciansError ? <Alert severity="error">{techniciansError}</Alert> : null}
 
-                            <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#f8fafc" }}>
-                              <div style={{ fontWeight: 1000, marginBottom: 10 }}>Crew</div>
+                              <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
+                                <Stack spacing={2}>
+                                  <Typography variant="subtitle1" fontWeight={700}>
+                                    Crew
+                                  </Typography>
 
-                              <div>
-                                <label style={{ fontWeight: 900, fontSize: 13 }}>Primary Technician</label>
-                                <select
-                                  value={tripPrimaryTechUid}
-                                  onChange={(e) => setTripPrimaryTechUid(e.target.value)}
-                                  disabled={tripSaving || techniciansLoading}
-                                  style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
-                                >
-                                  <option value="">Select a technician...</option>
-                                  {technicians.map((t) => (
-                                    <option key={t.uid} value={t.uid}>
-                                      {t.displayName}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              <div style={{ marginTop: 10 }}>
-                                <label style={{ fontWeight: 900, fontSize: 13 }}>Secondary Technician (Optional)</label>
-                                <select
-                                  value={tripSecondaryTechUid}
-                                  onChange={(e) => setTripSecondaryTechUid(e.target.value)}
-                                  disabled={tripSaving || !tripPrimaryTechUid}
-                                  style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
-                                >
-                                  <option value="">— None —</option>
-                                  {technicians
-                                    .filter((t) => t.uid !== tripPrimaryTechUid)
-                                    .map((t) => (
-                                      <option key={t.uid} value={t.uid}>
+                                  <TextField
+                                    select
+                                    fullWidth
+                                    size="small"
+                                    label="Primary Technician"
+                                    value={tripPrimaryTechUid}
+                                    onChange={(e) => setTripPrimaryTechUid(e.target.value)}
+                                    disabled={tripSaving || techniciansLoading}
+                                  >
+                                    <MenuItem value="">Select a technician…</MenuItem>
+                                    {technicians.map((t) => (
+                                      <MenuItem key={t.uid} value={t.uid}>
                                         {t.displayName}
-                                      </option>
+                                      </MenuItem>
                                     ))}
-                                </select>
-                                <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                                  Only use this for two true technicians. Helpers/apprentices go below.
-                                </div>
-                              </div>
+                                  </TextField>
 
-                              <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
-                                <div style={{ fontWeight: 1000, marginBottom: 8 }}>Helper / Apprentice</div>
+                                  <TextField
+                                    select
+                                    fullWidth
+                                    size="small"
+                                    label="Secondary Technician (Optional)"
+                                    value={tripSecondaryTechUid}
+                                    onChange={(e) => setTripSecondaryTechUid(e.target.value)}
+                                    disabled={tripSaving || !tripPrimaryTechUid}
+                                    helperText="Only use this for two true technicians. Helpers/apprentices go below."
+                                  >
+                                    <MenuItem value="">— None —</MenuItem>
+                                    {technicians
+                                      .filter((t) => t.uid !== tripPrimaryTechUid)
+                                      .map((t) => (
+                                        <MenuItem key={t.uid} value={t.uid}>
+                                          {t.displayName}
+                                        </MenuItem>
+                                      ))}
+                                  </TextField>
 
-                                {profilesLoading ? <p style={{ color: "#6b7280" }}>Loading employee profiles...</p> : null}
-                                {profilesError ? <p style={{ color: "#b91c1c" }}>{profilesError}</p> : null}
+                                  <Divider />
 
-                                <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={tripUseDefaultHelper}
-                                    onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
-                                    disabled={tripSaving}
+                                  <Typography variant="subtitle1" fontWeight={700}>
+                                    Helper / Apprentice
+                                  </Typography>
+
+                                  {profilesLoading ? <Alert severity="info">Loading employee profiles…</Alert> : null}
+                                  {profilesError ? <Alert severity="error">{profilesError}</Alert> : null}
+
+                                  <FormControlLabel
+                                    control={
+                                      <Checkbox
+                                        checked={tripUseDefaultHelper}
+                                        onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
+                                        disabled={tripSaving}
+                                      />
+                                    }
+                                    label="Use default helper pairing (recommended)"
                                   />
-                                  Use default helper pairing (recommended)
-                                </label>
 
-                                <div style={{ marginTop: 10 }}>
-                                  <label style={{ fontWeight: 900, fontSize: 13 }}>Helper / Apprentice (Optional)</label>
-                                  <select
+                                  <TextField
+                                    select
+                                    fullWidth
+                                    size="small"
+                                    label="Helper / Apprentice (Optional)"
                                     value={tripHelperUid}
                                     onChange={(e) => {
                                       setTripUseDefaultHelper(false);
                                       setTripHelperUid(e.target.value);
                                     }}
                                     disabled={tripSaving || profilesLoading || !tripPrimaryTechUid}
-                                    style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
                                   >
-                                    <option value="">— None —</option>
+                                    <MenuItem value="">— None —</MenuItem>
                                     {helperCandidates.map((h) => (
-                                      <option key={h.uid} value={h.uid}>
+                                      <MenuItem key={h.uid} value={h.uid}>
                                         {h.name} ({h.laborRole})
-                                      </option>
+                                      </MenuItem>
                                     ))}
-                                  </select>
-                                </div>
+                                  </TextField>
 
-                                <div style={{ marginTop: 10 }}>
-                                  <label style={{ fontWeight: 900, fontSize: 13 }}>Secondary Helper (Optional)</label>
-                                  <select
+                                  <TextField
+                                    select
+                                    fullWidth
+                                    size="small"
+                                    label="Secondary Helper (Optional)"
                                     value={tripSecondaryHelperUid}
                                     onChange={(e) => setTripSecondaryHelperUid(e.target.value)}
                                     disabled={tripSaving || profilesLoading}
-                                    style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
                                   >
-                                    <option value="">— None —</option>
+                                    <MenuItem value="">— None —</MenuItem>
                                     {helperCandidates.map((h) => (
-                                      <option key={h.uid} value={h.uid}>
+                                      <MenuItem key={h.uid} value={h.uid}>
                                         {h.name} ({h.laborRole})
-                                      </option>
+                                      </MenuItem>
                                     ))}
-                                  </select>
-                                </div>
-                              </div>
-                            </div>
+                                  </TextField>
+                                </Stack>
+                              </Paper>
 
-                            <div>
-                              <label style={{ fontWeight: 900, fontSize: 13 }}>Trip Notes (optional)</label>
-                              <textarea
+                              <TextField
+                                fullWidth
+                                multiline
+                                minRows={3}
+                                label="Trip Notes (optional)"
                                 value={tripNotes}
                                 onChange={(e) => setTripNotes(e.target.value)}
-                                rows={3}
-                                disabled={tripSaving}
-                                style={{
-                                  display: "block",
-                                  width: "100%",
-                                  padding: 10,
-                                  marginTop: 6,
-                                  borderRadius: 12,
-                                  border: "1px solid #d1d5db",
-                                }}
-                              />
-                            </div>
-
-                            <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
-                              <input
-                                type="checkbox"
-                                checked={tripSetTicketScheduled}
-                                onChange={(e) => setTripSetTicketScheduled(e.target.checked)}
                                 disabled={tripSaving}
                               />
-                              If ticket is NEW, change status to SCHEDULED when this trip is created
-                            </label>
 
-                            {tripSaveError ? <p style={{ color: "#b91c1c", fontWeight: 900 }}>{tripSaveError}</p> : null}
-                            {tripSaveSuccess ? <p style={{ color: "#166534", fontWeight: 900 }}>{tripSaveSuccess}</p> : null}
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    checked={tripSetTicketScheduled}
+                                    onChange={(e) => setTripSetTicketScheduled(e.target.checked)}
+                                    disabled={tripSaving}
+                                  />
+                                }
+                                label="If ticket is NEW, change status to SCHEDULED when this trip is created"
+                              />
 
-                            <PrimaryButton type="submit" disabled={tripSaving || !canDispatch} tone="blue" style={{ width: "fit-content" }}>
-                              {tripSaving ? "Scheduling..." : "Schedule Trip"}
-                            </PrimaryButton>
-                          </form>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </Card>
+                              {tripSaveError ? <Alert severity="error">{tripSaveError}</Alert> : null}
+                              {tripSaveSuccess ? <Alert severity="success">{tripSaveSuccess}</Alert> : null}
 
-                {/* Billing (clean) */}
-                <Card title="Billing Packet">
+                              <M3Button
+                                type="submit"
+                                tone="blue"
+                                disabled={tripSaving || !canDispatch}
+                                startIcon={<AddRoundedIcon />}
+                                sx={{ width: "fit-content" }}
+                              >
+                                {tripSaving ? "Scheduling..." : "Schedule Trip"}
+                              </M3Button>
+                            </form>
+                          </Paper>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </Stack>
+                </SectionCard>
+
+                <SectionCard title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
                   {!showFullBillingPanel ? (
-                    <div
-                      style={{
-                        border: "1px dashed #d1d5db",
-                        borderRadius: 12,
-                        padding: 12,
-                        background: "#f8fafc",
-                        color: "#6b7280",
-                        fontSize: 13,
-                        fontWeight: 800,
-                      }}
-                    >
+                    <Alert severity="info" variant="outlined">
                       No billing packet yet. It will appear after a trip is completed as <strong>Resolved — Ready to Bill</strong>.
-                    </div>
+                    </Alert>
                   ) : (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      <div style={{ fontSize: 13, color: "#374151" }}>
+                    <Stack spacing={1.5}>
+                      <Typography variant="body1">
                         Status: <strong>{billing?.status}</strong>
-                        {billing?.readyToBillAt ? <span style={{ color: "#6b7280" }}> • Ready: {billing.readyToBillAt}</span> : null}
-                      </div>
+                        {billing?.readyToBillAt ? (
+                          <span style={{ color: theme.palette.text.secondary }}>
+                            {" "}• Ready: {billing.readyToBillAt}
+                          </span>
+                        ) : null}
+                      </Typography>
 
-                      <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "white" }}>
-                        <div style={{ fontWeight: 1000, marginBottom: 6 }}>Labor (Customer Billing)</div>
-                        <div style={{ fontSize: 13, color: "#374151" }}>
+                      <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 4 }}>
+                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                          Labor (Customer Billing)
+                        </Typography>
+                        <Typography variant="body1">
                           Total billed hours: <strong>{Number(billing?.labor?.totalHours ?? 0).toFixed(2)}</strong>
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
                           Billing rule: labor hours belong to the <strong>Primary Tech only</strong>.
-                        </div>
+                        </Typography>
 
                         {Array.isArray(billing?.labor?.byCrew) && billing!.labor.byCrew.length ? (
-                          <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                          <Stack spacing={0.75} sx={{ mt: 1.25 }}>
                             {billing!.labor.byCrew.map((c) => (
-                              <div key={c.uid} style={{ fontSize: 13, color: "#374151" }}>
+                              <Typography key={c.uid} variant="body1">
                                 {c.name} • {c.hours.toFixed(2)} hr
-                              </div>
+                              </Typography>
                             ))}
-                          </div>
+                          </Stack>
                         ) : (
-                          <div style={{ marginTop: 10, fontSize: 13, color: "#6b7280" }}>No primary tech labor line captured yet.</div>
+                          <Typography variant="body1" color="text.secondary" sx={{ mt: 1.25 }}>
+                            No primary tech labor line captured yet.
+                          </Typography>
                         )}
-                      </div>
+                      </Paper>
 
-                      <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "white" }}>
-                        <div style={{ fontWeight: 1000, marginBottom: 6 }}>Materials</div>
+                      <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 4 }}>
+                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                          Materials
+                        </Typography>
 
                         {!Array.isArray(billing?.materials) || billing!.materials.length === 0 ? (
-                          <div style={{ fontSize: 13, color: "#6b7280" }}>No materials captured.</div>
+                          <Typography variant="body1" color="text.secondary">
+                            No materials captured.
+                          </Typography>
                         ) : (
-                          <div style={{ display: "grid", gap: 8 }}>
+                          <Stack spacing={1}>
                             {billing!.materials.map((m, idx) => (
-                              <div
-                                key={`bill-mat-${idx}`}
-                                style={{
-                                  border: "1px solid #f1f5f9",
-                                  borderRadius: 12,
-                                  padding: 10,
-                                }}
-                              >
-                                <div style={{ fontWeight: 900, fontSize: 13 }}>
+                              <Paper key={`bill-mat-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+                                <Typography variant="body1" fontWeight={700}>
                                   {m.name} • {Number(m.qty).toFixed(2)} {m.unit || ""}
-                                </div>
-                                {m.notes ? <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>{m.notes}</div> : null}
-                              </div>
+                                </Typography>
+                                {m.notes ? (
+                                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                                    {m.notes}
+                                  </Typography>
+                                ) : null}
+                              </Paper>
                             ))}
-                          </div>
+                          </Stack>
                         )}
-                      </div>
+                      </Paper>
 
-                      <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "white" }}>
-                        <div style={{ fontWeight: 1000, marginBottom: 6 }}>Resolution Notes</div>
-                        <div style={{ fontSize: 13, color: "#374151", whiteSpace: "pre-wrap" }}>
+                      <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 4 }}>
+                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                          Resolution Notes
+                        </Typography>
+                        <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
                           {billing?.resolutionNotes || "—"}
-                        </div>
+                        </Typography>
 
-                        <div style={{ marginTop: 12, fontWeight: 1000, marginBottom: 6 }}>Work Notes</div>
-                        <div style={{ fontSize: 13, color: "#374151", whiteSpace: "pre-wrap" }}>
+                        <Typography variant="subtitle1" fontWeight={700} sx={{ mt: 2, mb: 1 }}>
+                          Work Notes
+                        </Typography>
+                        <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
                           {billing?.workNotes || "—"}
-                        </div>
-                      </div>
+                        </Typography>
+                      </Paper>
 
                       {canBill ? (
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                          <GhostButton type="button" onClick={() => markBillingStatus("invoiced")} disabled={billingSaving}>
+                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                          <QuietButton onClick={() => markBillingStatus("invoiced")} disabled={billingSaving}>
                             {billingSaving ? "Working..." : "Mark Invoiced"}
-                          </GhostButton>
+                          </QuietButton>
 
-                          <GhostButton type="button" onClick={() => markBillingStatus("ready_to_bill")} disabled={billingSaving}>
+                          <QuietButton onClick={() => markBillingStatus("ready_to_bill")} disabled={billingSaving}>
                             Set Ready to Bill
-                          </GhostButton>
+                          </QuietButton>
 
-                          <GhostButton type="button" onClick={() => markBillingStatus("not_ready")} disabled={billingSaving}>
+                          <QuietButton onClick={() => markBillingStatus("not_ready")} disabled={billingSaving}>
                             Set Not Ready
-                          </GhostButton>
+                          </QuietButton>
 
-                          <GhostButton
-                            type="button"
+                          <QuietButton
                             onClick={async () => {
                               if (!ticket?.id) return;
 
@@ -3858,7 +3359,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                                 }
 
                                 alert(
-                                  `✅ QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
+                                  `QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
                                     data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
                                   }`
                                 );
@@ -3885,189 +3386,395 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                             }}
                           >
                             Create QBO Invoice Draft
-                          </GhostButton>
+                          </QuietButton>
 
-                          {billingErr ? <span style={{ color: "#b91c1c", fontSize: 13 }}>{billingErr}</span> : null}
-                          {billingOk ? <span style={{ color: "#166534", fontSize: 13 }}>{billingOk}</span> : null}
-                        </div>
+                          {billingErr ? <Alert severity="error" sx={{ py: 0 }}>{billingErr}</Alert> : null}
+                          {billingOk ? <Alert severity="success" sx={{ py: 0 }}>{billingOk}</Alert> : null}
+                        </Stack>
                       ) : (
-                        <div style={{ fontSize: 12, color: "#6b7280" }}>
+                        <Alert severity="info" variant="outlined">
                           Billing controls are limited to Admin/Manager/Dispatcher/Billing.
-                        </div>
+                        </Alert>
                       )}
-                    </div>
+                    </Stack>
                   )}
-                </Card>
+                </SectionCard>
 
-                {/* System (small + quiet) */}
-                <Card title="System">
-                  <div style={{ display: "grid", gap: 6, color: "#374151", fontSize: 13 }}>
-                    <div>
+                <SectionCard title="System" icon={<BuildRoundedIcon color="primary" />}>
+                  <Stack spacing={0.75}>
+                    <Typography variant="body1">
                       <strong>Active:</strong> {String(ticket.active)}
-                    </div>
-                    <div>
+                    </Typography>
+                    <Typography variant="body1">
                       <strong>Created At:</strong> {ticket.createdAt || "—"}
-                    </div>
-                    <div>
+                    </Typography>
+                    <Typography variant="body1">
                       <strong>Updated At:</strong> {ticket.updatedAt || "—"}
-                    </div>
-                  </div>
-                </Card>
-              </div>
-            </div>
+                    </Typography>
+                  </Stack>
+                </SectionCard>
+              </Stack>
+            </Box>
 
-            {/* Edit Trip Modal (separate UI so it never feels like the schedule form) */}
-            {canDispatch && editTripId ? (
-              <div
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(15, 23, 42, 0.55)",
-                  zIndex: 999,
-                  display: "grid",
-                  placeItems: "center",
-                  padding: 16,
-                }}
-                onClick={(e) => {
-                  if (e.target === e.currentTarget) closeEditTrip();
-                }}
-              >
-                <div
-                  style={{
-                    width: "min(720px, 100%)",
-                    background: "white",
-                    borderRadius: 16,
-                    border: "1px solid #e5e7eb",
-                    boxShadow: "0 30px 80px rgba(0,0,0,0.25)",
-                    overflow: "hidden",
+            <Dialog open={canDispatch && Boolean(editTripId)} onClose={closeEditTrip} fullWidth maxWidth="sm">
+              <DialogTitle>Edit / Reschedule Trip</DialogTitle>
+
+              <DialogContent dividers>
+                <Stack spacing={2} sx={{ pt: 0.5 }}>
+                  <Box sx={twoColSx}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="date"
+                      label="Date"
+                      value={editTripDate}
+                      onChange={(e) => setEditTripDate(e.target.value)}
+                      disabled={editTripSaving}
+                      InputLabelProps={{ shrink: true }}
+                    />
+
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label="Time Window"
+                      value={editTripTimeWindow}
+                      onChange={(e) => setEditTripTimeWindow(e.target.value as TripTimeWindow)}
+                      disabled={editTripSaving}
+                    >
+                      <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
+                      <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
+                      <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
+                      <MenuItem value="custom">Custom</MenuItem>
+                    </TextField>
+
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="time"
+                      label="Start Time"
+                      value={editTripStartTime}
+                      onChange={(e) => setEditTripStartTime(e.target.value)}
+                      disabled={editTripSaving}
+                      InputLabelProps={{ shrink: true }}
+                    />
+
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="time"
+                      label="End Time"
+                      value={editTripEndTime}
+                      onChange={(e) => setEditTripEndTime(e.target.value)}
+                      disabled={editTripSaving}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Box>
+
+                  <TextField
+                    fullWidth
+                    multiline
+                    minRows={3}
+                    label="Trip Notes"
+                    value={editTripNotes}
+                    onChange={(e) => setEditTripNotes(e.target.value)}
+                    disabled={editTripSaving}
+                  />
+
+                  {editTripErr ? <Alert severity="error">{editTripErr}</Alert> : null}
+                  {editTripOk ? <Alert severity="success">{editTripOk}</Alert> : null}
+
+                  <Typography variant="body2" color="text.secondary">
+                    This modal is intentionally separate from “Schedule New Trip” so rescheduling never feels like it’s using the same fields.
+                  </Typography>
+                </Stack>
+              </DialogContent>
+
+              <DialogActions sx={{ p: 2 }}>
+                <Button onClick={closeEditTrip} disabled={editTripSaving} sx={{ textTransform: "none", borderRadius: 999 }}>
+                  Close
+                </Button>
+                <M3Button tone="blue" onClick={handleSaveTripEdits} disabled={editTripSaving}>
+                  {editTripSaving ? "Saving..." : "Save Changes"}
+                </M3Button>
+              </DialogActions>
+            </Dialog>
+
+            {isMobile && (() => {
+              const trip = trips.find((t) => String(t.status || "") === "in_progress");
+              if (!trip) return null;
+
+              const finishMode = finishModeByTrip[trip.id] || "none";
+              const showPanel = mobileFinishOpen && finishMode !== "none";
+
+              const timerState = String(trip.timerState || (trip.status === "in_progress" ? "running" : "not_started"));
+              const isPaused = timerState === "paused";
+
+              const pausedMins = sumPausedMinutes(trip.pauseBlocks);
+              const liveGrossMins =
+                trip.actualStartAt && !trip.actualEndAt
+                  ? minutesBetweenIso(trip.actualStartAt, nowIso())
+                  : trip.actualStartAt && trip.actualEndAt
+                    ? minutesBetweenIso(trip.actualStartAt, trip.actualEndAt)
+                    : 0;
+
+              const computedBillable = Math.max(0, liveGrossMins - pausedMins);
+              const computedHours = roundToHalf(computedBillable / 60);
+
+              const hoursToUse =
+                typeof hoursOverrideByTrip[trip.id] === "number"
+                  ? roundToHalf(hoursOverrideByTrip[trip.id])
+                  : computedHours;
+
+              const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
+
+              const savingThis = Boolean(tripActionSaving[trip.id]);
+              const canAct = canCurrentUserActOnTrip(trip);
+
+              return (
+                <Paper
+                  elevation={6}
+                  sx={{
+                    position: "fixed",
+                    left: 12,
+                    right: 12,
+                    bottom: 148,
+                    zIndex: 30,
+                    borderRadius: 4,
+                    border: `1px solid ${alpha(theme.palette.info.main, 0.24)}`,
+                    p: 1.5,
                   }}
                 >
-                  <div
-                    style={{
-                      padding: 14,
-                      borderBottom: "1px solid #f1f5f9",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 10,
-                    }}
-                  >
-                    <div style={{ fontWeight: 1000 }}>Edit / Reschedule Trip</div>
-                    <GhostButton type="button" onClick={closeEditTrip} disabled={editTripSaving}>
-                      Close
-                    </GhostButton>
-                  </div>
+                  <Stack spacing={1.5}>
+                    <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start" flexWrap="wrap">
+                      <Box>
+                        <Typography variant="subtitle1" fontWeight={700}>
+                          Trip in progress
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {trip.date} • {formatTripWindow(String(trip.timeWindow || ""))} • {trip.startTime}-{trip.endTime}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+                          Timer: <strong>{timerState}</strong> • Minutes: <strong>{computedBillable}</strong> (gross {liveGrossMins} - paused {pausedMins})
+                        </Typography>
+                      </Box>
 
-                  <div style={{ padding: 16, display: "grid", gap: 12 }}>
-                    <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 13 }}>Date</label>
-                        <input
-                          type="date"
-                          value={editTripDate}
-                          onChange={(e) => setEditTripDate(e.target.value)}
-                          disabled={editTripSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #d1d5db",
+                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                        {isPaused ? (
+                          <QuietButton onClick={() => handleResumeTrip(trip)} disabled={!canAct || savingThis} startIcon={<PlayArrowRoundedIcon />}>
+                            Resume
+                          </QuietButton>
+                        ) : (
+                          <QuietButton onClick={() => handlePauseTrip(trip)} disabled={!canAct || savingThis} startIcon={<PauseRoundedIcon />}>
+                            Pause
+                          </QuietButton>
+                        )}
+
+                        <QuietButton
+                          onClick={() => {
+                            setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "follow_up" }));
+                            setMobileFinishOpen(true);
                           }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 13 }}>Time Window</label>
-                        <select
-                          value={editTripTimeWindow}
-                          onChange={(e) => setEditTripTimeWindow(e.target.value as TripTimeWindow)}
-                          disabled={editTripSaving}
-                          style={{ display: "block", width: "100%", padding: 10, marginTop: 6, borderRadius: 12 }}
+                          disabled={!canAct || savingThis}
                         >
-                          <option value="am">Morning (8:00–12:00)</option>
-                          <option value="pm">Afternoon (1:00–5:00)</option>
-                          <option value="all_day">All Day (8:00–5:00)</option>
-                          <option value="custom">Custom</option>
-                        </select>
-                      </div>
+                          Follow-Up
+                        </QuietButton>
 
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 13 }}>Start Time</label>
-                        <input
-                          type="time"
-                          value={editTripStartTime}
-                          onChange={(e) => setEditTripStartTime(e.target.value)}
-                          disabled={editTripSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #d1d5db",
+                        <QuietButton
+                          onClick={() => {
+                            setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "resolved" }));
+                            setMobileFinishOpen(true);
                           }}
-                        />
-                      </div>
+                          disabled={!canAct || savingThis}
+                        >
+                          Resolved
+                        </QuietButton>
 
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 13 }}>End Time</label>
-                        <input
-                          type="time"
-                          value={editTripEndTime}
-                          onChange={(e) => setEditTripEndTime(e.target.value)}
-                          disabled={editTripSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #d1d5db",
-                          }}
-                        />
-                      </div>
-                    </div>
+                        {finishMode !== "none" ? (
+                          <>
+                            <QuietButton onClick={() => setMobileFinishOpen((v) => !v)} disabled={!canAct || savingThis}>
+                              {showPanel ? "Hide" : "Show"} Fields
+                            </QuietButton>
 
-                    <div>
-                      <label style={{ fontWeight: 900, fontSize: 13 }}>Trip Notes</label>
-                      <textarea
-                        value={editTripNotes}
-                        onChange={(e) => setEditTripNotes(e.target.value)}
-                        rows={3}
-                        disabled={editTripSaving}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          borderRadius: 12,
-                          border: "1px solid #d1d5db",
-                          marginTop: 6,
+                            <QuietButton
+                              onClick={() => {
+                                setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
+                                setMobileFinishOpen(false);
+                              }}
+                              disabled={!canAct || savingThis}
+                            >
+                              Clear
+                            </QuietButton>
+                          </>
+                        ) : null}
+                      </Stack>
+                    </Stack>
+
+                    <Collapse in={showPanel}>
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 3,
+                          bgcolor:
+                            finishMode === "resolved"
+                              ? alpha(theme.palette.success.main, 0.06)
+                              : alpha(theme.palette.warning.main, 0.08),
+                          borderColor:
+                            finishMode === "resolved"
+                              ? alpha(theme.palette.success.main, 0.3)
+                              : alpha(theme.palette.warning.main, 0.28),
                         }}
-                      />
-                    </div>
+                      >
+                        <Stack spacing={1.5}>
+                          <Typography variant="subtitle1" fontWeight={700}>
+                            {finishMode === "resolved" ? "Finish Trip: Resolved" : "Finish Trip: Follow-Up"}
+                          </Typography>
 
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <PrimaryButton type="button" onClick={handleSaveTripEdits} disabled={editTripSaving} tone="blue">
-                        {editTripSaving ? "Saving..." : "Save Changes"}
-                      </PrimaryButton>
+                          <TextField
+                            label="Hours (override)"
+                            type="number"
+                            size="small"
+                            fullWidth
+                            inputProps={{ min: 0, step: 0.5 }}
+                            value={hoursToUse}
+                            onChange={(e) =>
+                              setHoursOverrideByTrip((prev) => ({
+                                ...prev,
+                                [trip.id]: Number(e.target.value),
+                              }))
+                            }
+                            disabled={!canAct || savingThis}
+                            helperText={`Timer default: ${computedHours} hr`}
+                          />
 
-                      {editTripErr ? <span style={{ color: "#b91c1c", fontSize: 13 }}>{editTripErr}</span> : null}
-                      {editTripOk ? <span style={{ color: "#166534", fontSize: 13 }}>{editTripOk}</span> : null}
-                    </div>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={helperConfirmedByTrip[trip.id] ?? true}
+                                onChange={(e) =>
+                                  setHelperConfirmedByTrip((prev) => ({
+                                    ...prev,
+                                    [trip.id]: e.target.checked,
+                                  }))
+                                }
+                                disabled={!canAct || savingThis}
+                              />
+                            }
+                            label="Include helper in payroll"
+                          />
 
-                    <div style={{ fontSize: 12, color: "#6b7280" }}>
-                      This modal is intentionally separate from “Schedule New Trip” so rescheduling never feels like it’s using the same fields.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : null}
+                          {finishMode === "follow_up" ? (
+                            <>
+                              <TextField
+                                label="Follow-Up Notes"
+                                multiline
+                                minRows={4}
+                                fullWidth
+                                value={tripFollowUpNotes[trip.id] ?? ""}
+                                onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
+                                disabled={!canAct || savingThis}
+                              />
+                              <M3Button
+                                fullWidth
+                                tone="blue"
+                                onClick={() => handleFollowUpTrip(trip)}
+                                disabled={!canAct || savingThis}
+                              >
+                                Complete as Follow-Up
+                              </M3Button>
+                            </>
+                          ) : null}
 
-            {/* Mobile sticky in-progress actions bar */}
-            {stickyInProgressBar}
-          </div>
+                          {finishMode === "resolved" ? (
+                            <>
+                              <TextField
+                                label="Resolution Notes"
+                                multiline
+                                minRows={4}
+                                fullWidth
+                                value={tripResolutionNotes[trip.id] ?? ""}
+                                onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
+                                disabled={!canAct || savingThis}
+                              />
+
+                              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                                <Stack spacing={1.25}>
+                                  <Typography variant="subtitle1" fontWeight={700}>
+                                    Materials
+                                  </Typography>
+
+                                  {mats.length === 0 ? (
+                                    <Alert severity="info" variant="outlined">
+                                      No materials added yet.
+                                    </Alert>
+                                  ) : (
+                                    <Stack spacing={1.25}>
+                                      {mats.map((m, idx) => (
+                                        <Paper key={`mobile-mat-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+                                          <Stack spacing={1}>
+                                            <Box sx={materialsTwoColSx}>
+                                              <TextField
+                                                label="Name"
+                                                size="small"
+                                                fullWidth
+                                                value={m.name}
+                                                onChange={(e) => updateMaterialRow(trip.id, idx, { name: e.target.value })}
+                                                disabled={!canAct || savingThis}
+                                              />
+                                              <TextField
+                                                label="Qty"
+                                                type="number"
+                                                size="small"
+                                                fullWidth
+                                                inputProps={{ min: 0.01, step: 0.01 }}
+                                                value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
+                                                onChange={(e) => updateMaterialRow(trip.id, idx, { qty: Number(e.target.value) })}
+                                                disabled={!canAct || savingThis}
+                                              />
+                                            </Box>
+
+                                            <QuietButton
+                                              onClick={() => removeMaterialRow(trip.id, idx)}
+                                              disabled={!canAct || savingThis}
+                                              startIcon={<DeleteOutlineRoundedIcon />}
+                                            >
+                                              Remove
+                                            </QuietButton>
+                                          </Stack>
+                                        </Paper>
+                                      ))}
+                                    </Stack>
+                                  )}
+
+                                  <QuietButton
+                                    onClick={() => addMaterialRow(trip.id)}
+                                    disabled={!canAct || savingThis}
+                                    startIcon={<AddRoundedIcon />}
+                                  >
+                                    Add Material
+                                  </QuietButton>
+                                </Stack>
+                              </Paper>
+
+                              <M3Button
+                                fullWidth
+                                tone="green"
+                                onClick={() => handleResolveTrip(trip)}
+                                disabled={!canAct || savingThis}
+                              >
+                                Complete as Resolved — Ready to Bill
+                              </M3Button>
+                            </>
+                          ) : null}
+                        </Stack>
+                      </Paper>
+                    </Collapse>
+                  </Stack>
+                </Paper>
+              );
+            })()}
+          </Box>
         ) : null}
       </AppShell>
     </ProtectedPage>

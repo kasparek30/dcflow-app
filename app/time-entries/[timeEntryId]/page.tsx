@@ -1,10 +1,11 @@
 // app/time-entries/[timeEntryId]/page.tsx
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -12,6 +13,29 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Checkbox,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControlLabel,
+  Snackbar,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
+import DeleteRoundedIcon from "@mui/icons-material/DeleteRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -63,9 +87,7 @@ type TripDoc = {
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
   outcome?: string | null;
-
   actualMinutes?: number | null;
-
   updatedAt?: string | null;
 };
 
@@ -103,16 +125,35 @@ function safeStr(x: unknown) {
   return typeof x === "string" ? x : "";
 }
 
-function normalize(s: unknown) {
-  return safeStr(s).trim();
+function safeTrim(x: unknown) {
+  return safeStr(x).trim();
 }
 
-function formatCategory(category: TimeEntry["category"]) {
-  switch (category) {
-    case "service_ticket":
-      return "Service Ticket";
-    case "project_stage":
-      return "Project Stage";
+function normalizeCategory(raw: unknown) {
+  const c = safeTrim(raw).toLowerCase();
+
+  if (c === "service_ticket") return "service";
+  if (c === "project_stage") return "project";
+
+  if (c === "service") return "service";
+  if (c === "project") return "project";
+  if (c === "meeting") return "meeting";
+  if (c === "shop") return "shop";
+  if (c === "office") return "office";
+  if (c === "pto") return "pto";
+  if (c === "holiday") return "holiday";
+  if (c === "manual_other") return "manual_other";
+
+  return c || "other";
+}
+
+function formatCategoryLabel(raw: unknown) {
+  const c = normalizeCategory(raw);
+  switch (c) {
+    case "service":
+      return "Service";
+    case "project":
+      return "Project";
     case "meeting":
       return "Meeting";
     case "shop":
@@ -124,33 +165,83 @@ function formatCategory(category: TimeEntry["category"]) {
     case "holiday":
       return "Holiday";
     case "manual_other":
-      return "Manual Other";
+      return "Manual";
     default:
-      return String(category || "");
+      return "Other";
+  }
+}
+
+function formatPayType(payType: TimeEntry["payType"]) {
+  switch (payType) {
+    case "regular":
+      return "Regular";
+    case "overtime":
+      return "Overtime";
+    case "pto":
+      return "PTO";
+    case "holiday":
+      return "Holiday";
+    default:
+      return String(payType || "—");
+  }
+}
+
+function formatStatus(status: TimeEntry["entryStatus"]) {
+  switch (status) {
+    case "draft":
+      return "Draft";
+    case "submitted":
+      return "Submitted";
+    case "approved":
+      return "Approved";
+    case "rejected":
+      return "Rejected";
+    case "exported":
+      return "Exported";
+    default:
+      return String(status || "—");
+  }
+}
+
+function formatSourceLabel(source?: string) {
+  const s = safeTrim(source).toLowerCase();
+  switch (s) {
+    case "manual_entry":
+      return "Manual";
+    case "auto_suggested":
+      return "Auto";
+    case "system_generated_pto":
+      return "Generated PTO";
+    case "system_generated_holiday":
+      return "Generated Holiday";
+    case "system_generated_meeting":
+      return "Generated Meeting";
+    case "trip_timer":
+      return "Trip";
+    default:
+      return s ? s.replace(/_/g, " ") : "Source";
   }
 }
 
 function formatStage(stageKey?: string) {
-  const s = (stageKey || "").toLowerCase();
-  if (s === "roughin") return "Rough-In";
-  if (s === "topoutvent") return "Top-Out / Vent";
-  if (s === "trimfinish") return "Trim / Finish";
-  if (s === "roughin" || s === "roughin") return "Rough-In";
-  if (s === "topoutvent") return "Top-Out / Vent";
-  if (s === "trimfinish") return "Trim / Finish";
-  return stageKey || "—";
+  const s = safeTrim(stageKey).toLowerCase();
+  if (s === "roughin" || s === "rough_in" || s === "roughin") return "Rough-In";
+  if (s === "topoutvent" || s === "top_out_vent") return "Top-Out / Vent";
+  if (s === "trimfinish" || s === "trim_finish") return "Trim / Finish";
+  return safeTrim(stageKey) || "—";
 }
 
-function buildAddressLine(t: ServiceTicketLite) {
+function buildAddressLine(ticket: ServiceTicketLite) {
   const parts: string[] = [];
-  const l1 = normalize(t.serviceAddressLine1);
-  const l2 = normalize(t.serviceAddressLine2);
-  const city = normalize(t.serviceCity);
-  const state = normalize(t.serviceState);
-  const zip = normalize(t.servicePostalCode);
+  const l1 = safeTrim(ticket.serviceAddressLine1);
+  const l2 = safeTrim(ticket.serviceAddressLine2);
+  const city = safeTrim(ticket.serviceCity);
+  const state = safeTrim(ticket.serviceState);
+  const zip = safeTrim(ticket.servicePostalCode);
 
   if (l1) parts.push(l1);
   if (l2) parts.push(l2);
+
   const csz = [city, state, zip].filter(Boolean).join(" ");
   if (csz) parts.push(csz);
 
@@ -159,6 +250,10 @@ function buildAddressLine(t: ServiceTicketLite) {
 
 function compactLines(lines: string[]) {
   return lines.map((x) => x.trim()).filter(Boolean);
+}
+
+function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
+  return `${employeeId}_${weekStartDate}`;
 }
 
 function buildAutoNotes(args: {
@@ -171,60 +266,76 @@ function buildAutoNotes(args: {
   const { entry, trip, ticket, project, event } = args;
 
   const lines: string[] = [];
+  lines.push(`AUTO • ${formatCategoryLabel(entry.category)} • ${entry.entryDate}`);
 
-  // Header
-  lines.push(`AUTO • ${formatCategory(entry.category)} • ${entry.entryDate}`);
-
-  // Meeting
-  if (entry.category === "meeting") {
-    const title = normalize(entry.title) || normalize(event?.title) || "Meeting";
-    const loc = normalize(entry.location) || normalize(event?.location);
+  if (normalizeCategory(entry.category) === "meeting") {
+    const title = safeTrim(entry.title) || safeTrim(event?.title) || "Meeting";
+    const loc = safeTrim(entry.location) || safeTrim(event?.location);
     lines.push(`📣 ${title}${loc ? ` • ${loc}` : ""}`);
-    if (normalize(event?.notes)) {
-      lines.push(`Notes: ${normalize(event?.notes)}`);
+
+    if (safeTrim(event?.notes)) {
+      lines.push(`Notes: ${safeTrim(event?.notes)}`);
     }
-    if (normalize(entry.companyEventId)) lines.push(`companyEventId: ${normalize(entry.companyEventId)}`);
+
+    if (safeTrim(entry.companyEventId)) {
+      lines.push(`companyEventId: ${safeTrim(entry.companyEventId)}`);
+    }
+
     return compactLines(lines).join("\n");
   }
 
-  // Trip-based (service/project)
-  const tripId = normalize(entry.tripId);
-  const stId = normalize(entry.serviceTicketId);
-  const projId = normalize(entry.projectId);
+  if (normalizeCategory(entry.category) === "pto") {
+    lines.push("Approved PTO entry");
+    if (safeTrim(entry.notes)) lines.push(`Notes: ${safeTrim(entry.notes)}`);
+    return compactLines(lines).join("\n");
+  }
+
+  if (normalizeCategory(entry.category) === "holiday") {
+    lines.push("Company holiday entry");
+    if (safeTrim(entry.notes)) lines.push(`Notes: ${safeTrim(entry.notes)}`);
+    return compactLines(lines).join("\n");
+  }
+
+  const tripId = safeTrim(entry.tripId);
+  const stId = safeTrim(entry.serviceTicketId);
+  const projId = safeTrim(entry.projectId);
 
   if (trip || tripId || stId || projId) {
     if (ticket) {
-      const cust = normalize(ticket.customerDisplayName);
+      const cust = safeTrim(ticket.customerDisplayName);
       const addr = buildAddressLine(ticket);
-      const issue = normalize(ticket.issueSummary);
+      const issue = safeTrim(ticket.issueSummary);
+
       if (cust || addr) lines.push(`Customer: ${[cust, addr].filter(Boolean).join(" — ")}`);
       if (issue) lines.push(`Issue: ${issue}`);
     }
 
     if (project) {
-      const name = normalize(project.name) || normalize(project.projectName) || normalize(project.title) || "";
+      const name =
+        safeTrim(project.name) ||
+        safeTrim(project.projectName) ||
+        safeTrim(project.title);
+
       if (name) lines.push(`Project: ${name}`);
     }
 
     if (trip) {
-      const window = normalize(trip.timeWindow);
-      const time = [normalize(trip.startTime), normalize(trip.endTime)].filter(Boolean).join("-");
-      const when = [normalize(trip.date), window || "", time || ""].filter(Boolean).join(" • ");
+      const window = safeTrim(trip.timeWindow);
+      const time = [safeTrim(trip.startTime), safeTrim(trip.endTime)].filter(Boolean).join(" - ");
+      const when = [safeTrim(trip.date), window, time].filter(Boolean).join(" • ");
       if (when) lines.push(`Trip: ${when}`);
 
-      const outcome = normalize(trip.outcome).toLowerCase();
+      const outcome = safeTrim(trip.outcome).toLowerCase();
       if (outcome) lines.push(`Outcome: ${outcome}`);
 
-      const follow = normalize(trip.followUpNotes);
-      const res = normalize(trip.resolutionNotes);
-      const work = normalize(trip.workNotes);
+      const follow = safeTrim(trip.followUpNotes);
+      const res = safeTrim(trip.resolutionNotes);
+      const work = safeTrim(trip.workNotes);
 
       if (outcome === "follow_up" && follow) lines.push(`Follow-up notes: ${follow}`);
       if (outcome === "resolved" && res) lines.push(`Resolution notes: ${res}`);
-      if (!outcome && (follow || res)) {
-        if (follow) lines.push(`Follow-up notes: ${follow}`);
-        if (res) lines.push(`Resolution notes: ${res}`);
-      }
+      if (!outcome && follow) lines.push(`Follow-up notes: ${follow}`);
+      if (!outcome && res) lines.push(`Resolution notes: ${res}`);
       if (work) lines.push(`Work notes: ${work}`);
 
       if (typeof trip.actualMinutes === "number" && Number.isFinite(trip.actualMinutes)) {
@@ -244,11 +355,35 @@ function buildAutoNotes(args: {
   return compactLines(lines).join("\n");
 }
 
+function isTimesheetLockedStatus(status: unknown) {
+  const s = safeTrim(status).toLowerCase();
+  return s === "submitted" || s === "approved" || s === "exported" || s === "exported_to_quickbooks";
+}
+
+function getStatusChipColor(status: TimeEntry["entryStatus"]): "default" | "warning" | "success" | "error" | "info" {
+  switch (status) {
+    case "draft":
+      return "warning";
+    case "submitted":
+      return "info";
+    case "approved":
+      return "success";
+    case "rejected":
+      return "error";
+    case "exported":
+      return "default";
+    default:
+      return "default";
+  }
+}
+
 export default function TimeEntryDetailPage({ params }: Props) {
+  const router = useRouter();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [timeEntryId, setTimeEntryId] = useState("");
   const [entry, setEntry] = useState<LocalTimeEntry | null>(null);
@@ -256,6 +391,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const [hours, setHours] = useState(0);
   const [billable, setBillable] = useState(false);
@@ -266,7 +402,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
   const [linkedTechnicianName, setLinkedTechnicianName] = useState("");
   const [notes, setNotes] = useState("");
 
-  // ✅ Auto details state
   const [trip, setTrip] = useState<TripDoc | null>(null);
   const [ticket, setTicket] = useState<ServiceTicketLite | null>(null);
   const [project, setProject] = useState<ProjectLite | null>(null);
@@ -281,12 +416,14 @@ export default function TimeEntryDetailPage({ params }: Props) {
   useEffect(() => {
     async function loadEntry() {
       try {
+        setLoading(true);
+        setError("");
+
         const resolved = await params;
         const nextId = resolved.timeEntryId;
         setTimeEntryId(nextId);
 
         const entrySnap = await getDoc(doc(db, "timeEntries", nextId));
-
         if (!entrySnap.exists()) {
           setError("Time entry not found.");
           setLoading(false);
@@ -294,7 +431,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
         }
 
         const data = entrySnap.data() as any;
-
         const item: LocalTimeEntry = {
           id: entrySnap.id,
           employeeId: data.employeeId ?? "",
@@ -309,7 +445,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
           category: data.category ?? "manual_other",
           hours: typeof data.hours === "number" ? data.hours : 0,
           payType: data.payType ?? "regular",
-          billable: data.billable ?? false,
+          billable: Boolean(data.billable),
           source: data.source ?? "manual_entry",
 
           serviceTicketId: data.serviceTicketId ?? undefined,
@@ -321,13 +457,11 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
           notes: data.notes ?? undefined,
           timesheetId: data.timesheetId ?? undefined,
-
           entryStatus: data.entryStatus ?? "draft",
 
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
 
-          // ✅ extra linkage fields
           tripId: data.tripId ?? undefined,
           companyEventId: data.companyEventId ?? undefined,
           title: data.title ?? null,
@@ -336,9 +470,8 @@ export default function TimeEntryDetailPage({ params }: Props) {
         };
 
         setEntry(item);
-
         setHours(item.hours);
-        setBillable(item.billable);
+        setBillable(Boolean(item.billable));
         setServiceTicketId(item.serviceTicketId ?? "");
         setProjectId(item.projectId ?? "");
         setProjectStageKey(
@@ -348,21 +481,13 @@ export default function TimeEntryDetailPage({ params }: Props) {
         setLinkedTechnicianName(item.linkedTechnicianName ?? "");
         setNotes(item.notes ?? "");
 
-        const weeklyQ = query(
-          collection(db, "weeklyTimesheets"),
-          where("employeeId", "==", item.employeeId),
-          where("weekStartDate", "==", item.weekStartDate),
-          where("weekEndDate", "==", item.weekEndDate)
-        );
+        const directTimesheetId = buildWeeklyTimesheetId(item.employeeId, item.weekStartDate);
+        const directTimesheetSnap = await getDoc(doc(db, "weeklyTimesheets", directTimesheetId));
 
-        const weeklySnap = await getDocs(weeklyQ);
-
-        if (!weeklySnap.empty) {
-          const tsDoc = weeklySnap.docs[0];
-          const tsData = tsDoc.data();
-
-          const ts: WeeklyTimesheet = {
-            id: tsDoc.id,
+        if (directTimesheetSnap.exists()) {
+          const tsData: any = directTimesheetSnap.data();
+          setMatchingTimesheet({
+            id: directTimesheetSnap.id,
             employeeId: tsData.employeeId ?? "",
             employeeName: tsData.employeeName ?? "",
             employeeRole: tsData.employeeRole ?? "",
@@ -392,11 +517,55 @@ export default function TimeEntryDetailPage({ params }: Props) {
             managerNote: tsData.managerNote ?? undefined,
             createdAt: tsData.createdAt ?? undefined,
             updatedAt: tsData.updatedAt ?? undefined,
-          };
-
-          setMatchingTimesheet(ts);
+          });
         } else {
-          setMatchingTimesheet(null);
+          const weeklyQ = query(
+            collection(db, "weeklyTimesheets"),
+            where("employeeId", "==", item.employeeId),
+            where("weekStartDate", "==", item.weekStartDate),
+            where("weekEndDate", "==", item.weekEndDate)
+          );
+
+          const weeklySnap = await getDocs(weeklyQ);
+          if (!weeklySnap.empty) {
+            const tsDoc = weeklySnap.docs[0];
+            const tsData: any = tsDoc.data();
+
+            setMatchingTimesheet({
+              id: tsDoc.id,
+              employeeId: tsData.employeeId ?? "",
+              employeeName: tsData.employeeName ?? "",
+              employeeRole: tsData.employeeRole ?? "",
+              weekStartDate: tsData.weekStartDate ?? "",
+              weekEndDate: tsData.weekEndDate ?? "",
+              timeEntryIds: Array.isArray(tsData.timeEntryIds) ? tsData.timeEntryIds : [],
+              totalHours: typeof tsData.totalHours === "number" ? tsData.totalHours : 0,
+              regularHours: typeof tsData.regularHours === "number" ? tsData.regularHours : 0,
+              overtimeHours: typeof tsData.overtimeHours === "number" ? tsData.overtimeHours : 0,
+              ptoHours: typeof tsData.ptoHours === "number" ? tsData.ptoHours : 0,
+              holidayHours: typeof tsData.holidayHours === "number" ? tsData.holidayHours : 0,
+              billableHours: typeof tsData.billableHours === "number" ? tsData.billableHours : 0,
+              nonBillableHours: typeof tsData.nonBillableHours === "number" ? tsData.nonBillableHours : 0,
+              status: tsData.status ?? "draft",
+              submittedAt: tsData.submittedAt ?? undefined,
+              submittedById: tsData.submittedById ?? undefined,
+              approvedAt: tsData.approvedAt ?? undefined,
+              approvedById: tsData.approvedById ?? undefined,
+              approvedByName: tsData.approvedByName ?? undefined,
+              rejectedAt: tsData.rejectedAt ?? undefined,
+              rejectedById: tsData.rejectedById ?? undefined,
+              rejectionReason: tsData.rejectionReason ?? undefined,
+              quickbooksExportStatus: tsData.quickbooksExportStatus ?? "not_ready",
+              quickbooksExportedAt: tsData.quickbooksExportedAt ?? undefined,
+              quickbooksPayrollBatchId: tsData.quickbooksPayrollBatchId ?? undefined,
+              employeeNote: tsData.employeeNote ?? undefined,
+              managerNote: tsData.managerNote ?? undefined,
+              createdAt: tsData.createdAt ?? undefined,
+              updatedAt: tsData.updatedAt ?? undefined,
+            });
+          } else {
+            setMatchingTimesheet(null);
+          }
         }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to load time entry.");
@@ -408,7 +577,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
     loadEntry();
   }, [params]);
 
-  // ✅ Load auto context (trip/ticket/project/event)
   useEffect(() => {
     async function loadAutoContext() {
       if (!entry) return;
@@ -420,12 +588,14 @@ export default function TimeEntryDetailPage({ params }: Props) {
       setEvent(null);
 
       try {
-        if (entry.category === "meeting") {
-          const ceid = normalize(entry.companyEventId);
-          if (ceid) {
-            const es = await getDoc(doc(db, "companyEvents", ceid));
+        const category = normalizeCategory(entry.category);
+
+        if (category === "meeting") {
+          const eventId = safeTrim(entry.companyEventId);
+          if (eventId) {
+            const es = await getDoc(doc(db, "companyEvents", eventId));
             if (es.exists()) {
-              const d = es.data() as any;
+              const d: any = es.data();
               setEvent({
                 id: es.id,
                 title: d.title ?? d.name ?? "Meeting",
@@ -442,11 +612,11 @@ export default function TimeEntryDetailPage({ params }: Props) {
           return;
         }
 
-        const tid = normalize(entry.tripId);
-        if (tid) {
-          const ts = await getDoc(doc(db, "trips", tid));
+        const tripId = safeTrim(entry.tripId);
+        if (tripId) {
+          const ts = await getDoc(doc(db, "trips", tripId));
           if (ts.exists()) {
-            const d = ts.data() as any;
+            const d: any = ts.data();
             setTrip({
               id: ts.id,
               type: d.type ?? undefined,
@@ -468,11 +638,11 @@ export default function TimeEntryDetailPage({ params }: Props) {
           }
         }
 
-        const stid = normalize(entry.serviceTicketId);
-        if (stid) {
-          const ss = await getDoc(doc(db, "serviceTickets", stid));
+        const serviceId = safeTrim(entry.serviceTicketId);
+        if (serviceId) {
+          const ss = await getDoc(doc(db, "serviceTickets", serviceId));
           if (ss.exists()) {
-            const d = ss.data() as any;
+            const d: any = ss.data();
             setTicket({
               id: ss.id,
               customerDisplayName: d.customerDisplayName ?? "",
@@ -486,11 +656,11 @@ export default function TimeEntryDetailPage({ params }: Props) {
           }
         }
 
-        const pid = normalize(entry.projectId);
+        const pid = safeTrim(entry.projectId);
         if (pid) {
           const ps = await getDoc(doc(db, "projects", pid));
           if (ps.exists()) {
-            const d = ps.data() as any;
+            const d: any = ps.data();
             setProject({
               id: ps.id,
               name: d.name ?? undefined,
@@ -500,40 +670,71 @@ export default function TimeEntryDetailPage({ params }: Props) {
           }
         }
       } catch {
-        // best-effort
+        // best-effort only
       } finally {
         setAutoLoading(false);
       }
     }
 
     loadAutoContext();
-  }, [entry?.id]);
+  }, [
+    entry?.id,
+    entry?.category,
+    entry?.tripId,
+    entry?.serviceTicketId,
+    entry?.projectId,
+    entry?.companyEventId,
+  ]);
 
   const isOwnEntry = useMemo(() => {
     if (!entry || !appUser?.uid) return false;
     return entry.employeeId === appUser.uid;
-  }, [entry, appUser?.uid]);
+  }, [appUser?.uid, entry]);
 
   const isTimesheetLocked = useMemo(() => {
     if (!matchingTimesheet) return false;
-    return (
-      matchingTimesheet.status === "submitted" ||
-      matchingTimesheet.status === "approved" ||
-      matchingTimesheet.status === "exported_to_quickbooks"
-    );
+    return isTimesheetLockedStatus(matchingTimesheet.status);
   }, [matchingTimesheet]);
 
   const isEntryHoursLocked = useMemo(() => {
     return Boolean(entry?.hoursLocked);
   }, [entry?.hoursLocked]);
 
+  const normalizedEntryCategory = useMemo(() => normalizeCategory(entry?.category), [entry?.category]);
+  const isHolidayEntry = normalizedEntryCategory === "holiday";
+  const isPtoEntry = normalizedEntryCategory === "pto";
+  const isMeetingEntry = normalizedEntryCategory === "meeting";
+  const isManualEntry = safeTrim(entry?.source).toLowerCase() === "manual_entry";
+
   const canEdit = useMemo(() => {
     if (!entry || !appUser) return false;
     if (!isOwnEntry && !canEditOtherUsers) return false;
     if (isTimesheetLocked) return false;
     if (isEntryHoursLocked) return false;
+    if (isHolidayEntry && !canEditOtherUsers) return false;
     return true;
-  }, [entry, appUser, isOwnEntry, canEditOtherUsers, isTimesheetLocked, isEntryHoursLocked]);
+  }, [
+    appUser,
+    canEditOtherUsers,
+    entry,
+    isEntryHoursLocked,
+    isHolidayEntry,
+    isOwnEntry,
+    isTimesheetLocked,
+  ]);
+
+  const canDelete = useMemo(() => {
+    if (!entry) return false;
+    if (!canEdit) return false;
+    if (!isManualEntry) return false;
+    return true;
+  }, [canEdit, entry, isManualEntry]);
+
+  const canEditBillable = useMemo(() => {
+    if (!canEdit) return false;
+    if (isPtoEntry || isHolidayEntry || isMeetingEntry) return false;
+    return true;
+  }, [canEdit, isHolidayEntry, isMeetingEntry, isPtoEntry]);
 
   const suggestedAutoNotes = useMemo(() => {
     if (!entry) return "";
@@ -541,25 +742,21 @@ export default function TimeEntryDetailPage({ params }: Props) {
   }, [entry, trip, ticket, project, event]);
 
   function appendAutoToNotes() {
-    const auto = (suggestedAutoNotes || "").trim();
+    const auto = safeTrim(suggestedAutoNotes);
     if (!auto) return;
 
-    const cur = (notes || "").trim();
-    if (!cur) {
+    const current = safeTrim(notes);
+    if (!current) {
       setNotes(auto);
       return;
     }
 
-    if (cur.includes("AUTO •")) {
-      setNotes(cur);
-      return;
-    }
-
-    setNotes(`${cur}\n\n${auto}`);
+    if (current.includes("AUTO •")) return;
+    setNotes(`${current}\n\n${auto}`);
   }
 
   function replaceNotesWithAuto() {
-    const auto = (suggestedAutoNotes || "").trim();
+    const auto = safeTrim(suggestedAutoNotes);
     if (!auto) return;
     setNotes(auto);
   }
@@ -582,18 +779,23 @@ export default function TimeEntryDetailPage({ params }: Props) {
       return;
     }
 
-    if (entry.category === "service_ticket" && !serviceTicketId.trim()) {
-      setError("Service Ticket ID is required for service ticket entries.");
+    if (isHolidayEntry && !canEditOtherUsers) {
+      setError("Holiday hours are read-only for employees.");
       return;
     }
 
-    if (entry.category === "project_stage") {
-      if (!projectId.trim()) {
-        setError("Project ID is required for project stage entries.");
+    if (normalizedEntryCategory === "service" && !safeTrim(serviceTicketId)) {
+      setError("Service Ticket ID is required for service entries.");
+      return;
+    }
+
+    if (normalizedEntryCategory === "project") {
+      if (!safeTrim(projectId)) {
+        setError("Project ID is required for project entries.");
         return;
       }
       if (!projectStageKey) {
-        setError("Project stage is required for project stage entries.");
+        setError("Project stage is required for project entries.");
         return;
       }
     }
@@ -607,31 +809,35 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
       await updateDoc(doc(db, "timeEntries", entry.id), {
         hours,
-        billable,
+        billable: canEditBillable ? billable : false,
 
-        serviceTicketId: serviceTicketId.trim() || null,
-        projectId: projectId.trim() || null,
+        serviceTicketId: safeTrim(serviceTicketId) || null,
+        projectId: safeTrim(projectId) || null,
         projectStageKey: projectStageKey || null,
 
-        linkedTechnicianId: linkedTechnicianId.trim() || null,
-        linkedTechnicianName: linkedTechnicianName.trim() || null,
+        linkedTechnicianId: safeTrim(linkedTechnicianId) || null,
+        linkedTechnicianName: safeTrim(linkedTechnicianName) || null,
 
-        notes: notes.trim() || null,
+        notes: safeTrim(notes) || null,
         updatedAt: nowIso,
       });
 
-      setEntry({
-        ...entry,
-        hours,
-        billable,
-        serviceTicketId: serviceTicketId.trim() || undefined,
-        projectId: projectId.trim() || undefined,
-        projectStageKey: projectStageKey || undefined,
-        linkedTechnicianId: linkedTechnicianId.trim() || undefined,
-        linkedTechnicianName: linkedTechnicianName.trim() || undefined,
-        notes: notes.trim() || undefined,
-        updatedAt: nowIso,
-      });
+      setEntry((prev) =>
+        prev
+          ? {
+              ...prev,
+              hours,
+              billable: canEditBillable ? billable : false,
+              serviceTicketId: safeTrim(serviceTicketId) || undefined,
+              projectId: safeTrim(projectId) || undefined,
+              projectStageKey: projectStageKey || undefined,
+              linkedTechnicianId: safeTrim(linkedTechnicianId) || undefined,
+              linkedTechnicianName: safeTrim(linkedTechnicianName) || undefined,
+              notes: safeTrim(notes) || undefined,
+              updatedAt: nowIso,
+            }
+          : prev
+      );
 
       setSaveMsg("Time entry saved.");
     } catch (err: unknown) {
@@ -641,230 +847,543 @@ export default function TimeEntryDetailPage({ params }: Props) {
     }
   }
 
+  async function handleDelete() {
+    if (!entry) {
+      setError("Missing time entry.");
+      return;
+    }
+
+    if (!canDelete) {
+      setError("Only editable manual entries can be deleted here.");
+      return;
+    }
+
+    setDeleting(true);
+    setError("");
+
+    try {
+      await deleteDoc(doc(db, "timeEntries", entry.id));
+      router.push("/time-entries");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to delete time entry.");
+      setDeleting(false);
+      setDeleteDialogOpen(false);
+    }
+  }
+
   return (
-    <ProtectedPage fallbackTitle="Edit Time Entry">
+    <ProtectedPage fallbackTitle="Time Entry">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: "12px",
-            flexWrap: "wrap",
-            alignItems: "flex-start",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>
-              Edit Time Entry
-            </h1>
-            <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-              Entries remain editable until the weekly timesheet is submitted/approved/exported (or an entry is explicitly locked).
-            </p>
-          </div>
-
-          <Link
-            href="/time-entries"
-            style={{
-              padding: "8px 12px",
-              border: "1px solid #ccc",
-              borderRadius: "10px",
-              textDecoration: "none",
-              color: "inherit",
-              background: "white",
-              height: "fit-content",
-            }}
+        <Stack spacing={2.5}>
+          <Stack
+            direction={{ xs: "column", md: "row" }}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", md: "center" }}
+            spacing={1.5}
           >
-            Back to Time Entries
-          </Link>
-        </div>
+            <Box>
+              <Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: -0.5 }}>
+                Time Entry
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                Review, adjust, and confirm this payroll entry.
+              </Typography>
+            </Box>
 
-        {loading ? <p style={{ marginTop: "16px" }}>Loading time entry...</p> : null}
-        {error ? <p style={{ marginTop: "16px", color: "red" }}>{error}</p> : null}
-        {saveMsg ? <p style={{ marginTop: "16px", color: "green" }}>{saveMsg}</p> : null}
-
-        {!loading && entry ? (
-          <>
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: "#fafafa",
-                maxWidth: "900px",
-                display: "grid",
-                gap: "8px",
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>
-                {formatCategory(entry.category)}
-              </div>
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Employee: {entry.employeeName}
-              </div>
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Entry Date: {entry.entryDate}
-              </div>
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Payroll Week: {entry.weekStartDate} through {entry.weekEndDate}
-              </div>
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Source: {entry.source === "auto_suggested" ? "Auto-Suggested" : entry.source || "Manual"}
-              </div>
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Hours Locked: <strong>{String(Boolean(entry.hoursLocked))}</strong>
-              </div>
-              <div style={{ fontSize: "12px", color: "#666" }}>
-                Time Entry ID: {timeEntryId}
-              </div>
-            </div>
-
-            <div
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: canEdit ? "#fafafa" : "#f7f7f7",
-                maxWidth: "900px",
-                display: "grid",
-                gap: "8px",
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: "18px" }}>Edit Rules</div>
-
-              <div style={{ fontSize: "13px", color: "#555" }}>
-                Your entry is {canEdit ? "currently editable." : "currently read-only."}
-              </div>
-
-              {isTimesheetLocked ? (
-                <div style={{ fontSize: "12px", color: "#8a5a00" }}>
-                  The matching weekly timesheet is <strong>{matchingTimesheet?.status}</strong>, so this entry is locked.
-                </div>
-              ) : null}
-
-              {isEntryHoursLocked ? (
-                <div style={{ fontSize: "12px", color: "#8a5a00" }}>
-                  This entry has <strong>hoursLocked = true</strong> (used for meetings and other system-controlled entries).
-                </div>
-              ) : null}
-
-              {!isOwnEntry && !canEditOtherUsers ? (
-                <div style={{ fontSize: "12px", color: "#8a5a00" }}>
-                  You can only edit your own entries.
-                </div>
-              ) : null}
-            </div>
-
-            <form
-              onSubmit={handleSave}
-              style={{
-                marginTop: "16px",
-                border: "1px solid #ddd",
-                borderRadius: "12px",
-                padding: "16px",
-                background: canEdit ? "#fafafa" : "#f7f7f7",
-                maxWidth: "900px",
-                display: "grid",
-                gap: "12px",
-              }}
-            >
-              <div style={{ fontWeight: 900, fontSize: "18px" }}>Entry Details</div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
-                  gap: "12px",
-                }}
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+              <Button
+                variant="outlined"
+                startIcon={<ArrowBackRoundedIcon />}
+                onClick={() => router.push("/time-entries")}
               >
-                <div>
-                  <label style={{ fontWeight: 700 }}>Hours</label>
-                  <input
-                    type="number"
-                    min={0.25}
-                    step={0.25}
-                    value={hours}
-                    onChange={(e) => setHours(Number(e.target.value))}
-                    disabled={!canEdit}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      marginTop: "4px",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                      background: canEdit ? "white" : "#f1f1f1",
-                    }}
-                  />
-                </div>
+                Back to Time Entries
+              </Button>
 
-                <div style={{ display: "flex", alignItems: "end" }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <input
-                      type="checkbox"
-                      checked={billable}
-                      onChange={(e) => setBillable(e.target.checked)}
+              <Button variant="contained" onClick={() => router.push("/weekly-timesheet")}>
+                Review Weekly Timesheet
+              </Button>
+            </Stack>
+          </Stack>
+
+          {loading ? <Alert severity="info">Loading time entry…</Alert> : null}
+          {!loading && error ? <Alert severity="error">{error}</Alert> : null}
+
+          {!loading && entry ? (
+            <>
+              <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Stack spacing={2}>
+                    <Stack
+                      direction={{ xs: "column", md: "row" }}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", md: "center" }}
+                      spacing={1.5}
+                    >
+                      <Box>
+                        <Typography variant="h5" sx={{ fontWeight: 800 }}>
+                          {formatCategoryLabel(entry.category)}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          {entry.employeeName} • {entry.entryDate}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Payroll week: {entry.weekStartDate} – {entry.weekEndDate}
+                        </Typography>
+                      </Box>
+
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip label={formatStatus(entry.entryStatus)} color={getStatusChipColor(entry.entryStatus)} />
+                        <Chip label={formatPayType(entry.payType)} variant="outlined" />
+                        <Chip label={formatSourceLabel(entry.source)} variant="outlined" />
+                        <Chip
+                          label={isHolidayEntry ? "Holiday pay" : isPtoEntry ? "PTO pay" : "Worked"}
+                          color={isHolidayEntry ? "success" : isPtoEntry ? "secondary" : "info"}
+                          variant={isHolidayEntry || isPtoEntry ? "filled" : "outlined"}
+                        />
+                      </Stack>
+                    </Stack>
+
+                    <Divider />
+
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))", lg: "repeat(4, minmax(0, 1fr))" },
+                        gap: 1.5,
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Hours:</strong> {Number(entry.hours || 0).toFixed(2)}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Billable:</strong> {entry.billable ? "Yes" : "No"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Hours Locked:</strong> {String(Boolean(entry.hoursLocked))}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>ID:</strong> {timeEntryId}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                </CardContent>
+              </Card>
+
+              <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Stack spacing={1.5}>
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                      Edit Rules
+                    </Typography>
+
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip
+                        label={canEdit ? "Editable" : "Read-only"}
+                        color={canEdit ? "success" : "warning"}
+                      />
+                      {isTimesheetLocked ? <Chip label="Timesheet locked" color="warning" variant="outlined" /> : null}
+                      {isEntryHoursLocked ? <Chip label="Hours locked" color="warning" variant="outlined" /> : null}
+                      {isHolidayEntry ? <Chip label="Holiday entry" color="success" variant="outlined" /> : null}
+                      {isPtoEntry ? <Chip label="PTO entry" color="secondary" variant="outlined" /> : null}
+                    </Stack>
+
+                    {isTimesheetLocked ? (
+                      <Alert severity="warning">
+                        The matching weekly timesheet is <strong>{matchingTimesheet?.status}</strong>, so this entry is locked.
+                      </Alert>
+                    ) : null}
+
+                    {isEntryHoursLocked ? (
+                      <Alert severity="warning">
+                        This entry has <strong>hoursLocked = true</strong> and is controlled by system workflow.
+                      </Alert>
+                    ) : null}
+
+                    {isHolidayEntry && !canEditOtherUsers ? (
+                      <Alert severity="info">
+                        Holiday entries are included for payroll review, but employees do not directly edit holiday hours here.
+                      </Alert>
+                    ) : null}
+
+                    {isPtoEntry ? (
+                      <Alert severity="info">
+                        PTO entries can be adjusted to match the actual payable PTO for the day. For example, if you worked part of the day, reduce PTO hours to the real amount taken.
+                      </Alert>
+                    ) : null}
+                  </Stack>
+                </CardContent>
+              </Card>
+
+              <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Box
+                    component="form"
+                    onSubmit={handleSave}
+                    sx={{ display: "grid", gap: 2.25 }}
+                  >
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                      Entry Details
+                    </Typography>
+
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                        gap: 2,
+                      }}
+                    >
+                      <TextField
+                        label="Hours"
+                        type="number"
+                        value={hours}
+                        onChange={(e) => setHours(Number(e.target.value))}
+                        inputProps={{ min: 0.25, step: 0.25 }}
+                        disabled={!canEdit}
+                        helperText={
+                          isPtoEntry
+                            ? "Adjust to actual PTO taken for the day."
+                            : isHolidayEntry
+                            ? "Holiday hours are normally controlled by admin/company holiday setup."
+                            : "Quarter-hour increments recommended."
+                        }
+                        fullWidth
+                      />
+
+                      <Box sx={{ display: "flex", alignItems: "center", minHeight: 56 }}>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={billable}
+                              onChange={(e) => setBillable(e.target.checked)}
+                              disabled={!canEditBillable}
+                            />
+                          }
+                          label="Billable"
+                        />
+                      </Box>
+                    </Box>
+
+                    {normalizedEntryCategory === "service" ? (
+                      <TextField
+                        label="Service Ticket ID"
+                        value={serviceTicketId}
+                        onChange={(e) => setServiceTicketId(e.target.value)}
+                        disabled={!canEdit}
+                        fullWidth
+                      />
+                    ) : null}
+
+                    {normalizedEntryCategory === "project" ? (
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                          gap: 2,
+                        }}
+                      >
+                        <TextField
+                          label="Project ID"
+                          value={projectId}
+                          onChange={(e) => setProjectId(e.target.value)}
+                          disabled={!canEdit}
+                          fullWidth
+                        />
+                        <TextField
+                          label="Project Stage"
+                          select
+                          value={projectStageKey}
+                          onChange={(e) =>
+                            setProjectStageKey(
+                              e.target.value as "" | "roughIn" | "topOutVent" | "trimFinish"
+                            )
+                          }
+                          disabled={!canEdit}
+                          fullWidth
+                        >
+                          <Box component="option" value="">
+                            Select stage
+                          </Box>
+                          <Box component="option" value="roughIn">
+                            Rough-In
+                          </Box>
+                          <Box component="option" value="topOutVent">
+                            Top-Out / Vent
+                          </Box>
+                          <Box component="option" value="trimFinish">
+                            Trim / Finish
+                          </Box>
+                        </TextField>
+                      </Box>
+                    ) : null}
+
+                    {!isPtoEntry && !isHolidayEntry ? (
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                          gap: 2,
+                        }}
+                      >
+                        <TextField
+                          label="Linked Technician ID"
+                          value={linkedTechnicianId}
+                          onChange={(e) => setLinkedTechnicianId(e.target.value)}
+                          disabled={!canEdit}
+                          fullWidth
+                        />
+                        <TextField
+                          label="Linked Technician Name"
+                          value={linkedTechnicianName}
+                          onChange={(e) => setLinkedTechnicianName(e.target.value)}
+                          disabled={!canEdit}
+                          fullWidth
+                        />
+                      </Box>
+                    ) : null}
+
+                    <TextField
+                      label="Notes"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
                       disabled={!canEdit}
+                      multiline
+                      minRows={5}
+                      helperText={
+                        isPtoEntry
+                          ? "Use notes to explain partial-day PTO adjustments if needed."
+                          : "Add payroll or work context here."
+                      }
+                      fullWidth
                     />
-                    Billable
-                  </label>
-                </div>
-              </div>
 
-              <div>
-                <label style={{ fontWeight: 700 }}>Notes</label>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  rows={5}
-                  disabled={!canEdit}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                    background: canEdit ? "white" : "#f1f1f1",
-                  }}
-                />
-              </div>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+                      {canEdit ? (
+                        <Button
+                          type="submit"
+                          variant="contained"
+                          startIcon={<SaveRoundedIcon />}
+                          disabled={saving}
+                        >
+                          {saving ? "Saving…" : "Save Time Entry"}
+                        </Button>
+                      ) : (
+                        <Button variant="outlined" disabled>
+                          Read-Only Entry
+                        </Button>
+                      )}
 
-              {canEdit ? (
-                <button
-                  type="submit"
-                  disabled={saving}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                    background: "white",
-                    cursor: "pointer",
-                    width: "fit-content",
-                    fontWeight: 800,
-                  }}
-                >
-                  {saving ? "Saving..." : "Save Time Entry"}
-                </button>
-              ) : (
-                <span
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: "10px",
-                    border: "1px solid #ddd",
-                    background: "#f1f1f1",
-                    color: "#777",
-                    width: "fit-content",
-                    fontWeight: 800,
-                  }}
-                >
-                  Read-Only Entry
-                </span>
-              )}
-            </form>
-          </>
-        ) : null}
+                      {canDelete ? (
+                        <Button
+                          color="error"
+                          variant="outlined"
+                          startIcon={<DeleteRoundedIcon />}
+                          onClick={() => setDeleteDialogOpen(true)}
+                          disabled={deleting}
+                        >
+                          Delete Entry
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  </Box>
+                </CardContent>
+              </Card>
+
+              <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Stack spacing={2}>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      spacing={1.25}
+                    >
+                      <Box>
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          Auto Context
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          Helpful context pulled from linked trip, event, ticket, or project records.
+                        </Typography>
+                      </Box>
+
+                      <Chip
+                        icon={<AutoAwesomeRoundedIcon />}
+                        label={autoLoading ? "Loading…" : "Ready"}
+                        color={autoLoading ? "default" : "info"}
+                        variant="outlined"
+                      />
+                    </Stack>
+
+                    {ticket || project || trip || event ? (
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                          gap: 1.5,
+                        }}
+                      >
+                        {ticket ? (
+                          <Card variant="outlined" sx={{ borderRadius: 3 }}>
+                            <CardContent>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                Service Ticket
+                              </Typography>
+                              <Typography variant="body2" sx={{ mt: 1 }}>
+                                {safeTrim(ticket.customerDisplayName) || "Customer"}
+                              </Typography>
+                              {safeTrim(ticket.issueSummary) ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  {safeTrim(ticket.issueSummary)}
+                                </Typography>
+                              ) : null}
+                              {buildAddressLine(ticket) ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  {buildAddressLine(ticket)}
+                                </Typography>
+                              ) : null}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+
+                        {project ? (
+                          <Card variant="outlined" sx={{ borderRadius: 3 }}>
+                            <CardContent>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                Project
+                              </Typography>
+                              <Typography variant="body2" sx={{ mt: 1 }}>
+                                {safeTrim(project.projectName) || safeTrim(project.name) || safeTrim(project.title) || "Project"}
+                              </Typography>
+                              {entry.projectStageKey ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  {formatStage(entry.projectStageKey)}
+                                </Typography>
+                              ) : null}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+
+                        {trip ? (
+                          <Card variant="outlined" sx={{ borderRadius: 3 }}>
+                            <CardContent>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                Trip
+                              </Typography>
+                              <Typography variant="body2" sx={{ mt: 1 }}>
+                                {[safeTrim(trip.date), safeTrim(trip.timeWindow)].filter(Boolean).join(" • ") || "Trip linked"}
+                              </Typography>
+                              {[safeTrim(trip.startTime), safeTrim(trip.endTime)].filter(Boolean).length ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  {[safeTrim(trip.startTime), safeTrim(trip.endTime)].filter(Boolean).join(" - ")}
+                                </Typography>
+                              ) : null}
+                              {safeTrim(trip.outcome) ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  Outcome: {safeTrim(trip.outcome)}
+                                </Typography>
+                              ) : null}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+
+                        {event ? (
+                          <Card variant="outlined" sx={{ borderRadius: 3 }}>
+                            <CardContent>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                Company Event
+                              </Typography>
+                              <Typography variant="body2" sx={{ mt: 1 }}>
+                                {safeTrim(event.title) || "Meeting"}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {[safeTrim(event.date), safeTrim(event.timeWindow)].filter(Boolean).join(" • ")}
+                              </Typography>
+                              {safeTrim(event.location) ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  {safeTrim(event.location)}
+                                </Typography>
+                              ) : null}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+                      </Box>
+                    ) : (
+                      <Alert severity="info">
+                        No linked trip, event, ticket, or project context was found for this entry.
+                      </Alert>
+                    )}
+
+                    <Divider />
+
+                    <Stack spacing={1.25}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                        Suggested Auto Notes
+                      </Typography>
+
+                      <Box
+                        sx={{
+                          p: 2,
+                          border: "1px solid",
+                          borderColor: "divider",
+                          borderRadius: 3,
+                          bgcolor: "background.default",
+                          whiteSpace: "pre-wrap",
+                          fontFamily: "inherit",
+                          fontSize: 14,
+                          color: "text.secondary",
+                          minHeight: 120,
+                        }}
+                      >
+                        {safeTrim(suggestedAutoNotes) || "No auto context available for this entry."}
+                      </Box>
+
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+                        <Button
+                          variant="outlined"
+                          onClick={appendAutoToNotes}
+                          disabled={!canEdit || !safeTrim(suggestedAutoNotes)}
+                        >
+                          Append to Notes
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          onClick={replaceNotesWithAuto}
+                          disabled={!canEdit || !safeTrim(suggestedAutoNotes)}
+                        >
+                          Replace Notes with Auto
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </Stack>
+                </CardContent>
+              </Card>
+            </>
+          ) : null}
+        </Stack>
+
+        <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)} fullWidth maxWidth="xs">
+          <DialogTitle>Delete time entry?</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" color="text.secondary">
+              This only deletes the time entry itself. Manual entries can be deleted here, but system-generated PTO, holiday, or locked records should not be removed from this screen.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDeleteDialogOpen(false)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button color="error" variant="contained" onClick={handleDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Snackbar
+          open={Boolean(saveMsg)}
+          autoHideDuration={3000}
+          onClose={() => setSaveMsg("")}
+          message={saveMsg}
+        />
       </AppShell>
     </ProtectedPage>
   );

@@ -1,6 +1,8 @@
+// app/customers/[customerId]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   addDoc,
@@ -12,6 +14,47 @@ import {
   query,
   updateDoc,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Skeleton,
+  Stack,
+  Switch,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import AddHomeRoundedIcon from "@mui/icons-material/AddHomeRounded";
+import AddIcCallRoundedIcon from "@mui/icons-material/AddIcCallRounded";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import BusinessRoundedIcon from "@mui/icons-material/BusinessRounded";
+import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
+import DirectionsRoundedIcon from "@mui/icons-material/DirectionsRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
+import EmailRoundedIcon from "@mui/icons-material/EmailRounded";
+import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
+import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
+import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
+import PhoneRoundedIcon from "@mui/icons-material/PhoneRounded";
+import PlaceRoundedIcon from "@mui/icons-material/PlaceRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
+import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
+import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -48,7 +91,7 @@ type CallLogItem = {
 };
 
 type AddressChoice = {
-  key: string; // "service:<id>" or "billing"
+  key: string;
   label: string;
   addressLine1: string;
   addressLine2?: string;
@@ -59,12 +102,21 @@ type AddressChoice = {
   isPrimary?: boolean;
 };
 
+type NormalizedServiceAddress = NonNullable<Customer["serviceAddresses"]>[number];
+
 function nowIso() {
   return new Date().toISOString();
 }
 
 function safeStr(x: unknown) {
   return String(x ?? "").trim();
+}
+
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `id_${Math.random().toString(36).slice(2, 11)}`;
 }
 
 function isAppleDevice() {
@@ -79,12 +131,130 @@ function buildMapsUrl(address: string) {
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 
-function buildInlineAddress(line1?: string, line2?: string, city?: string, state?: string, postal?: string) {
+function buildInlineAddress(
+  line1?: string,
+  line2?: string,
+  city?: string,
+  state?: string,
+  postal?: string
+) {
   const parts = [line1, line2, city, state, postal].map((x) => safeStr(x)).filter(Boolean);
   return parts.join(", ");
 }
 
+function formatDateTime(value?: string) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function getLinkedQboId(rawCustomer: any, customer: Customer | null) {
+  return (
+    safeStr(rawCustomer?.qboCustomerId) ||
+    safeStr(rawCustomer?.quickbooksCustomerId) ||
+    safeStr(customer?.quickbooksCustomerId)
+  );
+}
+
+function InfoRow(props: {
+  icon: React.ReactNode;
+  label: string;
+  primary: string;
+  secondary?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <Stack direction="row" spacing={1.5} alignItems="flex-start">
+      <Box
+        sx={{
+          width: 40,
+          height: 40,
+          borderRadius: 3,
+          display: "grid",
+          placeItems: "center",
+          bgcolor: "action.hover",
+          flexShrink: 0,
+          mt: 0.25,
+        }}
+      >
+        {props.icon}
+      </Box>
+
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          {props.label}
+        </Typography>
+        <Typography variant="body1" sx={{ fontWeight: 700, wordBreak: "break-word" }}>
+          {props.primary || "—"}
+        </Typography>
+        {props.secondary ? (
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ mt: 0.25, wordBreak: "break-word" }}
+          >
+            {props.secondary}
+          </Typography>
+        ) : null}
+      </Box>
+
+      {props.action ? <Box sx={{ flexShrink: 0 }}>{props.action}</Box> : null}
+    </Stack>
+  );
+}
+
+function SectionCard(props: {
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card
+      elevation={0}
+      sx={{
+        borderRadius: 5,
+        border: (theme) => `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+      }}
+    >
+      <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+        <Stack spacing={2}>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1.5}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                {props.title}
+              </Typography>
+              {props.subtitle ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {props.subtitle}
+                </Typography>
+              ) : null}
+            </Box>
+
+            {props.action ? <Box sx={{ flexShrink: 0 }}>{props.action}</Box> : null}
+          </Stack>
+
+          {props.children}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function CustomerDetailPage({ params }: CustomerDetailPageProps) {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
   const router = useRouter();
 
@@ -105,13 +275,12 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [rawCustomer, setRawCustomer] = useState<any>(null);
   const [error, setError] = useState("");
 
-  // ✅ UI: view-first, expand panels only on click
   const [isEditMode, setIsEditMode] = useState(false);
+
   const [showCreateTicket, setShowCreateTicket] = useState(false);
   const [showAddServiceAddress, setShowAddServiceAddress] = useState(false);
   const [showAddCallLog, setShowAddCallLog] = useState(false);
 
-  // ✅ Editable customer fields (Contact + Billing)
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState("");
   const [editOk, setEditOk] = useState("");
@@ -127,12 +296,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [editBillState, setEditBillState] = useState("");
   const [editBillPostal, setEditBillPostal] = useState("");
 
-  // ✅ QBO sync UI
   const [qboSyncing, setQboSyncing] = useState(false);
   const [qboSyncErr, setQboSyncErr] = useState("");
   const [qboSyncOk, setQboSyncOk] = useState("");
 
-  // ✅ Add Service Address state
   const [savingAddress, setSavingAddress] = useState(false);
   const [serviceAddressError, setServiceAddressError] = useState("");
 
@@ -145,7 +312,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [serviceNotes, setServiceNotes] = useState("");
   const [serviceIsPrimary, setServiceIsPrimary] = useState(false);
 
-  // ✅ Call logs
   const [callLogsLoading, setCallLogsLoading] = useState(true);
   const [callLogs, setCallLogs] = useState<CallLogItem[]>([]);
   const [callLogError, setCallLogError] = useState("");
@@ -164,7 +330,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [followUpNeeded, setFollowUpNeeded] = useState(false);
   const [followUpNote, setFollowUpNote] = useState("");
 
-  // ✅ Create Ticket state
   const [ticketSaving, setTicketSaving] = useState(false);
   const [ticketError, setTicketError] = useState("");
   const [issueSummary, setIssueSummary] = useState("");
@@ -172,9 +337,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState("60");
   const [selectedAddressKey, setSelectedAddressKey] = useState("");
 
-  // -----------------------------
-  // Load Customer
-  // -----------------------------
   useEffect(() => {
     async function loadCustomer() {
       try {
@@ -194,7 +356,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         const data = snap.data();
         setRawCustomer(data);
 
-        // NOTE: two schemas may exist. Normalize into your Customer type.
         const displayName =
           safeStr((data as any).displayName) ||
           safeStr((data as any).customerDisplayName) ||
@@ -208,8 +369,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
         const phoneSecondary = safeStr((data as any).phoneSecondary) || "";
 
-        const email =
-          safeStr((data as any).email) || "";
+        const email = safeStr((data as any).email) || "";
 
         const billingAddressLine1 =
           safeStr((data as any).billingAddressLine1) ||
@@ -239,7 +399,14 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
         const item: Customer = {
           id: snap.id,
-          quickbooksCustomerId: (data as any).quickbooksCustomerId ?? (data as any).qboCustomerId ?? undefined,
+          quickbooksCustomerId:
+            (data as any).quickbooksCustomerId ?? (data as any).qboCustomerId ?? undefined,
+          quickbooksSyncStatus:
+            (data as any).quickbooksSyncStatus ?? (data as any).qboSyncStatus ?? undefined,
+          lastQuickbooksSyncAt:
+            (data as any).lastQuickbooksSyncAt ?? (data as any).qboLastSyncedAt ?? undefined,
+          quickbooksLastError:
+            (data as any).quickbooksLastError ?? (data as any).qboLastSyncError ?? undefined,
           source: (data as any).source ?? "dcflow",
           displayName,
           phonePrimary,
@@ -254,7 +421,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
           serviceAddresses: Array.isArray((data as any).serviceAddresses)
             ? (data as any).serviceAddresses.map((addr: any) => ({
-                id: addr.id ?? crypto.randomUUID(),
+                id: addr.id ?? createId(),
                 label: addr.label ?? undefined,
                 addressLine1: addr.addressLine1 ?? "",
                 addressLine2: addr.addressLine2 ?? undefined,
@@ -264,6 +431,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 notes: addr.notes ?? undefined,
                 active: addr.active ?? true,
                 isPrimary: addr.isPrimary ?? false,
+                source: addr.source ?? undefined,
                 createdAt: addr.createdAt ?? undefined,
                 updatedAt: addr.updatedAt ?? undefined,
               }))
@@ -271,11 +439,12 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
           notes: (data as any).notes ?? undefined,
           active: (data as any).active ?? true,
+          createdAt: (data as any).createdAt ?? undefined,
+          updatedAt: (data as any).updatedAt ?? undefined,
         };
 
         setCustomer(item);
 
-        // Seed edit controls (but keep view-only until "Edit" clicked)
         setEditDisplayName(item.displayName || "");
         setEditPhonePrimary(item.phonePrimary || "");
         setEditPhoneSecondary(item.phoneSecondary || "");
@@ -296,9 +465,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     loadCustomer();
   }, [params]);
 
-  // -----------------------------
-  // Load Call Logs
-  // -----------------------------
   useEffect(() => {
     async function loadCallLogs() {
       try {
@@ -342,9 +508,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     loadCallLogs();
   }, [params]);
 
-  // -----------------------------
-  // Address choices for ticket creation
-  // -----------------------------
   const addressChoices = useMemo((): AddressChoice[] => {
     if (!customer) return [];
 
@@ -363,7 +526,11 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
           isPrimary: Boolean(a.isPrimary),
         })) || [];
 
-    services.sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.label.localeCompare(b.label));
+    services.sort(
+      (a, b) =>
+        Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)) ||
+        a.label.localeCompare(b.label)
+    );
 
     const billing: AddressChoice = {
       key: "billing",
@@ -390,18 +557,15 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     return addressChoices.find((a) => a.key === key) || null;
   }
 
-  // -----------------------------
-  // ✅ Enter/Exit Edit Mode
-  // -----------------------------
   function enterEditMode() {
     if (!customer) return;
+
     setEditErr("");
     setEditOk("");
     setQboSyncErr("");
     setQboSyncOk("");
     setIsEditMode(true);
 
-    // re-seed from current customer (safe)
     setEditDisplayName(customer.displayName || "");
     setEditPhonePrimary(customer.phonePrimary || "");
     setEditPhoneSecondary(customer.phoneSecondary || "");
@@ -421,11 +585,149 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     setIsEditMode(false);
   }
 
-  // -----------------------------
-  // ✅ Save customer edits (DCFlow)
-  // -----------------------------
+  async function handleCreateQboCustomer() {
+    if (!customer) return;
+
+    const alreadyLinked = getLinkedQboId(rawCustomer, customer);
+    if (alreadyLinked) {
+      await handleSyncToQbo({ updateName: true });
+      return;
+    }
+
+    setQboSyncErr("");
+    setQboSyncOk("");
+    setQboSyncing(true);
+
+    try {
+      const res = await fetch("/api/qbo/customers/create-from-dcflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dcCustomerId: customer.id }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setQboSyncErr(data?.error || "Failed to create customer in QuickBooks.");
+        return;
+      }
+
+      const linkedId = safeStr(data?.qboCustomerId);
+      const syncedAt = nowIso();
+
+      setCustomer((prev) =>
+        prev
+          ? {
+              ...prev,
+              quickbooksCustomerId: linkedId || prev.quickbooksCustomerId,
+              quickbooksSyncStatus: "synced",
+              lastQuickbooksSyncAt: syncedAt,
+              quickbooksLastError: undefined,
+            }
+          : prev
+      );
+
+      setRawCustomer((prev: any) => ({
+        ...(prev || {}),
+        quickbooksCustomerId: linkedId || prev?.quickbooksCustomerId || null,
+        qboCustomerId: linkedId || prev?.qboCustomerId || null,
+        quickbooksSyncStatus: "synced",
+        qboSyncStatus: "synced",
+        lastQuickbooksSyncAt: syncedAt,
+        qboLastSyncedAt: syncedAt,
+        quickbooksLastError: null,
+        qboLastSyncError: null,
+        qboLastSyncIntuitTid: data?.intuit_tid || "",
+        updatedAt: syncedAt,
+      }));
+
+      setQboSyncOk("Created customer in QuickBooks and linked to DCFlow.");
+    } catch (err: unknown) {
+      setQboSyncErr(
+        err instanceof Error ? err.message : "Failed to create customer in QuickBooks."
+      );
+    } finally {
+      setQboSyncing(false);
+    }
+  }
+
+  async function handleSyncToQbo(opts?: { updateName?: boolean }) {
+    if (!customer) return;
+
+    const qboLinkedId = getLinkedQboId(rawCustomer, customer);
+
+    if (!qboLinkedId) {
+      setQboSyncErr("This customer is not linked to QuickBooks yet.");
+      return;
+    }
+
+    setQboSyncErr("");
+    setQboSyncOk("");
+    setQboSyncing(true);
+
+    try {
+      const res = await fetch("/api/qbo/customers/update-from-dcflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dcCustomerId: customer.id,
+          updateName: Boolean(opts?.updateName),
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setQboSyncErr(data?.error || "Failed to sync customer to QuickBooks.");
+        return;
+      }
+
+      const syncedAt = nowIso();
+
+      setCustomer((prev) =>
+        prev
+          ? {
+              ...prev,
+              quickbooksSyncStatus: "synced",
+              lastQuickbooksSyncAt: syncedAt,
+              quickbooksLastError: undefined,
+            }
+          : prev
+      );
+
+      setRawCustomer((prev: any) => ({
+        ...(prev || {}),
+        quickbooksSyncStatus: "synced",
+        qboSyncStatus: "synced",
+        lastQuickbooksSyncAt: syncedAt,
+        qboLastSyncedAt: syncedAt,
+        quickbooksLastError: null,
+        qboLastSyncError: null,
+        qboLastSyncIntuitTid: data?.intuit_tid || "",
+        updatedAt: syncedAt,
+      }));
+
+      setQboSyncOk("Synced to QuickBooks.");
+    } catch (err: unknown) {
+      setQboSyncErr(err instanceof Error ? err.message : "Failed to sync to QuickBooks.");
+    } finally {
+      setQboSyncing(false);
+    }
+  }
+
+  async function handleCreateOrSyncToQbo(opts?: { updateName?: boolean }) {
+    const linked = getLinkedQboId(rawCustomer, customer);
+    if (linked) {
+      await handleSyncToQbo(opts);
+      return;
+    }
+
+    await handleCreateQboCustomer();
+  }
+
   async function handleSaveCustomerEdits(syncToQboAfter: boolean) {
     if (!customer) return;
+
     if (!canEditCustomer) {
       setEditErr("You do not have permission to edit customers.");
       return;
@@ -439,9 +741,9 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
     try {
       const now = nowIso();
+      const isAlreadyLinked = Boolean(getLinkedQboId(rawCustomer, customer));
 
       const payload: any = {
-        // Canonical (Customer type)
         displayName: safeStr(editDisplayName),
         phonePrimary: safeStr(editPhonePrimary),
         phoneSecondary: safeStr(editPhoneSecondary) || null,
@@ -455,7 +757,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
         updatedAt: now,
 
-        // Back-compat mirror fields (for older code paths)
         customerDisplayName: safeStr(editDisplayName),
         phone: safeStr(editPhonePrimary),
         billAddrLine1: safeStr(editBillLine1),
@@ -485,11 +786,22 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
           : prev
       );
 
-      setEditOk(syncToQboAfter ? "✅ Saved in DCFlow. Syncing to QBO..." : "✅ Saved in DCFlow.");
+      setRawCustomer((prev: any) => ({
+        ...(prev || {}),
+        ...payload,
+      }));
+
+      setEditOk(
+        syncToQboAfter
+          ? isAlreadyLinked
+            ? "Saved in DCFlow. Syncing to QuickBooks..."
+            : "Saved in DCFlow. Creating customer in QuickBooks..."
+          : "Saved in DCFlow."
+      );
       setIsEditMode(false);
 
       if (syncToQboAfter) {
-        await handleSyncToQbo({ updateName: true });
+        await handleCreateOrSyncToQbo({ updateName: true });
       }
     } catch (err: unknown) {
       setEditErr(err instanceof Error ? err.message : "Failed to save customer.");
@@ -498,54 +810,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     }
   }
 
-  // -----------------------------
-  // ✅ Sync customer to QBO (Option B)
-  // -----------------------------
-  async function handleSyncToQbo(opts?: { updateName?: boolean }) {
-    if (!customer) return;
-
-    const qboLinkedId =
-      safeStr((rawCustomer as any)?.qboCustomerId) ||
-      safeStr((rawCustomer as any)?.quickbooksCustomerId) ||
-      safeStr((customer as any)?.quickbooksCustomerId);
-
-    if (!qboLinkedId) {
-      setQboSyncErr("This customer is not linked to QuickBooks yet.");
-      return;
-    }
-
-    setQboSyncErr("");
-    setQboSyncOk("");
-    setQboSyncing(true);
-
-    try {
-      const res = await fetch("/api/qbo/customers/update-from-dcflow", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dcCustomerId: customer.id,
-          updateName: Boolean(opts?.updateName),
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        setQboSyncErr(data?.error || "Failed to sync customer to QBO.");
-        return;
-      }
-
-      setQboSyncOk("✅ Synced to QBO.");
-    } catch (err: unknown) {
-      setQboSyncErr(err instanceof Error ? err.message : "Failed to sync to QBO.");
-    } finally {
-      setQboSyncing(false);
-    }
-  }
-
-  // -----------------------------
-  // Add Service Address
-  // -----------------------------
   async function handleAddServiceAddress(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!customer) return;
@@ -554,8 +818,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     setSavingAddress(true);
 
     try {
-      const nextAddressForState = {
-        id: crypto.randomUUID(),
+      const timestamp = nowIso();
+
+      const nextAddressForState: NormalizedServiceAddress = {
+        id: createId(),
         label: serviceLabel.trim() || undefined,
         addressLine1: serviceAddressLine1.trim(),
         addressLine2: serviceAddressLine2.trim() || undefined,
@@ -565,8 +831,9 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         notes: serviceNotes.trim() || undefined,
         active: true,
         isPrimary: serviceIsPrimary,
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
+        source: "manual",
+        createdAt: timestamp,
+        updatedAt: timestamp,
       };
 
       let existingAddressesForState = customer.serviceAddresses ?? [];
@@ -585,19 +852,26 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         label: addr.label ?? null,
         addressLine2: addr.addressLine2 ?? null,
         notes: addr.notes ?? null,
+        source: addr.source ?? null,
       }));
 
       await updateDoc(doc(db, "customers", customer.id), {
         serviceAddresses: updatedAddressesForFirestore,
-        updatedAt: nowIso(),
+        updatedAt: timestamp,
       });
 
       setCustomer({
         ...customer,
         serviceAddresses: updatedAddressesForState,
+        updatedAt: timestamp,
       });
 
-      // reset + collapse
+      setRawCustomer((prev: any) => ({
+        ...(prev || {}),
+        serviceAddresses: updatedAddressesForFirestore,
+        updatedAt: timestamp,
+      }));
+
       setServiceLabel("");
       setServiceAddressLine1("");
       setServiceAddressLine2("");
@@ -614,9 +888,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     }
   }
 
-  // -----------------------------
-  // Add Call Log
-  // -----------------------------
   async function handleAddCallLog(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!customer) return;
@@ -664,7 +935,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
       setCallLogs((prev) => [newItem, ...prev]);
 
-      // reset + collapse
       setCallType("new_information");
       setDirection("inbound");
       setCallSummary("");
@@ -681,12 +951,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     }
   }
 
-  // -----------------------------
-  // Create Service Ticket
-  // -----------------------------
   async function handleCreateServiceTicket(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!customer) return;
+
     if (!canCreateTicket) {
       setTicketError("You do not have permission to create service tickets.");
       return;
@@ -698,6 +966,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     try {
       const now = nowIso();
       const sum = issueSummary.trim();
+
       if (!sum) {
         setTicketError("Issue Summary is required.");
         return;
@@ -705,7 +974,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
       const addr = getAddressFromKey(selectedAddressKey);
       if (!addr) {
-        setTicketError("Please choose a service/billing address.");
+        setTicketError("Please choose a service or billing address.");
         return;
       }
 
@@ -718,7 +987,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         customerId: customer.id,
         customerDisplayName: customer.displayName || "",
 
-        serviceAddressId: serviceAddressId,
+        serviceAddressId,
         serviceAddressLabel: addr.source === "service" ? addr.label : "Billing Address",
         serviceAddressLine1: addr.addressLine1 || "",
         serviceAddressLine2: addr.addressLine2 || null,
@@ -750,7 +1019,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
       const created = await addDoc(collection(db, "serviceTickets"), payload);
 
-      // reset + collapse + go
       setIssueSummary("");
       setIssueDetails("");
       setEstimatedDurationMinutes("60");
@@ -764,22 +1032,18 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     }
   }
 
-  // -----------------------------
-  // View helpers
-  // -----------------------------
   const qboStatus = useMemo(() => {
     const d = rawCustomer || {};
-    const linked =
-      safeStr(d.qboCustomerId) || safeStr(d.quickbooksCustomerId);
+    const linked = getLinkedQboId(rawCustomer, customer);
 
     return {
       linkedId: linked,
-      syncStatus: safeStr(d.qboSyncStatus) || "",
-      lastSyncedAt: safeStr(d.qboLastSyncedAt) || "",
-      lastError: safeStr(d.qboLastSyncError) || "",
+      syncStatus: safeStr(d.quickbooksSyncStatus) || safeStr(d.qboSyncStatus) || "",
+      lastSyncedAt: safeStr(d.lastQuickbooksSyncAt) || safeStr(d.qboLastSyncedAt) || "",
+      lastError: safeStr(d.quickbooksLastError) || safeStr(d.qboLastSyncError) || "",
       lastTid: safeStr(d.qboLastSyncIntuitTid) || "",
     };
-  }, [rawCustomer]);
+  }, [rawCustomer, customer]);
 
   const billingInline = useMemo(() => {
     return buildInlineAddress(
@@ -802,1062 +1066,1312 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     return full ? buildMapsUrl(full) : "";
   }, [customer]);
 
-  // lightweight “panel” component style
-  const panelStyle = {
-    border: "1px solid #e6e6e6",
-    borderRadius: 12,
-    padding: 12,
-    background: "white",
-  } as const;
+  const primaryServiceAddress = useMemo(() => {
+    return (
+      customer?.serviceAddresses?.find((addr) => addr.active !== false && addr.isPrimary) ??
+      customer?.serviceAddresses?.find((addr) => addr.active !== false) ??
+      null
+    );
+  }, [customer]);
 
-  const actionBtnStyle = (primary?: boolean) =>
-    ({
-      padding: "10px 14px",
-      borderRadius: 12,
-      border: primary ? "1px solid #1f6b1f" : "1px solid #ccc",
-      background: primary ? "#1f8f3a" : "white",
-      color: primary ? "white" : "inherit",
-      cursor: "pointer",
-      fontWeight: primary ? 1000 : 900,
-    } as const);
+  const activeServiceAddresses = useMemo(() => {
+    return (customer?.serviceAddresses || [])
+      .filter((a) => a.active !== false)
+      .sort((a, b) => Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)));
+  }, [customer]);
+
+  if (loading) {
+    return (
+      <ProtectedPage fallbackTitle="Customer Detail">
+        <AppShell appUser={appUser}>
+          <Box sx={{ maxWidth: 1320, mx: "auto", px: { xs: 1, sm: 2 }, pb: 4 }}>
+            <Stack spacing={2}>
+              <Skeleton variant="rounded" height={150} sx={{ borderRadius: 5 }} />
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", lg: "repeat(3, minmax(0, 1fr))" },
+                  gap: 2,
+                }}
+              >
+                <Skeleton variant="rounded" height={220} sx={{ borderRadius: 5 }} />
+                <Skeleton variant="rounded" height={220} sx={{ borderRadius: 5 }} />
+                <Skeleton variant="rounded" height={220} sx={{ borderRadius: 5 }} />
+              </Box>
+              <Skeleton variant="rounded" height={260} sx={{ borderRadius: 5 }} />
+              <Skeleton variant="rounded" height={260} sx={{ borderRadius: 5 }} />
+            </Stack>
+          </Box>
+        </AppShell>
+      </ProtectedPage>
+    );
+  }
 
   return (
     <ProtectedPage fallbackTitle="Customer Detail">
       <AppShell appUser={appUser}>
-        {loading ? <p>Loading customer...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+        <Box sx={{ maxWidth: 1320, mx: "auto", px: { xs: 1, sm: 2 }, pb: 4 }}>
+          {error ? (
+            <Alert severity="error" sx={{ borderRadius: 4 }}>
+              {error}
+            </Alert>
+          ) : null}
 
-        {!loading && !error && customer ? (
-          <div style={{ display: "grid", gap: 18 }}>
-            {/* Header */}
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div>
-                <h1 style={{ fontSize: 24, fontWeight: 1000, margin: 0 }}>{customer.displayName}</h1>
-                <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                  Customer ID: {customerId}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <button
-                  type="button"
-                  onClick={() => router.push("/customers")}
-                  style={actionBtnStyle(false)}
-                >
-                  Back to Customers
-                </button>
-
-                {canCreateTicket ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowCreateTicket((v) => !v);
-                      setTicketError("");
-                      // close other panels to keep page clean
-                      setShowAddServiceAddress(false);
-                      setShowAddCallLog(false);
-                      setIsEditMode(false);
-                    }}
-                    style={actionBtnStyle(true)}
+          {!error && customer ? (
+            <Stack spacing={3}>
+              <Paper
+                elevation={0}
+                sx={{
+                  borderRadius: 5,
+                  px: { xs: 2, sm: 3 },
+                  py: { xs: 2.25, sm: 3 },
+                  border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                  background: `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.08)} 0%, ${alpha(
+                    theme.palette.primary.main,
+                    0.03
+                  )} 100%)`,
+                }}
+              >
+                <Stack spacing={2}>
+                  <Stack
+                    direction={{ xs: "column", lg: "row" }}
+                    spacing={2}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", lg: "center" }}
                   >
-                    + Create Ticket
-                  </button>
-                ) : null}
+                    <Box sx={{ minWidth: 0 }}>
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        flexWrap="wrap"
+                        useFlexGap
+                      >
+                        <Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: -0.4 }}>
+                          {customer.displayName || "Unnamed Customer"}
+                        </Typography>
 
-                {canEditCustomer ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (isEditMode) cancelEditMode();
-                      else enterEditMode();
-                      setShowCreateTicket(false);
-                      setShowAddServiceAddress(false);
-                      setShowAddCallLog(false);
-                    }}
-                    style={actionBtnStyle(false)}
-                  >
-                    {isEditMode ? "Cancel Edit" : "Edit Customer"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
+                        <Chip
+                          label={customer.active ? "Active" : "Inactive"}
+                          color={customer.active ? "success" : "default"}
+                          variant={customer.active ? "filled" : "outlined"}
+                          sx={{ borderRadius: 99 }}
+                        />
 
-            {/* Contact + Billing (VIEW) */}
-            {!isEditMode ? (
-              <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
-                <div style={{ display: "grid", gap: 12, maxWidth: 980 }}>
-                  <div style={panelStyle}>
-                    <div style={{ fontWeight: 1000, marginBottom: 8 }}>Contact</div>
+                        <Chip
+                          label={qboStatus.linkedId ? "QBO linked" : "DCFlow only"}
+                          icon={qboStatus.linkedId ? <SyncRoundedIcon /> : <BusinessRoundedIcon />}
+                          color={qboStatus.linkedId ? "primary" : "default"}
+                          variant={qboStatus.linkedId ? "filled" : "outlined"}
+                          sx={{ borderRadius: 99 }}
+                        />
+                      </Stack>
 
-                    <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
-                      <div>
-                        <div style={{ fontSize: 12, color: "#777", fontWeight: 900 }}>Primary Phone</div>
-                        <div style={{ marginTop: 4, fontWeight: 900 }}>{customer.phonePrimary || "—"}</div>
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                        Customer ID: {customerId}
+                      </Typography>
 
-                        <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {customer.phonePrimary ? (
-                            <a
-                              href={`tel:${customer.phonePrimary}`}
-                              style={{
-                                padding: "8px 10px",
-                                borderRadius: 12,
-                                border: "1px solid #ddd",
-                                background: "white",
-                                textDecoration: "none",
-                                color: "inherit",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              📞 Call
-                            </a>
-                          ) : null}
-                          {customer.phonePrimary ? (
-                            <a
-                              href={`sms:${customer.phonePrimary}`}
-                              style={{
-                                padding: "8px 10px",
-                                borderRadius: 12,
-                                border: "1px solid #ddd",
-                                background: "white",
-                                textDecoration: "none",
-                                color: "inherit",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              💬 Text
-                            </a>
-                          ) : null}
-                        </div>
-                      </div>
+                      <Stack
+                        direction={{ xs: "column", md: "row" }}
+                        spacing={1}
+                        useFlexGap
+                        flexWrap="wrap"
+                        sx={{ mt: 1.5 }}
+                      >
+                        <Chip
+                          icon={<PhoneRoundedIcon />}
+                          label={customer.phonePrimary || "No primary phone"}
+                          variant="outlined"
+                          sx={{ borderRadius: 99 }}
+                        />
+                        <Chip
+                          icon={<LocationOnRoundedIcon />}
+                          label={
+                            activeServiceAddresses.length > 0
+                              ? `${activeServiceAddresses.length} service location${
+                                  activeServiceAddresses.length === 1 ? "" : "s"
+                                }`
+                              : "Billing-only customer"
+                          }
+                          variant="outlined"
+                          sx={{ borderRadius: 99 }}
+                        />
+                        <Chip
+                          icon={<TaskAltRoundedIcon />}
+                          label={
+                            primaryServiceAddress
+                              ? `Primary: ${primaryServiceAddress.label || "Service Address"}`
+                              : "No primary service location"
+                          }
+                          variant="outlined"
+                          sx={{ borderRadius: 99 }}
+                        />
+                      </Stack>
+                    </Box>
 
-                      <div>
-                        <div style={{ fontSize: 12, color: "#777", fontWeight: 900 }}>Email</div>
-                        <div style={{ marginTop: 4, fontWeight: 900 }}>{customer.email || "—"}</div>
-                      </div>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      useFlexGap
+                      flexWrap="wrap"
+                    >
+                      <Button
+                        component={Link}
+                        href="/customers"
+                        variant="outlined"
+                        startIcon={<ArrowBackRoundedIcon />}
+                        sx={{ borderRadius: 99, fontWeight: 700 }}
+                      >
+                        Back to Customers
+                      </Button>
 
-                      <div>
-                        <div style={{ fontSize: 12, color: "#777", fontWeight: 900 }}>Secondary Phone</div>
-                        <div style={{ marginTop: 4, fontWeight: 900 }}>{customer.phoneSecondary || "—"}</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={panelStyle}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                      <div>
-                        <div style={{ fontWeight: 1000 }}>Billing Address</div>
-                        <div style={{ marginTop: 6, fontSize: 13, color: "#555", fontWeight: 800 }}>
-                          {billingInline || "—"}
-                        </div>
-                      </div>
-
-                      {billingMapsUrl ? (
-                        <a
-                          href={billingMapsUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            background: "white",
-                            textDecoration: "none",
-                            color: "inherit",
-                            fontWeight: 900,
-                            height: "fit-content",
+                      {canCreateTicket ? (
+                        <Button
+                          variant="contained"
+                          startIcon={<DescriptionRoundedIcon />}
+                          onClick={() => {
+                            setShowCreateTicket(true);
+                            setTicketError("");
                           }}
+                          sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
                         >
-                          📍 Open in Maps
-                        </a>
+                          Create Ticket
+                        </Button>
                       ) : null}
-                    </div>
-                  </div>
 
-                  <div style={panelStyle}>
-                    <div style={{ fontWeight: 1000 }}>QuickBooks</div>
-                    <div style={{ marginTop: 8, fontSize: 13, color: "#555" }}>
-                      <div>
-                        <strong>Linked:</strong>{" "}
-                        {qboStatus.linkedId ? `Yes (${qboStatus.linkedId})` : "No"}
-                      </div>
-                      <div style={{ marginTop: 6 }}>
-                        <strong>Status:</strong> {qboStatus.syncStatus || "—"}
-                        {qboStatus.lastSyncedAt ? ` • Last sync: ${qboStatus.lastSyncedAt}` : ""}
-                      </div>
-                      {qboStatus.lastError ? (
-                        <div style={{ marginTop: 6, color: "red" }}>
-                          <strong>Last Error:</strong> {qboStatus.lastError}
-                        </div>
+                      {canEditCustomer ? (
+                        <Button
+                          variant={isEditMode ? "outlined" : "contained"}
+                          startIcon={<EditRoundedIcon />}
+                          onClick={() => {
+                            if (isEditMode) cancelEditMode();
+                            else enterEditMode();
+                          }}
+                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                        >
+                          {isEditMode ? "Cancel Edit" : "Edit Customer"}
+                        </Button>
                       ) : null}
-                      {qboStatus.lastTid ? (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                          Intuit TID: {qboStatus.lastTid}
-                        </div>
-                      ) : null}
-                    </div>
+                    </Stack>
+                  </Stack>
 
-                    <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button
-                        type="button"
-                        onClick={() => handleSyncToQbo({ updateName: true })}
-                        disabled={!canEditCustomer || qboSyncing}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                          background: "white",
-                          cursor: canEditCustomer ? "pointer" : "not-allowed",
-                          fontWeight: 900,
-                        }}
-                      >
-                        {qboSyncing ? "Syncing..." : "Sync Now"}
-                      </button>
-                    </div>
+                  <Divider />
 
-                    {qboSyncErr ? <div style={{ marginTop: 10, color: "red" }}>{qboSyncErr}</div> : null}
-                    {qboSyncOk ? <div style={{ marginTop: 10, color: "green" }}>{qboSyncOk}</div> : null}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              /* EDIT MODE (explicit toggle) */
-              <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontSize: 18, fontWeight: 1000 }}>Edit Customer</div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                      Changes are saved to DCFlow only unless you choose “Save & Sync”.
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <button
-                      type="button"
-                      onClick={cancelEditMode}
-                      disabled={editSaving || qboSyncing}
-                      style={actionBtnStyle(false)}
-                    >
-                      Cancel
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleSaveCustomerEdits(false)}
-                      disabled={!canEditCustomer || editSaving}
-                      style={actionBtnStyle(false)}
-                    >
-                      {editSaving ? "Saving..." : "Save"}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleSaveCustomerEdits(true)}
-                      disabled={!canEditCustomer || editSaving || qboSyncing}
-                      style={actionBtnStyle(true)}
-                      title="Save in DCFlow, then push changes to QBO"
-                    >
-                      {qboSyncing ? "Syncing..." : "Save & Sync"}
-                    </button>
-                  </div>
-                </div>
-
-                {editErr ? <div style={{ marginTop: 10, color: "red" }}>{editErr}</div> : null}
-                {editOk ? <div style={{ marginTop: 10, color: "green" }}>{editOk}</div> : null}
-
-                <div style={{ marginTop: 14, display: "grid", gap: 12, maxWidth: 980 }}>
-                  <div style={panelStyle}>
-                    <div style={{ fontWeight: 1000, marginBottom: 10 }}>Contact</div>
-
-                    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Customer Name</label>
-                        <input
-                          value={editDisplayName}
-                          onChange={(e) => setEditDisplayName(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Email</label>
-                        <input
-                          value={editEmail}
-                          onChange={(e) => setEditEmail(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Primary Phone</label>
-                        <input
-                          value={editPhonePrimary}
-                          onChange={(e) => setEditPhonePrimary(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Secondary Phone</label>
-                        <input
-                          value={editPhoneSecondary}
-                          onChange={(e) => setEditPhoneSecondary(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={panelStyle}>
-                    <div style={{ fontWeight: 1000, marginBottom: 10 }}>Billing Address</div>
-
-                    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(220px, 1fr))" }}>
-                      <div style={{ gridColumn: "1 / -1" }}>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Address Line 1</label>
-                        <input
-                          value={editBillLine1}
-                          onChange={(e) => setEditBillLine1(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div style={{ gridColumn: "1 / -1" }}>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Address Line 2</label>
-                        <input
-                          value={editBillLine2}
-                          onChange={(e) => setEditBillLine2(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>City</label>
-                        <input
-                          value={editBillCity}
-                          onChange={(e) => setEditBillCity(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>State</label>
-                        <input
-                          value={editBillState}
-                          onChange={(e) => setEditBillState(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900, fontSize: 12 }}>Postal Code</label>
-                        <input
-                          value={editBillPostal}
-                          onChange={(e) => setEditBillPostal(e.target.value)}
-                          disabled={!canEditCustomer || editSaving}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                            marginTop: 6,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Collapsible: Create Ticket */}
-            {showCreateTicket ? (
-              <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontSize: 18, fontWeight: 1000 }}>Create Service Ticket</div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                      This form is hidden until you click “Create Ticket”.
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateTicket(false)}
-                    style={actionBtnStyle(false)}
-                  >
-                    Close
-                  </button>
-                </div>
-
-                {!canCreateTicket ? (
-                  <div style={{ marginTop: 12, fontSize: 13, color: "#777" }}>
-                    Only Admin / Dispatcher / Manager can create service tickets.
-                  </div>
-                ) : (
-                  <form
-                    onSubmit={handleCreateServiceTicket}
-                    style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 900 }}
-                  >
-                    <div style={{ display: "grid", gap: 10, gridTemplateColumns: "2fr 1fr" }}>
-                      <div>
-                        <label style={{ fontWeight: 900 }}>Issue Summary</label>
-                        <input
-                          value={issueSummary}
-                          onChange={(e) => setIssueSummary(e.target.value)}
-                          required
-                          placeholder='Example: "Clogged kitchen sink"'
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900 }}>Estimated Duration (minutes)</label>
-                        <input
-                          type="number"
-                          min={1}
-                          value={estimatedDurationMinutes}
-                          onChange={(e) => setEstimatedDurationMinutes(e.target.value)}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Issue Details (optional)</label>
-                      <textarea
-                        value={issueDetails}
-                        onChange={(e) => setIssueDetails(e.target.value)}
-                        rows={3}
-                        placeholder="Helpful details for dispatch/tech…"
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      />
-                    </div>
-
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Address for this ticket</label>
-                      <select
-                        value={selectedAddressKey}
-                        onChange={(e) => setSelectedAddressKey(e.target.value)}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      >
-                        {addressChoices.length === 0 ? (
-                          <option value="">No addresses found</option>
-                        ) : (
-                          addressChoices.map((a) => (
-                            <option key={a.key} value={a.key}>
-                              {a.label} — {a.addressLine1}, {a.city}
-                            </option>
-                          ))
-                        )}
-                      </select>
-
-                      {(() => {
-                        const a = getAddressFromKey(selectedAddressKey);
-                        if (!a) return null;
-                        return (
-                          <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-                            Using: <strong>{a.addressLine1}</strong>
-                            {a.addressLine2 ? `, ${a.addressLine2}` : ""} • {a.city}, {a.state} {a.postalCode}
-                          </div>
-                        );
-                      })()}
-                    </div>
-
-                    {ticketError ? <div style={{ color: "red" }}>{ticketError}</div> : null}
-
-                    <button
-                      type="submit"
-                      disabled={ticketSaving}
-                      style={actionBtnStyle(true)}
-                    >
-                      {ticketSaving ? "Creating..." : "Create Ticket"}
-                    </button>
-                  </form>
-                )}
-              </div>
-            ) : null}
-
-            {/* Service Addresses (view) + add button */}
-            <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 1000 }}>Service Addresses</div>
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                    Add form stays hidden until clicked.
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddServiceAddress((v) => !v);
-                    setServiceAddressError("");
-                    setShowCreateTicket(false);
-                    setShowAddCallLog(false);
-                    setIsEditMode(false);
-                  }}
-                  style={actionBtnStyle(false)}
-                >
-                  {showAddServiceAddress ? "Close" : "+ Add Address"}
-                </button>
-              </div>
-
-              <div style={{ marginTop: 12 }}>
-                {customer.serviceAddresses && customer.serviceAddresses.length > 0 ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {customer.serviceAddresses
-                      .filter((a) => a.active !== false)
-                      .sort((a, b) => Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)))
-                      .map((addr) => {
-                        const fullAddr = buildInlineAddress(
-                          addr.addressLine1,
-                          addr.addressLine2,
-                          addr.city,
-                          addr.state,
-                          addr.postalCode
-                        );
-                        const maps = fullAddr ? buildMapsUrl(fullAddr) : "";
-
-                        return (
-                          <div
-                            key={addr.id}
-                            style={{
-                              border: "1px solid #eee",
-                              borderRadius: 12,
-                              padding: 12,
-                              background: "white",
-                            }}
-                          >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                              <div>
-                                <div style={{ fontWeight: 1000 }}>
-                                  {addr.label || "Service Address"}
-                                  {addr.isPrimary ? " (Primary)" : ""}
-                                </div>
-                                <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
-                                  {fullAddr || "—"}
-                                </div>
-                                {addr.notes ? (
-                                  <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                                    Notes: {addr.notes}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              {maps ? (
-                                <a
-                                  href={maps}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  style={{
-                                    padding: "10px 12px",
-                                    borderRadius: 12,
-                                    border: "1px solid #ccc",
-                                    background: "white",
-                                    textDecoration: "none",
-                                    color: "inherit",
-                                    fontWeight: 900,
-                                    height: "fit-content",
-                                  }}
-                                >
-                                  📍 Maps
-                                </a>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      border: "1px dashed #ccc",
-                      borderRadius: 12,
-                      padding: 12,
-                      background: "white",
-                      color: "#666",
-                      fontSize: 13,
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(2, minmax(0, 1fr))",
+                        xl: "repeat(4, minmax(0, 1fr))",
+                      },
+                      gap: 1.5,
                     }}
                   >
-                    No service addresses yet.
-                  </div>
-                )}
-              </div>
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        borderRadius: 4,
+                        p: 2,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                        bgcolor: theme.palette.background.paper,
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        Primary phone
+                      </Typography>
+                      <Typography
+                        variant="h6"
+                        sx={{ fontWeight: 800, mt: 0.5, wordBreak: "break-word" }}
+                      >
+                        {customer.phonePrimary || "—"}
+                      </Typography>
+                    </Paper>
 
-              {showAddServiceAddress ? (
-                <div style={{ marginTop: 14, ...panelStyle }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 1000 }}>Add Service Address</div>
-                    <button type="button" onClick={() => setShowAddServiceAddress(false)} style={actionBtnStyle(false)}>
-                      Close
-                    </button>
-                  </div>
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        borderRadius: 4,
+                        p: 2,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                        bgcolor: theme.palette.background.paper,
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        Email
+                      </Typography>
+                      <Typography
+                        variant="h6"
+                        sx={{ fontWeight: 800, mt: 0.5, wordBreak: "break-word" }}
+                      >
+                        {customer.email || "—"}
+                      </Typography>
+                    </Paper>
 
-                  <form
-                    onSubmit={handleAddServiceAddress}
-                    style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 760 }}
-                  >
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Label</label>
-                      <input
-                        value={serviceLabel}
-                        onChange={(e) => setServiceLabel(e.target.value)}
-                        placeholder="Home, Rental, Shop..."
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      />
-                    </div>
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        borderRadius: 4,
+                        p: 2,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                        bgcolor: theme.palette.background.paper,
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        QuickBooks status
+                      </Typography>
+                      <Typography variant="h6" sx={{ fontWeight: 800, mt: 0.5 }}>
+                        {qboStatus.linkedId ? qboStatus.syncStatus || "Linked" : "Not linked"}
+                      </Typography>
+                    </Paper>
 
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Address Line 1</label>
-                      <input
-                        value={serviceAddressLine1}
-                        onChange={(e) => setServiceAddressLine1(e.target.value)}
-                        required
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      />
-                    </div>
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        borderRadius: 4,
+                        p: 2,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                        bgcolor: theme.palette.background.paper,
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        Last sync
+                      </Typography>
+                      <Typography variant="h6" sx={{ fontWeight: 800, mt: 0.5 }}>
+                        {qboStatus.lastSyncedAt ? formatDateTime(qboStatus.lastSyncedAt) : "—"}
+                      </Typography>
+                    </Paper>
+                  </Box>
+                </Stack>
+              </Paper>
 
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Address Line 2</label>
-                      <input
-                        value={serviceAddressLine2}
-                        onChange={(e) => setServiceAddressLine2(e.target.value)}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      />
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(140px, 1fr))", gap: 10 }}>
-                      <div>
-                        <label style={{ fontWeight: 900 }}>City</label>
-                        <input
-                          value={serviceCity}
-                          onChange={(e) => setServiceCity(e.target.value)}
-                          required
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900 }}>State</label>
-                        <input
-                          value={serviceState}
-                          onChange={(e) => setServiceState(e.target.value)}
-                          required
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontWeight: 900 }}>Postal Code</label>
-                        <input
-                          value={servicePostalCode}
-                          onChange={(e) => setServicePostalCode(e.target.value)}
-                          required
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Notes</label>
-                      <textarea
-                        value={serviceNotes}
-                        onChange={(e) => setServiceNotes(e.target.value)}
-                        rows={3}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      />
-                    </div>
-
-                    <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <input
-                        type="checkbox"
-                        checked={serviceIsPrimary}
-                        onChange={(e) => setServiceIsPrimary(e.target.checked)}
-                      />
-                      <span style={{ fontWeight: 900 }}>Set as primary service address</span>
-                    </label>
-
-                    {serviceAddressError ? <div style={{ color: "red" }}>{serviceAddressError}</div> : null}
-
-                    <button type="submit" disabled={savingAddress} style={actionBtnStyle(true)}>
-                      {savingAddress ? "Saving..." : "Add Address"}
-                    </button>
-                  </form>
-                </div>
+              {editErr ? (
+                <Alert severity="error" sx={{ borderRadius: 4 }}>
+                  {editErr}
+                </Alert>
               ) : null}
-            </div>
 
-            {/* Call Logs (add collapsed) + history always visible */}
-            <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fafafa" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 1000 }}>Call Logs</div>
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                    Add form stays hidden until clicked.
-                  </div>
-                </div>
+              {editOk ? (
+                <Alert severity="success" sx={{ borderRadius: 4 }}>
+                  {editOk}
+                </Alert>
+              ) : null}
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddCallLog((v) => !v);
-                    setNewCallLogError("");
-                    setShowCreateTicket(false);
-                    setShowAddServiceAddress(false);
-                    setIsEditMode(false);
-                  }}
-                  style={actionBtnStyle(false)}
+              {qboSyncErr ? (
+                <Alert severity="error" sx={{ borderRadius: 4 }}>
+                  {qboSyncErr}
+                </Alert>
+              ) : null}
+
+              {qboSyncOk ? (
+                <Alert severity="success" sx={{ borderRadius: 4 }}>
+                  {qboSyncOk}
+                </Alert>
+              ) : null}
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", xl: "repeat(3, minmax(0, 1fr))" },
+                  gap: 2,
+                }}
+              >
+                <SectionCard
+                  title="Contact"
+                  subtitle="Primary customer contact details and quick communication actions."
                 >
-                  {showAddCallLog ? "Close" : "+ Add Call Log"}
-                </button>
-              </div>
+                  <Stack spacing={2}>
+                    <InfoRow
+                      icon={<PhoneRoundedIcon color="action" />}
+                      label="Primary phone"
+                      primary={customer.phonePrimary || "—"}
+                      secondary={
+                        customer.phoneSecondary
+                          ? `Secondary: ${customer.phoneSecondary}`
+                          : undefined
+                      }
+                      action={
+                        customer.phonePrimary ? (
+                          <Stack direction="row" spacing={1}>
+                            <Button
+                              component="a"
+                              href={`tel:${customer.phonePrimary}`}
+                              variant="outlined"
+                              size="small"
+                              sx={{ borderRadius: 99, fontWeight: 700 }}
+                            >
+                              Call
+                            </Button>
+                            <Button
+                              component="a"
+                              href={`sms:${customer.phonePrimary}`}
+                              variant="outlined"
+                              size="small"
+                              sx={{ borderRadius: 99, fontWeight: 700 }}
+                            >
+                              Text
+                            </Button>
+                          </Stack>
+                        ) : null
+                      }
+                    />
 
-              {showAddCallLog ? (
-                <div style={{ marginTop: 14, ...panelStyle }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 1000 }}>Add Call Log</div>
-                    <button type="button" onClick={() => setShowAddCallLog(false)} style={actionBtnStyle(false)}>
-                      Close
-                    </button>
-                  </div>
+                    <Divider />
 
-                  <form onSubmit={handleAddCallLog} style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 760 }}>
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Call Type</label>
-                      <select
-                        value={callType}
-                        onChange={(e) =>
-                          setCallType(
-                            e.target.value as
-                              | "new_information"
-                              | "status_check"
-                              | "reschedule"
-                              | "billing"
-                              | "general"
-                          )
-                        }
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      >
-                        <option value="new_information">New Information</option>
-                        <option value="status_check">Status Check</option>
-                        <option value="reschedule">Reschedule</option>
-                        <option value="billing">Billing</option>
-                        <option value="general">General</option>
-                      </select>
-                    </div>
+                    <InfoRow
+                      icon={<EmailRoundedIcon color="action" />}
+                      label="Email"
+                      primary={customer.email || "—"}
+                      action={
+                        customer.email ? (
+                          <Button
+                            component="a"
+                            href={`mailto:${customer.email}`}
+                            variant="outlined"
+                            size="small"
+                            sx={{ borderRadius: 99, fontWeight: 700 }}
+                          >
+                            Email
+                          </Button>
+                        ) : null
+                      }
+                    />
+                  </Stack>
+                </SectionCard>
 
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Direction</label>
-                      <select
-                        value={direction}
-                        onChange={(e) => setDirection(e.target.value as "inbound" | "outbound")}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
-                      >
-                        <option value="inbound">Inbound</option>
-                        <option value="outbound">Outbound</option>
-                      </select>
-                    </div>
+                <SectionCard
+                  title="Billing address"
+                  subtitle="Mailing and invoice destination for this customer."
+                >
+                  <Stack spacing={2}>
+                    <InfoRow
+                      icon={<PlaceRoundedIcon color="action" />}
+                      label="Billing address"
+                      primary={billingInline || "—"}
+                      action={
+                        billingMapsUrl ? (
+                          <Button
+                            component="a"
+                            href={billingMapsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            variant="outlined"
+                            size="small"
+                            startIcon={<DirectionsRoundedIcon />}
+                            sx={{ borderRadius: 99, fontWeight: 700 }}
+                          >
+                            Maps
+                          </Button>
+                        ) : null
+                      }
+                    />
+                  </Stack>
+                </SectionCard>
 
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Summary</label>
-                      <input
-                        value={callSummary}
-                        onChange={(e) => setCallSummary(e.target.value)}
-                        required
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
+                <SectionCard
+                  title="QuickBooks"
+                  subtitle={
+                    qboStatus.linkedId
+                      ? "This customer is linked to QuickBooks and can be synced at any time."
+                      : "This customer is currently DCFlow-only and can be created in QuickBooks from here."
+                  }
+                  action={
+                    <Button
+                      variant="outlined"
+                      startIcon={<SyncRoundedIcon />}
+                      onClick={() => handleCreateOrSyncToQbo({ updateName: true })}
+                      disabled={!canEditCustomer || qboSyncing}
+                      sx={{ borderRadius: 99, fontWeight: 700 }}
+                    >
+                      {qboSyncing
+                        ? qboStatus.linkedId
+                          ? "Syncing..."
+                          : "Creating..."
+                        : qboStatus.linkedId
+                        ? "Sync Now"
+                        : "Create in QBO"}
+                    </Button>
+                  }
+                >
+                  <Stack spacing={1.25}>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip
+                        label={qboStatus.linkedId ? `Linked: ${qboStatus.linkedId}` : "Not linked"}
+                        color={qboStatus.linkedId ? "primary" : "default"}
+                        variant={qboStatus.linkedId ? "filled" : "outlined"}
+                        sx={{ borderRadius: 99 }}
                       />
-                    </div>
-
-                    <div>
-                      <label style={{ fontWeight: 900 }}>Details</label>
-                      <textarea
-                        value={callDetails}
-                        onChange={(e) => setCallDetails(e.target.value)}
-                        rows={3}
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          padding: 10,
-                          marginTop: 6,
-                          borderRadius: 12,
-                          border: "1px solid #ccc",
-                        }}
+                      <Chip
+                        label={qboStatus.syncStatus || "No sync status"}
+                        variant="outlined"
+                        sx={{ borderRadius: 99 }}
                       />
-                    </div>
+                    </Stack>
 
-                    <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <input
-                        type="checkbox"
-                        checked={visibleToTech}
-                        onChange={(e) => setVisibleToTech(e.target.checked)}
-                      />
-                      <span style={{ fontWeight: 900 }}>Visible to technician</span>
-                    </label>
+                    <Typography variant="body2" color="text.secondary">
+                      Last sync:{" "}
+                      {qboStatus.lastSyncedAt ? formatDateTime(qboStatus.lastSyncedAt) : "—"}
+                    </Typography>
 
-                    <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <input
-                        type="checkbox"
-                        checked={updatesTicketNotes}
-                        onChange={(e) => setUpdatesTicketNotes(e.target.checked)}
-                      />
-                      <span style={{ fontWeight: 900 }}>Updates ticket notes</span>
-                    </label>
-
-                    <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <input
-                        type="checkbox"
-                        checked={followUpNeeded}
-                        onChange={(e) => setFollowUpNeeded(e.target.checked)}
-                      />
-                      <span style={{ fontWeight: 900 }}>Follow-up needed</span>
-                    </label>
-
-                    {followUpNeeded ? (
-                      <div>
-                        <label style={{ fontWeight: 900 }}>Follow-up Note</label>
-                        <input
-                          value={followUpNote}
-                          onChange={(e) => setFollowUpNote(e.target.value)}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            padding: 10,
-                            marginTop: 6,
-                            borderRadius: 12,
-                            border: "1px solid #ccc",
-                          }}
-                        />
-                      </div>
+                    {qboStatus.lastError ? (
+                      <Alert severity="warning" sx={{ borderRadius: 3 }}>
+                        {qboStatus.lastError}
+                      </Alert>
                     ) : null}
 
-                    {newCallLogError ? <div style={{ color: "red" }}>{newCallLogError}</div> : null}
+                    {qboStatus.lastTid ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Intuit TID: {qboStatus.lastTid}
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                </SectionCard>
+              </Box>
 
-                    <button type="submit" disabled={savingCallLog} style={actionBtnStyle(true)}>
-                      {savingCallLog ? "Saving..." : "Add Call Log"}
-                    </button>
-                  </form>
-                </div>
-              ) : null}
-
-              {/* Call History */}
-              <div style={{ marginTop: 14 }}>
-                {callLogsLoading ? <p>Loading call history...</p> : null}
-                {callLogError ? <p style={{ color: "red" }}>{callLogError}</p> : null}
-
-                {!callLogsLoading && !callLogError && callLogs.length === 0 ? (
-                  <div
-                    style={{
-                      border: "1px dashed #ccc",
-                      borderRadius: 12,
-                      padding: 12,
-                      background: "white",
-                      color: "#666",
-                      fontSize: 13,
+              {isEditMode ? (
+                <SectionCard
+                  title="Edit customer"
+                  subtitle={
+                    qboStatus.linkedId
+                      ? "Update contact and billing details. Save in DCFlow only, or save and sync to QuickBooks."
+                      : "Update contact and billing details. Save in DCFlow only, or save and create this customer in QuickBooks."
+                  }
+                  action={
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                      <Button
+                        variant="outlined"
+                        onClick={cancelEditMode}
+                        disabled={editSaving || qboSyncing}
+                        sx={{ borderRadius: 99, fontWeight: 700 }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        startIcon={<SaveRoundedIcon />}
+                        onClick={() => handleSaveCustomerEdits(false)}
+                        disabled={!canEditCustomer || editSaving}
+                        sx={{ borderRadius: 99, fontWeight: 700 }}
+                      >
+                        {editSaving ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        variant="contained"
+                        startIcon={<SyncRoundedIcon />}
+                        onClick={() => handleSaveCustomerEdits(true)}
+                        disabled={!canEditCustomer || editSaving || qboSyncing}
+                        sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
+                      >
+                        {qboSyncing
+                          ? qboStatus.linkedId
+                            ? "Syncing..."
+                            : "Creating..."
+                          : qboStatus.linkedId
+                          ? "Save & Sync"
+                          : "Save & Create in QBO"}
+                      </Button>
+                    </Stack>
+                  }
+                >
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: { xs: "1fr", lg: "repeat(2, minmax(0, 1fr))" },
+                      gap: 2,
                     }}
                   >
-                    No call logs yet.
-                  </div>
-                ) : null}
+                    <Card
+                      elevation={0}
+                      sx={{
+                        borderRadius: 4,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                      }}
+                    >
+                      <CardContent sx={{ p: 2 }}>
+                        <Stack spacing={2}>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Contact
+                          </Typography>
 
-                {!callLogsLoading && !callLogError && callLogs.length > 0 ? (
-                  <div style={{ display: "grid", gap: 10 }}>
-                    {callLogs.map((log) => (
-                      <div
-                        key={log.id}
-                        style={{
-                          border: "1px solid #eee",
-                          borderRadius: 12,
-                          padding: 12,
-                          background: "white",
+                          <TextField
+                            label="Customer name"
+                            value={editDisplayName}
+                            onChange={(e) => setEditDisplayName(e.target.value)}
+                            disabled={!canEditCustomer || editSaving}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Email"
+                            value={editEmail}
+                            onChange={(e) => setEditEmail(e.target.value)}
+                            disabled={!canEditCustomer || editSaving}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Primary phone"
+                            value={editPhonePrimary}
+                            onChange={(e) => setEditPhonePrimary(e.target.value)}
+                            disabled={!canEditCustomer || editSaving}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Secondary phone"
+                            value={editPhoneSecondary}
+                            onChange={(e) => setEditPhoneSecondary(e.target.value)}
+                            disabled={!canEditCustomer || editSaving}
+                            fullWidth
+                          />
+                        </Stack>
+                      </CardContent>
+                    </Card>
+
+                    <Card
+                      elevation={0}
+                      sx={{
+                        borderRadius: 4,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                      }}
+                    >
+                      <CardContent sx={{ p: 2 }}>
+                        <Stack spacing={2}>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Billing address
+                          </Typography>
+
+                          <TextField
+                            label="Address line 1"
+                            value={editBillLine1}
+                            onChange={(e) => setEditBillLine1(e.target.value)}
+                            disabled={!canEditCustomer || editSaving}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Address line 2"
+                            value={editBillLine2}
+                            onChange={(e) => setEditBillLine2(e.target.value)}
+                            disabled={!canEditCustomer || editSaving}
+                            fullWidth
+                          />
+
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns: {
+                                xs: "1fr",
+                                sm: "repeat(3, minmax(0, 1fr))",
+                              },
+                              gap: 2,
+                            }}
+                          >
+                            <TextField
+                              label="City"
+                              value={editBillCity}
+                              onChange={(e) => setEditBillCity(e.target.value)}
+                              disabled={!canEditCustomer || editSaving}
+                              fullWidth
+                            />
+
+                            <TextField
+                              label="State"
+                              value={editBillState}
+                              onChange={(e) => setEditBillState(e.target.value)}
+                              disabled={!canEditCustomer || editSaving}
+                              fullWidth
+                            />
+
+                            <TextField
+                              label="Postal code"
+                              value={editBillPostal}
+                              onChange={(e) => setEditBillPostal(e.target.value)}
+                              disabled={!canEditCustomer || editSaving}
+                              fullWidth
+                            />
+                          </Box>
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  </Box>
+                </SectionCard>
+              ) : null}
+
+              <SectionCard
+                title="Service locations"
+                subtitle="Manage the physical service addresses used for tickets, dispatch, and future property-level history."
+                action={
+                  <Button
+                    variant="contained"
+                    startIcon={<AddHomeRoundedIcon />}
+                    onClick={() => {
+                      setServiceAddressError("");
+                      setShowAddServiceAddress(true);
+                    }}
+                    sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
+                  >
+                    Add Service Location
+                  </Button>
+                }
+              >
+                {activeServiceAddresses.length === 0 ? (
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      borderRadius: 4,
+                      p: 3,
+                      border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
+                      textAlign: "center",
+                    }}
+                  >
+                    <Stack spacing={1.25} alignItems="center">
+                      <Box
+                        sx={{
+                          width: 56,
+                          height: 56,
+                          borderRadius: 4,
+                          display: "grid",
+                          placeItems: "center",
+                          bgcolor: alpha(theme.palette.primary.main, 0.1),
+                          color: theme.palette.primary.main,
                         }}
                       >
-                        <div style={{ fontWeight: 1000 }}>{log.summary}</div>
-                        <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
-                          {log.callType} • {log.direction}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 13, color: "#555" }}>
-                          {log.details || "No additional details."}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                          Visible to Tech: {String(log.visibleToTech)} • Follow-up: {String(log.followUpNeeded)}
-                        </div>
-                        {log.followUpNote ? (
-                          <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
-                            Follow-up Note: {log.followUpNote}
-                          </div>
-                        ) : null}
-                      </div>
+                        <HomeWorkRoundedIcon sx={{ fontSize: 28 }} />
+                      </Box>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                        No service locations yet
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
+                        Add a service location for the home, rental property, shop, or other
+                        physical address where work is performed.
+                      </Typography>
+                    </Stack>
+                  </Paper>
+                ) : (
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: { xs: "1fr", lg: "repeat(2, minmax(0, 1fr))" },
+                      gap: 2,
+                    }}
+                  >
+                    {activeServiceAddresses.map((addr) => {
+                      const fullAddr = buildInlineAddress(
+                        addr.addressLine1,
+                        addr.addressLine2,
+                        addr.city,
+                        addr.state,
+                        addr.postalCode
+                      );
+                      const maps = fullAddr ? buildMapsUrl(fullAddr) : "";
+
+                      return (
+                        <Card
+                          key={addr.id}
+                          elevation={0}
+                          sx={{
+                            borderRadius: 4,
+                            border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                          }}
+                        >
+                          <CardContent sx={{ p: 2 }}>
+                            <Stack spacing={1.5}>
+                              <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                                justifyContent="space-between"
+                                alignItems={{ xs: "flex-start", sm: "center" }}
+                              >
+                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                  <Chip
+                                    label={addr.label || "Service Address"}
+                                    color="primary"
+                                    variant="outlined"
+                                    sx={{ borderRadius: 99 }}
+                                  />
+                                  {addr.isPrimary ? (
+                                    <Chip
+                                      label="Primary"
+                                      color="success"
+                                      variant="filled"
+                                      sx={{ borderRadius: 99 }}
+                                    />
+                                  ) : null}
+                                  {addr.source ? (
+                                    <Chip
+                                      label={addr.source}
+                                      variant="outlined"
+                                      sx={{ borderRadius: 99, textTransform: "capitalize" }}
+                                    />
+                                  ) : null}
+                                </Stack>
+
+                                {maps ? (
+                                  <Button
+                                    component="a"
+                                    href={maps}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<DirectionsRoundedIcon />}
+                                    sx={{ borderRadius: 99, fontWeight: 700 }}
+                                  >
+                                    Maps
+                                  </Button>
+                                ) : null}
+                              </Stack>
+
+                              <Divider />
+
+                              <InfoRow
+                                icon={<LocationOnRoundedIcon color="action" />}
+                                label="Address"
+                                primary={fullAddr || "—"}
+                                secondary={addr.notes ? `Notes: ${addr.notes}` : undefined}
+                              />
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </Box>
+                )}
+              </SectionCard>
+
+              <SectionCard
+                title="Call logs"
+                subtitle="Track important customer calls, follow-ups, and office context."
+                action={
+                  <Button
+                    variant="contained"
+                    startIcon={<AddIcCallRoundedIcon />}
+                    onClick={() => {
+                      setNewCallLogError("");
+                      setShowAddCallLog(true);
+                    }}
+                    sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
+                  >
+                    Add Call Log
+                  </Button>
+                }
+              >
+                {callLogsLoading ? (
+                  <Stack spacing={1.5}>
+                    <Skeleton variant="rounded" height={120} sx={{ borderRadius: 4 }} />
+                    <Skeleton variant="rounded" height={120} sx={{ borderRadius: 4 }} />
+                    <Skeleton variant="rounded" height={120} sx={{ borderRadius: 4 }} />
+                  </Stack>
+                ) : callLogError ? (
+                  <Alert severity="error" sx={{ borderRadius: 4 }}>
+                    {callLogError}
+                  </Alert>
+                ) : callLogs.length === 0 ? (
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      borderRadius: 4,
+                      p: 3,
+                      border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
+                      textAlign: "center",
+                    }}
+                  >
+                    <Stack spacing={1.25} alignItems="center">
+                      <Box
+                        sx={{
+                          width: 56,
+                          height: 56,
+                          borderRadius: 4,
+                          display: "grid",
+                          placeItems: "center",
+                          bgcolor: alpha(theme.palette.primary.main, 0.1),
+                          color: theme.palette.primary.main,
+                        }}
+                      >
+                        <EventNoteRoundedIcon sx={{ fontSize: 28 }} />
+                      </Box>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                        No call logs yet
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
+                        Log the next inbound or outbound call so dispatch and office staff can
+                        track customer context.
+                      </Typography>
+                    </Stack>
+                  </Paper>
+                ) : (
+                  <Stack spacing={1.5}>
+                    {callLogs.map((log) => (
+                      <Card
+                        key={log.id}
+                        elevation={0}
+                        sx={{
+                          borderRadius: 4,
+                          border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                        }}
+                      >
+                        <CardContent sx={{ p: 2 }}>
+                          <Stack spacing={1.25}>
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={1}
+                              justifyContent="space-between"
+                              alignItems={{ xs: "flex-start", md: "center" }}
+                            >
+                              <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                {log.summary}
+                              </Typography>
+
+                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                <Chip
+                                  label={log.callType.replaceAll("_", " ")}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 99 }}
+                                />
+                                <Chip
+                                  label={log.direction}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 99 }}
+                                />
+                                {log.visibleToTech ? (
+                                  <Chip
+                                    label="Visible to tech"
+                                    color="primary"
+                                    variant="outlined"
+                                    sx={{ borderRadius: 99 }}
+                                  />
+                                ) : null}
+                                {log.followUpNeeded ? (
+                                  <Chip
+                                    label="Follow-up needed"
+                                    color="warning"
+                                    variant="filled"
+                                    sx={{ borderRadius: 99 }}
+                                  />
+                                ) : null}
+                              </Stack>
+                            </Stack>
+
+                            <Typography variant="body2" color="text.secondary">
+                              {log.details || "No additional details."}
+                            </Typography>
+
+                            {log.followUpNote ? (
+                              <Typography variant="body2" color="text.secondary">
+                                Follow-up note: {log.followUpNote}
+                              </Typography>
+                            ) : null}
+
+                            <Typography variant="caption" color="text.secondary">
+                              Logged: {formatDateTime(log.createdAt || log.callOccurredAt)}
+                            </Typography>
+                          </Stack>
+                        </CardContent>
+                      </Card>
                     ))}
-                  </div>
+                  </Stack>
+                )}
+              </SectionCard>
+            </Stack>
+          ) : null}
+        </Box>
+
+        <Dialog
+          open={showCreateTicket}
+          onClose={() => !ticketSaving && setShowCreateTicket(false)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>Create Service Ticket</DialogTitle>
+          <DialogContent dividers>
+            {!canCreateTicket ? (
+              <Alert severity="info" sx={{ borderRadius: 3 }}>
+                Only Admin, Dispatcher, and Manager roles can create service tickets.
+              </Alert>
+            ) : (
+              <Box
+                component="form"
+                id="create-ticket-form"
+                onSubmit={handleCreateServiceTicket}
+                sx={{ display: "grid", gap: 2, pt: 0.5 }}
+              >
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", md: "2fr 1fr" },
+                    gap: 2,
+                  }}
+                >
+                  <TextField
+                    label="Issue summary"
+                    value={issueSummary}
+                    onChange={(e) => setIssueSummary(e.target.value)}
+                    required
+                    fullWidth
+                    placeholder='Example: "Clogged kitchen sink"'
+                  />
+
+                  <TextField
+                    label="Estimated duration (minutes)"
+                    type="number"
+                    inputProps={{ min: 1 }}
+                    value={estimatedDurationMinutes}
+                    onChange={(e) => setEstimatedDurationMinutes(e.target.value)}
+                    fullWidth
+                  />
+                </Box>
+
+                <TextField
+                  label="Issue details"
+                  value={issueDetails}
+                  onChange={(e) => setIssueDetails(e.target.value)}
+                  multiline
+                  minRows={3}
+                  fullWidth
+                  placeholder="Helpful details for dispatch and technician notes…"
+                />
+
+                <FormControl fullWidth>
+                  <InputLabel id="ticket-address-label">Address for this ticket</InputLabel>
+                  <Select
+                    labelId="ticket-address-label"
+                    value={selectedAddressKey}
+                    label="Address for this ticket"
+                    onChange={(e) => setSelectedAddressKey(String(e.target.value))}
+                  >
+                    {addressChoices.length === 0 ? (
+                      <MenuItem value="">No addresses found</MenuItem>
+                    ) : (
+                      addressChoices.map((a) => (
+                        <MenuItem key={a.key} value={a.key}>
+                          {a.label} — {a.addressLine1}, {a.city}
+                        </MenuItem>
+                      ))
+                    )}
+                  </Select>
+                </FormControl>
+
+                {(() => {
+                  const a = getAddressFromKey(selectedAddressKey);
+                  if (!a) return null;
+
+                  return (
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        borderRadius: 3,
+                        p: 2,
+                        bgcolor: "action.hover",
+                        border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        Using address
+                      </Typography>
+                      <Typography variant="body1" sx={{ fontWeight: 700, mt: 0.5 }}>
+                        {buildInlineAddress(
+                          a.addressLine1,
+                          a.addressLine2,
+                          a.city,
+                          a.state,
+                          a.postalCode
+                        )}
+                      </Typography>
+                    </Paper>
+                  );
+                })()}
+
+                {ticketError ? (
+                  <Alert severity="error" sx={{ borderRadius: 3 }}>
+                    {ticketError}
+                  </Alert>
                 ) : null}
-              </div>
-            </div>
-          </div>
-        ) : null}
+              </Box>
+            )}
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button
+              onClick={() => setShowCreateTicket(false)}
+              disabled={ticketSaving}
+              sx={{ borderRadius: 99, fontWeight: 700 }}
+            >
+              Cancel
+            </Button>
+            {canCreateTicket ? (
+              <Button
+                type="submit"
+                form="create-ticket-form"
+                variant="contained"
+                startIcon={<DescriptionRoundedIcon />}
+                disabled={ticketSaving}
+                sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
+              >
+                {ticketSaving ? "Creating..." : "Create Ticket"}
+              </Button>
+            ) : null}
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={showAddServiceAddress}
+          onClose={() => !savingAddress && setShowAddServiceAddress(false)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>Add Service Location</DialogTitle>
+          <DialogContent dividers>
+            <Box
+              component="form"
+              id="add-service-address-form"
+              onSubmit={handleAddServiceAddress}
+              sx={{ display: "grid", gap: 2, pt: 0.5 }}
+            >
+              <TextField
+                label="Label"
+                value={serviceLabel}
+                onChange={(e) => setServiceLabel(e.target.value)}
+                fullWidth
+                placeholder="Home, Rental House, Shop, Weekend House..."
+              />
+
+              <TextField
+                label="Address line 1"
+                value={serviceAddressLine1}
+                onChange={(e) => setServiceAddressLine1(e.target.value)}
+                required
+                fullWidth
+              />
+
+              <TextField
+                label="Address line 2"
+                value={serviceAddressLine2}
+                onChange={(e) => setServiceAddressLine2(e.target.value)}
+                fullWidth
+              />
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
+                  gap: 2,
+                }}
+              >
+                <TextField
+                  label="City"
+                  value={serviceCity}
+                  onChange={(e) => setServiceCity(e.target.value)}
+                  required
+                  fullWidth
+                />
+
+                <TextField
+                  label="State"
+                  value={serviceState}
+                  onChange={(e) => setServiceState(e.target.value)}
+                  required
+                  fullWidth
+                />
+
+                <TextField
+                  label="Postal code"
+                  value={servicePostalCode}
+                  onChange={(e) => setServicePostalCode(e.target.value)}
+                  required
+                  fullWidth
+                />
+              </Box>
+
+              <TextField
+                label="Notes"
+                value={serviceNotes}
+                onChange={(e) => setServiceNotes(e.target.value)}
+                multiline
+                minRows={3}
+                fullWidth
+              />
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={serviceIsPrimary}
+                    onChange={(e) => setServiceIsPrimary(e.target.checked)}
+                  />
+                }
+                label="Set as primary service address"
+              />
+
+              {serviceAddressError ? (
+                <Alert severity="error" sx={{ borderRadius: 3 }}>
+                  {serviceAddressError}
+                </Alert>
+              ) : null}
+            </Box>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button
+              onClick={() => setShowAddServiceAddress(false)}
+              disabled={savingAddress}
+              sx={{ borderRadius: 99, fontWeight: 700 }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="add-service-address-form"
+              variant="contained"
+              startIcon={<AddHomeRoundedIcon />}
+              disabled={savingAddress}
+              sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
+            >
+              {savingAddress ? "Saving..." : "Add Service Location"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={showAddCallLog}
+          onClose={() => !savingCallLog && setShowAddCallLog(false)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>Add Call Log</DialogTitle>
+          <DialogContent dividers>
+            <Box
+              component="form"
+              id="add-call-log-form"
+              onSubmit={handleAddCallLog}
+              sx={{ display: "grid", gap: 2, pt: 0.5 }}
+            >
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                  gap: 2,
+                }}
+              >
+                <FormControl fullWidth>
+                  <InputLabel id="call-type-label">Call type</InputLabel>
+                  <Select
+                    labelId="call-type-label"
+                    value={callType}
+                    label="Call type"
+                    onChange={(e) =>
+                      setCallType(
+                        e.target.value as
+                          | "new_information"
+                          | "status_check"
+                          | "reschedule"
+                          | "billing"
+                          | "general"
+                      )
+                    }
+                  >
+                    <MenuItem value="new_information">New Information</MenuItem>
+                    <MenuItem value="status_check">Status Check</MenuItem>
+                    <MenuItem value="reschedule">Reschedule</MenuItem>
+                    <MenuItem value="billing">Billing</MenuItem>
+                    <MenuItem value="general">General</MenuItem>
+                  </Select>
+                </FormControl>
+
+                <FormControl fullWidth>
+                  <InputLabel id="call-direction-label">Direction</InputLabel>
+                  <Select
+                    labelId="call-direction-label"
+                    value={direction}
+                    label="Direction"
+                    onChange={(e) => setDirection(e.target.value as "inbound" | "outbound")}
+                  >
+                    <MenuItem value="inbound">Inbound</MenuItem>
+                    <MenuItem value="outbound">Outbound</MenuItem>
+                  </Select>
+                </FormControl>
+              </Box>
+
+              <TextField
+                label="Summary"
+                value={callSummary}
+                onChange={(e) => setCallSummary(e.target.value)}
+                required
+                fullWidth
+              />
+
+              <TextField
+                label="Details"
+                value={callDetails}
+                onChange={(e) => setCallDetails(e.target.value)}
+                multiline
+                minRows={3}
+                fullWidth
+              />
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={visibleToTech}
+                    onChange={(e) => setVisibleToTech(e.target.checked)}
+                  />
+                }
+                label="Visible to technician"
+              />
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={updatesTicketNotes}
+                    onChange={(e) => setUpdatesTicketNotes(e.target.checked)}
+                  />
+                }
+                label="Updates ticket notes"
+              />
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={followUpNeeded}
+                    onChange={(e) => setFollowUpNeeded(e.target.checked)}
+                  />
+                }
+                label="Follow-up needed"
+              />
+
+              {followUpNeeded ? (
+                <TextField
+                  label="Follow-up note"
+                  value={followUpNote}
+                  onChange={(e) => setFollowUpNote(e.target.value)}
+                  fullWidth
+                />
+              ) : null}
+
+              {newCallLogError ? (
+                <Alert severity="error" sx={{ borderRadius: 3 }}>
+                  {newCallLogError}
+                </Alert>
+              ) : null}
+            </Box>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button
+              onClick={() => setShowAddCallLog(false)}
+              disabled={savingCallLog}
+              sx={{ borderRadius: 99, fontWeight: 700 }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="add-call-log-form"
+              variant="contained"
+              startIcon={<AddIcCallRoundedIcon />}
+              disabled={savingCallLog}
+              sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
+            >
+              {savingCallLog ? "Saving..." : "Add Call Log"}
+            </Button>
+          </DialogActions>
+        </Dialog>
       </AppShell>
     </ProtectedPage>
   );

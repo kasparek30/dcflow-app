@@ -2,18 +2,44 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   collection,
-  getDocs,
-  orderBy,
-  query,
   doc,
   getDoc,
-  where,
-  onSnapshot,
+  getDocs,
   limit,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
 } from "firebase/firestore";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Divider,
+  Fab,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
+  Skeleton,
+  Stack,
+  Typography,
+} from "@mui/material";
+import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
+import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
+import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
+import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
+import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
+import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
+import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
+import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -26,11 +52,42 @@ type PayrollDay = {
   isoDate: string;
 };
 
+type ServiceTicketMini = {
+  id: string;
+  customerDisplayName: string;
+  issueSummary: string;
+};
+
+type ProjectMini = {
+  id: string;
+  projectName: string;
+};
+
+type DayBreakdown = {
+  worked: number;
+  pto: number;
+  holiday: number;
+  paid: number;
+};
+
+type CategoryFilterValue =
+  | "all"
+  | "service"
+  | "project"
+  | "meeting"
+  | "shop"
+  | "office"
+  | "pto"
+  | "holiday"
+  | "manual_other"
+  | "other";
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
 function toIsoDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
 function getMondayForWeekOffset(weekOffset: number) {
@@ -44,6 +101,7 @@ function getMondayForWeekOffset(weekOffset: number) {
 
   const monday = new Date(base);
   monday.setDate(base.getDate() + mondayOffset);
+  monday.setHours(12, 0, 0, 0);
 
   return monday;
 }
@@ -51,29 +109,93 @@ function getMondayForWeekOffset(weekOffset: number) {
 function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
   const monday = getMondayForWeekOffset(weekOffset);
 
-  return [
-    { label: "Monday", shortLabel: "Mon", isoDate: toIsoDate(monday) },
-    {
-      label: "Tuesday",
-      shortLabel: "Tue",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1)),
-    },
-    {
-      label: "Wednesday",
-      shortLabel: "Wed",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2)),
-    },
-    {
-      label: "Thursday",
-      shortLabel: "Thu",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3)),
-    },
-    {
-      label: "Friday",
-      shortLabel: "Fri",
-      isoDate: toIsoDate(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4)),
-    },
-  ];
+  return [0, 1, 2, 3, 4].map((offset) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + offset);
+
+    const labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    const shortLabels = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+
+    return {
+      label: labels[offset],
+      shortLabel: shortLabels[offset],
+      isoDate: toIsoDate(d),
+    };
+  });
+}
+
+function safeTrim(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function formatDisplayDate(isoDate: string) {
+  if (!isoDate) return "—";
+  const d = new Date(`${isoDate}T12:00:00`);
+  return d.toLocaleDateString(undefined, {
+    month: "numeric",
+    day: "numeric",
+    year: "2-digit",
+  });
+}
+
+function firstMeaningfulLine(notes?: string) {
+  const raw = safeTrim(notes);
+  if (!raw) return "";
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const preferred = lines.find((line) => !line.startsWith("AUTO_TIME_FROM_TRIP:"));
+  return preferred || lines[0] || "";
+}
+
+function truncateLine(value: string, max = 90) {
+  const clean = safeTrim(value);
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max - 1)}…`;
+}
+
+function normalizeCategory(raw: unknown) {
+  const c = safeTrim(raw).toLowerCase();
+
+  if (c === "service_ticket") return "service";
+  if (c === "project_stage") return "project";
+
+  if (c === "service") return "service";
+  if (c === "project") return "project";
+  if (c === "meeting") return "meeting";
+  if (c === "shop") return "shop";
+  if (c === "office") return "office";
+  if (c === "pto") return "pto";
+  if (c === "holiday") return "holiday";
+  if (c === "manual_other") return "manual_other";
+
+  return c || "other";
+}
+
+function formatCategoryLabel(raw: unknown) {
+  const c = normalizeCategory(raw);
+  switch (c) {
+    case "service":
+      return "Service";
+    case "project":
+      return "Project";
+    case "meeting":
+      return "Meeting";
+    case "shop":
+      return "Shop";
+    case "office":
+      return "Office";
+    case "pto":
+      return "PTO";
+    case "holiday":
+      return "Holiday";
+    case "manual_other":
+      return "Manual";
+    default:
+      return "Other";
+  }
 }
 
 function formatPayType(payType: TimeEntry["payType"]) {
@@ -87,7 +209,7 @@ function formatPayType(payType: TimeEntry["payType"]) {
     case "holiday":
       return "Holiday";
     default:
-      return String(payType || "");
+      return String(payType || "—");
   }
 }
 
@@ -104,89 +226,92 @@ function formatStatus(status: TimeEntry["entryStatus"]) {
     case "exported":
       return "Exported";
     default:
-      return String(status || "");
+      return String(status || "—");
   }
 }
 
-function formatDisplayDate(isoDate: string) {
-  const safeDate = new Date(`${isoDate}T12:00:00`);
-  return safeDate.toLocaleDateString(undefined, {
-    month: "numeric",
-    day: "numeric",
-    year: "2-digit",
-  });
-}
-
-function safeTrim(x: unknown) {
-  return String(x ?? "").trim();
-}
-
-function firstMeaningfulLine(notes?: string) {
-  const raw = safeTrim(notes);
-  if (!raw) return "";
-  const lines = raw
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const preferred = lines.find((l) => !l.startsWith("AUTO_TIME_FROM_TRIP:")) || lines[0] || "";
-  return preferred;
-}
-
-function truncateLine(s: string, max = 80) {
-  const x = safeTrim(s);
-  if (x.length <= max) return x;
-  return x.slice(0, max - 1) + "…";
-}
-
-function normalizeCategory(raw: unknown) {
-  const c = safeTrim(raw).toLowerCase();
-
-  // legacy -> new
-  if (c === "service_ticket") return "service";
-  if (c === "project_stage") return "project";
-
-  if (c === "service") return "service";
-  if (c === "project") return "project";
-  if (c === "meeting") return "meeting";
-
-  return c || "other";
-}
-
-function categoryPillLabel(cat: string) {
-  const c = normalizeCategory(cat);
-  if (c === "service") return "service";
-  if (c === "project") return "project";
-  if (c === "meeting") return "meeting";
-  return c || "other";
+function formatSourceLabel(source?: string) {
+  const s = safeTrim(source).toLowerCase();
+  switch (s) {
+    case "manual_entry":
+      return "Manual";
+    case "auto_suggested":
+      return "Auto";
+    case "system_generated_pto":
+      return "PTO";
+    case "system_generated_holiday":
+      return "Holiday";
+    case "system_generated_meeting":
+      return "Meeting";
+    case "trip_timer":
+      return "Trip";
+    default:
+      return s ? s.replace(/_/g, " ") : "Source";
+  }
 }
 
 function stageLabel(stage?: string) {
-  const s = safeTrim(stage);
+  const s = safeTrim(stage).toLowerCase();
   if (!s) return "";
-  if (s === "roughIn") return "Rough-In";
-  if (s === "topOutVent") return "Top-Out / Vent";
-  if (s === "trimFinish") return "Trim / Finish";
-  return s;
+  if (s === "roughin" || s === "rough_in" || s === "roughIn".toLowerCase()) return "Rough-In";
+  if (s === "topoutvent" || s === "top_out_vent" || s === "topOutVent".toLowerCase()) {
+    return "Top-Out / Vent";
+  }
+  if (s === "trimfinish" || s === "trim_finish" || s === "trimFinish".toLowerCase()) {
+    return "Trim / Finish";
+  }
+  return safeTrim(stage);
 }
-
-type ServiceTicketMini = {
-  id: string;
-  customerDisplayName: string;
-  issueSummary: string;
-};
-
-type ProjectMini = {
-  id: string;
-  projectName: string;
-};
 
 function isTimesheetLockedStatus(status: unknown) {
   const s = safeTrim(status).toLowerCase();
-  return s === "submitted" || s === "approved" || s === "exported_to_quickbooks";
+  return s === "submitted" || s === "approved" || s === "exported" || s === "exported_to_quickbooks";
+}
+
+function getEntryKind(entry: TimeEntry) {
+  const category = normalizeCategory((entry as any).category);
+  const payType = safeTrim(entry.payType).toLowerCase();
+
+  if (category === "holiday" || payType === "holiday") return "holiday";
+  if (category === "pto" || payType === "pto") return "pto";
+  return "worked";
+}
+
+function getStatusChipColor(status: TimeEntry["entryStatus"]): "default" | "warning" | "success" | "error" | "info" {
+  switch (status) {
+    case "draft":
+      return "warning";
+    case "submitted":
+      return "info";
+    case "approved":
+      return "success";
+    case "rejected":
+      return "error";
+    case "exported":
+      return "default";
+    default:
+      return "default";
+  }
+}
+
+function getKindChipColor(kind: "worked" | "pto" | "holiday"): "default" | "info" | "success" | "secondary" {
+  switch (kind) {
+    case "pto":
+      return "secondary";
+    case "holiday":
+      return "success";
+    default:
+      return "info";
+  }
+}
+
+function buildWeekRangeLabel(weekStart: string, weekEnd: string) {
+  if (!weekStart || !weekEnd) return "—";
+  return `${formatDisplayDate(weekStart)} – ${formatDisplayDate(weekEnd)}`;
 }
 
 export default function TimeEntriesPage() {
+  const router = useRouter();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -194,21 +319,26 @@ export default function TimeEntriesPage() {
   const [error, setError] = useState("");
 
   const [statusFilter, setStatusFilter] = useState<"all" | TimeEntry["entryStatus"]>("all");
-  const [categoryFilter, setCategoryFilter] = useState<"all" | string>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilterValue>("all");
   const [weekOffset, setWeekOffset] = useState(0);
+
+  const [myWeekLocked, setMyWeekLocked] = useState(false);
+  const [myWeekStatus, setMyWeekStatus] = useState<string>("");
+
+  const [ticketMiniById, setTicketMiniById] = useState<Record<string, ServiceTicketMini>>({});
+  const [projectMiniById, setProjectMiniById] = useState<Record<string, ProjectMini>>({});
 
   const canSeeAll =
     appUser?.role === "admin" ||
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
-  // lookup caches (id -> display)
-  const [ticketMiniById, setTicketMiniById] = useState<Record<string, ServiceTicketMini>>({});
-  const [projectMiniById, setProjectMiniById] = useState<Record<string, ProjectMini>>({});
-
   useEffect(() => {
     async function loadEntries() {
       try {
+        setLoading(true);
+        setError("");
+
         const q = query(collection(db, "timeEntries"), orderBy("entryDate", "desc"));
         const snap = await getDocs(q);
 
@@ -228,7 +358,7 @@ export default function TimeEntriesPage() {
             category: data.category ?? "manual_other",
             hours: typeof data.hours === "number" ? data.hours : 0,
             payType: data.payType ?? "regular",
-            billable: data.billable ?? false,
+            billable: Boolean(data.billable),
             source: data.source ?? "manual_entry",
 
             serviceTicketId: data.serviceTicketId ?? undefined,
@@ -264,19 +394,17 @@ export default function TimeEntriesPage() {
   const weekEnd = payrollWeekDays[4]?.isoDate ?? "";
   const isCurrentWeek = weekOffset === 0;
 
-  // ✅ Determine if THIS user’s weekly timesheet for this week is locked.
-  // (We only enforce "Read-only week" behavior for non-admin view.)
-  const [myWeekLocked, setMyWeekLocked] = useState(false);
-
   useEffect(() => {
-    // Only meaningful for a single employee view (non-admin)
     if (canSeeAll) {
       setMyWeekLocked(false);
+      setMyWeekStatus("");
       return;
     }
+
     const uid = safeTrim(appUser?.uid);
     if (!uid || !weekStart || !weekEnd) {
       setMyWeekLocked(false);
+      setMyWeekStatus("");
       return;
     }
 
@@ -293,19 +421,23 @@ export default function TimeEntriesPage() {
       (snap) => {
         if (snap.empty) {
           setMyWeekLocked(false);
+          setMyWeekStatus("");
           return;
         }
+
         const d: any = snap.docs[0].data();
-        setMyWeekLocked(isTimesheetLockedStatus(d.status));
+        const status = safeTrim(d.status);
+        setMyWeekStatus(status);
+        setMyWeekLocked(isTimesheetLockedStatus(status));
       },
       () => {
-        // If listener fails, don't block UX
         setMyWeekLocked(false);
+        setMyWeekStatus("");
       }
     );
 
     return () => unsub();
-  }, [canSeeAll, appUser?.uid, weekStart, weekEnd]);
+  }, [appUser?.uid, canSeeAll, weekEnd, weekStart]);
 
   const visibleEntries = useMemo(() => {
     let items = entries;
@@ -321,29 +453,33 @@ export default function TimeEntriesPage() {
     }
 
     if (categoryFilter !== "all") {
-      items = items.filter(
-        (entry) =>
-          safeTrim(entry.category).toLowerCase() === safeTrim(categoryFilter).toLowerCase()
-      );
+      items = items.filter((entry) => normalizeCategory((entry as any).category) === categoryFilter);
     }
 
-    return items;
-  }, [entries, canSeeAll, appUser?.uid, weekStart, weekEnd, statusFilter, categoryFilter]);
+    return [...items].sort((a, b) => {
+      if (a.entryDate !== b.entryDate) return a.entryDate.localeCompare(b.entryDate);
+      if (canSeeAll && a.employeeName !== b.employeeName) {
+        return safeTrim(a.employeeName).localeCompare(safeTrim(b.employeeName));
+      }
+      return safeTrim(a.createdAt).localeCompare(safeTrim(b.createdAt));
+    });
+  }, [appUser?.uid, canSeeAll, categoryFilter, entries, statusFilter, weekEnd, weekStart]);
 
-  // hydrate needed display info (serviceTicket + project)
   useEffect(() => {
     async function hydrate() {
       const needTicketIds = new Set<string>();
       const needProjectIds = new Set<string>();
 
-      for (const e of visibleEntries) {
-        const cat = normalizeCategory((e as any).category);
+      for (const entry of visibleEntries) {
+        const cat = normalizeCategory((entry as any).category);
+
         if (cat === "service") {
-          const tid = safeTrim((e as any).serviceTicketId);
+          const tid = safeTrim((entry as any).serviceTicketId);
           if (tid && !ticketMiniById[tid]) needTicketIds.add(tid);
         }
+
         if (cat === "project") {
-          const pid = safeTrim((e as any).projectId);
+          const pid = safeTrim((entry as any).projectId);
           if (pid && !projectMiniById[pid]) needProjectIds.add(pid);
         }
       }
@@ -385,13 +521,22 @@ export default function TimeEntriesPage() {
       ]);
 
       const nextTickets: Record<string, ServiceTicketMini> = {};
-      for (const t of ticketResults) if (t?.id) nextTickets[t.id] = t;
+      for (const t of ticketResults) {
+        if (t?.id) nextTickets[t.id] = t;
+      }
 
       const nextProjects: Record<string, ProjectMini> = {};
-      for (const p of projectResults) if (p?.id) nextProjects[p.id] = p;
+      for (const p of projectResults) {
+        if (p?.id) nextProjects[p.id] = p;
+      }
 
-      if (Object.keys(nextTickets).length) setTicketMiniById((prev) => ({ ...prev, ...nextTickets }));
-      if (Object.keys(nextProjects).length) setProjectMiniById((prev) => ({ ...prev, ...nextProjects }));
+      if (Object.keys(nextTickets).length) {
+        setTicketMiniById((prev) => ({ ...prev, ...nextTickets }));
+      }
+
+      if (Object.keys(nextProjects).length) {
+        setProjectMiniById((prev) => ({ ...prev, ...nextProjects }));
+      }
     }
 
     hydrate();
@@ -400,29 +545,64 @@ export default function TimeEntriesPage() {
 
   const entriesByDay = useMemo(() => {
     const result: Record<string, TimeEntry[]> = {};
-    for (const day of payrollWeekDays) result[day.isoDate] = [];
+    for (const day of payrollWeekDays) {
+      result[day.isoDate] = [];
+    }
+
     for (const entry of visibleEntries) {
       if (!result[entry.entryDate]) continue;
       result[entry.entryDate].push(entry);
     }
-    for (const day of payrollWeekDays) {
-      result[day.isoDate].sort((a, b) => a.createdAt?.localeCompare(b.createdAt ?? "") ?? 0);
-    }
-    return result;
-  }, [visibleEntries, payrollWeekDays]);
 
-  const dayTotals = useMemo(() => {
-    const totals: Record<string, number> = {};
+    return result;
+  }, [payrollWeekDays, visibleEntries]);
+
+  const dayBreakdowns = useMemo(() => {
+    const totals: Record<string, DayBreakdown> = {};
+
     for (const day of payrollWeekDays) {
-      totals[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce((sum, entry) => sum + entry.hours, 0);
+      const rows = entriesByDay[day.isoDate] ?? [];
+      const breakdown: DayBreakdown = {
+        worked: 0,
+        pto: 0,
+        holiday: 0,
+        paid: 0,
+      };
+
+      for (const entry of rows) {
+        const kind = getEntryKind(entry);
+        if (kind === "holiday") {
+          breakdown.holiday += Number(entry.hours || 0);
+        } else if (kind === "pto") {
+          breakdown.pto += Number(entry.hours || 0);
+        } else {
+          breakdown.worked += Number(entry.hours || 0);
+        }
+      }
+
+      breakdown.paid = breakdown.worked + breakdown.pto + breakdown.holiday;
+      totals[day.isoDate] = breakdown;
     }
+
     return totals;
   }, [entriesByDay, payrollWeekDays]);
 
-  const weekTotal = useMemo(
-    () => visibleEntries.reduce((sum, entry) => sum + entry.hours, 0),
-    [visibleEntries]
-  );
+  const weekBreakdown = useMemo(() => {
+    return visibleEntries.reduce(
+      (acc, entry) => {
+        const kind = getEntryKind(entry);
+        const hrs = Number(entry.hours || 0);
+
+        if (kind === "holiday") acc.holiday += hrs;
+        else if (kind === "pto") acc.pto += hrs;
+        else acc.worked += hrs;
+
+        acc.paid += hrs;
+        return acc;
+      },
+      { worked: 0, pto: 0, holiday: 0, paid: 0 }
+    );
+  }, [visibleEntries]);
 
   function renderTitleAndSubtitle(entry: TimeEntry) {
     const cat = normalizeCategory((entry as any).category);
@@ -430,363 +610,532 @@ export default function TimeEntriesPage() {
     if (cat === "service") {
       const tid = safeTrim((entry as any).serviceTicketId);
       const mini = tid ? ticketMiniById[tid] : null;
-      const title = mini?.customerDisplayName || "Service";
-      const subtitle = mini?.issueSummary || "";
-      return { title, subtitle };
+      return {
+        title: mini?.customerDisplayName || "Service Ticket",
+        subtitle: mini?.issueSummary || truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+      };
     }
 
     if (cat === "project") {
       const pid = safeTrim((entry as any).projectId);
       const mini = pid ? projectMiniById[pid] : null;
-      const title = mini?.projectName || "Project";
       const stage = stageLabel((entry as any).projectStageKey);
-      const subtitle = stage ? `Stage: ${stage}` : "";
-      return { title, subtitle };
+      return {
+        title: mini?.projectName || "Project",
+        subtitle: stage ? `Stage: ${stage}` : truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+      };
     }
 
     if (cat === "meeting") {
-      const title = "Meeting";
-      const subtitle = truncateLine(firstMeaningfulLine((entry as any).notes), 60);
-      return { title, subtitle };
+      return {
+        title: "Meeting",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+      };
     }
 
-    return { title: safeTrim((entry as any).category) || "Entry", subtitle: "" };
+    if (cat === "pto") {
+      return {
+        title: "Paid Time Off",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 70) || "Approved PTO for this day",
+      };
+    }
+
+    if (cat === "holiday") {
+      return {
+        title: "Company Holiday",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 70) || "Paid holiday time",
+      };
+    }
+
+    if (cat === "shop") {
+      return {
+        title: "Shop Time",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+      };
+    }
+
+    if (cat === "office") {
+      return {
+        title: "Office Time",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+      };
+    }
+
+    return {
+      title: "Manual Entry",
+      subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+    };
   }
 
   return (
-    <ProtectedPage fallbackTitle="This Week's Time Entries">
+    <ProtectedPage fallbackTitle="Time Entries">
       <AppShell appUser={appUser}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-            marginBottom: 16,
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
-              {isCurrentWeek ? "This Week’s Time Entries" : "Weekly Time Entries"}
-            </h1>
-            <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
-              Week of {weekStart} through {weekEnd}
-            </p>
-            <p style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
-              {canSeeAll ? "Viewing all employees for this week." : "Viewing your week day by day."}
-            </p>
+        <Stack spacing={2.5}>
+          <Card variant="outlined" sx={{ borderRadius: 4 }}>
+            <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+              <Stack spacing={2.5}>
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  justifyContent="space-between"
+                  alignItems={{ xs: "flex-start", md: "center" }}
+                  spacing={2}
+                >
+                  <Box>
+                    <Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: -0.5 }}>
+                      {isCurrentWeek ? "This Week’s Time Entries" : "Weekly Time Entries"}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                      {buildWeekRangeLabel(weekStart, weekEnd)}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                      {canSeeAll
+                        ? "Viewing weekly entries across employees."
+                        : "Review worked time, PTO, and holiday hours before weekly submission."}
+                    </Typography>
+                  </Box>
 
-            {/* ✅ Only show lock message for single-user view */}
-            {!canSeeAll && myWeekLocked ? (
-              <p style={{ marginTop: 6, color: "#8a5a00", fontSize: 13, fontWeight: 700 }}>
-                This payroll week is locked because your weekly timesheet has been submitted.
-              </p>
-            ) : null}
-          </div>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} width={{ xs: "100%", md: "auto" }}>
+                    <Button
+                      variant="outlined"
+                      startIcon={<ChevronLeftRoundedIcon />}
+                      onClick={() => setWeekOffset((prev) => prev - 1)}
+                      fullWidth={false}
+                    >
+                      Previous
+                    </Button>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              type="button"
-              onClick={() => setWeekOffset((prev) => prev - 1)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
-              Previous Week
-            </button>
+                    <Button
+                      variant={isCurrentWeek ? "contained" : "outlined"}
+                      startIcon={<TodayRoundedIcon />}
+                      onClick={() => setWeekOffset(0)}
+                    >
+                      This Week
+                    </Button>
 
-            <button
-              type="button"
-              onClick={() => setWeekOffset(0)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
-              This Week
-            </button>
+                    <Button
+                      variant="outlined"
+                      endIcon={<ChevronRightRoundedIcon />}
+                      onClick={() => setWeekOffset((prev) => prev + 1)}
+                    >
+                      Next
+                    </Button>
+                  </Stack>
+                </Stack>
 
-            <button
-              type="button"
-              onClick={() => setWeekOffset((prev) => prev + 1)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #ccc",
-                borderRadius: 10,
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
-              Next Week
-            </button>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {!canSeeAll && myWeekStatus ? (
+                    <Chip
+                      color={getStatusChipColor(myWeekStatus as TimeEntry["entryStatus"])}
+                      label={`Timesheet: ${formatStatus(myWeekStatus as TimeEntry["entryStatus"])}`}
+                    />
+                  ) : null}
 
-            {/* ✅ Add Time Entry allowed unless the current user's week is locked */}
-            {!canSeeAll && myWeekLocked ? (
-              <span
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #ddd",
-                  borderRadius: 10,
-                  color: "#999",
-                  background: "#f7f7f7",
-                  fontWeight: 700,
-                }}
-                title="Locked after submission"
-              >
-                Week Locked
-              </span>
-            ) : (
-              <Link
-                href="/time-entries/new"
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #ccc",
-                  borderRadius: 10,
-                  textDecoration: "none",
-                  color: "inherit",
-                  background: "white",
-                  fontWeight: 700,
-                }}
-              >
-                Add Time Entry
-              </Link>
-            )}
-          </div>
-        </div>
+                  {!canSeeAll ? (
+                    <Chip
+                      color={myWeekLocked ? "warning" : "success"}
+                      label={myWeekLocked ? "Week locked" : "Week editable"}
+                      variant={myWeekLocked ? "filled" : "outlined"}
+                    />
+                  ) : (
+                    <Chip label="All employees" variant="outlined" />
+                  )}
+                </Stack>
 
-        <div
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: 12,
-            padding: 16,
-            marginBottom: 16,
-            background: "#fafafa",
-            display: "grid",
-            gap: 12,
-            maxWidth: 720,
-          }}
-        >
-          <div
-            style={{
+                {!canSeeAll && myWeekLocked ? (
+                  <Alert severity="warning" sx={{ borderRadius: 3 }}>
+                    This payroll week is locked because your weekly timesheet has already been submitted, approved, or exported.
+                  </Alert>
+                ) : null}
+
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+                  <Button
+                    variant="contained"
+                    onClick={() => router.push("/weekly-timesheet")}
+                    endIcon={<ArrowForwardRoundedIcon />}
+                  >
+                    Review Weekly Timesheet
+                  </Button>
+
+                  <Button
+                    variant="outlined"
+                    onClick={() => router.push("/time-entries/new")}
+                    disabled={!canSeeAll && myWeekLocked}
+                    startIcon={<EditNoteRoundedIcon />}
+                  >
+                    Add Time Entry
+                  </Button>
+                </Stack>
+              </Stack>
+            </CardContent>
+          </Card>
+
+          <Box
+            sx={{
               display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-              gap: 12,
+              gridTemplateColumns: {
+                xs: "1fr",
+                sm: "repeat(2, minmax(0, 1fr))",
+                lg: "repeat(4, minmax(0, 1fr))",
+              },
+              gap: 2,
             }}
           >
-            <div>
-              <label style={{ fontWeight: 700 }}>Status</label>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: 4,
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                }}
-              >
-                <option value="all">All Statuses</option>
-                <option value="draft">Draft</option>
-                <option value="submitted">Submitted</option>
-                <option value="approved">Approved</option>
-                <option value="rejected">Rejected</option>
-                <option value="exported">Exported</option>
-              </select>
-            </div>
+            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Stack direction="row" alignItems="center" spacing={1}>
+                    <AccessTimeRoundedIcon color="primary" fontSize="small" />
+                    <Typography variant="overline" color="text.secondary">
+                      Worked
+                    </Typography>
+                  </Stack>
+                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                    {weekBreakdown.worked.toFixed(2)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Work hours this week
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
 
-            <div>
-              <label style={{ fontWeight: 700 }}>Category</label>
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: 4,
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid #ccc",
-                }}
-              >
-                <option value="all">All Categories</option>
-                <option value="service">Service</option>
-                <option value="project">Project</option>
-                <option value="meeting">Meeting</option>
-              </select>
-            </div>
-          </div>
+            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Stack direction="row" alignItems="center" spacing={1}>
+                    <BeachAccessRoundedIcon color="secondary" fontSize="small" />
+                    <Typography variant="overline" color="text.secondary">
+                      PTO
+                    </Typography>
+                  </Stack>
+                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                    {weekBreakdown.pto.toFixed(2)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Paid time off hours
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
 
-          <div style={{ fontSize: 12, color: "#666" }}>
-            Showing {visibleEntries.length} entr{visibleEntries.length === 1 ? "y" : "ies"} for this week.
-          </div>
-        </div>
+            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Stack direction="row" alignItems="center" spacing={1}>
+                    <CelebrationRoundedIcon color="success" fontSize="small" />
+                    <Typography variant="overline" color="text.secondary">
+                      Holiday
+                    </Typography>
+                  </Stack>
+                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                    {weekBreakdown.holiday.toFixed(2)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Paid holiday hours
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
 
-        {loading ? <p>Loading time entries...</p> : null}
-        {error ? <p style={{ color: "red" }}>{error}</p> : null}
+            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Stack direction="row" alignItems="center" spacing={1}>
+                    <TodayRoundedIcon color="info" fontSize="small" />
+                    <Typography variant="overline" color="text.secondary">
+                      Total Paid
+                    </Typography>
+                  </Stack>
+                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                    {weekBreakdown.paid.toFixed(2)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Worked + PTO + holiday
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Box>
 
-        {!loading && !error ? (
-          <>
-            <div style={{ display: "grid", gap: 16 }}>
+          <Card variant="outlined" sx={{ borderRadius: 4 }}>
+            <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+              <Stack spacing={2}>
+                <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                  Filters
+                </Typography>
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                    gap: 2,
+                    maxWidth: 760,
+                  }}
+                >
+                  <FormControl fullWidth>
+                    <InputLabel>Status</InputLabel>
+                    <Select
+                      label="Status"
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value as "all" | TimeEntry["entryStatus"])}
+                    >
+                      <MenuItem value="all">All statuses</MenuItem>
+                      <MenuItem value="draft">Draft</MenuItem>
+                      <MenuItem value="submitted">Submitted</MenuItem>
+                      <MenuItem value="approved">Approved</MenuItem>
+                      <MenuItem value="rejected">Rejected</MenuItem>
+                      <MenuItem value="exported">Exported</MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  <FormControl fullWidth>
+                    <InputLabel>Category</InputLabel>
+                    <Select
+                      label="Category"
+                      value={categoryFilter}
+                      onChange={(e) => setCategoryFilter(e.target.value as CategoryFilterValue)}
+                    >
+                      <MenuItem value="all">All categories</MenuItem>
+                      <MenuItem value="service">Service</MenuItem>
+                      <MenuItem value="project">Project</MenuItem>
+                      <MenuItem value="meeting">Meeting</MenuItem>
+                      <MenuItem value="shop">Shop</MenuItem>
+                      <MenuItem value="office">Office</MenuItem>
+                      <MenuItem value="pto">PTO</MenuItem>
+                      <MenuItem value="holiday">Holiday</MenuItem>
+                      <MenuItem value="manual_other">Manual</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Box>
+
+                <Typography variant="body2" color="text.secondary">
+                  Showing {visibleEntries.length} {visibleEntries.length === 1 ? "entry" : "entries"} for this payroll week.
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+
+          {loading ? (
+            <Stack spacing={2}>
+              {[0, 1, 2].map((i) => (
+                <Card key={i} variant="outlined" sx={{ borderRadius: 4 }}>
+                  <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                    <Stack spacing={1.5}>
+                      <Skeleton variant="text" width={220} height={36} />
+                      <Skeleton variant="rectangular" height={64} sx={{ borderRadius: 3 }} />
+                      <Skeleton variant="rectangular" height={64} sx={{ borderRadius: 3 }} />
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          ) : null}
+
+          {!loading && error ? <Alert severity="error" sx={{ borderRadius: 3 }}>{error}</Alert> : null}
+
+          {!loading && !error ? (
+            <Stack spacing={2.5}>
               {payrollWeekDays.map((day) => {
-                const dayEntries = entriesByDay[day.isoDate] ?? [];
-                const total = dayTotals[day.isoDate] ?? 0;
+                const rows = entriesByDay[day.isoDate] ?? [];
+                const breakdown = dayBreakdowns[day.isoDate] ?? {
+                  worked: 0,
+                  pto: 0,
+                  holiday: 0,
+                  paid: 0,
+                };
 
                 return (
-                  <div
-                    key={day.isoDate}
-                    style={{
-                      border: "1px solid #ddd",
-                      borderRadius: 12,
-                      padding: 16,
-                      background: "#fafafa",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: 12,
-                        flexWrap: "wrap",
-                        marginBottom: 12,
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 800, fontSize: 18 }}>
-                          {day.label} {formatDisplayDate(day.isoDate)}
-                        </div>
-                        <div style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
-                          {day.isoDate}
-                        </div>
-                      </div>
+                  <Card key={day.isoDate} variant="outlined" sx={{ borderRadius: 4 }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                      <Stack spacing={2}>
+                        <Stack
+                          direction={{ xs: "column", md: "row" }}
+                          justifyContent="space-between"
+                          alignItems={{ xs: "flex-start", md: "center" }}
+                          spacing={1.5}
+                        >
+                          <Box>
+                            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                              {day.label} • {formatDisplayDate(day.isoDate)}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              {day.isoDate}
+                            </Typography>
+                          </Box>
 
-                      <div style={{ fontSize: 13, color: "#666", fontWeight: 700 }}>
-                        Daily Total: {total.toFixed(2)} hr
-                      </div>
-                    </div>
+                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                            <Chip label={`Worked ${breakdown.worked.toFixed(2)}`} variant="outlined" />
+                            <Chip label={`PTO ${breakdown.pto.toFixed(2)}`} color="secondary" variant="outlined" />
+                            <Chip label={`Holiday ${breakdown.holiday.toFixed(2)}`} color="success" variant="outlined" />
+                            <Chip label={`Paid ${breakdown.paid.toFixed(2)}`} color="info" />
+                          </Stack>
+                        </Stack>
 
-                    {dayEntries.length === 0 ? (
-                      <div
-                        style={{
-                          border: "1px dashed #ccc",
-                          borderRadius: 10,
-                          padding: 10,
-                          background: "white",
-                          color: "#666",
-                          fontSize: 13,
-                        }}
-                      >
-                        No entries for this day.
-                      </div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {dayEntries.map((entry) => {
-                          const { title, subtitle } = renderTitleAndSubtitle(entry);
-                          const pill = categoryPillLabel(String((entry as any).category || ""));
+                        <Divider />
 
-                          return (
-                            <Link
-                              key={entry.id}
-                              href={`/time-entries/${entry.id}`}
-                              style={{
-                                display: "block",
-                                border: "1px solid #ddd",
-                                borderRadius: 14,
-                                padding: 12,
-                                background: "white",
-                                textDecoration: "none",
-                                color: "inherit",
-                              }}
-                            >
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 950, fontSize: 18, lineHeight: 1.15 }}>
-                                    {canSeeAll ? `${entry.employeeName} • ` : ""}
-                                    {title}
-                                  </div>
+                        {rows.length === 0 ? (
+                          <Card
+                            variant="outlined"
+                            sx={{
+                              borderRadius: 3,
+                              borderStyle: "dashed",
+                              bgcolor: "background.default",
+                            }}
+                          >
+                            <CardContent>
+                              <Stack spacing={1.5} alignItems="flex-start">
+                                <Typography variant="body1" sx={{ fontWeight: 700 }}>
+                                  No entries for this day
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  Worked time, approved PTO, and paid holidays will all appear here for review.
+                                </Typography>
+                                {!canSeeAll && !myWeekLocked ? (
+                                  <Button
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<EditNoteRoundedIcon />}
+                                    onClick={() => router.push("/time-entries/new")}
+                                  >
+                                    Add entry
+                                  </Button>
+                                ) : null}
+                              </Stack>
+                            </CardContent>
+                          </Card>
+                        ) : (
+                          <Stack spacing={1.5}>
+                            {rows.map((entry) => {
+                              const { title, subtitle } = renderTitleAndSubtitle(entry);
+                              const categoryLabel = formatCategoryLabel((entry as any).category);
+                              const kind = getEntryKind(entry);
 
-                                  <div style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 8 }}>
-                                    <span
-                                      style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        padding: "4px 10px",
-                                        borderRadius: 999,
-                                        border: "1px solid #e6e6e6",
-                                        background: "#fafafa",
-                                        fontSize: 12,
-                                        fontWeight: 900,
-                                        textTransform: "lowercase",
-                                      }}
-                                    >
-                                      {pill}
-                                    </span>
-                                  </div>
+                              return (
+                                <Link
+                                  key={entry.id}
+                                  href={`/time-entries/${entry.id}`}
+                                  style={{ textDecoration: "none", color: "inherit" }}
+                                >
+                                  <Card
+                                    variant="outlined"
+                                    sx={{
+                                      borderRadius: 3,
+                                      transition: "transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease",
+                                      "&:hover": {
+                                        transform: "translateY(-1px)",
+                                        boxShadow: 2,
+                                        borderColor: "primary.main",
+                                      },
+                                    }}
+                                  >
+                                    <CardContent sx={{ p: { xs: 2, sm: 2.25 } }}>
+                                      <Stack spacing={1.5}>
+                                        <Stack
+                                          direction={{ xs: "column", sm: "row" }}
+                                          justifyContent="space-between"
+                                          alignItems={{ xs: "flex-start", sm: "flex-start" }}
+                                          spacing={1.5}
+                                        >
+                                          <Box sx={{ minWidth: 0 }}>
+                                            <Typography
+                                              variant="subtitle1"
+                                              sx={{ fontWeight: 900, lineHeight: 1.2 }}
+                                            >
+                                              {canSeeAll ? `${safeTrim(entry.employeeName) || "Employee"} • ` : ""}
+                                              {title}
+                                            </Typography>
 
-                                  {subtitle ? (
-                                    <div style={{ marginTop: 8, fontSize: 13, color: "#555", fontWeight: 700 }}>
-                                      {subtitle}
-                                    </div>
-                                  ) : null}
-                                </div>
+                                            {subtitle ? (
+                                              <Typography
+                                                variant="body2"
+                                                color="text.secondary"
+                                                sx={{ mt: 0.5 }}
+                                              >
+                                                {subtitle}
+                                              </Typography>
+                                            ) : null}
+                                          </Box>
 
-                                <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                                  <div style={{ fontWeight: 1000, fontSize: 18 }}>
-                                    {Number(entry.hours).toFixed(2)} hr
-                                  </div>
-                                  <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>
-                                    {formatPayType(entry.payType)}
-                                  </div>
-                                </div>
-                              </div>
+                                          <Box sx={{ textAlign: { xs: "left", sm: "right" }, whiteSpace: "nowrap" }}>
+                                            <Typography variant="h6" sx={{ fontWeight: 900 }}>
+                                              {Number(entry.hours || 0).toFixed(2)} hr
+                                            </Typography>
+                                            <Typography variant="body2" color="text.secondary">
+                                              {formatPayType(entry.payType)}
+                                            </Typography>
+                                          </Box>
+                                        </Stack>
 
-                              <div style={{ marginTop: 10, fontSize: 12, color: "#777" }}>
-                                Billable: <strong>{String(entry.billable)}</strong> &nbsp;&nbsp;•&nbsp;&nbsp; Status:{" "}
-                                <strong>{formatStatus(entry.entryStatus)}</strong>
-                              </div>
+                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                          <Chip size="small" label={categoryLabel} variant="outlined" />
+                                          <Chip
+                                            size="small"
+                                            label={formatSourceLabel(entry.source)}
+                                            variant="outlined"
+                                          />
+                                          <Chip
+                                            size="small"
+                                            label={formatStatus(entry.entryStatus)}
+                                            color={getStatusChipColor(entry.entryStatus)}
+                                          />
+                                          <Chip
+                                            size="small"
+                                            label={kind === "holiday" ? "Holiday pay" : kind === "pto" ? "PTO pay" : "Worked"}
+                                            color={getKindChipColor(kind)}
+                                            variant={kind === "worked" ? "outlined" : "filled"}
+                                          />
+                                        </Stack>
 
-                              <div style={{ marginTop: 10, fontSize: 12, color: "#0a58ca", fontWeight: 800 }}>
-                                Open Entry →
-                              </div>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                                        <Stack
+                                          direction={{ xs: "column", sm: "row" }}
+                                          justifyContent="space-between"
+                                          alignItems={{ xs: "flex-start", sm: "center" }}
+                                          spacing={1}
+                                        >
+                                          <Typography variant="caption" color="text.secondary">
+                                            Billable: <strong>{entry.billable ? "Yes" : "No"}</strong>
+                                          </Typography>
+
+                                          <Typography
+                                            variant="body2"
+                                            color="primary.main"
+                                            sx={{ fontWeight: 800 }}
+                                          >
+                                            Open entry →
+                                          </Typography>
+                                        </Stack>
+                                      </Stack>
+                                    </CardContent>
+                                  </Card>
+                                </Link>
+                              );
+                            })}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
                 );
               })}
-            </div>
+            </Stack>
+          ) : null}
+        </Stack>
 
-            <div
-              style={{
-                marginTop: 18,
-                border: "1px solid #ddd",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                maxWidth: 720,
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: 18 }}>Weekly Total</div>
-              <div style={{ marginTop: 6, fontSize: 14, color: "#444" }}>
-                {weekTotal.toFixed(2)} hr
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
-                Overtime, PTO, and holiday treatment will be finalized in timesheet processing.
-              </div>
-            </div>
-          </>
+        {!canSeeAll && !myWeekLocked ? (
+          <Fab
+            color="primary"
+            variant="extended"
+            onClick={() => router.push("/time-entries/new")}
+            sx={{
+              position: "fixed",
+              right: 24,
+              bottom: 24,
+              zIndex: 20,
+            }}
+          >
+            <EditNoteRoundedIcon sx={{ mr: 1 }} />
+            Add Entry
+          </Fab>
         ) : null}
       </AppShell>
     </ProtectedPage>

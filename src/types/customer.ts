@@ -1,4 +1,9 @@
+// src/types/customer.ts
 export type CustomerSource = "dcflow" | "quickbooks";
+
+export type AddressSource = "manual" | "qbo_ship" | "qbo_bill" | "legacy";
+
+export type QuickbooksSyncStatus = "not_linked" | "synced" | "pending" | "error";
 
 export type ServiceAddress = {
   id: string;
@@ -14,6 +19,9 @@ export type ServiceAddress = {
   active: boolean;
   isPrimary?: boolean;
 
+  // Optional source tracking for future QBO/DCFlow sync logic
+  source?: AddressSource;
+
   createdAt?: string;
   updatedAt?: string;
 };
@@ -21,8 +29,12 @@ export type ServiceAddress = {
 export type Customer = {
   id: string;
 
-  // Future QuickBooks linkage
+  // QuickBooks linkage
   quickbooksCustomerId?: string;
+  quickbooksSyncStatus?: QuickbooksSyncStatus;
+  lastQuickbooksSyncAt?: string;
+  quickbooksLastError?: string;
+
   source: CustomerSource;
 
   displayName: string;
@@ -37,7 +49,10 @@ export type Customer = {
   billingState: string;
   billingPostalCode: string;
 
-  // Future service addresses support
+  // Optional source tracking for billing address origin
+  billingAddressSource?: Exclude<AddressSource, "qbo_ship">;
+
+  // Service addresses
   serviceAddresses?: ServiceAddress[];
 
   notes?: string;
