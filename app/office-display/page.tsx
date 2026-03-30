@@ -1,3 +1,4 @@
+// app/office-display/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -33,6 +34,7 @@ import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
 import AssignmentLateRoundedIcon from "@mui/icons-material/AssignmentLateRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
+import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
@@ -84,6 +86,13 @@ type CompanyEvent = {
   location?: string | null;
   notes?: string | null;
   blocksSchedule?: boolean;
+};
+
+type CompanyHoliday = {
+  id: string;
+  date: string;
+  name: string;
+  active: boolean;
 };
 
 type TicketSummary = {
@@ -299,6 +308,20 @@ function extractPtoDates(d: any): string[] {
   return [];
 }
 
+function extractHolidayDate(d: any) {
+  return String(d.date ?? d.holidayDate ?? d.day ?? "").trim();
+}
+
+function extractHolidayName(d: any) {
+  return String(d.name ?? d.title ?? d.holidayName ?? "Holiday").trim();
+}
+
+function holidayIsActive(d: any) {
+  if (typeof d.active === "boolean") return d.active;
+  if (typeof d.isActive === "boolean") return d.isActive;
+  return true;
+}
+
 function MaterialSymbolIcon({
   name,
   size = 14,
@@ -333,6 +356,7 @@ export default function OfficeDisplayPage() {
   const [techs, setTechs] = useState<TechRow[]>([]);
   const [trips, setTrips] = useState<TripDoc[]>([]);
   const [eventsByDate, setEventsByDate] = useState<Record<string, CompanyEvent[]>>({});
+  const [holidaysByDate, setHolidaysByDate] = useState<Record<string, CompanyHoliday[]>>({});
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
   const [ptoByUidByDate, setPtoByUidByDate] = useState<Record<string, Record<string, PtoDay>>>({});
@@ -503,6 +527,54 @@ export default function OfficeDisplayPage() {
 
     return () => {
       for (const u of unsubs) u();
+    };
+  }, [weekStartIso, weekEndIso, days]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHolidays() {
+      try {
+        const snap = await getDocs(collection(db, "companyHolidays"));
+        const map: Record<string, CompanyHoliday[]> = {};
+        for (const day of days) map[day.iso] = [];
+
+        for (const ds of snap.docs) {
+          const d = ds.data() as any;
+          const date = extractHolidayDate(d);
+          if (!date) continue;
+          if (date < weekStartIso || date > weekEndIso) continue;
+          if (!holidayIsActive(d)) continue;
+
+          const holiday: CompanyHoliday = {
+            id: ds.id,
+            date,
+            name: extractHolidayName(d),
+            active: true,
+          };
+
+          if (!map[date]) map[date] = [];
+          map[date].push(holiday);
+        }
+
+        for (const k of Object.keys(map)) {
+          map[k].sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        if (!cancelled) {
+          setHolidaysByDate(map);
+          setLastUpdated(new Date().toLocaleTimeString());
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setError((prev) => prev || e?.message || "Failed to load company holidays.");
+        }
+      }
+    }
+
+    loadHolidays();
+    return () => {
+      cancelled = true;
     };
   }, [weekStartIso, weekEndIso, days]);
 
@@ -1025,7 +1097,7 @@ export default function OfficeDisplayPage() {
                 </Typography>
 
                 <Typography variant="body2" color="text.secondary">
-                  Technician schedule overview with meetings, assignments, approved PTO, and weekly visibility
+                  Technician schedule overview with meetings, company holidays, approved PTO, and weekly visibility
                 </Typography>
               </Stack>
             </Stack>
@@ -1101,6 +1173,8 @@ export default function OfficeDisplayPage() {
 
             {days.map(({ d, iso }) => {
               const ptoNames = ptoNamesByDate[iso] || [];
+              const holidays = holidaysByDate[iso] || [];
+
               return (
                 <Box
                   key={iso}
@@ -1124,6 +1198,24 @@ export default function OfficeDisplayPage() {
                         {formatIsoMDY(iso)}
                       </Typography>
                     </Stack>
+
+                    {holidays.map((holiday) => (
+                      <Chip
+                        key={holiday.id}
+                        size="small"
+                        icon={<CelebrationRoundedIcon sx={{ fontSize: 15 }} />}
+                        label={holiday.name}
+                        variant="outlined"
+                        sx={{
+                          width: "fit-content",
+                          borderRadius: 1.25,
+                          fontWeight: 600,
+                          color: "#FFE6A7",
+                          backgroundColor: "rgba(245,158,11,0.10)",
+                          border: "1px solid rgba(245,158,11,0.24)",
+                        }}
+                      />
+                    ))}
 
                     {ptoNames.length ? (
                       <Chip
@@ -1220,6 +1312,8 @@ export default function OfficeDisplayPage() {
                   const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
                   const cellTrips = grid.get(rowKey)?.get(iso) || [];
                   const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
+                  const holidays = holidaysByDate[iso] || [];
+                  const isHoliday = holidays.length > 0;
 
                   return (
                     <Box
@@ -1234,7 +1328,9 @@ export default function OfficeDisplayPage() {
                         gap: 0.7,
                         backgroundColor: pto
                           ? alpha(theme.palette.secondary.main, 0.08)
-                          : "transparent",
+                          : isHoliday
+                            ? "rgba(245,158,11,0.06)"
+                            : "transparent",
                       }}
                     >
                       {pto ? (
@@ -1249,6 +1345,24 @@ export default function OfficeDisplayPage() {
                             borderRadius: 1.25,
                             fontWeight: 500,
                             flexShrink: 0,
+                          }}
+                        />
+                      ) : null}
+
+                      {!pto && isHoliday ? (
+                        <Chip
+                          size="small"
+                          icon={<CelebrationRoundedIcon sx={{ fontSize: 15 }} />}
+                          label={holidays.length === 1 ? holidays[0].name : `${holidays.length} holidays`}
+                          variant="outlined"
+                          sx={{
+                            width: "fit-content",
+                            borderRadius: 1.25,
+                            fontWeight: 600,
+                            flexShrink: 0,
+                            color: "#FFE6A7",
+                            backgroundColor: "rgba(245,158,11,0.10)",
+                            border: "1px solid rgba(245,158,11,0.24)",
                           }}
                         />
                       ) : null}
@@ -1268,7 +1382,7 @@ export default function OfficeDisplayPage() {
                           }}
                         >
                           <Typography variant="caption">
-                            {pto ? "PTO" : "—"}
+                            {pto ? "PTO" : isHoliday ? "Holiday" : "—"}
                           </Typography>
                         </Paper>
                       ) : (
