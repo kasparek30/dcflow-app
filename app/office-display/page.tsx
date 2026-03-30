@@ -1174,8 +1174,12 @@ export default function OfficeDisplayPage() {
             {days.map(({ d, iso }) => {
               const ptoNames = ptoNamesByDate[iso] || [];
               const holidays = holidaysByDate[iso] || [];
+
               const holidayLabel =
                 holidays.length === 1 ? holidays[0].name : `${holidays.length} Holidays`;
+
+              const ptoLabel =
+                ptoNames.length === 1 ? `PTO: ${ptoNames[0]}` : `PTO: ${ptoNames.length} employees`;
 
               return (
                 <Box
@@ -1198,9 +1202,16 @@ export default function OfficeDisplayPage() {
                         direction="row"
                         spacing={0.75}
                         alignItems="center"
-                        sx={{ minWidth: 0, flex: 1, overflow: "hidden" }}
+                        sx={{
+                          minWidth: 0,
+                          flex: 1,
+                          overflow: "hidden",
+                        }}
                       >
-                        <Typography variant="subtitle2" sx={{ flexShrink: 0 }}>
+                        <Typography
+                          variant="subtitle2"
+                          sx={{ flexShrink: 0 }}
+                        >
                           {formatDowShort(d)}
                         </Typography>
 
@@ -1225,27 +1236,32 @@ export default function OfficeDisplayPage() {
                             }}
                           />
                         ) : null}
+
+                        {ptoNames.length ? (
+                          <Chip
+                            size="small"
+                            icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
+                            label={ptoLabel}
+                            color="secondary"
+                            variant="outlined"
+                            sx={{
+                              maxWidth: "100%",
+                              borderRadius: 1.25,
+                              fontWeight: 500,
+                              "& .MuiChip-label": {
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              },
+                            }}
+                          />
+                        ) : null}
                       </Stack>
 
                       <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
                         {formatIsoMDY(iso)}
                       </Typography>
                     </Stack>
-
-                    {ptoNames.length ? (
-                      <Chip
-                        size="small"
-                        icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
-                        label={ptoNames.length === 1 ? `PTO: ${ptoNames[0]}` : `PTO: ${ptoNames.length} employees`}
-                        color="secondary"
-                        variant="outlined"
-                        sx={{
-                          width: "fit-content",
-                          borderRadius: 1.25,
-                          fontWeight: 500,
-                        }}
-                      />
-                    ) : null}
 
                     {renderMeetingsForDay(iso)}
                   </Stack>
