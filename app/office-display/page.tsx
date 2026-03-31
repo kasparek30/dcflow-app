@@ -35,6 +35,7 @@ import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
 import AssignmentLateRoundedIcon from "@mui/icons-material/AssignmentLateRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
+import FiberManualRecordRoundedIcon from "@mui/icons-material/FiberManualRecordRounded";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
@@ -172,6 +173,12 @@ function formatTime12h(hhmm?: string) {
 
 function normalizeStatus(s?: string) {
   return String(s || "").trim().toLowerCase();
+}
+
+function isTripActivelyWorking(t: TripDoc) {
+  const status = normalizeStatus(t.status);
+  const timer = normalizeStatus(t.timerState || "");
+  return status === "in_progress" || timer === "running";
 }
 
 function statusTone(status?: string) {
@@ -804,6 +811,32 @@ export default function OfficeDisplayPage() {
     const isCompleted =
       normalizeStatus(t.status) === "complete" ||
       normalizeStatus(t.status) === "completed";
+    const isActiveNow = isTripActivelyWorking(t);
+
+    const activePalette =
+      tripType === "project"
+        ? {
+            glow: "rgba(245, 158, 11, 0.28)",
+            border: "rgba(245, 158, 11, 0.48)",
+            bgTop: "rgba(245, 158, 11, 0.16)",
+            bgBottom: "rgba(245, 158, 11, 0.08)",
+            iconBg: "rgba(245, 158, 11, 0.22)",
+            iconColor: "#FFD89C",
+            liveBg: "rgba(245, 158, 11, 0.16)",
+            liveBorder: "rgba(245, 158, 11, 0.32)",
+            liveColor: "#FFE6B7",
+          }
+        : {
+            glow: "rgba(71, 184, 255, 0.28)",
+            border: "rgba(71, 184, 255, 0.46)",
+            bgTop: "rgba(71, 184, 255, 0.16)",
+            bgBottom: "rgba(71, 184, 255, 0.08)",
+            iconBg: "rgba(71, 184, 255, 0.22)",
+            iconColor: "#D8F0FF",
+            liveBg: "rgba(71, 184, 255, 0.14)",
+            liveBorder: "rgba(71, 184, 255, 0.28)",
+            liveColor: "#E5F7FF",
+          };
 
     return (
       <Paper
@@ -812,10 +845,58 @@ export default function OfficeDisplayPage() {
         sx={{
           px: 0.9,
           py: isCompleted ? 0.7 : 0.9,
-          borderRadius: 1.5,
-          backgroundColor: "background.paper",
-          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+          borderRadius: 1.75,
           minHeight: 0,
+          position: "relative",
+          overflow: "hidden",
+          background: isActiveNow
+            ? `linear-gradient(180deg, ${activePalette.bgTop} 0%, ${activePalette.bgBottom} 100%)`
+            : "background.paper",
+          border: isActiveNow
+            ? `1px solid ${activePalette.border}`
+            : `1px solid ${alpha("#FFFFFF", 0.08)}`,
+          boxShadow: isActiveNow
+            ? `0 0 0 1px ${alpha(activePalette.glow, 0.32)}, 0 0 20px ${alpha(
+                activePalette.glow,
+                0.28
+              )}`
+            : "none",
+          animation: isActiveNow ? "officeTripPulse 2.2s ease-in-out infinite" : "none",
+          "@keyframes officeTripPulse": {
+            "0%": {
+              boxShadow: `0 0 0 1px ${alpha(activePalette.glow, 0.20)}, 0 0 0px ${alpha(
+                activePalette.glow,
+                0.0
+              )}`,
+              transform: "scale(1)",
+            },
+            "50%": {
+              boxShadow: `0 0 0 1px ${alpha(activePalette.glow, 0.38)}, 0 0 22px ${alpha(
+                activePalette.glow,
+                0.42
+              )}`,
+              transform: "scale(1.005)",
+            },
+            "100%": {
+              boxShadow: `0 0 0 1px ${alpha(activePalette.glow, 0.20)}, 0 0 0px ${alpha(
+                activePalette.glow,
+                0.0
+              )}`,
+              transform: "scale(1)",
+            },
+          },
+          "&::after": isActiveNow
+            ? {
+                content: '""',
+                position: "absolute",
+                inset: 0,
+                pointerEvents: "none",
+                background: `linear-gradient(135deg, ${alpha(
+                  "#FFFFFF",
+                  0.06
+                )} 0%, transparent 45%, transparent 100%)`,
+              }
+            : undefined,
         }}
       >
         <Stack spacing={isCompleted ? 0.45 : 0.5}>
@@ -829,12 +910,14 @@ export default function OfficeDisplayPage() {
                   display: "grid",
                   placeItems: "center",
                   flexShrink: 0,
-                  backgroundColor:
-                    tripType === "project"
+                  backgroundColor: isActiveNow
+                    ? activePalette.iconBg
+                    : tripType === "project"
                       ? alpha(theme.palette.warning.main, 0.14)
                       : alpha(theme.palette.primary.main, 0.14),
-                  color:
-                    tripType === "project"
+                  color: isActiveNow
+                    ? activePalette.iconColor
+                    : tripType === "project"
                       ? "#FFD89C"
                       : theme.palette.primary.light,
                 }}
@@ -847,19 +930,59 @@ export default function OfficeDisplayPage() {
               </Box>
 
               <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Typography
-                  variant="subtitle2"
-                  sx={{
-                    lineHeight: 1.2,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                  }}
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  alignItems="flex-start"
+                  justifyContent="space-between"
+                  sx={{ minWidth: 0 }}
                 >
-                  {title}
-                </Typography>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{
+                      lineHeight: 1.2,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      minWidth: 0,
+                      flex: 1,
+                    }}
+                  >
+                    {title}
+                  </Typography>
+
+                  {isActiveNow ? (
+                    <Chip
+                      icon={
+                        <FiberManualRecordRoundedIcon
+                          sx={{
+                            fontSize: "10px !important",
+                            color: `${activePalette.liveColor} !important`,
+                          }}
+                        />
+                      }
+                      label="Live"
+                      size="small"
+                      sx={{
+                        height: 20,
+                        ml: 0.25,
+                        borderRadius: 999,
+                        color: activePalette.liveColor,
+                        backgroundColor: activePalette.liveBg,
+                        border: `1px solid ${activePalette.liveBorder}`,
+                        flexShrink: 0,
+                        "& .MuiChip-label": {
+                          px: 0.75,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          letterSpacing: "0.02em",
+                        },
+                      }}
+                    />
+                  ) : null}
+                </Stack>
 
                 {subtitle ? (
                   <Typography
@@ -879,40 +1002,55 @@ export default function OfficeDisplayPage() {
               </Box>
             </Stack>
 
-            <Chip
-              label={tone.label}
-              size="small"
-              sx={{
-                height: 20,
-                borderRadius: 1,
-                color: tone.color,
-                backgroundColor: tone.bg,
-                border: `1px solid ${tone.border}`,
-                "& .MuiChip-label": {
-                  px: 0.75,
-                  fontSize: 10,
-                  fontWeight: 500,
-                },
-              }}
-            />
+            {!isActiveNow ? (
+              <Chip
+                label={tone.label}
+                size="small"
+                sx={{
+                  height: 20,
+                  borderRadius: 1,
+                  color: tone.color,
+                  backgroundColor: tone.bg,
+                  border: `1px solid ${tone.border}`,
+                  "& .MuiChip-label": {
+                    px: 0.75,
+                    fontSize: 10,
+                    fontWeight: 500,
+                  },
+                }}
+              />
+            ) : null}
           </Stack>
 
           {!isCompleted ? (
             <Stack spacing={0.35}>
               <Stack direction="row" spacing={0.5} alignItems="center">
-                <ScheduleRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
-                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                <ScheduleRoundedIcon
+                  sx={{
+                    fontSize: 13,
+                    color: isActiveNow ? activePalette.iconColor : "text.secondary",
+                  }}
+                />
+                <Typography
+                  variant="caption"
+                  sx={{ color: isActiveNow ? activePalette.liveColor : "text.secondary" }}
+                >
                   {timeText}
                 </Typography>
               </Stack>
 
               {location ? (
                 <Stack direction="row" spacing={0.5} alignItems="center">
-                  <LocationOnRoundedIcon sx={{ fontSize: 13, color: "text.secondary" }} />
+                  <LocationOnRoundedIcon
+                    sx={{
+                      fontSize: 13,
+                      color: isActiveNow ? activePalette.iconColor : "text.secondary",
+                    }}
+                  />
                   <Typography
                     variant="caption"
                     sx={{
-                      color: "text.secondary",
+                      color: isActiveNow ? activePalette.liveColor : "text.secondary",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
@@ -1430,6 +1568,19 @@ export default function OfficeDisplayPage() {
             ))}
           </Box>
         </Paper>
+
+        {loading ? (
+          <Alert
+            severity="info"
+            variant="outlined"
+            sx={{
+              borderRadius: 1.5,
+              flexShrink: 0,
+            }}
+          >
+            Loading office display…
+          </Alert>
+        ) : null}
 
         {error ? (
           <Alert

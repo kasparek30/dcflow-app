@@ -2,18 +2,19 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import {
   addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
+  orderBy,
   query,
+  runTransaction,
   setDoc,
   updateDoc,
   where,
-  orderBy,
-  runTransaction,
 } from "firebase/firestore";
 import {
   Alert,
@@ -24,71 +25,84 @@ import {
   CardHeader,
   Checkbox,
   Chip,
-  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
-  Fab,
   FormControlLabel,
   IconButton,
   MenuItem,
   Paper,
   Stack,
   TextField,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
-import type { SxProps, Theme } from "@mui/material/styles";
 import useMediaQuery from "@mui/material/useMediaQuery";
-import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
-import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
-import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
-import AlternateEmailRoundedIcon from "@mui/icons-material/AlternateEmailRounded";
-import AddRoundedIcon from "@mui/icons-material/AddRounded";
-import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
-import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
-import EditRoundedIcon from "@mui/icons-material/EditRounded";
-import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import AssignmentTurnedInRoundedIcon from "@mui/icons-material/AssignmentTurnedInRounded";
-import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
-import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
 import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
+import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
+import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
+import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
+import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
+import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
+import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
+import AlternateEmailRoundedIcon from "@mui/icons-material/AlternateEmailRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
-import type { ServiceTicket } from "../../../src/types/service-ticket";
-import type { AppUser } from "../../../src/types/app-user";
+import {
+  canCancelTrip,
+  canEditTripSchedule,
+  canFinishTrip,
+  canPauseTrip,
+  canResumeTrip,
+  canStartTrip,
+  deriveTicketStatusFromTrips,
+  formatLifecycleTripStatus,
+  getManualTicketStatusError,
+  hasInProgressTrips,
+  hasOpenTrips,
+  isTicketTerminal,
+  normalizeTripStatus,
+} from "../../../src/lib/service-ticket-lifecycle";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
+import type { AppUser } from "../../../src/types/app-user";
+import type { ServiceTicket } from "../../../src/types/service-ticket";
 
-type ServiceTicketDetailPageProps = {
-  params: Promise<{
-    ticketId: string;
-  }>;
+type Props = {
+  params: Promise<{ ticketId: string }>;
 };
 
-type TechnicianOption = {
-  uid: string;
-  displayName: string;
-  active: boolean;
-  role: AppUser["role"];
-};
-
-type EmployeeProfileOption = {
-  id: string;
-  userUid?: string | null;
-  displayName?: string;
-  employmentStatus?: string;
-  laborRole?: string;
-  defaultPairedTechUid?: string | null;
-};
+type TicketStatus =
+  | "new"
+  | "scheduled"
+  | "in_progress"
+  | "follow_up"
+  | "completed"
+  | "cancelled";
 
 type TripTimeWindow = "am" | "pm" | "all_day" | "custom";
+
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+  helperUid?: string | null;
+  helperName?: string | null;
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
 
 type PauseBlock = {
   startAt: string;
@@ -102,17 +116,6 @@ type TripMaterial = {
   notes?: string;
 };
 
-type TripCrew = {
-  primaryTechUid?: string | null;
-  primaryTechName?: string | null;
-  helperUid?: string | null;
-  helperName?: string | null;
-  secondaryTechUid?: string | null;
-  secondaryTechName?: string | null;
-  secondaryHelperUid?: string | null;
-  secondaryHelperName?: string | null;
-};
-
 type TripDoc = {
   id: string;
   active: boolean;
@@ -122,16 +125,16 @@ type TripDoc = {
   timeWindow: TripTimeWindow | string;
   startTime: string;
   endTime: string;
-  crew?: TripCrew;
+  crew?: TripCrew | null;
+  crewConfirmed?: TripCrew | null;
   link?: {
     serviceTicketId?: string | null;
     projectId?: string | null;
     projectStageKey?: string | null;
   };
-  sourceKey?: string;
   notes?: string | null;
   cancelReason?: string | null;
-  timerState?: "not_started" | "running" | "paused" | "complete" | string;
+  timerState?: string | null;
   actualStartAt?: string | null;
   actualEndAt?: string | null;
   startedByUid?: string | null;
@@ -141,12 +144,9 @@ type TripDoc = {
   workNotes?: string | null;
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
-  crewConfirmed?: TripCrew | null;
   materials?: TripMaterial[] | null;
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
-  createdAt?: string;
-  createdByUid?: string | null;
   updatedAt?: string;
   updatedByUid?: string | null;
 };
@@ -175,26 +175,33 @@ type TicketWithBilling = ServiceTicket & {
   billing?: BillingPacket | null;
 };
 
-type TicketStatus =
-  | "new"
-  | "scheduled"
-  | "in_progress"
-  | "follow_up"
-  | "completed"
-  | "cancelled";
+type TechnicianOption = {
+  uid: string;
+  displayName: string;
+  active: boolean;
+  role: AppUser["role"];
+};
+
+type EmployeeProfileOption = {
+  id: string;
+  userUid?: string | null;
+  displayName?: string;
+  employmentStatus?: string;
+  laborRole?: string;
+  defaultPairedTechUid?: string | null;
+};
 
 type FinishMode = "none" | "follow_up" | "resolved";
 
-function safeText(x: unknown) {
-  return String(x ?? "").trim();
-}
+type ExistingTimeEntry = {
+  hours?: number;
+  hoursLocked?: boolean;
+  createdAt?: string;
+  createdByUid?: string | null;
+};
 
-function oneLine(x: unknown) {
-  return safeText(x).replace(/\s+/g, " ");
-}
-
-function normalizeRole(role?: string) {
-  return (role || "").trim().toLowerCase();
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function isoTodayLocal() {
@@ -205,83 +212,8 @@ function isoTodayLocal() {
   return `${y}-${m}-${day}`;
 }
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function roundToHalf(hours: number) {
-  return Math.round(hours * 2) / 2;
-}
-
-function stripUndefined<T>(obj: T): T {
-  if (obj === null || obj === undefined) return obj;
-
-  if (Array.isArray(obj)) {
-    return obj.map((v) => stripUndefined(v)) as unknown as T;
-  }
-
-  if (typeof obj === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      if (v === undefined) continue;
-      out[k] = stripUndefined(v);
-    }
-    return out as unknown as T;
-  }
-
-  return obj;
-}
-
-function formatTripWindow(w: string) {
-  if (w === "am") return "AM";
-  if (w === "pm") return "PM";
-  if (w === "all_day") return "All Day";
-  if (w === "custom") return "Custom";
-  return w;
-}
-
-function windowToTimes(window: TripTimeWindow) {
-  if (window === "am") return { start: "08:00", end: "12:00" };
-  if (window === "pm") return { start: "13:00", end: "17:00" };
-  if (window === "all_day") return { start: "08:00", end: "17:00" };
-  return { start: "09:00", end: "10:00" };
-}
-
-function minutesBetweenIso(aIso: string, bIso: string) {
-  const a = new Date(aIso).getTime();
-  const b = new Date(bIso).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
-  const diffMs = b - a;
-  return Math.max(0, Math.round(diffMs / 60000));
-}
-
-function sumPausedMinutes(pauseBlocks?: PauseBlock[]) {
-  if (!Array.isArray(pauseBlocks) || pauseBlocks.length === 0) return 0;
-  let total = 0;
-  for (const p of pauseBlocks) {
-    if (!p?.startAt) continue;
-    const endAt = p.endAt || null;
-    if (!endAt) continue;
-    total += minutesBetweenIso(p.startAt, endAt);
-  }
-  return total;
-}
-
-function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
-  if (!uid) return false;
-  if (!crew) return false;
-  return (
-    (crew.primaryTechUid || "") === uid ||
-    (crew.helperUid || "") === uid ||
-    (crew.secondaryTechUid || "") === uid ||
-    (crew.secondaryHelperUid || "") === uid
-  );
-}
-
 function hhmmLocal(d: Date) {
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 function addMinutes(date: Date, mins: number) {
@@ -290,78 +222,30 @@ function addMinutes(date: Date, mins: number) {
   return d;
 }
 
-function crewMembersFromTrip(trip: { crewConfirmed?: TripCrew | null; crew?: TripCrew | null }) {
-  const crew = trip.crewConfirmed || trip.crew || {};
-  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> = [];
-
-  if (crew.primaryTechUid)
-    out.push({
-      uid: crew.primaryTechUid,
-      name: crew.primaryTechName || "Primary Tech",
-      role: "technician",
-    });
-
-  if (crew.helperUid)
-    out.push({
-      uid: crew.helperUid,
-      name: crew.helperName || "Helper",
-      role: "helper",
-    });
-
-  if (crew.secondaryTechUid)
-    out.push({
-      uid: crew.secondaryTechUid,
-      name: crew.secondaryTechName || "Secondary Tech",
-      role: "technician",
-    });
-
-  if (crew.secondaryHelperUid)
-    out.push({
-      uid: crew.secondaryHelperUid,
-      name: crew.secondaryHelperName || "Secondary Helper",
-      role: "helper",
-    });
-
-  const seen = new Set<string>();
-  return out.filter((m) => {
-    if (!m.uid) return false;
-    if (seen.has(m.uid)) return false;
-    seen.add(m.uid);
-    return true;
-  });
+function roundToHalf(hours: number) {
+  return Math.round(hours * 2) / 2;
 }
 
-function isAppleDevice() {
-  if (typeof window === "undefined") return false;
-  const ua = window.navigator.userAgent || "";
-  return /iPhone|iPad|iPod/i.test(ua);
+function normalizeRole(role?: string) {
+  return String(role || "").trim().toLowerCase();
 }
 
-function buildMapsUrl(address: string) {
-  const q = encodeURIComponent(address);
-  if (isAppleDevice()) {
-    return `https://maps.apple.com/?q=${q}`;
+function stripUndefined<T>(obj: T): T {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map((x) => stripUndefined(x)) as unknown as T;
+  if (typeof obj === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefined(v);
+    }
+    return out as unknown as T;
   }
-  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+  return obj;
 }
 
-function buildMapsEmbedUrl(address: string) {
-  const q = encodeURIComponent(address);
-  return `https://www.google.com/maps?q=${q}&output=embed`;
-}
-
-function isTerminalTicketStatus(s?: string) {
-  const x = String(s || "").toLowerCase().trim();
-  return x === "completed" || x === "cancelled";
-}
-
-function isAlreadyInProgressOrBeyond(s?: string) {
-  const x = String(s || "").toLowerCase().trim();
-  return x === "in_progress" || x === "follow_up" || x === "completed" || x === "cancelled";
-}
-
-function formatTicketStatus(value: ServiceTicket["status"]) {
-  switch (value) {
+function formatTicketStatus(value?: string) {
+  switch (String(value || "").toLowerCase()) {
     case "new":
       return "New";
     case "scheduled":
@@ -375,20 +259,260 @@ function formatTicketStatus(value: ServiceTicket["status"]) {
     case "cancelled":
       return "Cancelled";
     default:
-      return value;
+      return value || "—";
   }
+}
+
+function formatTripWindow(value?: string) {
+  if (value === "am") return "AM";
+  if (value === "pm") return "PM";
+  if (value === "all_day") return "All Day";
+  if (value === "custom") return "Custom";
+  return value || "—";
+}
+
+function windowToTimes(window: TripTimeWindow) {
+  if (window === "am") return { start: "08:00", end: "12:00" };
+  if (window === "pm") return { start: "13:00", end: "17:00" };
+  if (window === "all_day") return { start: "08:00", end: "17:00" };
+  return { start: "09:00", end: "10:00" };
+}
+
+function minutesBetweenIso(aIso: string, bIso: string) {
+  const a = new Date(aIso).getTime();
+  const b = new Date(bIso).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.max(0, Math.round((b - a) / 60000));
+}
+
+function sumPausedMinutes(blocks?: PauseBlock[]) {
+  if (!Array.isArray(blocks)) return 0;
+  let total = 0;
+  for (const block of blocks) {
+    if (!block?.startAt || !block?.endAt) continue;
+    total += minutesBetweenIso(block.startAt, block.endAt);
+  }
+  return total;
+}
+
+function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
+  if (!uid || !crew) return false;
+  return (
+    crew.primaryTechUid === uid ||
+    crew.helperUid === uid ||
+    crew.secondaryTechUid === uid ||
+    crew.secondaryHelperUid === uid
+  );
+}
+
+function crewMembersFromTrip(trip: { crewConfirmed?: TripCrew | null; crew?: TripCrew | null }) {
+  const crew = trip.crewConfirmed || trip.crew || {};
+  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> = [];
+
+  if (crew.primaryTechUid) {
+    out.push({
+      uid: crew.primaryTechUid,
+      name: crew.primaryTechName || "Primary Tech",
+      role: "technician",
+    });
+  }
+
+  if (crew.helperUid) {
+    out.push({
+      uid: crew.helperUid,
+      name: crew.helperName || "Helper",
+      role: "helper",
+    });
+  }
+
+  if (crew.secondaryTechUid) {
+    out.push({
+      uid: crew.secondaryTechUid,
+      name: crew.secondaryTechName || "Secondary Tech",
+      role: "technician",
+    });
+  }
+
+  if (crew.secondaryHelperUid) {
+    out.push({
+      uid: crew.secondaryHelperUid,
+      name: crew.secondaryHelperName || "Secondary Helper",
+      role: "helper",
+    });
+  }
+
+  const seen = new Set<string>();
+  return out.filter((x) => {
+    if (!x.uid || seen.has(x.uid)) return false;
+    seen.add(x.uid);
+    return true;
+  });
+}
+
+function isOpenTripRecord(tripLike: { active?: boolean | null; status?: string | null }) {
+  if (tripLike.active === false) return false;
+  const status = normalizeTripStatus(tripLike.status);
+  return status === "planned" || status === "in_progress";
+}
+
+function isRunningTripRecord(tripLike: {
+  active?: boolean | null;
+  status?: string | null;
+  timerState?: string | null;
+}) {
+  if (tripLike.active === false) return false;
+  const status = normalizeTripStatus(tripLike.status);
+  const timerState = String(tripLike.timerState || "").trim().toLowerCase();
+  return status === "in_progress" && timerState === "running";
+}
+
+function crewUidsFromCrew(crew?: TripCrew | null) {
+  return Array.from(
+    new Set(
+      [
+        String(crew?.primaryTechUid || "").trim(),
+        String(crew?.helperUid || "").trim(),
+        String(crew?.secondaryTechUid || "").trim(),
+        String(crew?.secondaryHelperUid || "").trim(),
+      ].filter(Boolean)
+    )
+  );
+}
+
+async function findOpenTripsForTicketId(serviceTicketId: string, excludeTripId?: string) {
+  if (!serviceTicketId) return [];
+
+  const queriesToRun = [
+    query(collection(db, "trips"), where("link.serviceTicketId", "==", serviceTicketId)),
+    query(collection(db, "trips"), where("serviceTicketId", "==", serviceTicketId)),
+  ];
+
+  const snaps = await Promise.all(
+    queriesToRun.map(async (qTrips) => {
+      try {
+        return await getDocs(qTrips);
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const byId = new Map<
+    string,
+    {
+      id: string;
+      date: string;
+      startTime: string;
+      endTime: string;
+      status: string;
+      timerState: string;
+    }
+  >();
+
+  for (const snap of snaps) {
+    if (!snap) continue;
+
+    for (const docSnap of snap.docs) {
+      if (excludeTripId && docSnap.id === excludeTripId) continue;
+
+      const data = docSnap.data() as any;
+      if (!isOpenTripRecord(data)) continue;
+
+      byId.set(docSnap.id, {
+        id: docSnap.id,
+        date: String(data.date || ""),
+        startTime: String(data.startTime || ""),
+        endTime: String(data.endTime || ""),
+        status: String(data.status || ""),
+        timerState: String(data.timerState || ""),
+      });
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
+async function findRunningTripsForCrewUids(args: {
+  crewUids: string[];
+  excludeTripId?: string;
+}) {
+  const cleanUids = Array.from(new Set((args.crewUids || []).filter(Boolean)));
+  if (cleanUids.length === 0) return [];
+
+  const fieldPaths = [
+    "crew.primaryTechUid",
+    "crew.helperUid",
+    "crew.secondaryTechUid",
+    "crew.secondaryHelperUid",
+    "primaryTechUid",
+    "helperUid",
+    "secondaryTechUid",
+    "secondaryHelperUid",
+  ];
+
+  const queryPromises: Promise<any>[] = [];
+
+  for (const uid of cleanUids) {
+    for (const fieldPath of fieldPaths) {
+      queryPromises.push(
+        getDocs(query(collection(db, "trips"), where(fieldPath as any, "==", uid))).catch(() => null)
+      );
+    }
+  }
+
+  const snaps = await Promise.all(queryPromises);
+
+  const byId = new Map<
+    string,
+    {
+      id: string;
+      date: string;
+      startTime: string;
+      endTime: string;
+      status: string;
+      timerState: string;
+      primaryName: string;
+      summary: string;
+    }
+  >();
+
+  for (const snap of snaps) {
+    if (!snap) continue;
+
+    for (const docSnap of snap.docs) {
+      if (args.excludeTripId && docSnap.id === args.excludeTripId) continue;
+
+      const data = docSnap.data() as any;
+      if (!isRunningTripRecord(data)) continue;
+
+      const crew = (data.crew || {}) as TripCrew;
+      const primaryName =
+        crew.primaryTechName ||
+        data.primaryTechName ||
+        data.primaryTechnicianName ||
+        "Assigned Tech";
+
+      byId.set(docSnap.id, {
+        id: docSnap.id,
+        date: String(data.date || ""),
+        startTime: String(data.startTime || ""),
+        endTime: String(data.endTime || ""),
+        status: String(data.status || ""),
+        timerState: String(data.timerState || ""),
+        primaryName,
+        summary: `${String(data.date || "No date")} • ${String(data.startTime || "—")}-${String(
+          data.endTime || "—"
+        )} • ${primaryName} • Trip ${docSnap.id}`,
+      });
+    }
+  }
+
+  return Array.from(byId.values());
 }
 
 function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
-
-type ExistingTimeEntry = {
-  hours?: number;
-  hoursLocked?: boolean;
-  createdAt?: string;
-  createdByUid?: string | null;
-};
 
 async function upsertWeeklyTimesheetHeader(args: {
   employeeId: string;
@@ -398,27 +522,22 @@ async function upsertWeeklyTimesheetHeader(args: {
   weekEndDate: string;
   createdByUid: string | null;
 }) {
-  const { employeeId, employeeName, employeeRole, weekStartDate, weekEndDate, createdByUid } = args;
   const now = nowIso();
-
-  const timesheetId = buildWeeklyTimesheetId(employeeId, weekStartDate);
-  const ref = doc(db, "weeklyTimesheets", timesheetId);
+  const timesheetId = buildWeeklyTimesheetId(args.employeeId, args.weekStartDate);
 
   await setDoc(
-    ref,
+    doc(db, "weeklyTimesheets", timesheetId),
     stripUndefined({
-      employeeId,
-      employeeName,
-      employeeRole,
-      weekStartDate,
-      weekEndDate,
+      employeeId: args.employeeId,
+      employeeName: args.employeeName,
+      employeeRole: args.employeeRole,
+      weekStartDate: args.weekStartDate,
+      weekEndDate: args.weekEndDate,
       status: "draft",
-      submittedAt: null,
-      submittedByUid: null,
       createdAt: now,
-      createdByUid: createdByUid || null,
+      createdByUid: args.createdByUid || null,
       updatedAt: now,
-      updatedByUid: createdByUid || null,
+      updatedByUid: args.createdByUid || null,
     }),
     { merge: true }
   );
@@ -440,223 +559,137 @@ async function upsertTimeEntryFromTrip(args: {
   outcomeLabel: string;
   addressShort?: string;
 }) {
-  const {
-    trip,
-    member,
-    entryDate,
-    hoursGenerated,
-    weekStartDate,
-    weekEndDate,
-    timesheetId,
-    createdByUid,
-    displayTitle,
-    displaySubtitle,
-    outcomeLabel,
-    addressShort,
-  } = args;
-
   const now = nowIso();
-
-  const timeEntryId = `trip_${trip.id}_${member.uid}`;
+  const timeEntryId = `trip_${args.trip.id}_${args.member.uid}`;
   const ref = doc(db, "timeEntries", timeEntryId);
-
   const existingSnap = await getDoc(ref);
   const existing = existingSnap.exists() ? (existingSnap.data() as ExistingTimeEntry) : null;
-
   const hoursLocked = Boolean(existing?.hoursLocked);
-  const hoursToWrite = hoursLocked ? Number(existing?.hours ?? hoursGenerated) : hoursGenerated;
+  const hoursToWrite = hoursLocked ? Number(existing?.hours ?? args.hoursGenerated) : args.hoursGenerated;
 
   const noteLines: string[] = [];
-  if (displayTitle) noteLines.push(`Title: ${displayTitle}`);
-  if (displaySubtitle) noteLines.push(`Detail: ${displaySubtitle}`);
-  if (addressShort) noteLines.push(`Address: ${addressShort}`);
-  if (outcomeLabel) noteLines.push(`Outcome: ${outcomeLabel}`);
-  noteLines.push(`Trip: ${trip.id}`);
-  const notes = noteLines.join("\n");
+  if (args.displayTitle) noteLines.push(`Title: ${args.displayTitle}`);
+  if (args.displaySubtitle) noteLines.push(`Detail: ${args.displaySubtitle}`);
+  if (args.addressShort) noteLines.push(`Address: ${args.addressShort}`);
+  if (args.outcomeLabel) noteLines.push(`Outcome: ${args.outcomeLabel}`);
+  noteLines.push(`Trip: ${args.trip.id}`);
 
   await setDoc(
     ref,
     stripUndefined({
-      employeeId: member.uid,
-      employeeName: member.name,
-      employeeRole: member.role,
-      entryDate,
-      weekStartDate,
-      weekEndDate,
-      timesheetId,
-      category: trip.type === "project" ? "project_stage" : "service_ticket",
+      employeeId: args.member.uid,
+      employeeName: args.member.name,
+      employeeRole: args.member.role,
+      entryDate: args.entryDate,
+      weekStartDate: args.weekStartDate,
+      weekEndDate: args.weekEndDate,
+      timesheetId: args.timesheetId,
+      category: args.trip.type === "project" ? "project_stage" : "service_ticket",
       payType: "regular",
       billable: true,
       source: "trip_completion",
       hours: hoursToWrite,
-      hoursSource: hoursGenerated,
-      hoursLocked: hoursLocked || false,
-      tripId: trip.id,
-      serviceTicketId: trip.link?.serviceTicketId || null,
-      projectId: trip.link?.projectId || null,
-      projectStageKey: trip.link?.projectStageKey || null,
-      displayTitle: displayTitle || null,
-      displaySubtitle: displaySubtitle || null,
-      outcome: outcomeLabel ? outcomeLabel.toLowerCase().replaceAll(" ", "_") : null,
+      hoursSource: args.hoursGenerated,
+      hoursLocked,
+      tripId: args.trip.id,
+      serviceTicketId: args.trip.link?.serviceTicketId || null,
+      projectId: args.trip.link?.projectId || null,
+      projectStageKey: args.trip.link?.projectStageKey || null,
+      displayTitle: args.displayTitle || null,
+      displaySubtitle: args.displaySubtitle || null,
+      outcome: args.outcomeLabel.toLowerCase().replaceAll(" ", "_"),
       entryStatus: "draft",
-      notes: notes || null,
+      notes: noteLines.join("\n"),
       createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
-      createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : createdByUid || null,
+      createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : args.createdByUid || null,
       updatedAt: now,
-      updatedByUid: createdByUid || null,
+      updatedByUid: args.createdByUid || null,
     }),
     { merge: true }
   );
 }
 
-function validateMaterialsForResolved(
-  materials: TripMaterial[]
-): { ok: false; message: string } | { ok: true; cleaned: TripMaterial[] } {
+function validateMaterialsForResolved(materials: TripMaterial[]) {
   const cleaned = (materials || [])
     .map((m) => ({
-      name: (m.name || "").trim(),
+      name: String(m.name || "").trim(),
       qty: Number(m.qty),
-      unit: (m.unit || "").trim(),
-      notes: (m.notes || "").trim(),
+      unit: String(m.unit || "").trim(),
+      notes: String(m.notes || "").trim(),
     }))
     .filter((m) => m.name);
 
   if (cleaned.length < 1) {
-    return { ok: false, message: "Resolved requires at least 1 material line item (name + qty)." };
+    return {
+      ok: false as const,
+      message: "Resolved requires at least 1 material line item (name + qty).",
+    };
   }
 
   for (const m of cleaned) {
     if (!Number.isFinite(m.qty) || m.qty <= 0) {
-      return { ok: false, message: `Material "${m.name}" must have qty > 0.` };
+      return {
+        ok: false as const,
+        message: `Material "${m.name}" must have qty > 0.`,
+      };
     }
   }
 
-  return { ok: true, cleaned };
+  return { ok: true as const, cleaned };
 }
 
-function SectionCard(props: {
+function getTicketTone(status?: string): "default" | "success" | "warning" | "error" | "info" {
+  const s = String(status || "").toLowerCase();
+  if (s === "completed") return "success";
+  if (s === "in_progress") return "info";
+  if (s === "scheduled" || s === "follow_up") return "warning";
+  if (s === "cancelled") return "error";
+  return "default";
+}
+
+function getTripTone(status?: string): "default" | "success" | "warning" | "error" | "info" {
+  const s = normalizeTripStatus(status);
+  if (s === "complete") return "success";
+  if (s === "in_progress") return "info";
+  if (s === "planned") return "warning";
+  if (s === "cancelled") return "error";
+  return "default";
+}
+
+function Section(props: {
   title: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <Card
-      variant="outlined"
-      sx={{
-        borderRadius: 4,
-        borderColor: "divider",
-        overflow: "hidden",
-        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-      }}
-    >
+    <Card variant="outlined" sx={{ borderRadius: 4 }}>
       <CardHeader
-        avatar={props.icon ? props.icon : undefined}
+        avatar={props.icon}
+        action={props.action}
         title={
           <Typography variant="h6" fontWeight={700}>
             {props.title}
           </Typography>
         }
-        action={props.action}
-        sx={{ pb: 1.5 }}
       />
       <Divider />
-      <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>{props.children}</CardContent>
+      <CardContent>{props.children}</CardContent>
     </Card>
   );
 }
 
-function StatusPill(props: { text: string; tone?: "neutral" | "green" | "yellow" | "red" | "blue" }) {
-  const tone = props.tone || "neutral";
-
-  const chipProps =
-    tone === "green"
-      ? { color: "success" as const, variant: "filled" as const }
-      : tone === "yellow"
-        ? { color: "warning" as const, variant: "filled" as const }
-        : tone === "red"
-          ? { color: "error" as const, variant: "filled" as const }
-          : tone === "blue"
-            ? { color: "info" as const, variant: "filled" as const }
-            : { color: "default" as const, variant: "outlined" as const };
-
-  return <Chip size="small" label={props.text} {...chipProps} sx={{ fontWeight: 700 }} />;
-}
-
-function sxArray(sx?: SxProps<Theme>) {
-  if (!sx) return [];
-  return Array.isArray(sx) ? sx : [sx];
-}
-
-function M3Button({
-  tone = "gray",
-  sx,
-  ...props
-}: React.ComponentProps<typeof Button> & { tone?: "green" | "blue" | "gray" }) {
-  const color = tone === "green" ? "success" : tone === "blue" ? "primary" : "inherit";
-  const variant = tone === "gray" ? "outlined" : "contained";
-
-  return (
-    <Button
-      {...props}
-      color={color}
-      variant={variant}
-      sx={[
-        {
-          borderRadius: 999,
-          textTransform: "none",
-          fontWeight: 700,
-          boxShadow: variant === "contained" ? "none" : undefined,
-        },
-        ...sxArray(sx),
-      ]}
-    />
-  );
-}
-
-function QuietButton({ sx, ...props }: React.ComponentProps<typeof Button>) {
-  return (
-    <Button
-      {...props}
-      variant="outlined"
-      color="inherit"
-      sx={[
-        {
-          borderRadius: 999,
-          textTransform: "none",
-          fontWeight: 700,
-        },
-        ...sxArray(sx),
-      ]}
-    />
-  );
-}
-
-function getTicketTone(status?: string): "neutral" | "green" | "yellow" | "red" | "blue" {
-  const s = String(status || "").toLowerCase();
-  if (s === "completed") return "green";
-  if (s === "in_progress") return "blue";
-  if (s === "scheduled") return "yellow";
-  if (s === "cancelled") return "red";
-  return "neutral";
-}
-
-function getTripStatusTone(status?: string): "neutral" | "green" | "yellow" | "red" | "blue" {
-  const s = String(status || "").toLowerCase();
-  if (s === "complete") return "green";
-  if (s === "in_progress") return "blue";
-  if (s === "planned") return "yellow";
-  if (s === "cancelled") return "red";
-  return "neutral";
-}
-
-export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailPageProps) {
+export default function ServiceTicketDetailPage({ params }: Props) {
   const { appUser } = useAuthContext();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const canDispatch =
-    appUser?.role === "admin" || appUser?.role === "dispatcher" || appUser?.role === "manager";
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager";
 
   const canWorkTrip =
     appUser?.role === "admin" ||
@@ -678,6 +711,10 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
   const myUid = appUser?.uid || "";
 
+  const [mobileFinishTripId, setMobileFinishTripId] = useState<string | null>(null);
+  const [mobileFinishMode, setMobileFinishMode] = useState<FinishMode>("none");
+  const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
+
   const [loading, setLoading] = useState(true);
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
@@ -686,148 +723,241 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
 
-  const [ticketEditSaving, setTicketEditSaving] = useState(false);
-  const [ticketEditErr, setTicketEditErr] = useState("");
-  const [ticketEditOk, setTicketEditOk] = useState("");
-  const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
-  const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] = useState<string>("240");
-  const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState<string>("");
-
-  const [techniciansLoading, setTechniciansLoading] = useState(true);
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
-  const [techniciansError, setTechniciansError] = useState("");
-
-  const [profilesLoading, setProfilesLoading] = useState(true);
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
-  const [profilesError, setProfilesError] = useState("");
 
-  const [tripsLoading, setTripsLoading] = useState(true);
-  const [tripsError, setTripsError] = useState("");
   const [trips, setTrips] = useState<TripDoc[]>([]);
-
-  const [scheduleOpen, setScheduleOpen] = useState(false);
-
-  const [tripDate, setTripDate] = useState(isoTodayLocal());
-  const [tripTimeWindow, setTripTimeWindow] = useState<TripTimeWindow>("am");
-  const [tripStartTime, setTripStartTime] = useState("08:00");
-  const [tripEndTime, setTripEndTime] = useState("12:00");
-
-  const [tripPrimaryTechUid, setTripPrimaryTechUid] = useState("");
-  const [tripSecondaryTechUid, setTripSecondaryTechUid] = useState("");
-
-  const [tripUseDefaultHelper, setTripUseDefaultHelper] = useState(true);
-  const [tripHelperUid, setTripHelperUid] = useState("");
-  const [tripSecondaryHelperUid, setTripSecondaryHelperUid] = useState("");
-
-  const [tripNotes, setTripNotes] = useState("");
-  const [tripSetTicketScheduled, setTripSetTicketScheduled] = useState(true);
-
-  const [tripSaving, setTripSaving] = useState(false);
-  const [tripSaveError, setTripSaveError] = useState("");
-  const [tripSaveSuccess, setTripSaveSuccess] = useState("");
-
+  const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>({});
+  const [tripActionError, setTripActionError] = useState<Record<string, string>>({});
+  const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>({});
   const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>({});
   const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>({});
   const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>({});
   const [tripMaterials, setTripMaterials] = useState<Record<string, TripMaterial[]>>({});
-  const [tripActionError, setTripActionError] = useState<Record<string, string>>({});
-  const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>({});
-  const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>({});
-
   const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>({});
   const [hoursOverrideByTrip, setHoursOverrideByTrip] = useState<Record<string, number>>({});
   const [helperConfirmedByTrip, setHelperConfirmedByTrip] = useState<Record<string, boolean>>({});
 
-  const [mobileFinishOpen, setMobileFinishOpen] = useState(false);
+  const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
+  const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] = useState("240");
+  const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
+  const [ticketEditSaving, setTicketEditSaving] = useState(false);
+  const [ticketEditErr, setTicketEditErr] = useState("");
+  const [ticketEditOk, setTicketEditOk] = useState("");
+
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [tripDate, setTripDate] = useState(isoTodayLocal());
+  const [tripTimeWindow, setTripTimeWindow] = useState<TripTimeWindow>("am");
+  const [tripStartTime, setTripStartTime] = useState("08:00");
+  const [tripEndTime, setTripEndTime] = useState("12:00");
+  const [tripPrimaryTechUid, setTripPrimaryTechUid] = useState("");
+  const [tripSecondaryTechUid, setTripSecondaryTechUid] = useState("");
+  const [tripUseDefaultHelper, setTripUseDefaultHelper] = useState(true);
+  const [tripHelperUid, setTripHelperUid] = useState("");
+  const [tripSecondaryHelperUid, setTripSecondaryHelperUid] = useState("");
+  const [tripNotes, setTripNotes] = useState("");
+  const [tripSaving, setTripSaving] = useState(false);
+  const [tripSaveError, setTripSaveError] = useState("");
+  const [tripSaveSuccess, setTripSaveSuccess] = useState("");
 
   const [editTripId, setEditTripId] = useState<string | null>(null);
+  const [editTripDate, setEditTripDate] = useState(isoTodayLocal());
+  const [editTripTimeWindow, setEditTripTimeWindow] = useState<TripTimeWindow>("am");
+  const [editTripStartTime, setEditTripStartTime] = useState("08:00");
+  const [editTripEndTime, setEditTripEndTime] = useState("12:00");
+  const [editTripNotes, setEditTripNotes] = useState("");
   const [editTripSaving, setEditTripSaving] = useState(false);
   const [editTripErr, setEditTripErr] = useState("");
-  const [editTripOk, setEditTripOk] = useState("");
-
-  const [editTripDate, setEditTripDate] = useState<string>(isoTodayLocal());
-  const [editTripTimeWindow, setEditTripTimeWindow] = useState<TripTimeWindow>("am");
-  const [editTripStartTime, setEditTripStartTime] = useState<string>("08:00");
-  const [editTripEndTime, setEditTripEndTime] = useState<string>("12:00");
-  const [editTripNotes, setEditTripNotes] = useState<string>("");
 
   const [billingSaving, setBillingSaving] = useState(false);
   const [billingErr, setBillingErr] = useState("");
   const [billingOk, setBillingOk] = useState("");
 
-  async function ensureTicketInProgressIfNeeded(args: { now: string; reason?: string }) {
-    if (!ticket?.id) return;
-    if (isTerminalTicketStatus(ticket.status)) return;
-    if (String(ticket.status || "") === "in_progress") return;
-    if (isAlreadyInProgressOrBeyond(ticket.status)) return;
+  const helperCandidates = useMemo(() => {
+    const items = employeeProfiles
+      .filter((p) => String(p.employmentStatus || "current").toLowerCase() === "current")
+      .filter((p) => {
+        const labor = normalizeRole(p.laborRole);
+        return labor === "helper" || labor === "apprentice";
+      })
+      .map((p) => ({
+        uid: String(p.userUid || "").trim(),
+        name: p.displayName || "Unnamed",
+        laborRole: normalizeRole(p.laborRole),
+        defaultPairedTechUid: p.defaultPairedTechUid ?? null,
+      }))
+      .filter((p) => p.uid);
 
-    await updateDoc(doc(db, "serviceTickets", ticket.id), {
-      status: "in_progress",
-      updatedAt: args.now,
-    });
+    items.sort((a, b) => a.name.localeCompare(b.name));
+    return items;
+  }, [employeeProfiles]);
 
-    setTicket((prev) => (prev ? { ...prev, status: "in_progress", updatedAt: args.now } : prev));
-    setTicketStatusEdit("in_progress");
-  }
+  const defaultHelperForPrimary = useMemo(() => {
+    const techUid = tripPrimaryTechUid.trim();
+    if (!techUid) return "";
+    return helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid)?.uid || "";
+  }, [tripPrimaryTechUid, helperCandidates]);
 
   useEffect(() => {
-    async function loadTicket() {
+    async function loadAll() {
       try {
-        const resolvedParams = await params;
-        const id = resolvedParams.ticketId;
+        const resolved = await params;
+        const id = resolved.ticketId;
         setTicketId(id);
 
-        const ticketRef = doc(db, "serviceTickets", id);
-        const snap = await getDoc(ticketRef);
-
-        if (!snap.exists()) {
+        const ticketSnap = await getDoc(doc(db, "serviceTickets", id));
+        if (!ticketSnap.exists()) {
           setError("Service ticket not found.");
           setLoading(false);
           return;
         }
 
-        const data = snap.data() as any;
-
-        const item: TicketWithBilling = {
-          id: snap.id,
-          customerId: data.customerId ?? "",
-          customerDisplayName: data.customerDisplayName ?? "",
-          serviceAddressId: data.serviceAddressId ?? undefined,
-          serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-          serviceAddressLine1: data.serviceAddressLine1 ?? "",
-          serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-          serviceCity: data.serviceCity ?? "",
-          serviceState: data.serviceState ?? "",
-          servicePostalCode: data.servicePostalCode ?? "",
-          issueSummary: data.issueSummary ?? "",
-          issueDetails: data.issueDetails ?? undefined,
-          status: data.status ?? "new",
-          estimatedDurationMinutes: data.estimatedDurationMinutes ?? 0,
-          scheduledDate: data.scheduledDate ?? undefined,
-          scheduledStartTime: data.scheduledStartTime ?? undefined,
-          scheduledEndTime: data.scheduledEndTime ?? undefined,
-          assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-          assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-          primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-          assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
-            ? data.assignedTechnicianIds.filter(Boolean)
+        const d = ticketSnap.data() as any;
+        const nextTicket: TicketWithBilling = {
+          id: ticketSnap.id,
+          customerId: d.customerId ?? "",
+          customerDisplayName: d.customerDisplayName ?? "",
+          serviceAddressLabel: d.serviceAddressLabel ?? undefined,
+          serviceAddressLine1: d.serviceAddressLine1 ?? "",
+          serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
+          serviceCity: d.serviceCity ?? "",
+          serviceState: d.serviceState ?? "",
+          servicePostalCode: d.servicePostalCode ?? "",
+          issueSummary: d.issueSummary ?? "",
+          issueDetails: d.issueDetails ?? undefined,
+          status: d.status ?? "new",
+          estimatedDurationMinutes: d.estimatedDurationMinutes ?? 60,
+          assignedTechnicianId: d.assignedTechnicianId ?? undefined,
+          assignedTechnicianName: d.assignedTechnicianName ?? undefined,
+          primaryTechnicianId: d.primaryTechnicianId ?? undefined,
+          assignedTechnicianIds: Array.isArray(d.assignedTechnicianIds)
+            ? d.assignedTechnicianIds
             : undefined,
-          secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-          secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-          helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-          helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-          internalNotes: data.internalNotes ?? undefined,
-          active: data.active ?? true,
-          createdAt: data.createdAt ?? undefined,
-          updatedAt: data.updatedAt ?? undefined,
-          billing: data.billing ?? null,
+          secondaryTechnicianId: d.secondaryTechnicianId ?? undefined,
+          secondaryTechnicianName: d.secondaryTechnicianName ?? undefined,
+          helperIds: Array.isArray(d.helperIds) ? d.helperIds : undefined,
+          helperNames: Array.isArray(d.helperNames) ? d.helperNames : undefined,
+          active: d.active ?? true,
+          createdAt: d.createdAt ?? undefined,
+          updatedAt: d.updatedAt ?? undefined,
+          billing: d.billing ?? null,
         };
 
-        setTicket(item);
+        setTicket(nextTicket);
+        setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
+        setTicketEstimatedMinutesEdit(String(nextTicket.estimatedDurationMinutes || 60));
+        setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
 
-        setTicketStatusEdit((item.status || "new") as TicketStatus);
-        setTicketEstimatedMinutesEdit(String(item.estimatedDurationMinutes || 60));
-        setTicketIssueDetailsEdit(String(item.issueDetails || ""));
+        const [usersSnap, profilesSnap, tripSnap] = await Promise.all([
+          getDocs(collection(db, "users")),
+          getDocs(collection(db, "employeeProfiles")),
+          getDocs(
+            query(
+              collection(db, "trips"),
+              where("link.serviceTicketId", "==", id),
+              orderBy("date", "asc"),
+              orderBy("startTime", "asc")
+            )
+          ),
+        ]);
+
+        setTechnicians(
+          usersSnap.docs
+            .map((ds) => {
+              const user = ds.data() as any;
+              return {
+                uid: user.uid ?? ds.id,
+                displayName: user.displayName ?? "Unnamed Technician",
+                active: user.active ?? false,
+                role: user.role ?? "technician",
+              };
+            })
+            .filter((u) => u.active && u.role === "technician")
+            .sort((a, b) => a.displayName.localeCompare(b.displayName))
+        );
+
+        setEmployeeProfiles(
+          profilesSnap.docs.map((ds) => {
+            const p = ds.data() as any;
+            return {
+              id: ds.id,
+              userUid: p.userUid ?? null,
+              displayName: p.displayName ?? undefined,
+              employmentStatus: p.employmentStatus ?? "current",
+              laborRole: p.laborRole ?? "other",
+              defaultPairedTechUid: p.defaultPairedTechUid ?? null,
+            };
+          })
+        );
+
+        const nextTrips = tripSnap.docs.map((ds) => {
+          const trip = ds.data() as any;
+          return {
+            id: ds.id,
+            active: trip.active ?? true,
+            type: trip.type ?? "service",
+            status: trip.status ?? "planned",
+            date: trip.date ?? "",
+            timeWindow: trip.timeWindow ?? "custom",
+            startTime: trip.startTime ?? "",
+            endTime: trip.endTime ?? "",
+            crew: trip.crew ?? null,
+            crewConfirmed: trip.crewConfirmed ?? null,
+            link: trip.link ?? undefined,
+            notes: trip.notes ?? null,
+            cancelReason: trip.cancelReason ?? null,
+            timerState: trip.timerState ?? "not_started",
+            actualStartAt: trip.actualStartAt ?? null,
+            actualEndAt: trip.actualEndAt ?? null,
+            startedByUid: trip.startedByUid ?? null,
+            endedByUid: trip.endedByUid ?? null,
+            pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
+            actualMinutes: typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
+            workNotes: trip.workNotes ?? null,
+            resolutionNotes: trip.resolutionNotes ?? null,
+            followUpNotes: trip.followUpNotes ?? null,
+            materials: Array.isArray(trip.materials) ? trip.materials : [],
+            outcome: trip.outcome ?? null,
+            readyToBillAt: trip.readyToBillAt ?? null,
+            updatedAt: trip.updatedAt ?? undefined,
+            updatedByUid: trip.updatedByUid ?? null,
+          } as TripDoc;
+        });
+
+        setTrips(nextTrips);
+
+        const nextWork: Record<string, string> = {};
+        const nextResolution: Record<string, string> = {};
+        const nextFollow: Record<string, string> = {};
+        const nextMaterials: Record<string, TripMaterial[]> = {};
+        const nextFinish: Record<string, FinishMode> = {};
+        const nextHelperConfirmed: Record<string, boolean> = {};
+
+        for (const trip of nextTrips) {
+          nextWork[trip.id] = String(trip.workNotes || "");
+          nextResolution[trip.id] = String(trip.resolutionNotes || "");
+          nextFollow[trip.id] = String(trip.followUpNotes || "");
+          nextMaterials[trip.id] = Array.isArray(trip.materials) ? trip.materials : [];
+          nextFinish[trip.id] = "none";
+          nextHelperConfirmed[trip.id] = true;
+        }
+
+        setTripWorkNotes(nextWork);
+        setTripResolutionNotes(nextResolution);
+        setTripFollowUpNotes(nextFollow);
+        setTripMaterials(nextMaterials);
+        setFinishModeByTrip(nextFinish);
+        setHelperConfirmedByTrip(nextHelperConfirmed);
+
+        const customerId = String(nextTicket.customerId || "").trim();
+        if (customerId) {
+          const customerSnap = await getDoc(doc(db, "customers", customerId));
+          if (customerSnap.exists()) {
+            const customer = customerSnap.data() as any;
+            setCustomerPhone(String(customer.phone || "").trim());
+            setCustomerEmail(String(customer.email || "").trim());
+          }
+        }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to load service ticket.");
       } finally {
@@ -835,243 +965,16 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       }
     }
 
-    loadTicket();
+    loadAll();
   }, [params]);
 
   useEffect(() => {
-    async function loadCustomerContact() {
-      const customerId = String(ticket?.customerId || "").trim();
-      if (!customerId) {
-        setCustomerPhone("");
-        setCustomerEmail("");
-        return;
-      }
-
-      try {
-        const snap = await getDoc(doc(db, "customers", customerId));
-        if (!snap.exists()) {
-          setCustomerPhone("");
-          setCustomerEmail("");
-          return;
-        }
-
-        const d = snap.data() as any;
-        setCustomerPhone(String(d.phone || "").trim());
-        setCustomerEmail(String(d.email || "").trim());
-      } catch {
-        setCustomerPhone("");
-        setCustomerEmail("");
-      }
-    }
-
-    loadCustomerContact();
-  }, [ticket?.customerId]);
-
-  useEffect(() => {
-    async function loadTechnicians() {
-      try {
-        const snap = await getDocs(collection(db, "users"));
-
-        const items: TechnicianOption[] = snap.docs
-          .map((docSnap) => {
-            const data = docSnap.data() as any;
-            return {
-              uid: data.uid ?? docSnap.id,
-              displayName: data.displayName ?? "Unnamed Technician",
-              active: data.active ?? false,
-              role: data.role ?? "technician",
-            };
-          })
-          .filter((u) => u.role === "technician" && u.active);
-
-        items.sort((a, b) => a.displayName.localeCompare(b.displayName));
-        setTechnicians(items);
-      } catch (err: unknown) {
-        setTechniciansError(err instanceof Error ? err.message : "Failed to load technicians.");
-      } finally {
-        setTechniciansLoading(false);
-      }
-    }
-
-    loadTechnicians();
-  }, []);
-
-  useEffect(() => {
-    async function loadProfiles() {
-      setProfilesLoading(true);
-      setProfilesError("");
-
-      try {
-        const snap = await getDocs(collection(db, "employeeProfiles"));
-        const items: EmployeeProfileOption[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data() as any;
-          return {
-            id: docSnap.id,
-            userUid: d.userUid ?? null,
-            displayName: d.displayName ?? undefined,
-            employmentStatus: d.employmentStatus ?? "current",
-            laborRole: d.laborRole ?? "other",
-            defaultPairedTechUid: d.defaultPairedTechUid ?? null,
-          };
-        });
-
-        setEmployeeProfiles(items);
-      } catch (err: unknown) {
-        setProfilesError(err instanceof Error ? err.message : "Failed to load employee profiles.");
-      } finally {
-        setProfilesLoading(false);
-      }
-    }
-
-    loadProfiles();
-  }, []);
-
-  const helperCandidates = useMemo(() => {
-    const out: { uid: string; name: string; laborRole: string; defaultPairedTechUid?: string | null }[] = [];
-
-    for (const p of employeeProfiles) {
-      if ((p.employmentStatus || "current").toLowerCase() !== "current") continue;
-
-      const labor = normalizeRole(p.laborRole);
-      if (labor !== "helper" && labor !== "apprentice") continue;
-
-      const uid = String(p.userUid || "").trim();
-      if (!uid) continue;
-
-      out.push({
-        uid,
-        name: p.displayName || "Unnamed",
-        laborRole: labor,
-        defaultPairedTechUid: p.defaultPairedTechUid ?? null,
-      });
-    }
-
-    out.sort((a, b) => a.name.localeCompare(b.name));
-    return out;
-  }, [employeeProfiles]);
-
-  function findTechName(uid: string) {
-    const t = technicians.find((x) => x.uid === uid);
-    return t?.displayName || "";
-  }
-
-  function findHelperName(uid: string) {
-    const h = helperCandidates.find((x) => x.uid === uid);
-    return h?.name || "";
-  }
-
-  useEffect(() => {
-    async function loadTrips() {
-      if (!ticketId) return;
-      setTripsLoading(true);
-      setTripsError("");
-
-      try {
-        const qTrips = query(
-          collection(db, "trips"),
-          where("link.serviceTicketId", "==", ticketId),
-          orderBy("date", "asc"),
-          orderBy("startTime", "asc")
-        );
-
-        const snap = await getDocs(qTrips);
-
-        const items: TripDoc[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data() as any;
-          return {
-            id: docSnap.id,
-            active: d.active ?? true,
-            type: d.type ?? "service",
-            status: d.status ?? "planned",
-            date: d.date ?? "",
-            timeWindow: d.timeWindow ?? "custom",
-            startTime: d.startTime ?? "",
-            endTime: d.endTime ?? "",
-            crew: d.crew ?? undefined,
-            link: d.link ?? undefined,
-            sourceKey: d.sourceKey ?? undefined,
-            notes: d.notes ?? null,
-            cancelReason: d.cancelReason ?? null,
-            timerState: d.timerState ?? undefined,
-            actualStartAt: d.actualStartAt ?? null,
-            actualEndAt: d.actualEndAt ?? null,
-            startedByUid: d.startedByUid ?? null,
-            endedByUid: d.endedByUid ?? null,
-            pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : undefined,
-            actualMinutes: typeof d.actualMinutes === "number" ? d.actualMinutes : null,
-            workNotes: d.workNotes ?? null,
-            resolutionNotes: d.resolutionNotes ?? null,
-            followUpNotes: d.followUpNotes ?? null,
-            crewConfirmed: d.crewConfirmed ?? null,
-            materials: Array.isArray(d.materials) ? d.materials : null,
-            outcome: d.outcome ?? null,
-            readyToBillAt: d.readyToBillAt ?? null,
-            createdAt: d.createdAt ?? undefined,
-            createdByUid: d.createdByUid ?? null,
-            updatedAt: d.updatedAt ?? undefined,
-            updatedByUid: d.updatedByUid ?? null,
-          };
-        });
-
-        setTrips(items);
-
-        const nextWork: Record<string, string> = {};
-        const nextRes: Record<string, string> = {};
-        const nextFollow: Record<string, string> = {};
-        const nextMat: Record<string, TripMaterial[]> = {};
-
-        for (const t of items) {
-          nextWork[t.id] = String(t.workNotes || "");
-          nextRes[t.id] = String(t.resolutionNotes || "");
-          nextFollow[t.id] = String(t.followUpNotes || "");
-          nextMat[t.id] = Array.isArray(t.materials) && t.materials.length ? (t.materials as TripMaterial[]) : [];
-        }
-
-        setTripWorkNotes(nextWork);
-        setTripResolutionNotes(nextRes);
-        setTripFollowUpNotes(nextFollow);
-        setTripMaterials(nextMat);
-
-        setFinishModeByTrip((prev) => {
-          const next = { ...prev };
-          for (const t of items) {
-            if (!next[t.id]) next[t.id] = "none";
-          }
-          return next;
-        });
-
-        setHelperConfirmedByTrip((prev) => {
-          const next = { ...prev };
-          for (const t of items) {
-            if (typeof next[t.id] !== "boolean") next[t.id] = true;
-          }
-          return next;
-        });
-      } catch (err: unknown) {
-        setTripsError(err instanceof Error ? err.message : "Failed to load trips.");
-      } finally {
-        setTripsLoading(false);
-      }
-    }
-
-    loadTrips();
-  }, [ticketId]);
-
-  useEffect(() => {
-    const { start, end } = windowToTimes(tripTimeWindow);
     if (tripTimeWindow !== "custom") {
-      setTripStartTime(start);
-      setTripEndTime(end);
+      const times = windowToTimes(tripTimeWindow);
+      setTripStartTime(times.start);
+      setTripEndTime(times.end);
     }
   }, [tripTimeWindow]);
-
-  const defaultHelperForPrimary = useMemo(() => {
-    const techUid = tripPrimaryTechUid.trim();
-    if (!techUid) return "";
-
-    const match = helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid);
-    return match?.uid || "";
-  }, [tripPrimaryTechUid, helperCandidates]);
 
   useEffect(() => {
     if (!tripUseDefaultHelper) return;
@@ -1082,17 +985,166 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     setTripHelperUid(defaultHelperForPrimary);
   }, [tripUseDefaultHelper, tripPrimaryTechUid, defaultHelperForPrimary]);
 
-  async function handleSaveTicketOverview() {
-    if (!canDispatch) return;
+  function findTechName(uid: string) {
+    return technicians.find((t) => t.uid === uid)?.displayName || "";
+  }
+
+  function findHelperName(uid: string) {
+    return helperCandidates.find((h) => h.uid === uid)?.name || "";
+  }
+
+  function deriveNextTicketStatus(nextTrips: TripDoc[], lastCompletedOutcome?: string | null) {
+    return deriveTicketStatusFromTrips({
+      currentStatus: ticket?.status,
+      trips: nextTrips,
+      lastCompletedOutcome: lastCompletedOutcome ?? null,
+    }) as TicketStatus;
+  }
+
+  async function persistTicketStatus(
+    nextStatus: TicketStatus,
+    now: string,
+    billingOverride?: BillingPacket | null
+  ) {
     if (!ticket?.id) return;
+
+    const payload: Record<string, unknown> = {
+      status: nextStatus,
+      updatedAt: now,
+    };
+
+    if (billingOverride !== undefined) {
+      payload.billing = billingOverride;
+    }
+
+    await updateDoc(doc(db, "serviceTickets", ticket.id), payload);
+
+    setTicket((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: nextStatus,
+            updatedAt: now,
+            ...(billingOverride !== undefined ? { billing: billingOverride } : {}),
+          }
+        : prev
+    );
+
+    setTicketStatusEdit(nextStatus);
+  }
+
+  function setTripSavingFlag(tripId: string, value: boolean) {
+    setTripActionSaving((prev) => ({ ...prev, [tripId]: value }));
+  }
+
+  function setTripErr(tripId: string, value: string) {
+    setTripActionError((prev) => ({ ...prev, [tripId]: value }));
+  }
+
+  function setTripOk(tripId: string, value: string) {
+    setTripActionSuccess((prev) => ({ ...prev, [tripId]: value }));
+  }
+
+  function canCurrentUserActOnTrip(trip: TripDoc) {
+    if (!myUid) return false;
+    if (appUser?.role === "admin") return true;
+    return isUidOnTripCrew(myUid, trip.crew || null);
+  }
+
+  function applyHelperConfirmation(crew: TripCrew | null, tripId: string): TripCrew | null {
+    if (!crew) return crew;
+    if (helperConfirmedByTrip[tripId] === false) {
+      return {
+        ...crew,
+        helperUid: null,
+        helperName: null,
+        secondaryHelperUid: null,
+        secondaryHelperName: null,
+      };
+    }
+    return crew;
+  }
+
+  function getHoursToUse(tripId: string, computedMinutes: number) {
+    const override = hoursOverrideByTrip[tripId];
+    if (typeof override === "number" && Number.isFinite(override) && override >= 0) {
+      return roundToHalf(override);
+    }
+    return roundToHalf(computedMinutes / 60);
+  }
+
+  const mobileFinishTrip = useMemo(
+    () => trips.find((trip) => trip.id === mobileFinishTripId) || null,
+    [trips, mobileFinishTripId]
+  );
+
+  const inProgressTrip = useMemo(
+    () => trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress") || null,
+    [trips]
+  );
+
+  useEffect(() => {
+    if (!inProgressTrip) return;
+    const id = window.setInterval(() => setLiveNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [inProgressTrip?.id]);
+
+  const liveNowIso = useMemo(() => new Date(liveNowMs).toISOString(), [liveNowMs]);
+
+  useEffect(() => {
+    if (!ticket?.id || trips.length === 0) return;
+
+    const action = String(searchParams.get("tripAction") || "").trim().toLowerCase();
+    const targetTripId = String(searchParams.get("tripId") || "").trim();
+    const hash = typeof window !== "undefined" ? decodeURIComponent(window.location.hash || "") : "";
+
+    let consumed = false;
+
+    if ((action === "resolved" || action === "follow_up") && isMobile) {
+      const targetTrip =
+        trips.find((trip) => trip.id === targetTripId) ||
+        trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress") ||
+        null;
+
+      if (targetTrip && normalizeTripStatus(targetTrip.status) === "in_progress") {
+        setMobileFinishTripId(targetTrip.id);
+        setMobileFinishMode(action === "resolved" ? "resolved" : "follow_up");
+        consumed = true;
+      }
+    }
+
+    if (hash.startsWith("#trip-work-notes-")) {
+      const targetId = hash.replace("#trip-work-notes-", "");
+      const el = document.getElementById(`trip-work-notes-${targetId}`);
+      if (el) {
+        setTimeout(() => {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+            el.focus();
+          }
+        }, 120);
+        consumed = true;
+      }
+    }
+
+    if (consumed && typeof window !== "undefined") {
+      window.history.replaceState({}, "", pathname);
+    }
+  }, [isMobile, pathname, searchParams, ticket?.id, trips]);
+
+  function closeMobileFinishSheet() {
+    setMobileFinishTripId(null);
+    setMobileFinishMode("none");
+  }
+
+  async function handleSaveTicketOverview() {
+    if (!canDispatch || !ticket?.id) return;
 
     setTicketEditErr("");
     setTicketEditOk("");
     setTicketEditSaving(true);
 
     try {
-      const now = nowIso();
-
       const minutes = Number(ticketEstimatedMinutesEdit);
       if (!Number.isFinite(minutes) || minutes <= 0) {
         setTicketEditErr("Estimated duration must be a number > 0.");
@@ -1100,12 +1152,23 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       }
 
       const nextStatus = ticketStatusEdit as TicketStatus;
-      const nextIssueDetails = ticketIssueDetailsEdit.trim();
+      const guard = getManualTicketStatusError({
+        nextStatus,
+        currentStatus: ticket.status,
+        trips,
+      });
+
+      if (guard) {
+        setTicketEditErr(guard);
+        return;
+      }
+
+      const now = nowIso();
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         status: nextStatus,
         estimatedDurationMinutes: minutes,
-        issueDetails: nextIssueDetails ? nextIssueDetails : null,
+        issueDetails: ticketIssueDetailsEdit.trim() || null,
         updatedAt: now,
       });
 
@@ -1115,7 +1178,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
               ...prev,
               status: nextStatus,
               estimatedDurationMinutes: minutes,
-              issueDetails: nextIssueDetails ? nextIssueDetails : undefined,
+              issueDetails: ticketIssueDetailsEdit.trim() || undefined,
               updatedAt: now,
             }
           : prev
@@ -1131,81 +1194,84 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!ticket) return;
-    if (!canDispatch) return;
+    if (!ticket || !canDispatch) return;
 
     setTripSaveError("");
     setTripSaveSuccess("");
 
-    const date = tripDate.trim();
-    if (!date) {
+    if (isTicketTerminal(ticket.status)) {
+      setTripSaveError("Completed or cancelled tickets cannot receive new trips.");
+      return;
+    }
+
+    if (hasOpenTrips(trips)) {
+      setTripSaveError("This ticket already has an open trip. Complete or cancel it before scheduling another.");
+      return;
+    }
+
+    const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
+    if (remoteOpenTrips.length > 0) {
+      setTripSaveError(
+        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
+      );
+      return;
+    }
+
+    if (!tripDate.trim()) {
       setTripSaveError("Trip date is required.");
       return;
     }
 
-    const primaryUid = tripPrimaryTechUid.trim();
-    if (!primaryUid) {
-      setTripSaveError("Primary technician is required to schedule a trip.");
+    if (!tripPrimaryTechUid.trim()) {
+      setTripSaveError("Primary technician is required.");
       return;
     }
 
-    const startTime = tripStartTime.trim();
-    const endTime = tripEndTime.trim();
-    if (!startTime || !endTime) {
-      setTripSaveError("Start and end time are required.");
+    if (!tripStartTime.trim() || !tripEndTime.trim() || tripEndTime <= tripStartTime) {
+      setTripSaveError("Enter a valid start and end time.");
       return;
     }
-    if (endTime <= startTime) {
-      setTripSaveError("End time must be after start time.");
-      return;
-    }
-
-    const helperUid = tripHelperUid.trim() || "";
-    const secondaryTechUid = tripSecondaryTechUid.trim() || "";
-    const secondaryHelperUid = tripSecondaryHelperUid.trim() || "";
 
     setTripSaving(true);
 
     try {
       const now = nowIso();
+      const helperUid = tripHelperUid.trim() || "";
+      const secondaryTechUid = tripSecondaryTechUid.trim() || "";
+      const secondaryHelperUid = tripSecondaryHelperUid.trim() || "";
 
-      const primaryName = findTechName(primaryUid) || "Unnamed Technician";
+      const primaryName = findTechName(tripPrimaryTechUid) || "Unnamed Technician";
       const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
       const secondaryTechName = secondaryTechUid ? findTechName(secondaryTechUid) || "Unnamed Technician" : null;
-      const secondaryHelperName = secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
+      const secondaryHelperName =
+        secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
 
-      const sourceKey = `serviceTicket:${ticket.id}:${date}:${tripTimeWindow}`;
-
-      const tripPayload = {
+      const payload = {
         active: true,
-        cancelReason: null,
-        createdAt: now,
-        createdByUid: appUser?.uid || null,
-        updatedAt: now,
-        updatedByUid: appUser?.uid || null,
+        type: "service",
+        status: "planned",
+        date: tripDate,
+        timeWindow: tripTimeWindow,
+        startTime: tripStartTime,
+        endTime: tripEndTime,
         crew: {
-          primaryTechUid: primaryUid,
+          primaryTechUid: tripPrimaryTechUid,
           primaryTechName: primaryName,
           helperUid: helperUid || null,
-          helperName: helperName,
+          helperName,
           secondaryTechUid: secondaryTechUid || null,
-          secondaryTechName: secondaryTechName,
+          secondaryTechName,
           secondaryHelperUid: secondaryHelperUid || null,
-          secondaryHelperName: secondaryHelperName,
+          secondaryHelperName,
         },
-        date,
-        startTime,
-        endTime,
-        timeWindow: tripTimeWindow,
+        crewConfirmed: null,
         link: {
+          serviceTicketId: ticket.id,
           projectId: null,
           projectStageKey: null,
-          serviceTicketId: ticket.id,
         },
         notes: tripNotes.trim() || null,
-        sourceKey,
-        status: "planned",
-        type: "service",
+        cancelReason: null,
         timerState: "not_started",
         actualStartAt: null,
         actualEndAt: null,
@@ -1216,83 +1282,80 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         workNotes: null,
         resolutionNotes: null,
         followUpNotes: null,
-        crewConfirmed: null,
-        materials: null,
+        materials: [],
         outcome: null,
         readyToBillAt: null,
+        createdAt: now,
+        createdByUid: appUser?.uid || null,
+        updatedAt: now,
+        updatedByUid: appUser?.uid || null,
       };
 
-      const createdTripRef = await addDoc(collection(db, "trips"), tripPayload as any);
+      const createdRef = await addDoc(collection(db, "trips"), payload as any);
+      const createdTrip: TripDoc = { id: createdRef.id, ...(payload as any) };
+
+      const nextTrips = [...trips, createdTrip].sort((a, b) => {
+        const byDate = String(a.date || "").localeCompare(String(b.date || ""));
+        if (byDate !== 0) return byDate;
+        return String(a.startTime || "").localeCompare(String(b.startTime || ""));
+      });
 
       const helperIds = helperUid ? [helperUid] : [];
       const helperNames = helperName ? [helperName] : [];
 
-      const assignedTechnicianIds: string[] = [];
-      assignedTechnicianIds.push(primaryUid);
-      if (secondaryTechUid && secondaryTechUid !== primaryUid) assignedTechnicianIds.push(secondaryTechUid);
-      for (const h of helperIds) {
-        if (!assignedTechnicianIds.includes(h)) assignedTechnicianIds.push(h);
+      const assignedTechnicianIds = [tripPrimaryTechUid];
+      if (secondaryTechUid && secondaryTechUid !== tripPrimaryTechUid) {
+        assignedTechnicianIds.push(secondaryTechUid);
+      }
+      if (helperUid && !assignedTechnicianIds.includes(helperUid)) {
+        assignedTechnicianIds.push(helperUid);
       }
       if (secondaryHelperUid && !assignedTechnicianIds.includes(secondaryHelperUid)) {
         assignedTechnicianIds.push(secondaryHelperUid);
       }
 
-      const nextStatus = tripSetTicketScheduled && ticket.status === "new" ? "scheduled" : ticket.status;
+      const nextStatus = deriveNextTicketStatus(nextTrips);
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         status: nextStatus,
-        assignedTechnicianId: primaryUid,
+        assignedTechnicianId: tripPrimaryTechUid,
         assignedTechnicianName: primaryName,
-        primaryTechnicianId: primaryUid,
+        primaryTechnicianId: tripPrimaryTechUid,
         secondaryTechnicianId: secondaryTechUid || null,
         secondaryTechnicianName: secondaryTechUid ? secondaryTechName : null,
         helperIds: helperIds.length ? helperIds : null,
         helperNames: helperNames.length ? helperNames : null,
-        assignedTechnicianIds: assignedTechnicianIds.length ? assignedTechnicianIds : null,
+        assignedTechnicianIds,
         updatedAt: now,
       });
 
-      setTicket((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          status: nextStatus as any,
-          assignedTechnicianId: primaryUid,
-          assignedTechnicianName: primaryName,
-          primaryTechnicianId: primaryUid,
-          secondaryTechnicianId: secondaryTechUid || undefined,
-          secondaryTechnicianName: secondaryTechUid ? (secondaryTechName || undefined) : undefined,
-          helperIds: helperIds.length ? helperIds : undefined,
-          helperNames: helperNames.length ? helperNames : undefined,
-          assignedTechnicianIds: assignedTechnicianIds.length ? assignedTechnicianIds : undefined,
-          updatedAt: now,
-        };
-      });
-
-      const createdTrip: TripDoc = {
-        id: createdTripRef.id,
-        ...(tripPayload as any),
-        materials: [],
-        pauseBlocks: [],
-      };
-
-      setTrips((prev) =>
-        [...prev, createdTrip].sort((a, b) => {
-          const byDate = (a.date || "").localeCompare(b.date || "");
-          if (byDate !== 0) return byDate;
-          return (a.startTime || "").localeCompare(b.startTime || "");
-        })
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: nextStatus,
+              assignedTechnicianId: tripPrimaryTechUid,
+              assignedTechnicianName: primaryName,
+              primaryTechnicianId: tripPrimaryTechUid,
+              secondaryTechnicianId: secondaryTechUid || undefined,
+              secondaryTechnicianName: secondaryTechName || undefined,
+              helperIds: helperIds.length ? helperIds : undefined,
+              helperNames: helperNames.length ? helperNames : undefined,
+              assignedTechnicianIds,
+              updatedAt: now,
+            }
+          : prev
       );
 
+      setTicketStatusEdit(nextStatus);
+      setTrips(nextTrips);
       setTripWorkNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripResolutionNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripFollowUpNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
-
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
-
-      setTripSaveSuccess(`Trip scheduled (${formatTripWindow(tripTimeWindow)}).`);
+      setTripSaveSuccess(`Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`);
       setTripNotes("");
       setScheduleOpen(false);
     } catch (err: unknown) {
@@ -1302,76 +1365,35 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  function setTripSavingFlag(tripId: string, value: boolean) {
-    setTripActionSaving((prev) => ({ ...prev, [tripId]: value }));
-  }
-  function setTripErr(tripId: string, msg: string) {
-    setTripActionError((prev) => ({ ...prev, [tripId]: msg }));
-  }
-  function setTripOk(tripId: string, msg: string) {
-    setTripActionSuccess((prev) => ({ ...prev, [tripId]: msg }));
-  }
+  async function handleStartTrip(trip: TripDoc) {
+    if (!canStartTripRole || !myUid) return;
 
-  function addMaterialRow(tripId: string) {
-    setTripMaterials((prev) => {
-      const cur = Array.isArray(prev[tripId]) ? prev[tripId] : [];
-      return {
-        ...prev,
-        [tripId]: [...cur, { name: "", qty: 1 }],
-      };
-    });
-  }
-
-  function updateMaterialRow(tripId: string, idx: number, patch: Partial<TripMaterial>) {
-    setTripMaterials((prev) => {
-      const cur = Array.isArray(prev[tripId]) ? prev[tripId] : [];
-      const next = cur.map((m, i) => (i === idx ? { ...m, ...patch } : m));
-      return { ...prev, [tripId]: next };
-    });
-  }
-
-  function removeMaterialRow(tripId: string, idx: number) {
-    setTripMaterials((prev) => {
-      const cur = Array.isArray(prev[tripId]) ? prev[tripId] : [];
-      const next = cur.filter((_, i) => i !== idx);
-      return { ...prev, [tripId]: next };
-    });
-  }
-
-  function applyHelperConfirmation(crew: TripCrew | null, tripId: string): TripCrew | null {
-    if (!crew) return crew;
-    const helperConfirmed = helperConfirmedByTrip[tripId];
-    if (typeof helperConfirmed === "boolean" && helperConfirmed === false) {
-      return {
-        ...crew,
-        helperUid: null,
-        helperName: null,
-        secondaryHelperUid: null,
-        secondaryHelperName: null,
-      };
-    }
-    return crew;
-  }
-
-  function getHoursToUse(tripId: string, computedMinutes: number) {
-    const computed = roundToHalf(computedMinutes / 60);
-    const override = hoursOverrideByTrip[tripId];
-    if (typeof override === "number" && Number.isFinite(override) && override >= 0) return roundToHalf(override);
-    return computed;
-  }
-
-  function canCurrentUserActOnTrip(trip: TripDoc) {
-    if (!myUid) return false;
-    if (appUser?.role === "admin") return true;
-    return isUidOnTripCrew(myUid, trip.crew || null);
-  }
-
-    async function handleStartTrip(trip: TripDoc) {
-    if (!canStartTripRole) return;
-    if (!myUid) return;
-
-    if (appUser?.role !== "admin" && !isUidOnTripCrew(myUid, trip.crew || null)) {
+    if (!canCurrentUserActOnTrip(trip) && appUser?.role !== "admin") {
       setTripErr(trip.id, "You are not assigned to this trip.");
+      return;
+    }
+
+    if (!canStartTrip(trip.status, trip.timerState)) {
+      setTripErr(trip.id, "This trip is not in a startable state.");
+      return;
+    }
+
+    if (hasInProgressTrips(trips.filter((t) => t.id !== trip.id))) {
+      setTripErr(trip.id, "Another trip on this ticket is already in progress.");
+      return;
+    }
+
+    const startCrew = trip.crewConfirmed || trip.crew || null;
+    const runningConflicts = await findRunningTripsForCrewUids({
+      crewUids: crewUidsFromCrew(startCrew),
+      excludeTripId: trip.id,
+    });
+
+    if (runningConflicts.length > 0) {
+      setTripErr(
+        trip.id,
+        `Cannot start this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+      );
       return;
     }
 
@@ -1388,35 +1410,35 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         actualStartAt: trip.actualStartAt || now,
         actualEndAt: null,
         startedByUid: trip.startedByUid || myUid,
+        crewConfirmed: trip.crewConfirmed || trip.crew || null,
+        pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
         updatedAt: now,
         updatedByUid: myUid,
-        crewConfirmed: trip.crew || null,
-        pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
       });
 
-      setTrips((prev) =>
-        prev.map((t) =>
-          t.id === trip.id
-            ? {
-                ...t,
-                status: "in_progress",
-                timerState: "running",
-                actualStartAt: t.actualStartAt || now,
-                actualEndAt: null,
-                startedByUid: t.startedByUid || myUid,
-                crewConfirmed: t.crew || t.crewConfirmed,
-                pauseBlocks: Array.isArray(t.pauseBlocks) ? t.pauseBlocks : [],
-                updatedAt: now,
-                updatedByUid: myUid,
-              }
-            : t
-        )
+      const nextTrips = trips.map((t) =>
+        t.id === trip.id
+          ? {
+              ...t,
+              status: "in_progress",
+              timerState: "running",
+              actualStartAt: t.actualStartAt || now,
+              actualEndAt: null,
+              startedByUid: t.startedByUid || myUid,
+              crewConfirmed: t.crewConfirmed || t.crew || null,
+              pauseBlocks: Array.isArray(t.pauseBlocks) ? t.pauseBlocks : [],
+              updatedAt: now,
+              updatedByUid: myUid,
+            }
+          : t
       );
 
+      setTrips(nextTrips);
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
 
-      if (ticket?.id && !isTerminalTicketStatus(ticket.status) && !isAlreadyInProgressOrBeyond(ticket.status)) {
-        await ensureTicketInProgressIfNeeded({ now, reason: "start_trip" });
+      const nextStatus = deriveNextTicketStatus(nextTrips);
+      if (ticket?.id && nextStatus !== ticket.status) {
+        await persistTicketStatus(nextStatus, now);
       }
 
       setTripOk(trip.id, "Trip started.");
@@ -1428,8 +1450,17 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }
 
   async function handlePauseTrip(trip: TripDoc) {
-    if (!canWorkTrip) return;
-    if (!myUid) return;
+    if (!canWorkTrip || !myUid) return;
+
+    if (!canCurrentUserActOnTrip(trip)) {
+      setTripErr(trip.id, "You are not assigned to this trip.");
+      return;
+    }
+
+    if (!canPauseTrip(trip.status, trip.timerState)) {
+      setTripErr(trip.id, "This trip cannot be paused right now.");
+      return;
+    }
 
     setTripErr(trip.id, "");
     setTripOk(trip.id, "");
@@ -1437,24 +1468,25 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
     try {
       const now = nowIso();
-      const curBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
-      const hasOpen = curBlocks.some((b) => b && b.startAt && !b.endAt);
-      if (hasOpen) {
-        setTripErr(trip.id, "Trip is already paused.");
+      const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
+
+      const hasOpenPause = pauseBlocks.some((block) => block?.startAt && !block?.endAt);
+      if (hasOpenPause) {
+        setTripErr(trip.id, "This trip is already paused.");
         return;
       }
 
-      curBlocks.push({ startAt: now, endAt: null });
+      pauseBlocks.push({ startAt: now, endAt: null });
 
       await updateDoc(doc(db, "trips", trip.id), {
         timerState: "paused",
-        pauseBlocks: curBlocks,
+        pauseBlocks,
         updatedAt: now,
         updatedByUid: myUid,
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks: curBlocks } : t))
+        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks } : t))
       );
 
       setTripOk(trip.id, "Paused.");
@@ -1466,8 +1498,36 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }
 
   async function handleResumeTrip(trip: TripDoc) {
-    if (!canWorkTrip) return;
-    if (!myUid) return;
+    if (!canWorkTrip || !myUid) return;
+
+    if (!canCurrentUserActOnTrip(trip)) {
+      setTripErr(trip.id, "You are not assigned to this trip.");
+      return;
+    }
+
+    if (!canResumeTrip(trip.status, trip.timerState)) {
+      setTripErr(trip.id, "This trip cannot be resumed right now.");
+      return;
+    }
+
+    if (hasInProgressTrips(trips.filter((t) => t.id !== trip.id))) {
+      setTripErr(trip.id, "Another trip on this ticket is already in progress.");
+      return;
+    }
+
+    const resumeCrew = trip.crewConfirmed || trip.crew || null;
+    const runningConflicts = await findRunningTripsForCrewUids({
+      crewUids: crewUidsFromCrew(resumeCrew),
+      excludeTripId: trip.id,
+    });
+
+    if (runningConflicts.length > 0) {
+      setTripErr(
+        trip.id,
+        `Cannot resume this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+      );
+      return;
+    }
 
     setTripErr(trip.id, "");
     setTripOk(trip.id, "");
@@ -1475,32 +1535,32 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
     try {
       const now = nowIso();
-      const curBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
+      const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
 
-      let closed = false;
-      for (let i = curBlocks.length - 1; i >= 0; i--) {
-        const b = curBlocks[i];
-        if (b && b.startAt && !b.endAt) {
-          curBlocks[i] = { ...b, endAt: now };
-          closed = true;
+      let foundOpenPause = false;
+
+      for (let i = pauseBlocks.length - 1; i >= 0; i--) {
+        if (pauseBlocks[i] && pauseBlocks[i].startAt && !pauseBlocks[i].endAt) {
+          pauseBlocks[i] = { ...pauseBlocks[i], endAt: now };
+          foundOpenPause = true;
           break;
         }
       }
 
-      if (!closed) {
-        setTripErr(trip.id, "No active pause to resume.");
+      if (!foundOpenPause) {
+        setTripErr(trip.id, "No active pause block was found to resume.");
         return;
       }
 
       await updateDoc(doc(db, "trips", trip.id), {
         timerState: "running",
-        pauseBlocks: curBlocks,
+        pauseBlocks,
         updatedAt: now,
         updatedByUid: myUid,
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "running", pauseBlocks: curBlocks } : t))
+        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "running", pauseBlocks } : t))
       );
 
       setTripOk(trip.id, "Resumed.");
@@ -1512,25 +1572,29 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
   }
 
   async function handleSaveWorkNotes(trip: TripDoc) {
-    if (!canWorkTrip) return;
-    if (!myUid) return;
+    if (!canWorkTrip || !myUid) return;
 
+    if (!canCurrentUserActOnTrip(trip)) {
+      setTripErr(trip.id, "You are not assigned to this trip.");
+      return;
+    }
+
+    setTripSavingFlag(trip.id, true);
     setTripErr(trip.id, "");
     setTripOk(trip.id, "");
-    setTripSavingFlag(trip.id, true);
 
     try {
       const now = nowIso();
-      const notes = (tripWorkNotes[trip.id] || "").trim();
+      const value = String(tripWorkNotes[trip.id] || "").trim();
 
       await updateDoc(doc(db, "trips", trip.id), {
-        workNotes: notes || null,
+        workNotes: value || null,
         updatedAt: now,
         updatedByUid: myUid,
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, workNotes: notes || null } : t))
+        prev.map((t) => (t.id === trip.id ? { ...t, workNotes: value || null } : t))
       );
 
       setTripOk(trip.id, "Notes saved.");
@@ -1541,35 +1605,49 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-    async function handleResolveTrip(trip: TripDoc) {
-    if (!canWorkTrip) return;
-    if (!myUid) return;
+  async function finishTrip(trip: TripDoc, mode: "resolved" | "follow_up") {
+    if (!canWorkTrip || !myUid) return;
 
+    if (!canCurrentUserActOnTrip(trip)) {
+      setTripErr(trip.id, "You are not assigned to this trip.");
+      return;
+    }
+
+    if (!canFinishTrip(trip.status, trip.timerState)) {
+      setTripErr(trip.id, "This trip is not ready to finish.");
+      return;
+    }
+
+    setTripSavingFlag(trip.id, true);
     setTripErr(trip.id, "");
     setTripOk(trip.id, "");
-    setTripSavingFlag(trip.id, true);
 
     try {
       const now = nowIso();
+      const followNotes = String(tripFollowUpNotes[trip.id] || "").trim();
+      const resolutionNotes = String(tripResolutionNotes[trip.id] || "").trim();
 
-      const resolution = (tripResolutionNotes[trip.id] || "").trim();
-      if (!resolution) {
-        setTripErr(trip.id, "Resolved requires resolution notes.");
-        return;
+      if (mode === "follow_up" && !followNotes) {
+        throw new Error("Follow Up requires follow-up notes.");
+      }
+      if (mode === "resolved" && !resolutionNotes) {
+        throw new Error("Resolved requires resolution notes.");
       }
 
       const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
-      const matCheck = validateMaterialsForResolved(mats);
-      if (!matCheck.ok) {
-        setTripErr(trip.id, matCheck.message || "Materials validation failed.");
-        return;
+      const materialCheck =
+        mode === "resolved"
+          ? validateMaterialsForResolved(mats)
+          : { ok: true as const, cleaned: [] as TripMaterial[] };
+
+      if (!materialCheck.ok) {
+        throw new Error(materialCheck.message);
       }
 
-      let pauseBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
+      const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
       for (let i = pauseBlocks.length - 1; i >= 0; i--) {
-        const b = pauseBlocks[i];
-        if (b && b.startAt && !b.endAt) {
-          pauseBlocks[i] = { ...b, endAt: now };
+        if (pauseBlocks[i] && pauseBlocks[i].startAt && !pauseBlocks[i].endAt) {
+          pauseBlocks[i] = { ...pauseBlocks[i], endAt: now };
           break;
         }
       }
@@ -1579,21 +1657,29 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       const paused = sumPausedMinutes(pauseBlocks);
       const actualMinutes = Math.max(0, gross - paused);
 
-      if (!trip.date) throw new Error("Trip is missing date; cannot create time entries.");
-      if (!actualMinutes || actualMinutes <= 0) throw new Error("Trip duration is 0 minutes; no time entry created.");
+      if (!trip.date) {
+        throw new Error("Trip is missing date; cannot create time entries.");
+      }
+      if (!actualMinutes || actualMinutes <= 0) {
+        throw new Error("Trip duration is 0 minutes; no time entry created.");
+      }
 
       const latestSnap = await getDoc(doc(db, "trips", trip.id));
       const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
 
-      const crewConfirmedBase: TripCrew | null = (latestTrip?.crewConfirmed ?? trip.crewConfirmed ?? null) as any;
-      const crewFallbackBase: TripCrew | null = (latestTrip?.crew ?? trip.crew ?? null) as any;
+      const crewConfirmed = applyHelperConfirmation(
+        (latestTrip?.crewConfirmed ?? trip.crewConfirmed ?? null) as TripCrew | null,
+        trip.id
+      );
+      const crewFallback = applyHelperConfirmation(
+        (latestTrip?.crew ?? trip.crew ?? null) as TripCrew | null,
+        trip.id
+      );
+      const finalCrew = crewConfirmed || crewFallback || null;
 
-      const crewConfirmed = applyHelperConfirmation(crewConfirmedBase, trip.id);
-      const crewFallback = applyHelperConfirmation(crewFallbackBase, trip.id);
-
-      const crewMembers = crewMembersFromTrip({ crewConfirmed, crew: crewFallback });
-      if (crewMembers.length === 0) {
-        throw new Error("No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries.");
+      const crewMembers = crewMembersFromTrip({ crewConfirmed: finalCrew, crew: finalCrew });
+      if (!crewMembers.length) {
+        throw new Error("No crew members found on trip.");
       }
 
       const hoursToUse = getHoursToUse(trip.id, actualMinutes);
@@ -1609,23 +1695,23 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           endedByUid: myUid,
           pauseBlocks,
           actualMinutes,
-          workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-          resolutionNotes: resolution,
-          followUpNotes: null,
-          outcome: "resolved",
-          readyToBillAt: now,
-          materials: matCheck.cleaned,
-          crewConfirmed: crewConfirmed || crewFallback || null,
+          workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+          resolutionNotes: mode === "resolved" ? resolutionNotes : null,
+          followUpNotes: mode === "follow_up" ? followNotes : null,
+          outcome: mode,
+          readyToBillAt: mode === "resolved" ? now : null,
+          materials: mode === "resolved" ? materialCheck.cleaned : [],
+          crewConfirmed: finalCrew,
           updatedAt: now,
           updatedByUid: myUid,
-        }) as any
+        })
       );
 
-      for (const m of crewMembers) {
+      for (const member of crewMembers) {
         const timesheetId = await upsertWeeklyTimesheetHeader({
-          employeeId: m.uid,
-          employeeName: m.name,
-          employeeRole: m.role,
+          employeeId: member.uid,
+          employeeName: member.name,
+          employeeRole: member.role,
           weekStartDate,
           weekEndDate,
           createdByUid: myUid || null,
@@ -1642,7 +1728,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
 
         await upsertTimeEntryFromTrip({
           trip,
-          member: m,
+          member,
           entryDate,
           hoursGenerated: hoursToUse,
           weekStartDate,
@@ -1651,301 +1737,137 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           createdByUid: myUid || null,
           displayTitle: ticket?.customerDisplayName || "Customer",
           displaySubtitle: ticket?.issueSummary || "Service Ticket",
-          outcomeLabel: "Resolved",
+          outcomeLabel: mode === "resolved" ? "Resolved" : "Follow Up",
           addressShort,
         });
       }
 
-      if (ticket?.id) {
-        const primaryUid = crewConfirmed?.primaryTechUid || crewFallback?.primaryTechUid || "";
-        const primaryName =
-          crewConfirmed?.primaryTechName ||
-          crewFallback?.primaryTechName ||
-          findTechName(primaryUid) ||
-          "Primary Tech";
-
-        const billingPacket: BillingPacket = {
-          status: "ready_to_bill",
-          readyToBillAt: now,
-          readyToBillTripId: trip.id,
-          resolutionNotes: resolution,
-          workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-          labor: {
-            totalHours: hoursToUse,
-            byCrew: primaryUid
-              ? [
-                  {
-                    uid: primaryUid,
-                    name: primaryName,
-                    role: "technician",
-                    hours: hoursToUse,
-                  },
-                ]
-              : [],
-          },
-          materials: matCheck.cleaned,
-          photos: [],
-          updatedAt: now,
-        };
-
-        await updateDoc(doc(db, "serviceTickets", ticket.id), {
-          status: "completed",
-          updatedAt: now,
-          billing: billingPacket,
-        });
-
-        setTicket((prev) => (prev ? { ...prev, status: "completed", updatedAt: now, billing: billingPacket } : prev));
-        setTicketStatusEdit("completed");
-      }
-
-      setTrips((prev) =>
-        prev.map((t) =>
-          t.id === trip.id
-            ? {
-                ...t,
-                status: "complete",
-                timerState: "complete",
-                actualEndAt: now,
-                endedByUid: myUid,
-                pauseBlocks,
-                actualMinutes,
-                workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-                resolutionNotes: resolution,
-                followUpNotes: null,
-                materials: matCheck.cleaned as any,
-                outcome: "resolved",
-                readyToBillAt: now,
-                crewConfirmed: crewConfirmed || crewFallback || null,
-              }
-            : t
-        )
+      const nextTrips = trips.map((t) =>
+        t.id === trip.id
+          ? {
+              ...t,
+              status: "complete",
+              timerState: "complete",
+              actualEndAt: now,
+              endedByUid: myUid,
+              pauseBlocks,
+              actualMinutes,
+              workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+              resolutionNotes: mode === "resolved" ? resolutionNotes : null,
+              followUpNotes: mode === "follow_up" ? followNotes : null,
+              outcome: mode,
+              readyToBillAt: mode === "resolved" ? now : null,
+              materials: mode === "resolved" ? materialCheck.cleaned : [],
+              crewConfirmed: finalCrew,
+            }
+          : t
       );
 
+      setTrips(nextTrips);
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-      setMobileFinishOpen(false);
+      closeMobileFinishSheet();
 
-      setTripOk(trip.id, `Resolved. Hours: ${hoursToUse}. Time entries: ${crewMembers.length}`);
-    } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to resolve trip.");
-    } finally {
-      setTripSavingFlag(trip.id, false);
-    }
-  }
+      const nextStatus = deriveNextTicketStatus(nextTrips, mode);
+      let billingOverride: BillingPacket | null | undefined = undefined;
 
-  async function handleFollowUpTrip(trip: TripDoc) {
-    if (!canWorkTrip) return;
-    if (!myUid) return;
+      if (mode === "resolved") {
+        if (nextStatus === "completed") {
+          const primaryUid = finalCrew?.primaryTechUid || "";
+          const primaryName = finalCrew?.primaryTechName || "Primary Tech";
 
-    setTripErr(trip.id, "");
-    setTripOk(trip.id, "");
-    setTripSavingFlag(trip.id, true);
-
-    try {
-      const now = nowIso();
-
-      const follow = (tripFollowUpNotes[trip.id] || "").trim();
-      if (!follow) {
-        setTripErr(trip.id, "Follow Up requires follow-up notes.");
-        return;
-      }
-
-      let pauseBlocks = Array.isArray(trip.pauseBlocks) ? [...trip.pauseBlocks] : [];
-      for (let i = pauseBlocks.length - 1; i >= 0; i--) {
-        const b = pauseBlocks[i];
-        if (b && b.startAt && !b.endAt) {
-          pauseBlocks[i] = { ...b, endAt: now };
-          break;
+          billingOverride = {
+            status: "ready_to_bill",
+            readyToBillAt: now,
+            readyToBillTripId: trip.id,
+            resolutionNotes,
+            workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+            labor: {
+              totalHours: hoursToUse,
+              byCrew: primaryUid
+                ? [
+                    {
+                      uid: primaryUid,
+                      name: primaryName,
+                      role: "technician",
+                      hours: hoursToUse,
+                    },
+                  ]
+                : [],
+            },
+            materials: materialCheck.cleaned,
+            photos: [],
+            updatedAt: now,
+          };
+        } else {
+          billingOverride = null;
         }
-      }
-
-      const startAt = trip.actualStartAt || now;
-      const gross = minutesBetweenIso(startAt, now);
-      const paused = sumPausedMinutes(pauseBlocks);
-      const actualMinutes = Math.max(0, gross - paused);
-
-      if (!trip.date) throw new Error("Trip is missing date; cannot create time entries.");
-      if (!actualMinutes || actualMinutes <= 0) throw new Error("Trip duration is 0 minutes; no time entry created.");
-
-      const latestSnap = await getDoc(doc(db, "trips", trip.id));
-      const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
-
-      const crewConfirmedBase: TripCrew | null = (latestTrip?.crewConfirmed ?? trip.crewConfirmed ?? null) as any;
-      const crewFallbackBase: TripCrew | null = (latestTrip?.crew ?? trip.crew ?? null) as any;
-
-      const crewConfirmed = applyHelperConfirmation(crewConfirmedBase, trip.id);
-      const crewFallback = applyHelperConfirmation(crewFallbackBase, trip.id);
-
-      const crewMembers = crewMembersFromTrip({ crewConfirmed, crew: crewFallback });
-      if (crewMembers.length === 0) {
-        throw new Error("No crew members found on trip (crewConfirmed/crew empty). Cannot create time entries.");
-      }
-
-      const hoursToUse = getHoursToUse(trip.id, actualMinutes);
-      const entryDate = trip.date;
-      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
-
-      await updateDoc(doc(db, "trips", trip.id), {
-        status: "complete",
-        timerState: "complete",
-        actualEndAt: now,
-        endedByUid: myUid,
-        pauseBlocks,
-        actualMinutes,
-        workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-        resolutionNotes: null,
-        followUpNotes: follow,
-        outcome: "follow_up",
-        readyToBillAt: null,
-        crewConfirmed: crewConfirmed || crewFallback || null,
-        updatedAt: now,
-        updatedByUid: myUid,
-      });
-
-      for (const m of crewMembers) {
-        const timesheetId = await upsertWeeklyTimesheetHeader({
-          employeeId: m.uid,
-          employeeName: m.name,
-          employeeRole: m.role,
-          weekStartDate,
-          weekEndDate,
-          createdByUid: myUid || null,
-        });
-
-        const addressShort = [
-          ticket?.serviceAddressLine1 || "",
-          ticket?.serviceCity || "",
-          ticket?.serviceState || "",
-          ticket?.servicePostalCode || "",
-        ]
-          .filter(Boolean)
-          .join(", ");
-
-        await upsertTimeEntryFromTrip({
-          trip,
-          member: m,
-          entryDate,
-          hoursGenerated: hoursToUse,
-          weekStartDate,
-          weekEndDate,
-          timesheetId,
-          createdByUid: myUid || null,
-          displayTitle: ticket?.customerDisplayName || "Customer",
-          displaySubtitle: ticket?.issueSummary || "Service Ticket",
-          outcomeLabel: "Follow Up",
-          addressShort,
-        });
+      } else {
+        billingOverride = null;
       }
 
       if (ticket?.id) {
-        await updateDoc(doc(db, "serviceTickets", ticket.id), {
-          status: "follow_up",
-          updatedAt: now,
-        });
-
-        setTicket((prev) => (prev ? { ...prev, status: "follow_up", updatedAt: now } : prev));
-        setTicketStatusEdit("follow_up");
+        await persistTicketStatus(nextStatus, now, billingOverride);
       }
 
-      setTrips((prev) =>
-        prev.map((t) =>
-          t.id === trip.id
-            ? {
-                ...t,
-                status: "complete",
-                timerState: "complete",
-                actualEndAt: now,
-                endedByUid: myUid,
-                pauseBlocks,
-                actualMinutes,
-                workNotes: (tripWorkNotes[trip.id] || "").trim() || null,
-                followUpNotes: follow,
-                resolutionNotes: null,
-                outcome: "follow_up",
-                crewConfirmed: crewConfirmed || crewFallback || null,
-              }
-            : t
-        )
-      );
-
-      setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-      setMobileFinishOpen(false);
-
-      setTripOk(trip.id, `Follow Up logged. Hours: ${hoursToUse}. Time entries: ${crewMembers.length}`);
+      setTripOk(trip.id, `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Hours: ${hoursToUse}.`);
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to complete follow-up.");
+      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to finish trip.");
     } finally {
       setTripSavingFlag(trip.id, false);
     }
   }
 
-    function openEditTrip(t: TripDoc) {
+  function openEditTrip(trip: TripDoc) {
+    if (!canEditTripSchedule(trip.status, trip.timerState)) return;
+    setEditTripId(trip.id);
+    setEditTripDate(trip.date || isoTodayLocal());
+    setEditTripTimeWindow((trip.timeWindow as TripTimeWindow) || "custom");
+    setEditTripStartTime(trip.startTime || "08:00");
+    setEditTripEndTime(trip.endTime || "12:00");
+    setEditTripNotes(String(trip.notes || ""));
     setEditTripErr("");
-    setEditTripOk("");
-    setEditTripId(t.id);
-
-    setEditTripDate(t.date || isoTodayLocal());
-    setEditTripTimeWindow((t.timeWindow as TripTimeWindow) || "custom");
-    setEditTripStartTime(t.startTime || "08:00");
-    setEditTripEndTime(t.endTime || "12:00");
-    setEditTripNotes(String(t.notes || ""));
   }
 
-  function closeEditTrip() {
-    setEditTripId(null);
-    setEditTripErr("");
-    setEditTripOk("");
-    setEditTripSaving(false);
-  }
-
-  async function handleSaveTripEdits() {
-    if (!canDispatch) return;
-    if (!editTripId) return;
+  async function handleSaveTripEdit() {
+    if (!canDispatch || !editTripId) return;
+    const trip = trips.find((t) => t.id === editTripId);
+    if (!trip) return;
 
     setEditTripErr("");
-    setEditTripOk("");
     setEditTripSaving(true);
 
     try {
+      if (!canEditTripSchedule(trip.status, trip.timerState)) {
+        throw new Error("Only planned trips can be edited.");
+      }
+      if (!editTripDate.trim()) {
+        throw new Error("Trip date is required.");
+      }
+      if (!editTripStartTime.trim() || !editTripEndTime.trim() || editTripEndTime <= editTripStartTime) {
+        throw new Error("Enter a valid start and end time.");
+      }
+
       const now = nowIso();
 
-      const date = editTripDate.trim();
-      if (!date) {
-        setEditTripErr("Trip date is required.");
-        return;
-      }
-
-      const startTime = editTripStartTime.trim();
-      const endTime = editTripEndTime.trim();
-      if (!startTime || !endTime) {
-        setEditTripErr("Start and end time are required.");
-        return;
-      }
-      if (endTime <= startTime) {
-        setEditTripErr("End time must be after start time.");
-        return;
-      }
-
-      const payload = stripUndefined({
-        date,
+      await updateDoc(doc(db, "trips", trip.id), {
+        date: editTripDate,
         timeWindow: editTripTimeWindow,
-        startTime,
-        endTime,
+        startTime: editTripStartTime,
+        endTime: editTripEndTime,
         notes: editTripNotes.trim() || null,
         updatedAt: now,
         updatedByUid: myUid || null,
       });
 
-      await updateDoc(doc(db, "trips", editTripId), payload as any);
-
       setTrips((prev) =>
         prev.map((t) =>
-          t.id === editTripId
+          t.id === trip.id
             ? {
                 ...t,
-                date,
+                date: editTripDate,
                 timeWindow: editTripTimeWindow,
-                startTime,
-                endTime,
+                startTime: editTripStartTime,
+                endTime: editTripEndTime,
                 notes: editTripNotes.trim() || null,
                 updatedAt: now,
                 updatedByUid: myUid || null,
@@ -1954,8 +1876,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         )
       );
 
-      setEditTripOk("Trip updated.");
-      setTimeout(() => closeEditTrip(), 650);
+      setEditTripId(null);
     } catch (err: unknown) {
       setEditTripErr(err instanceof Error ? err.message : "Failed to update trip.");
     } finally {
@@ -1963,29 +1884,26 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  async function handleSoftDeleteTrip(t: TripDoc) {
+  async function handleSoftDeleteTrip(trip: TripDoc) {
     if (!canDispatch) return;
 
-    const status = String(t.status || "").toLowerCase();
-    if (status === "in_progress" || status === "complete") {
-      alert("You can’t delete a trip that is in progress or complete.");
+    if (!canCancelTrip(trip.status, trip.timerState)) {
+      alert("Only planned trips can be removed.");
       return;
     }
 
-    const confirm = window.prompt(
-      `Type DELETE to remove this trip from the schedule.\n\nTrip: ${t.date} ${t.startTime}-${t.endTime}`,
-      ""
-    );
-    if (confirm !== "DELETE") return;
+    if (window.prompt(`Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`, "") !== "DELETE") {
+      return;
+    }
 
-    setTripErr(t.id, "");
-    setTripOk(t.id, "");
-    setTripSavingFlag(t.id, true);
+    setTripSavingFlag(trip.id, true);
+    setTripErr(trip.id, "");
+    setTripOk(trip.id, "");
 
     try {
       const now = nowIso();
 
-      await updateDoc(doc(db, "trips", t.id), {
+      await updateDoc(doc(db, "trips", trip.id), {
         status: "cancelled",
         timerState: "complete",
         active: false,
@@ -1994,51 +1912,43 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         updatedByUid: myUid || null,
       });
 
-      setTrips((prev) =>
-        prev.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                status: "cancelled",
-                timerState: "complete",
-                active: false,
-                cancelReason: "deleted",
-                updatedAt: now,
-                updatedByUid: myUid || null,
-              }
-            : x
-        )
+      const nextTrips = trips.map((t) =>
+        t.id === trip.id
+          ? {
+              ...t,
+              status: "cancelled",
+              timerState: "complete",
+              active: false,
+              cancelReason: "deleted",
+              updatedAt: now,
+              updatedByUid: myUid || null,
+            }
+          : t
       );
 
-      setTripOk(t.id, "Trip removed (soft delete).");
+      setTrips(nextTrips);
+
+      const nextStatus = deriveNextTicketStatus(nextTrips);
+      if (ticket?.id && nextStatus !== ticket.status) {
+        await persistTicketStatus(nextStatus, now);
+      }
+
+      setTripOk(trip.id, "Trip removed.");
     } catch (err: unknown) {
-      setTripErr(t.id, err instanceof Error ? err.message : "Failed to delete trip.");
+      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to delete trip.");
     } finally {
-      setTripSavingFlag(t.id, false);
+      setTripSavingFlag(trip.id, false);
     }
   }
 
   async function handleClaimAndStartTrip() {
-    if (!ticket?.id) return;
-    if (!myUid) return;
+    if (!ticket?.id || !myUid) return;
 
     const role = String(appUser?.role || "");
-    const canSelfDispatch =
-      role === "technician" ||
-      role === "helper" ||
-      role === "apprentice" ||
-      role === "admin" ||
-      role === "dispatcher" ||
-      role === "manager";
+    const canSelfDispatch = ["technician", "helper", "apprentice", "admin", "dispatcher", "manager"].includes(role);
 
     if (!canSelfDispatch) {
       alert("You do not have permission to claim tickets.");
-      return;
-    }
-
-    const curStatus = String(ticket.status || "").toLowerCase();
-    if (curStatus === "completed" || curStatus === "cancelled") {
-      alert("This ticket is not claimable.");
       return;
     }
 
@@ -2047,45 +1957,65 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       return;
     }
 
-    const now = new Date();
-    const nowIsoStr = now.toISOString();
-    const date = isoTodayLocal();
-    const startTime = hhmmLocal(now);
-    const endTime = hhmmLocal(addMinutes(now, 60));
+    if (isTicketTerminal(ticket.status)) {
+      alert("This ticket is not claimable.");
+      return;
+    }
 
-    const defaultHelperUid =
+    if (hasOpenTrips(trips)) {
+      alert("This ticket already has an open trip.");
+      return;
+    }
+
+    const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
+    if (remoteOpenTrips.length > 0) {
+      alert(
+        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
+      );
+      return;
+    }
+
+    const now = new Date();
+    const nowString = now.toISOString();
+
+    const helperUid =
       helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
-    const helperUid = defaultHelperUid || "";
     const helperName = helperUid
       ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
       : null;
 
+    const runningConflicts = await findRunningTripsForCrewUids({
+      crewUids: [myUid, ...(helperUid ? [helperUid] : [])],
+    });
+
+    if (runningConflicts.length > 0) {
+      alert(
+        `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+      );
+      return;
+    }
+
     try {
       const ticketRef = doc(db, "serviceTickets", ticket.id);
-      const tripsCol = collection(db, "trips");
-      const newTripRef = doc(tripsCol);
+      const tripsRef = collection(db, "trips");
+      const newTripRef = doc(tripsRef);
 
       await runTransaction(db, async (tx) => {
-        const ticketSnap = await tx.get(ticketRef);
-        if (!ticketSnap.exists()) throw new Error("Ticket not found.");
+        const liveTicket = await tx.get(ticketRef);
+        if (!liveTicket.exists()) throw new Error("Ticket not found.");
 
-        const live = ticketSnap.data() as any;
-
+        const live = liveTicket.data() as any;
         if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
-
-        const liveStatus = String(live.status || "").toLowerCase();
-        if (liveStatus === "completed" || liveStatus === "cancelled") {
-          throw new Error("Ticket is not claimable.");
-        }
+        if (isTicketTerminal(live.status)) throw new Error("Ticket is not claimable.");
 
         tx.set(newTripRef, {
           active: true,
           type: "service",
           status: "in_progress",
-          date,
+          date: isoTodayLocal(),
           timeWindow: "custom",
-          startTime,
-          endTime,
+          startTime: hhmmLocal(now),
+          endTime: hhmmLocal(addMinutes(now, 60)),
           crew: {
             primaryTechUid: myUid,
             primaryTechName: appUser?.displayName || "Technician",
@@ -2114,7 +2044,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           notes: null,
           cancelReason: null,
           timerState: "running",
-          actualStartAt: nowIsoStr,
+          actualStartAt: nowString,
           actualEndAt: null,
           startedByUid: myUid,
           endedByUid: null,
@@ -2123,12 +2053,12 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           workNotes: null,
           resolutionNotes: null,
           followUpNotes: null,
-          materials: null,
+          materials: [],
           outcome: null,
           readyToBillAt: null,
-          createdAt: nowIsoStr,
+          createdAt: nowString,
           createdByUid: myUid,
-          updatedAt: nowIsoStr,
+          updatedAt: nowString,
           updatedByUid: myUid,
         });
 
@@ -2142,23 +2072,18 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           helperIds: helperUid ? [helperUid] : null,
           helperNames: helperName ? [helperName] : null,
           assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
-          updatedAt: nowIsoStr,
+          updatedAt: nowString,
         });
       });
 
-      alert("Claimed and started trip.");
       window.location.reload();
-    } catch (e: any) {
-      alert(e?.message || "Failed to claim ticket.");
+    } catch (err: any) {
+      alert(err?.message || "Failed to claim ticket.");
     }
   }
 
-  const billing = ticket?.billing ?? null;
-  const showFullBillingPanel = Boolean(billing);
-
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
-    if (!ticket?.id) return;
-    if (!canBill) return;
+    if (!ticket?.id || !canBill) return;
 
     setBillingErr("");
     setBillingOk("");
@@ -2168,8 +2093,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
       const now = nowIso();
 
       const base: BillingPacket =
-        billing ||
-        ({
+        ticket.billing || {
           status: "not_ready",
           readyToBillAt: null,
           readyToBillTripId: null,
@@ -2179,7 +2103,7 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
           materials: [],
           photos: [],
           updatedAt: now,
-        } as BillingPacket);
+        };
 
       const next: BillingPacket = {
         ...base,
@@ -2206,51 +2130,15 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
     }
   }
 
-  const mainColumnsSx = {
-    display: "grid",
-    gap: 2.5,
-    gridTemplateColumns: {
-      xs: "1fr",
-      md: "minmax(0, 1.25fr) minmax(340px, 0.95fr)",
-    },
-    alignItems: "start",
-  } as const;
-
-  const twoColSx = {
-    display: "grid",
-    gap: 2,
-    gridTemplateColumns: {
-      xs: "1fr",
-      md: "1fr 1fr",
-    },
-  } as const;
-
-  const customerAddressSx = {
-    display: "grid",
-    gap: 2,
-    gridTemplateColumns: {
-      xs: "1fr",
-      md: "minmax(0, 0.95fr) minmax(0, 1.25fr)",
-    },
-  } as const;
-
-  const materialsTwoColSx = {
-    display: "grid",
-    gap: 1,
-    gridTemplateColumns: {
-      xs: "1fr 1fr",
-      sm: "1fr 1fr",
-    },
-  } as const;
-
-  const materialsFourSx = {
-    display: "grid",
-    gap: 1,
-    gridTemplateColumns: {
-      xs: "1fr",
-      sm: "1fr 1fr",
-    },
-  } as const;
+  const mapsAddress = [
+    ticket?.serviceAddressLine1 || "",
+    ticket?.serviceAddressLine2 || "",
+    ticket?.serviceCity || "",
+    ticket?.serviceState || "",
+    ticket?.servicePostalCode || "",
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
@@ -2259,292 +2147,388 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
         {error ? <Alert severity="error">{error}</Alert> : null}
 
         {!loading && !error && ticket ? (
-          <Box sx={{ display: "grid", gap: 3 }}>
-            {isMobile && (() => {
-              const startableTrip = trips
-                .filter((t) => {
-                  const status = String(t.status || "");
-                  const cancelled = status === "cancelled";
-                  const complete = status === "complete";
-                  const inProg = status === "in_progress";
-                  if (cancelled || complete || inProg) return false;
-                  if (!canStartTripRole) return false;
-                  return canCurrentUserActOnTrip(t);
-                })
-                .find((t) => String(t.date || "") === isoTodayLocal()) ||
-                trips.find((t) => {
-                  const status = String(t.status || "");
-                  const cancelled = status === "cancelled";
-                  const complete = status === "complete";
-                  const inProg = status === "in_progress";
-                  if (cancelled || complete || inProg) return false;
-                  if (!canStartTripRole) return false;
-                  return canCurrentUserActOnTrip(t);
-                }) ||
-                null;
-
-              return startableTrip ? (
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    position: "sticky",
-                    top: 12,
-                    zIndex: 10,
-                    p: 1.5,
-                    borderRadius: 4,
-                    borderColor: alpha(theme.palette.primary.main, 0.28),
-                    backgroundColor: alpha(theme.palette.primary.main, 0.06),
-                  }}
-                >
-                  <Stack direction="row" spacing={1.25} alignItems="center" justifyContent="space-between" flexWrap="wrap">
-                    <Box>
-                      <Typography variant="subtitle1" fontWeight={700}>
-                        Ready to start?
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {startableTrip.date} • {formatTripWindow(String(startableTrip.timeWindow || ""))} • {startableTrip.startTime}-{startableTrip.endTime}
-                      </Typography>
-                    </Box>
-
-                    <Fab
-                      variant="extended"
-                      color="primary"
-                      size="medium"
-                      onClick={() => handleStartTrip(startableTrip)}
-                      sx={{ boxShadow: "none" }}
+          <Stack spacing={3}>
+            <Dialog
+              fullScreen={isMobile}
+              open={Boolean(mobileFinishTrip)}
+              onClose={closeMobileFinishSheet}
+              fullWidth
+              maxWidth="sm"
+            >
+              <DialogTitle sx={{ pb: 1 }}>
+                <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography
+                      variant="overline"
+                      sx={{ color: "text.secondary", letterSpacing: "0.08em" }}
                     >
-                      <PlayArrowRoundedIcon sx={{ mr: 0.75 }} />
-                      Start Trip
-                    </Fab>
+                      Finish Trip
+                    </Typography>
+
+                    <Typography variant="h6" fontWeight={800} sx={{ mt: 0.25 }} noWrap>
+                      {ticket.customerDisplayName || "Customer"}
+                    </Typography>
+
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ mt: 0.5 }}
+                    >
+                      {ticket.issueSummary || "Service Ticket"}
+                    </Typography>
+
+                    <Chip
+                      sx={{ mt: 1.25 }}
+                      size="small"
+                      color={mobileFinishMode === "resolved" ? "success" : "warning"}
+                      icon={mobileFinishMode === "resolved" ? <CheckRoundedIcon /> : undefined}
+                      label={mobileFinishMode === "resolved" ? "Resolved" : "Follow-Up"}
+                    />
+                  </Box>
+
+                  <IconButton onClick={closeMobileFinishSheet}>
+                    <CloseRoundedIcon />
+                  </IconButton>
+                </Stack>
+              </DialogTitle>
+
+              <DialogContent dividers>
+                {mobileFinishTrip ? (
+                  <Stack spacing={2}>
+                    <TextField
+                      label="Hours (override)"
+                      type="number"
+                      size="small"
+                      inputProps={{ min: 0, step: 0.5 }}
+                      value={
+                        typeof hoursOverrideByTrip[mobileFinishTrip.id] === "number"
+                          ? hoursOverrideByTrip[mobileFinishTrip.id]
+                          : roundToHalf(
+                              Math.max(
+                                0,
+                                (() => {
+                                  const paused = sumPausedMinutes(mobileFinishTrip.pauseBlocks);
+                                  const gross =
+                                    mobileFinishTrip.actualStartAt && !mobileFinishTrip.actualEndAt
+                                      ? minutesBetweenIso(mobileFinishTrip.actualStartAt, liveNowIso)
+                                      : mobileFinishTrip.actualStartAt && mobileFinishTrip.actualEndAt
+                                        ? minutesBetweenIso(
+                                            mobileFinishTrip.actualStartAt,
+                                            mobileFinishTrip.actualEndAt
+                                          )
+                                        : 0;
+                                  return gross - paused;
+                                })()
+                              ) / 60
+                            )
+                      }
+                      onChange={(e) =>
+                        setHoursOverrideByTrip((prev) => ({
+                          ...prev,
+                          [mobileFinishTrip.id]: Number(e.target.value),
+                        }))
+                      }
+                      helperText="Timer default shown above; you can override if needed."
+                    />
+
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={helperConfirmedByTrip[mobileFinishTrip.id] ?? true}
+                          onChange={(e) =>
+                            setHelperConfirmedByTrip((prev) => ({
+                              ...prev,
+                              [mobileFinishTrip.id]: e.target.checked,
+                            }))
+                          }
+                        />
+                      }
+                      label="Include helper in payroll"
+                    />
+
+                    {mobileFinishMode === "follow_up" ? (
+                      <TextField
+                        label="Follow-Up Notes"
+                        multiline
+                        minRows={5}
+                        value={tripFollowUpNotes[mobileFinishTrip.id] ?? ""}
+                        onChange={(e) =>
+                          setTripFollowUpNotes((prev) => ({
+                            ...prev,
+                            [mobileFinishTrip.id]: e.target.value,
+                          }))
+                        }
+                      />
+                    ) : null}
+
+                    {mobileFinishMode === "resolved" ? (
+                      <>
+                        <TextField
+                          label="Resolution Notes"
+                          multiline
+                          minRows={5}
+                          value={tripResolutionNotes[mobileFinishTrip.id] ?? ""}
+                          onChange={(e) =>
+                            setTripResolutionNotes((prev) => ({
+                              ...prev,
+                              [mobileFinishTrip.id]: e.target.value,
+                            }))
+                          }
+                        />
+
+                        <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                          <Stack spacing={1.25}>
+                            <Typography variant="subtitle1" fontWeight={700}>
+                              Materials
+                            </Typography>
+
+                            {(tripMaterials[mobileFinishTrip.id] || []).length === 0 ? (
+                              <Alert severity="info" variant="outlined">
+                                No materials added yet.
+                              </Alert>
+                            ) : null}
+
+                            {(tripMaterials[mobileFinishTrip.id] || []).map((m, idx) => (
+                              <Stack
+                                key={`${mobileFinishTrip.id}-${idx}`}
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                              >
+                                <TextField
+                                  size="small"
+                                  label="Name"
+                                  value={m.name}
+                                  onChange={(e) =>
+                                    setTripMaterials((prev) => ({
+                                      ...prev,
+                                      [mobileFinishTrip.id]: (prev[mobileFinishTrip.id] || []).map(
+                                        (row, rowIdx) =>
+                                          rowIdx === idx ? { ...row, name: e.target.value } : row
+                                      ),
+                                    }))
+                                  }
+                                />
+
+                                <TextField
+                                  size="small"
+                                  label="Qty"
+                                  type="number"
+                                  value={m.qty}
+                                  onChange={(e) =>
+                                    setTripMaterials((prev) => ({
+                                      ...prev,
+                                      [mobileFinishTrip.id]: (prev[mobileFinishTrip.id] || []).map(
+                                        (row, rowIdx) =>
+                                          rowIdx === idx ? { ...row, qty: Number(e.target.value) } : row
+                                      ),
+                                    }))
+                                  }
+                                />
+
+                                <Button
+                                  variant="outlined"
+                                  color="error"
+                                  onClick={() =>
+                                    setTripMaterials((prev) => ({
+                                      ...prev,
+                                      [mobileFinishTrip.id]: (prev[mobileFinishTrip.id] || []).filter(
+                                        (_, rowIdx) => rowIdx !== idx
+                                      ),
+                                    }))
+                                  }
+                                >
+                                  Remove
+                                </Button>
+                              </Stack>
+                            ))}
+
+                            <Button
+                              variant="outlined"
+                              onClick={() =>
+                                setTripMaterials((prev) => ({
+                                  ...prev,
+                                  [mobileFinishTrip.id]: [
+                                    ...(prev[mobileFinishTrip.id] || []),
+                                    { name: "", qty: 1 },
+                                  ],
+                                }))
+                              }
+                            >
+                              Add Material
+                            </Button>
+                          </Stack>
+                        </Paper>
+                      </>
+                    ) : null}
                   </Stack>
-                </Paper>
-              ) : null;
-            })()}
+                ) : null}
+              </DialogContent>
+
+              <DialogActions sx={{ p: 2, pb: "calc(16px + env(safe-area-inset-bottom))" }}>
+                <Button onClick={closeMobileFinishSheet}>Cancel</Button>
+
+                {mobileFinishTrip ? (
+                  <Button
+                    variant="contained"
+                    color={mobileFinishMode === "resolved" ? "success" : "primary"}
+                    onClick={() =>
+                      finishTrip(mobileFinishTrip, mobileFinishMode as "resolved" | "follow_up")
+                    }
+                  >
+                    {mobileFinishMode === "resolved"
+                      ? "Complete as Resolved"
+                      : "Complete as Follow-Up"}
+                  </Button>
+                ) : null}
+              </DialogActions>
+            </Dialog>
 
             <Stack
               direction={{ xs: "column", md: "row" }}
-              spacing={2}
-              alignItems={{ xs: "flex-start", md: "center" }}
               justifyContent="space-between"
+              alignItems={{ xs: "flex-start", md: "center" }}
+              spacing={2}
             >
               <Stack spacing={1}>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                   <Typography variant="h4" fontWeight={800}>
                     {ticket.issueSummary}
                   </Typography>
-                  <StatusPill text={formatTicketStatus(ticket.status)} tone={getTicketTone(ticket.status)} />
+                  <Chip
+                    label={formatTicketStatus(ticket.status)}
+                    color={getTicketTone(ticket.status)}
+                    size="small"
+                  />
                 </Stack>
 
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                  <Chip
-                    variant="outlined"
-                    label={`Ticket ID: ${ticketId}`}
-                    sx={{ borderRadius: 999, fontWeight: 700 }}
-                  />
-                  <Tooltip title="Copy ticket ID">
-                    <IconButton
-                      size="small"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(ticketId);
-                        } catch {}
-                      }}
-                    >
-                      <ContentCopyRoundedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Chip label={`Ticket ID: ${ticketId}`} variant="outlined" />
+                  <IconButton
+                    size="small"
+                    onClick={() => navigator.clipboard.writeText(ticketId).catch(() => undefined)}
+                  >
+                    <ContentCopyRoundedIcon fontSize="small" />
+                  </IconButton>
                 </Stack>
               </Stack>
 
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap">
-                {!ticket.assignedTechnicianId ? (
-                  <M3Button tone="green" onClick={handleClaimAndStartTrip} startIcon={<PlayArrowRoundedIcon />}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                {!ticket.assignedTechnicianId && !hasOpenTrips(trips) ? (
+                  <Button
+                    variant="contained"
+                    color="success"
+                    onClick={handleClaimAndStartTrip}
+                    startIcon={<PlayArrowRoundedIcon />}
+                  >
                     Claim & Start Trip
-                  </M3Button>
+                  </Button>
                 ) : null}
 
-                <Link href="/service-tickets" style={{ textDecoration: "none" }}>
-                  <Button
-                    variant="outlined"
-                    startIcon={<ArrowBackRoundedIcon />}
-                    sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
-                  >
-                    Back to Tickets
-                  </Button>
-                </Link>
+                <Button
+                  component={Link}
+                  href="/service-tickets"
+                  variant="outlined"
+                  startIcon={<ArrowBackRoundedIcon />}
+                >
+                  Back to Tickets
+                </Button>
               </Stack>
             </Stack>
 
-            <Box sx={mainColumnsSx}>
+            <Box
+              sx={{
+                display: "grid",
+                gap: 2.5,
+                gridTemplateColumns: { xs: "1fr", lg: "1.2fr 0.95fr" },
+              }}
+            >
               <Stack spacing={2.5}>
-                <SectionCard
-                  title="Customer & Service Address"
+                <Section
+                  title="Customer & Address"
                   icon={<PlaceOutlinedIcon color="primary" />}
                   action={
-                    buildMapsUrl(
-                      `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-                    ) ? (
- <a
-  href={buildMapsUrl(
-    `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-  )}
-  target="_blank"
-  rel="noreferrer"
-  style={{ textDecoration: "none" }}
->
-  <Button
-    variant="text"
-    sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
-  >
-    Open in Maps
-  </Button>
-</a>
+                    mapsAddress ? (
+                      <Button
+                        component="a"
+                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                          mapsAddress
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        variant="text"
+                      >
+                        Open Maps
+                      </Button>
                     ) : null
                   }
                 >
-                  <Box sx={customerAddressSx}>
-                    <Stack spacing={2}>
-                      <Box>
-                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                          Customer
+                  <Stack spacing={2}>
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                        Customer
+                      </Typography>
+                      <Stack spacing={1}>
+                        <Typography variant="body1">
+                          <strong>Name:</strong> {ticket.customerDisplayName || "—"}
                         </Typography>
 
-                        <Stack spacing={1.25}>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <PhoneOutlinedIcon fontSize="small" color="action" />
                           <Typography variant="body1">
-                            <strong>Name:</strong> {ticket.customerDisplayName || "—"}
+                            {customerPhone ? <a href={`tel:${customerPhone}`}>{customerPhone}</a> : "—"}
                           </Typography>
-
-                          <Stack direction="row" spacing={1} alignItems="center">
-                            <PhoneOutlinedIcon fontSize="small" color="action" />
-                            <Typography variant="body1">
-                              {customerPhone ? (
-                                <a href={`tel:${customerPhone}`} style={{ color: "inherit" }}>
-                                  {customerPhone}
-                                </a>
-                              ) : (
-                                "—"
-                              )}
-                            </Typography>
-                          </Stack>
-
-                          <Stack direction="row" spacing={1} alignItems="center">
-                            <AlternateEmailRoundedIcon fontSize="small" color="action" />
-                            <Typography variant="body1">
-                              {customerEmail ? (
-                                <a href={`mailto:${customerEmail}`} style={{ color: "inherit" }}>
-                                  {customerEmail}
-                                </a>
-                              ) : (
-                                "—"
-                              )}
-                            </Typography>
-                          </Stack>
                         </Stack>
-                      </Box>
 
-                      <Divider />
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <AlternateEmailRoundedIcon fontSize="small" color="action" />
+                          <Typography variant="body1">
+                            {customerEmail ? <a href={`mailto:${customerEmail}`}>{customerEmail}</a> : "—"}
+                          </Typography>
+                        </Stack>
+                      </Stack>
+                    </Box>
 
-                      <Box>
-                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                          Service Address
+                    <Divider />
+
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                        Service Address
+                      </Typography>
+                      <Stack spacing={0.5}>
+                        <Typography variant="body1">{ticket.serviceAddressLabel || "—"}</Typography>
+                        <Typography variant="body1">{ticket.serviceAddressLine1 || "—"}</Typography>
+                        {ticket.serviceAddressLine2 ? (
+                          <Typography variant="body1">{ticket.serviceAddressLine2}</Typography>
+                        ) : null}
+                        <Typography variant="body1">
+                          {ticket.serviceCity || "—"}, {ticket.serviceState || "—"}{" "}
+                          {ticket.servicePostalCode || ""}
                         </Typography>
+                      </Stack>
+                    </Box>
+                  </Stack>
+                </Section>
 
-                        <Stack spacing={0.75}>
-                          <Typography variant="body1">
-                            <strong>Label:</strong> {ticket.serviceAddressLabel || "—"}
-                          </Typography>
-                          <Typography variant="body1">{ticket.serviceAddressLine1 || "—"}</Typography>
-                          {ticket.serviceAddressLine2 ? (
-                            <Typography variant="body1">{ticket.serviceAddressLine2}</Typography>
-                          ) : null}
-                          <Typography variant="body1">
-                            {ticket.serviceCity || "—"}, {ticket.serviceState || "—"} {ticket.servicePostalCode || ""}
-                          </Typography>
-                        </Stack>
-
-                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
-                          <QuietButton
-                            startIcon={<ContentCopyRoundedIcon />}
-                            onClick={async () => {
-                              try {
-                                await navigator.clipboard.writeText(
-                                  `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-                                );
-                              } catch {}
-                            }}
-                          >
-                            Copy Address
-                          </QuietButton>
-
-                          {buildMapsUrl(
-                            `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-                          ) ? (
-<a
-  href={buildMapsUrl(
-    `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-  )}
-  target="_blank"
-  rel="noreferrer"
-  style={{ textDecoration: "none" }}
->
-  <QuietButton startIcon={<PlaceOutlinedIcon />}>
-    Open Maps
-  </QuietButton>
-</a>
-                          ) : null}
-                        </Stack>
-                      </Box>
-                    </Stack>
-
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        borderRadius: 4,
-                        overflow: "hidden",
-                        minHeight: { xs: 240, md: 340 },
-                        bgcolor: "action.hover",
-                      }}
-                    >
-                      {buildMapsEmbedUrl(
-                        `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-                      ) ? (
-                        <iframe
-                          title="Map"
-                          src={buildMapsEmbedUrl(
-                            `${ticket.serviceAddressLine1 || ""} ${ticket.serviceAddressLine2 || ""}, ${ticket.serviceCity || ""}, ${ticket.serviceState || ""} ${ticket.servicePostalCode || ""}`.trim()
-                          )}
-                          loading="lazy"
-                          referrerPolicy="no-referrer-when-downgrade"
-                          style={{
-                            width: "100%",
-                            height: isMobile ? 240 : 340,
-                            border: 0,
-                            display: "block",
-                          }}
-                        />
-                      ) : (
-                        <Box sx={{ p: 2 }}>
-                          <Typography variant="body2" color="text.secondary">
-                            No address available to show a map.
-                          </Typography>
-                        </Box>
-                      )}
-                    </Paper>
-                  </Box>
-                </SectionCard>
-
-                <SectionCard title="Ticket Overview" icon={<AssignmentTurnedInRoundedIcon color="primary" />}>
+                <Section title="Ticket Overview" icon={<AssignmentTurnedInRoundedIcon color="primary" />}>
                   {canDispatch ? (
                     <Stack spacing={2}>
-                      <Box sx={twoColSx}>
+                      <Alert severity="info" variant="outlined">
+                        Status changes are now guarded by the trip lifecycle.
+                      </Alert>
+
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                        }}
+                      >
                         <TextField
                           select
-                          fullWidth
                           size="small"
                           label="Status"
                           value={ticketStatusEdit}
                           onChange={(e) => setTicketStatusEdit(e.target.value as TicketStatus)}
-                          disabled={ticketEditSaving}
                         >
                           <MenuItem value="new">New</MenuItem>
                           <MenuItem value="scheduled">Scheduled</MenuItem>
@@ -2555,1226 +2539,793 @@ export default function ServiceTicketDetailPage({ params }: ServiceTicketDetailP
                         </TextField>
 
                         <TextField
-                          fullWidth
                           size="small"
                           type="number"
                           label="Estimated Duration (minutes)"
                           inputProps={{ min: 1 }}
                           value={ticketEstimatedMinutesEdit}
                           onChange={(e) => setTicketEstimatedMinutesEdit(e.target.value)}
-                          disabled={ticketEditSaving}
                         />
                       </Box>
 
                       <TextField
-                        fullWidth
                         multiline
                         minRows={4}
                         label="Issue Details"
                         value={ticketIssueDetailsEdit}
                         onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
-                        disabled={ticketEditSaving}
-                        placeholder="Add or update issue details for the tech..."
                       />
 
-                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} alignItems={{ xs: "stretch", sm: "center" }}>
-                        <M3Button tone="blue" onClick={handleSaveTicketOverview} disabled={ticketEditSaving}>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <Button
+                          variant="contained"
+                          onClick={handleSaveTicketOverview}
+                          disabled={ticketEditSaving}
+                        >
                           {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
-                        </M3Button>
-
-                        {ticketEditErr ? <Alert severity="error" sx={{ py: 0 }}>{ticketEditErr}</Alert> : null}
-                        {ticketEditOk ? <Alert severity="success" sx={{ py: 0 }}>{ticketEditOk}</Alert> : null}
+                        </Button>
+                        {ticketEditErr ? <Alert severity="error">{ticketEditErr}</Alert> : null}
+                        {ticketEditOk ? <Alert severity="success">{ticketEditOk}</Alert> : null}
                       </Stack>
                     </Stack>
                   ) : (
-                    <Stack spacing={1.25}>
+                    <Stack spacing={1}>
                       <Typography variant="body1">
-                        <strong>Current Status:</strong> {formatTicketStatus(ticket.status)}
+                        <strong>Status:</strong> {formatTicketStatus(ticket.status)}
                       </Typography>
                       <Typography variant="body1">
                         <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
                       </Typography>
-                      <Box>
-                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                          Issue Details
-                        </Typography>
-                        <Typography variant="body1">
-                          {ticket.issueDetails || "No additional issue details."}
-                        </Typography>
-                      </Box>
+                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                        {ticket.issueDetails || "No additional issue details."}
+                      </Typography>
                     </Stack>
                   )}
-                </SectionCard>
+                </Section>
               </Stack>
 
               <Stack spacing={2.5}>
-                <SectionCard
+                <Section
                   title="Trips"
                   icon={<ScheduleRoundedIcon color="primary" />}
                   action={
                     canDispatch ? (
-                      <M3Button
-                        tone="blue"
-                        onClick={() => setScheduleOpen((v) => !v)}
-                        startIcon={<AddRoundedIcon />}
-                      >
-                        {scheduleOpen ? "Close" : "Schedule New Trip"}
-                      </M3Button>
+                      <Button variant="contained" onClick={() => setScheduleOpen((prev) => !prev)}>
+                        {scheduleOpen ? "Close" : "Schedule Trip"}
+                      </Button>
                     ) : null
                   }
                 >
                   <Stack spacing={1.5}>
-                    {tripsLoading ? <Alert severity="info">Loading trips…</Alert> : null}
-                    {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
+                    {trips.length === 0 ? (
+                      <Alert severity="info" variant="outlined">
+                        No trips scheduled yet.
+                      </Alert>
+                    ) : null}
 
-                    {!tripsLoading && !tripsError ? (
-                      <>
-                        {trips.length === 0 ? (
-                          <Alert severity="info" variant="outlined">
-                            No trips scheduled yet.
-                          </Alert>
-                        ) : (
-                          trips.map((t) => {
-                            const crew = t.crew || {};
-                            const primary = crew.primaryTechName || "Unassigned";
-                            const helper = crew.helperName ? `Helper: ${crew.helperName}` : "";
-                            const secondary = crew.secondaryTechName ? `2nd Tech: ${crew.secondaryTechName}` : "";
-                            const secondaryHelper = crew.secondaryHelperName ? `2nd Helper: ${crew.secondaryHelperName}` : "";
+                    {trips.map((trip) => {
+                      const canAct = canCurrentUserActOnTrip(trip);
+                      const savingThis = Boolean(tripActionSaving[trip.id]);
+                      const timerState = String(
+                        trip.timerState ||
+                          (normalizeTripStatus(trip.status) === "in_progress" ? "running" : "not_started")
+                      );
+                      const pausedMinutes = sumPausedMinutes(trip.pauseBlocks);
+                      const grossMinutes =
+                        trip.actualStartAt && !trip.actualEndAt
+                          ? minutesBetweenIso(trip.actualStartAt, liveNowIso)
+                          : trip.actualStartAt && trip.actualEndAt
+                            ? minutesBetweenIso(trip.actualStartAt, trip.actualEndAt)
+                            : 0;
+                      const billableMinutes = Math.max(0, grossMinutes - pausedMinutes);
+                      const timerHours = roundToHalf(billableMinutes / 60);
+                      const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
+                      const finishMode = finishModeByTrip[trip.id] || "none";
+                      const showFinishPanel =
+                        normalizeTripStatus(trip.status) === "in_progress" && finishMode !== "none";
+                      const anotherTripInProgress = hasInProgressTrips(trips.filter((t) => t.id !== trip.id));
 
-                            const canAct = canCurrentUserActOnTrip(t);
-                            const savingThis = Boolean(tripActionSaving[t.id]);
-                            const errMsg = tripActionError[t.id] || "";
-                            const okMsg = tripActionSuccess[t.id] || "";
+                      return (
+                        <Paper
+                          key={trip.id}
+                          variant="outlined"
+                          sx={{
+                            p: 1.5,
+                            borderRadius: 3,
+                            borderColor:
+                              normalizeTripStatus(trip.status) === "in_progress"
+                                ? alpha(theme.palette.info.main, 0.3)
+                                : "divider",
+                          }}
+                        >
+                          <Stack spacing={1.25}>
+                            <Stack
+                              direction="row"
+                              justifyContent="space-between"
+                              alignItems="flex-start"
+                              flexWrap="wrap"
+                            >
+                              <Box>
+                                <Typography variant="subtitle1" fontWeight={700}>
+                                  {trip.date} • {formatTripWindow(String(trip.timeWindow || ""))} •{" "}
+                                  {trip.startTime}-{trip.endTime}
+                                </Typography>
 
-                            const timerState = (t.timerState || (t.status === "in_progress" ? "running" : "not_started")) as string;
-                            const isRunning = timerState === "running";
-                            const isPaused = timerState === "paused";
-                            const isComplete = timerState === "complete" || t.status === "complete";
-                            const isInProgress = t.status === "in_progress";
-                            const isCancelled = t.status === "cancelled";
+                                <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 0.75 }}>
+                                  <Chip
+                                    size="small"
+                                    label={formatLifecycleTripStatus(trip.status)}
+                                    color={getTripTone(trip.status)}
+                                  />
+                                  <Chip size="small" label={`Timer: ${timerState}`} variant="outlined" />
+                                </Stack>
+                              </Box>
 
-                            const pausedMins = sumPausedMinutes(t.pauseBlocks);
-                            const liveGrossMins =
-                              t.actualStartAt && !t.actualEndAt
-                                ? minutesBetweenIso(t.actualStartAt, nowIso())
-                                : t.actualStartAt && t.actualEndAt
-                                  ? minutesBetweenIso(t.actualStartAt, t.actualEndAt)
-                                  : 0;
+                              {canDispatch ? (
+                                <Stack direction="row" spacing={1}>
+                                  <IconButton
+                                    onClick={() => openEditTrip(trip)}
+                                    disabled={!canEditTripSchedule(trip.status, trip.timerState)}
+                                  >
+                                    <EditRoundedIcon />
+                                  </IconButton>
 
-                            const computedBillable = Math.max(0, liveGrossMins - pausedMins);
-                            const computedHours = roundToHalf(computedBillable / 60);
+                                  <IconButton
+                                    color="error"
+                                    onClick={() => handleSoftDeleteTrip(trip)}
+                                    disabled={!canCancelTrip(trip.status, trip.timerState)}
+                                  >
+                                    <DeleteOutlineRoundedIcon />
+                                  </IconButton>
+                                </Stack>
+                              ) : null}
+                            </Stack>
 
-                            const hoursToUse =
-                              typeof hoursOverrideByTrip[t.id] === "number"
-                                ? roundToHalf(hoursOverrideByTrip[t.id])
-                                : computedHours;
+                            <Typography variant="body2" color="text.secondary">
+                              Tech: <strong>{trip.crew?.primaryTechName || "Unassigned"}</strong>
+                              {trip.crew?.helperName ? ` • Helper: ${trip.crew.helperName}` : ""}
+                              {trip.crew?.secondaryTechName ? ` • 2nd Tech: ${trip.crew.secondaryTechName}` : ""}
+                              {trip.crew?.secondaryHelperName
+                                ? ` • 2nd Helper: ${trip.crew.secondaryHelperName}`
+                                : ""}
+                            </Typography>
 
-                            const mats = Array.isArray(tripMaterials[t.id]) ? tripMaterials[t.id] : [];
+                            <Typography variant="body2" color="text.secondary">
+                              Timer minutes: <strong>{billableMinutes}</strong> (gross {grossMinutes} - paused{" "}
+                              {pausedMinutes})
+                            </Typography>
 
-                            const finishMode = finishModeByTrip[t.id] || "none";
-                            const showFinishPanel = isInProgress && finishMode !== "none";
-                            const showFollowUpField = showFinishPanel && finishMode === "follow_up";
-                            const showResolvedFields = showFinishPanel && finishMode === "resolved";
-                            const hideInlineFinishPanelOnMobile =
-                              isMobile &&
-                              trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id;
+                            <Stack direction="row" spacing={1} flexWrap="wrap">
+                              {canStartTrip(trip.status, trip.timerState) ? (
+                                <Button
+                                  variant="contained"
+                                  color="success"
+                                  startIcon={<PlayArrowRoundedIcon />}
+                                  onClick={() => handleStartTrip(trip)}
+                                  disabled={!canAct || savingThis || !canStartTripRole || anotherTripInProgress}
+                                >
+                                  Start Trip
+                                </Button>
+                              ) : null}
 
-                            return (
+                              {canPauseTrip(trip.status, trip.timerState) ? (
+                                <Button
+                                  variant="outlined"
+                                  startIcon={<PauseRoundedIcon />}
+                                  onClick={() => handlePauseTrip(trip)}
+                                  disabled={!canAct || savingThis}
+                                >
+                                  Pause
+                                </Button>
+                              ) : null}
+
+                              {canResumeTrip(trip.status, trip.timerState) ? (
+                                <Button
+                                  variant="outlined"
+                                  startIcon={<PlayArrowRoundedIcon />}
+                                  onClick={() => handleResumeTrip(trip)}
+                                  disabled={!canAct || savingThis}
+                                >
+                                  Resume
+                                </Button>
+                              ) : null}
+
+                              {isMobile && normalizeTripStatus(trip.status) === "in_progress" ? (
+                                <Alert severity="info" variant="outlined" sx={{ py: 0 }}>
+                                  Use the app-wide trip dock at the bottom for pause, resume, add note,
+                                  follow-up, and resolved actions.
+                                </Alert>
+                              ) : normalizeTripStatus(trip.status) === "in_progress" ? (
+                                <>
+                                  <Button
+                                    variant="outlined"
+                                    onClick={() => {
+                                      setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "follow_up" }));
+                                    }}
+                                    disabled={!canAct || savingThis || !canFinishTrip(trip.status, trip.timerState)}
+                                  >
+                                    Follow-Up
+                                  </Button>
+
+                                  <Button
+                                    variant="outlined"
+                                    onClick={() => {
+                                      setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "resolved" }));
+                                    }}
+                                    disabled={!canAct || savingThis || !canFinishTrip(trip.status, trip.timerState)}
+                                  >
+                                    Resolved
+                                  </Button>
+
+                                  {finishMode !== "none" ? (
+                                    <Button
+                                      variant="outlined"
+                                      onClick={() =>
+                                        setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }))
+                                      }
+                                    >
+                                      Clear
+                                    </Button>
+                                  ) : null}
+                                </>
+                              ) : null}
+                            </Stack>
+
+                            <TextField
+                              id={`trip-work-notes-${trip.id}`}
+                              label="Work Notes"
+                              multiline
+                              minRows={3}
+                              value={tripWorkNotes[trip.id] ?? ""}
+                              onChange={(e) =>
+                                setTripWorkNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))
+                              }
+                              disabled={!canAct || normalizeTripStatus(trip.status) === "cancelled"}
+                            />
+
+                            <Button
+                              variant="outlined"
+                              startIcon={<NoteAltOutlinedIcon />}
+                              onClick={() => handleSaveWorkNotes(trip)}
+                              disabled={
+                                !canAct ||
+                                normalizeTripStatus(trip.status) === "cancelled" ||
+                                savingThis
+                              }
+                            >
+                              Save Notes
+                            </Button>
+
+                            {showFinishPanel && !isMobile ? (
                               <Paper
-                                key={t.id}
                                 variant="outlined"
                                 sx={{
-                                  p: 1.5,
-                                  borderRadius: 4,
-                                  borderColor:
-                                    isInProgress
-                                      ? alpha(theme.palette.info.main, 0.28)
-                                      : isComplete
-                                        ? alpha(theme.palette.success.main, 0.28)
-                                        : "divider",
-                                  bgcolor:
-                                    isInProgress
-                                      ? alpha(theme.palette.info.main, 0.03)
-                                      : "background.paper",
+                                  p: 1.25,
+                                  borderRadius: 3,
+                                  backgroundColor:
+                                    finishMode === "resolved"
+                                      ? alpha(theme.palette.success.main, 0.06)
+                                      : alpha(theme.palette.warning.main, 0.08),
                                 }}
                               >
                                 <Stack spacing={1.25}>
-                                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start" flexWrap="wrap">
-                                    <Box>
-                                      <Typography variant="subtitle1" fontWeight={700}>
-                                        {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
-                                      </Typography>
-
-                                      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 0.75 }}>
-                                        <StatusPill text={oneLine(t.status)} tone={getTripStatusTone(t.status)} />
-                                        <StatusPill text={`Timer: ${timerState}`} tone={isPaused ? "yellow" : isInProgress ? "blue" : isComplete ? "green" : "neutral"} />
-                                      </Stack>
-                                    </Box>
-
-                                    {canDispatch ? (
-                                      <Stack direction="row" spacing={1}>
-                                        <Tooltip title="Edit trip">
-                                          <span>
-                                            <IconButton onClick={() => openEditTrip(t)} disabled={savingThis || isCancelled}>
-                                              <EditRoundedIcon />
-                                            </IconButton>
-                                          </span>
-                                        </Tooltip>
-
-                                        <Tooltip title="Delete trip">
-                                          <span>
-                                            <IconButton
-                                              onClick={() => handleSoftDeleteTrip(t)}
-                                              disabled={savingThis || isCancelled || isInProgress || isComplete}
-                                              color="error"
-                                            >
-                                              <DeleteOutlineRoundedIcon />
-                                            </IconButton>
-                                          </span>
-                                        </Tooltip>
-                                      </Stack>
-                                    ) : null}
-                                  </Stack>
-
-                                  <Stack spacing={0.5}>
-                                    <Typography variant="body2" color="text.secondary">
-                                      Tech: <strong>{primary}</strong>
-                                    </Typography>
-                                    {helper ? <Typography variant="body2" color="text.secondary">{helper}</Typography> : null}
-                                    {secondary ? <Typography variant="body2" color="text.secondary">{secondary}</Typography> : null}
-                                    {secondaryHelper ? <Typography variant="body2" color="text.secondary">{secondaryHelper}</Typography> : null}
-                                    <Typography variant="body2" color="text.secondary">
-                                      Timer minutes: <strong>{computedBillable}</strong> (gross {liveGrossMins} - paused {pausedMins})
-                                    </Typography>
-                                  </Stack>
-
-                                  <Divider />
-
-                                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                    {!isComplete && !isCancelled ? (
-                                      <>
-                                        {!isInProgress ? (
-                                          <M3Button
-                                            tone="green"
-                                            onClick={() => handleStartTrip(t)}
-                                            disabled={!canAct || savingThis || !canStartTripRole}
-                                            startIcon={<PlayArrowRoundedIcon />}
-                                          >
-                                            {savingThis ? "Working..." : "Start Trip"}
-                                          </M3Button>
-                                        ) : null}
-
-                                        {isInProgress && isRunning ? (
-                                          <QuietButton
-                                            onClick={() => handlePauseTrip(t)}
-                                            disabled={!canAct || savingThis}
-                                            startIcon={<PauseRoundedIcon />}
-                                          >
-                                            Pause
-                                          </QuietButton>
-                                        ) : null}
-
-                                        {isInProgress && isPaused ? (
-                                          <QuietButton
-                                            onClick={() => handleResumeTrip(t)}
-                                            disabled={!canAct || savingThis}
-                                            startIcon={<PlayArrowRoundedIcon />}
-                                          >
-                                            Resume
-                                          </QuietButton>
-                                        ) : null}
-
-                                        {isInProgress ? (
-                                          <>
-                                            <QuietButton
-                                              onClick={() => {
-                                                setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "follow_up" }));
-                                                if (isMobile && trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id) {
-                                                  setMobileFinishOpen(true);
-                                                }
-                                              }}
-                                              disabled={!canAct || savingThis}
-                                            >
-                                              Follow-Up
-                                            </QuietButton>
-
-                                            <QuietButton
-                                              onClick={() => {
-                                                setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "resolved" }));
-                                                if (isMobile && trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id) {
-                                                  setMobileFinishOpen(true);
-                                                }
-                                              }}
-                                              disabled={!canAct || savingThis}
-                                            >
-                                              Resolved
-                                            </QuietButton>
-
-                                            {finishMode !== "none" ? (
-                                              <QuietButton
-                                                onClick={() => {
-                                                  setFinishModeByTrip((prev) => ({ ...prev, [t.id]: "none" }));
-                                                  if (isMobile && trips.find((x) => String(x.status || "") === "in_progress")?.id === t.id) {
-                                                    setMobileFinishOpen(false);
-                                                  }
-                                                }}
-                                                disabled={!canAct || savingThis}
-                                              >
-                                                Clear
-                                              </QuietButton>
-                                            ) : null}
-                                          </>
-                                        ) : null}
-                                      </>
-                                    ) : (
-                                      <Alert severity={isCancelled ? "error" : "success"} variant="outlined" sx={{ py: 0 }}>
-                                        {isCancelled ? `Cancelled (${t.cancelReason || "No reason"})` : "Complete"}
-                                      </Alert>
-                                    )}
-                                  </Stack>
-
                                   <TextField
-                                    label="Work Notes"
-                                    multiline
-                                    minRows={3}
-                                    fullWidth
-                                    value={tripWorkNotes[t.id] ?? ""}
-                                    onChange={(e) => setTripWorkNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                    disabled={!canAct || savingThis || isCancelled}
+                                    label="Hours (override)"
+                                    type="number"
+                                    size="small"
+                                    inputProps={{ min: 0, step: 0.5 }}
+                                    value={
+                                      typeof hoursOverrideByTrip[trip.id] === "number"
+                                        ? hoursOverrideByTrip[trip.id]
+                                        : timerHours
+                                    }
+                                    onChange={(e) =>
+                                      setHoursOverrideByTrip((prev) => ({
+                                        ...prev,
+                                        [trip.id]: Number(e.target.value),
+                                      }))
+                                    }
                                   />
-
-                                  <QuietButton
-                                    onClick={() => handleSaveWorkNotes(t)}
-                                    disabled={!canAct || savingThis || isCancelled}
-                                    startIcon={<NoteAltOutlinedIcon />}
-                                  >
-                                    Save Notes
-                                  </QuietButton>
-
-                                  {showFinishPanel && !hideInlineFinishPanelOnMobile ? (
-                                    <Paper
-                                      variant="outlined"
-                                      sx={{
-                                        p: 1.5,
-                                        borderRadius: 3,
-                                        bgcolor:
-                                          finishMode === "resolved"
-                                            ? alpha(theme.palette.success.main, 0.06)
-                                            : alpha(theme.palette.warning.main, 0.08),
-                                        borderColor:
-                                          finishMode === "resolved"
-                                            ? alpha(theme.palette.success.main, 0.3)
-                                            : alpha(theme.palette.warning.main, 0.28),
-                                      }}
-                                    >
-                                      <Stack spacing={1.5}>
-                                        <Typography variant="subtitle1" fontWeight={700}>
-                                          {finishMode === "resolved" ? "Finish Trip: Resolved" : "Finish Trip: Follow-Up"}
-                                        </Typography>
-
-                                        <Box sx={twoColSx}>
-                                          <TextField
-                                            label="Hours (override)"
-                                            type="number"
-                                            size="small"
-                                            fullWidth
-                                            inputProps={{ min: 0, step: 0.5 }}
-                                            value={hoursToUse}
-                                            onChange={(e) =>
-                                              setHoursOverrideByTrip((prev) => ({
-                                                ...prev,
-                                                [t.id]: Number(e.target.value),
-                                              }))
-                                            }
-                                            disabled={!canAct || savingThis}
-                                            helperText={`Timer default: ${computedHours} hr`}
-                                          />
-
-                                          <FormControlLabel
-                                            control={
-                                              <Checkbox
-                                                checked={helperConfirmedByTrip[t.id] ?? true}
-                                                onChange={(e) =>
-                                                  setHelperConfirmedByTrip((prev) => ({
-                                                    ...prev,
-                                                    [t.id]: e.target.checked,
-                                                  }))
-                                                }
-                                                disabled={!canAct || savingThis}
-                                              />
-                                            }
-                                            label="Include helper in payroll"
-                                          />
-                                        </Box>
-
-                                        {showFollowUpField ? (
-                                          <>
-                                            <TextField
-                                              label="Follow-Up Notes"
-                                              multiline
-                                              minRows={4}
-                                              fullWidth
-                                              value={tripFollowUpNotes[t.id] ?? ""}
-                                              onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                              disabled={!canAct || savingThis}
-                                            />
-                                            <M3Button
-                                              tone="blue"
-                                              onClick={() => handleFollowUpTrip(t)}
-                                              disabled={!canAct || savingThis}
-                                            >
-                                              Complete as Follow-Up
-                                            </M3Button>
-                                          </>
-                                        ) : null}
-
-                                        {showResolvedFields ? (
-                                          <>
-                                            <TextField
-                                              label="Resolution Notes"
-                                              multiline
-                                              minRows={4}
-                                              fullWidth
-                                              value={tripResolutionNotes[t.id] ?? ""}
-                                              onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                              disabled={!canAct || savingThis}
-                                            />
-
-                                            <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
-                                              <Stack spacing={1.25}>
-                                                <Typography variant="subtitle1" fontWeight={700}>
-                                                  Materials
-                                                </Typography>
-
-                                                {mats.length === 0 ? (
-                                                  <Alert severity="info" variant="outlined">
-                                                    No materials added yet.
-                                                  </Alert>
-                                                ) : (
-                                                  <Stack spacing={1.25}>
-                                                    {mats.map((m, idx) => (
-                                                      <Paper key={`${t.id}-mat-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
-                                                        <Stack spacing={1}>
-                                                          <Box sx={materialsTwoColSx}>
-                                                            <TextField
-                                                              label="Name"
-                                                              size="small"
-                                                              fullWidth
-                                                              value={m.name}
-                                                              onChange={(e) => updateMaterialRow(t.id, idx, { name: e.target.value })}
-                                                              disabled={!canAct || savingThis}
-                                                            />
-                                                            <TextField
-                                                              label="Qty"
-                                                              type="number"
-                                                              size="small"
-                                                              fullWidth
-                                                              inputProps={{ min: 0.01, step: 0.01 }}
-                                                              value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                                              onChange={(e) => updateMaterialRow(t.id, idx, { qty: Number(e.target.value) })}
-                                                              disabled={!canAct || savingThis}
-                                                            />
-                                                          </Box>
-
-                                                          <QuietButton
-                                                            onClick={() => removeMaterialRow(t.id, idx)}
-                                                            disabled={!canAct || savingThis}
-                                                            startIcon={<DeleteOutlineRoundedIcon />}
-                                                          >
-                                                            Remove
-                                                          </QuietButton>
-                                                        </Stack>
-                                                      </Paper>
-                                                    ))}
-                                                  </Stack>
-                                                )}
-
-                                                <QuietButton
-                                                  onClick={() => addMaterialRow(t.id)}
-                                                  disabled={!canAct || savingThis}
-                                                  startIcon={<AddRoundedIcon />}
-                                                >
-                                                  Add Material
-                                                </QuietButton>
-                                              </Stack>
-                                            </Paper>
-
-                                            <M3Button
-                                              tone="green"
-                                              onClick={() => handleResolveTrip(t)}
-                                              disabled={!canAct || savingThis}
-                                            >
-                                              Complete as Resolved — Ready to Bill
-                                            </M3Button>
-                                          </>
-                                        ) : null}
-                                      </Stack>
-                                    </Paper>
-                                  ) : null}
-
-                                  {errMsg ? <Alert severity="error">{errMsg}</Alert> : null}
-                                  {okMsg ? <Alert severity="success">{okMsg}</Alert> : null}
-
-                                  <Typography variant="caption" color="text.secondary">
-                                    Trip ID: {t.id}
-                                  </Typography>
-                                </Stack>
-                              </Paper>
-                            );
-                          })
-                        )}
-
-                        {canDispatch && scheduleOpen ? (
-                          <Paper
-                            variant="outlined"
-                            sx={{
-                              mt: 0.5,
-                              p: 2,
-                              borderRadius: 4,
-                              bgcolor: alpha(theme.palette.primary.main, 0.03),
-                            }}
-                          >
-                            <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>
-                              Schedule a Trip
-                            </Typography>
-
-                            <form onSubmit={handleCreateTrip} style={{ display: "grid", gap: 16 }}>
-                              <Box sx={twoColSx}>
-                                <TextField
-                                  fullWidth
-                                  size="small"
-                                  type="date"
-                                  label="Date"
-                                  value={tripDate}
-                                  onChange={(e) => setTripDate(e.target.value)}
-                                  disabled={tripSaving}
-                                  InputLabelProps={{ shrink: true }}
-                                />
-
-                                <TextField
-                                  select
-                                  fullWidth
-                                  size="small"
-                                  label="Time Window"
-                                  value={tripTimeWindow}
-                                  onChange={(e) => setTripTimeWindow(e.target.value as TripTimeWindow)}
-                                  disabled={tripSaving}
-                                >
-                                  <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
-                                  <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
-                                  <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
-                                  <MenuItem value="custom">Custom</MenuItem>
-                                </TextField>
-                              </Box>
-
-                              {tripTimeWindow === "custom" ? (
-                                <Box sx={twoColSx}>
-                                  <TextField
-                                    fullWidth
-                                    size="small"
-                                    type="time"
-                                    label="Start Time"
-                                    value={tripStartTime}
-                                    onChange={(e) => setTripStartTime(e.target.value)}
-                                    disabled={tripSaving}
-                                    InputLabelProps={{ shrink: true }}
-                                  />
-                                  <TextField
-                                    fullWidth
-                                    size="small"
-                                    type="time"
-                                    label="End Time"
-                                    value={tripEndTime}
-                                    onChange={(e) => setTripEndTime(e.target.value)}
-                                    disabled={tripSaving}
-                                    InputLabelProps={{ shrink: true }}
-                                  />
-                                </Box>
-                              ) : null}
-
-                              {techniciansLoading ? <Alert severity="info">Loading technicians…</Alert> : null}
-                              {techniciansError ? <Alert severity="error">{techniciansError}</Alert> : null}
-
-                              <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
-                                <Stack spacing={2}>
-                                  <Typography variant="subtitle1" fontWeight={700}>
-                                    Crew
-                                  </Typography>
-
-                                  <TextField
-                                    select
-                                    fullWidth
-                                    size="small"
-                                    label="Primary Technician"
-                                    value={tripPrimaryTechUid}
-                                    onChange={(e) => setTripPrimaryTechUid(e.target.value)}
-                                    disabled={tripSaving || techniciansLoading}
-                                  >
-                                    <MenuItem value="">Select a technician…</MenuItem>
-                                    {technicians.map((t) => (
-                                      <MenuItem key={t.uid} value={t.uid}>
-                                        {t.displayName}
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
-
-                                  <TextField
-                                    select
-                                    fullWidth
-                                    size="small"
-                                    label="Secondary Technician (Optional)"
-                                    value={tripSecondaryTechUid}
-                                    onChange={(e) => setTripSecondaryTechUid(e.target.value)}
-                                    disabled={tripSaving || !tripPrimaryTechUid}
-                                    helperText="Only use this for two true technicians. Helpers/apprentices go below."
-                                  >
-                                    <MenuItem value="">— None —</MenuItem>
-                                    {technicians
-                                      .filter((t) => t.uid !== tripPrimaryTechUid)
-                                      .map((t) => (
-                                        <MenuItem key={t.uid} value={t.uid}>
-                                          {t.displayName}
-                                        </MenuItem>
-                                      ))}
-                                  </TextField>
-
-                                  <Divider />
-
-                                  <Typography variant="subtitle1" fontWeight={700}>
-                                    Helper / Apprentice
-                                  </Typography>
-
-                                  {profilesLoading ? <Alert severity="info">Loading employee profiles…</Alert> : null}
-                                  {profilesError ? <Alert severity="error">{profilesError}</Alert> : null}
 
                                   <FormControlLabel
                                     control={
                                       <Checkbox
-                                        checked={tripUseDefaultHelper}
-                                        onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
-                                        disabled={tripSaving}
+                                        checked={helperConfirmedByTrip[trip.id] ?? true}
+                                        onChange={(e) =>
+                                          setHelperConfirmedByTrip((prev) => ({
+                                            ...prev,
+                                            [trip.id]: e.target.checked,
+                                          }))
+                                        }
                                       />
                                     }
-                                    label="Use default helper pairing (recommended)"
+                                    label="Include helper in payroll"
                                   />
 
-                                  <TextField
-                                    select
-                                    fullWidth
-                                    size="small"
-                                    label="Helper / Apprentice (Optional)"
-                                    value={tripHelperUid}
-                                    onChange={(e) => {
-                                      setTripUseDefaultHelper(false);
-                                      setTripHelperUid(e.target.value);
-                                    }}
-                                    disabled={tripSaving || profilesLoading || !tripPrimaryTechUid}
-                                  >
-                                    <MenuItem value="">— None —</MenuItem>
-                                    {helperCandidates.map((h) => (
-                                      <MenuItem key={h.uid} value={h.uid}>
-                                        {h.name} ({h.laborRole})
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
+                                  {finishMode === "follow_up" ? (
+                                    <>
+                                      <TextField
+                                        label="Follow-Up Notes"
+                                        multiline
+                                        minRows={4}
+                                        value={tripFollowUpNotes[trip.id] ?? ""}
+                                        onChange={(e) =>
+                                          setTripFollowUpNotes((prev) => ({
+                                            ...prev,
+                                            [trip.id]: e.target.value,
+                                          }))
+                                        }
+                                      />
 
-                                  <TextField
-                                    select
-                                    fullWidth
-                                    size="small"
-                                    label="Secondary Helper (Optional)"
-                                    value={tripSecondaryHelperUid}
-                                    onChange={(e) => setTripSecondaryHelperUid(e.target.value)}
-                                    disabled={tripSaving || profilesLoading}
-                                  >
-                                    <MenuItem value="">— None —</MenuItem>
-                                    {helperCandidates.map((h) => (
-                                      <MenuItem key={h.uid} value={h.uid}>
-                                        {h.name} ({h.laborRole})
-                                      </MenuItem>
-                                    ))}
-                                  </TextField>
+                                      <Button
+                                        variant="contained"
+                                        onClick={() => finishTrip(trip, "follow_up")}
+                                        disabled={!canAct || savingThis}
+                                      >
+                                        Complete as Follow-Up
+                                      </Button>
+                                    </>
+                                  ) : null}
+
+                                  {finishMode === "resolved" ? (
+                                    <>
+                                      <TextField
+                                        label="Resolution Notes"
+                                        multiline
+                                        minRows={4}
+                                        value={tripResolutionNotes[trip.id] ?? ""}
+                                        onChange={(e) =>
+                                          setTripResolutionNotes((prev) => ({
+                                            ...prev,
+                                            [trip.id]: e.target.value,
+                                          }))
+                                        }
+                                      />
+
+                                      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+                                        <Stack spacing={1}>
+                                          <Typography variant="subtitle1" fontWeight={700}>
+                                            Materials
+                                          </Typography>
+
+                                          {mats.length === 0 ? (
+                                            <Alert severity="info" variant="outlined">
+                                              No materials added yet.
+                                            </Alert>
+                                          ) : null}
+
+                                          {mats.map((m, idx) => (
+                                            <Stack
+                                              key={`${trip.id}-${idx}`}
+                                              direction={{ xs: "column", md: "row" }}
+                                              spacing={1}
+                                            >
+                                              <TextField
+                                                size="small"
+                                                label="Name"
+                                                value={m.name}
+                                                onChange={(e) =>
+                                                  setTripMaterials((prev) => ({
+                                                    ...prev,
+                                                    [trip.id]: (prev[trip.id] || []).map(
+                                                      (row, rowIdx) =>
+                                                        rowIdx === idx
+                                                          ? { ...row, name: e.target.value }
+                                                          : row
+                                                    ),
+                                                  }))
+                                                }
+                                              />
+
+                                              <TextField
+                                                size="small"
+                                                label="Qty"
+                                                type="number"
+                                                value={m.qty}
+                                                onChange={(e) =>
+                                                  setTripMaterials((prev) => ({
+                                                    ...prev,
+                                                    [trip.id]: (prev[trip.id] || []).map(
+                                                      (row, rowIdx) =>
+                                                        rowIdx === idx
+                                                          ? { ...row, qty: Number(e.target.value) }
+                                                          : row
+                                                    ),
+                                                  }))
+                                                }
+                                              />
+
+                                              <Button
+                                                variant="outlined"
+                                                color="error"
+                                                onClick={() =>
+                                                  setTripMaterials((prev) => ({
+                                                    ...prev,
+                                                    [trip.id]: (prev[trip.id] || []).filter(
+                                                      (_, rowIdx) => rowIdx !== idx
+                                                    ),
+                                                  }))
+                                                }
+                                              >
+                                                Remove
+                                              </Button>
+                                            </Stack>
+                                          ))}
+
+                                          <Button
+                                            variant="outlined"
+                                            onClick={() =>
+                                              setTripMaterials((prev) => ({
+                                                ...prev,
+                                                [trip.id]: [...(prev[trip.id] || []), { name: "", qty: 1 }],
+                                              }))
+                                            }
+                                          >
+                                            Add Material
+                                          </Button>
+                                        </Stack>
+                                      </Paper>
+
+                                      <Button
+                                        variant="contained"
+                                        color="success"
+                                        onClick={() => finishTrip(trip, "resolved")}
+                                        disabled={!canAct || savingThis}
+                                      >
+                                        Complete as Resolved — Ready to Bill
+                                      </Button>
+                                    </>
+                                  ) : null}
                                 </Stack>
                               </Paper>
+                            ) : null}
+
+                            {tripActionError[trip.id] ? (
+                              <Alert severity="error">{tripActionError[trip.id]}</Alert>
+                            ) : null}
+                            {tripActionSuccess[trip.id] ? (
+                              <Alert severity="success">{tripActionSuccess[trip.id]}</Alert>
+                            ) : null}
+                          </Stack>
+                        </Paper>
+                      );
+                    })}
+
+                    {canDispatch && scheduleOpen ? (
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          p: 2,
+                          borderRadius: 3,
+                          backgroundColor: alpha(theme.palette.primary.main, 0.03),
+                        }}
+                      >
+                        <Stack spacing={2} component="form" onSubmit={handleCreateTrip}>
+                          <Typography variant="h6" fontWeight={700}>
+                            Schedule Trip
+                          </Typography>
+
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gap: 2,
+                              gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                            }}
+                          >
+                            <TextField
+                              type="date"
+                              size="small"
+                              label="Date"
+                              value={tripDate}
+                              onChange={(e) => setTripDate(e.target.value)}
+                              InputLabelProps={{ shrink: true }}
+                            />
+
+                            <TextField
+                              select
+                              size="small"
+                              label="Time Window"
+                              value={tripTimeWindow}
+                              onChange={(e) => setTripTimeWindow(e.target.value as TripTimeWindow)}
+                            >
+                              <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
+                              <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
+                              <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
+                              <MenuItem value="custom">Custom</MenuItem>
+                            </TextField>
+                          </Box>
+
+                          {tripTimeWindow === "custom" ? (
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gap: 2,
+                                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                              }}
+                            >
+                              <TextField
+                                type="time"
+                                size="small"
+                                label="Start Time"
+                                value={tripStartTime}
+                                onChange={(e) => setTripStartTime(e.target.value)}
+                                InputLabelProps={{ shrink: true }}
+                              />
 
                               <TextField
-                                fullWidth
-                                multiline
-                                minRows={3}
-                                label="Trip Notes (optional)"
-                                value={tripNotes}
-                                onChange={(e) => setTripNotes(e.target.value)}
-                                disabled={tripSaving}
+                                type="time"
+                                size="small"
+                                label="End Time"
+                                value={tripEndTime}
+                                onChange={(e) => setTripEndTime(e.target.value)}
+                                InputLabelProps={{ shrink: true }}
                               />
+                            </Box>
+                          ) : null}
 
-                              <FormControlLabel
-                                control={
-                                  <Checkbox
-                                    checked={tripSetTicketScheduled}
-                                    onChange={(e) => setTripSetTicketScheduled(e.target.checked)}
-                                    disabled={tripSaving}
-                                  />
-                                }
-                                label="If ticket is NEW, change status to SCHEDULED when this trip is created"
+                          <TextField
+                            select
+                            size="small"
+                            label="Primary Technician"
+                            value={tripPrimaryTechUid}
+                            onChange={(e) => setTripPrimaryTechUid(e.target.value)}
+                          >
+                            <MenuItem value="">Select a technician…</MenuItem>
+                            {technicians.map((tech) => (
+                              <MenuItem key={tech.uid} value={tech.uid}>
+                                {tech.displayName}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+
+                          <TextField
+                            select
+                            size="small"
+                            label="Secondary Technician (optional)"
+                            value={tripSecondaryTechUid}
+                            onChange={(e) => setTripSecondaryTechUid(e.target.value)}
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {technicians
+                              .filter((tech) => tech.uid !== tripPrimaryTechUid)
+                              .map((tech) => (
+                                <MenuItem key={tech.uid} value={tech.uid}>
+                                  {tech.displayName}
+                                </MenuItem>
+                              ))}
+                          </TextField>
+
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={tripUseDefaultHelper}
+                                onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
                               />
+                            }
+                            label="Use default helper pairing"
+                          />
 
-                              {tripSaveError ? <Alert severity="error">{tripSaveError}</Alert> : null}
-                              {tripSaveSuccess ? <Alert severity="success">{tripSaveSuccess}</Alert> : null}
+                          <TextField
+                            select
+                            size="small"
+                            label="Helper / Apprentice (optional)"
+                            value={tripHelperUid}
+                            onChange={(e) => {
+                              setTripUseDefaultHelper(false);
+                              setTripHelperUid(e.target.value);
+                            }}
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {helperCandidates.map((helper) => (
+                              <MenuItem key={helper.uid} value={helper.uid}>
+                                {helper.name} ({helper.laborRole})
+                              </MenuItem>
+                            ))}
+                          </TextField>
 
-                              <M3Button
-                                type="submit"
-                                tone="blue"
-                                disabled={tripSaving || !canDispatch}
-                                startIcon={<AddRoundedIcon />}
-                                sx={{ width: "fit-content" }}
-                              >
-                                {tripSaving ? "Scheduling..." : "Schedule Trip"}
-                              </M3Button>
-                            </form>
-                          </Paper>
-                        ) : null}
-                      </>
+                          <TextField
+                            select
+                            size="small"
+                            label="Secondary Helper (optional)"
+                            value={tripSecondaryHelperUid}
+                            onChange={(e) => setTripSecondaryHelperUid(e.target.value)}
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {helperCandidates.map((helper) => (
+                              <MenuItem key={helper.uid} value={helper.uid}>
+                                {helper.name} ({helper.laborRole})
+                              </MenuItem>
+                            ))}
+                          </TextField>
+
+                          <TextField
+                            multiline
+                            minRows={3}
+                            label="Trip Notes"
+                            value={tripNotes}
+                            onChange={(e) => setTripNotes(e.target.value)}
+                          />
+
+                          <Alert severity="info" variant="outlined">
+                            Ticket status moves automatically based on the trip lifecycle.
+                          </Alert>
+
+                          {tripSaveError ? <Alert severity="error">{tripSaveError}</Alert> : null}
+                          {tripSaveSuccess ? <Alert severity="success">{tripSaveSuccess}</Alert> : null}
+
+                          <Button variant="contained" type="submit" disabled={tripSaving}>
+                            {tripSaving ? "Scheduling..." : "Schedule Trip"}
+                          </Button>
+                        </Stack>
+                      </Paper>
                     ) : null}
                   </Stack>
-                </SectionCard>
+                </Section>
 
-                <SectionCard title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
-                  {!showFullBillingPanel ? (
+                <Section title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
+                  {!ticket.billing ? (
                     <Alert severity="info" variant="outlined">
-                      No billing packet yet. It will appear after a trip is completed as <strong>Resolved — Ready to Bill</strong>.
+                      No billing packet yet. It appears after a trip is completed as{" "}
+                      <strong>Resolved — Ready to Bill</strong>.
                     </Alert>
                   ) : (
                     <Stack spacing={1.5}>
                       <Typography variant="body1">
-                        Status: <strong>{billing?.status}</strong>
-                        {billing?.readyToBillAt ? (
-                          <span style={{ color: theme.palette.text.secondary }}>
-                            {" "}• Ready: {billing.readyToBillAt}
-                          </span>
+                        Status: <strong>{ticket.billing.status}</strong>
+                        {ticket.billing.readyToBillAt ? (
+                          <span> • Ready: {ticket.billing.readyToBillAt}</span>
                         ) : null}
                       </Typography>
 
-                      <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 4 }}>
-                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                          Labor (Customer Billing)
-                        </Typography>
-                        <Typography variant="body1">
-                          Total billed hours: <strong>{Number(billing?.labor?.totalHours ?? 0).toFixed(2)}</strong>
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-                          Billing rule: labor hours belong to the <strong>Primary Tech only</strong>.
-                        </Typography>
+                      <Typography variant="body1">
+                        Total billed hours:{" "}
+                        <strong>{Number(ticket.billing.labor.totalHours || 0).toFixed(2)}</strong>
+                      </Typography>
 
-                        {Array.isArray(billing?.labor?.byCrew) && billing!.labor.byCrew.length ? (
-                          <Stack spacing={0.75} sx={{ mt: 1.25 }}>
-                            {billing!.labor.byCrew.map((c) => (
-                              <Typography key={c.uid} variant="body1">
-                                {c.name} • {c.hours.toFixed(2)} hr
+                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                        <strong>Resolution Notes:</strong>
+                        {"\n"}
+                        {ticket.billing.resolutionNotes || "—"}
+                      </Typography>
+
+                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                        <strong>Work Notes:</strong>
+                        {"\n"}
+                        {ticket.billing.workNotes || "—"}
+                      </Typography>
+
+                      {Array.isArray(ticket.billing.materials) && ticket.billing.materials.length ? (
+                        <Stack spacing={1}>
+                          {ticket.billing.materials.map((material, idx) => (
+                            <Paper key={`bill-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+                              <Typography variant="body1" fontWeight={700}>
+                                {material.name} • {Number(material.qty).toFixed(2)} {material.unit || ""}
                               </Typography>
-                            ))}
-                          </Stack>
-                        ) : (
-                          <Typography variant="body1" color="text.secondary" sx={{ mt: 1.25 }}>
-                            No primary tech labor line captured yet.
-                          </Typography>
-                        )}
-                      </Paper>
-
-                      <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 4 }}>
-                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                          Materials
-                        </Typography>
-
-                        {!Array.isArray(billing?.materials) || billing!.materials.length === 0 ? (
-                          <Typography variant="body1" color="text.secondary">
-                            No materials captured.
-                          </Typography>
-                        ) : (
-                          <Stack spacing={1}>
-                            {billing!.materials.map((m, idx) => (
-                              <Paper key={`bill-mat-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
-                                <Typography variant="body1" fontWeight={700}>
-                                  {m.name} • {Number(m.qty).toFixed(2)} {m.unit || ""}
+                              {material.notes ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  {material.notes}
                                 </Typography>
-                                {m.notes ? (
-                                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                                    {m.notes}
-                                  </Typography>
-                                ) : null}
-                              </Paper>
-                            ))}
-                          </Stack>
-                        )}
-                      </Paper>
-
-                      <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 4 }}>
-                        <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                          Resolution Notes
-                        </Typography>
-                        <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
-                          {billing?.resolutionNotes || "—"}
-                        </Typography>
-
-                        <Typography variant="subtitle1" fontWeight={700} sx={{ mt: 2, mb: 1 }}>
-                          Work Notes
-                        </Typography>
-                        <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
-                          {billing?.workNotes || "—"}
-                        </Typography>
-                      </Paper>
+                              ) : null}
+                            </Paper>
+                          ))}
+                        </Stack>
+                      ) : null}
 
                       {canBill ? (
-                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
-                          <QuietButton onClick={() => markBillingStatus("invoiced")} disabled={billingSaving}>
-                            {billingSaving ? "Working..." : "Mark Invoiced"}
-                          </QuietButton>
-
-                          <QuietButton onClick={() => markBillingStatus("ready_to_bill")} disabled={billingSaving}>
-                            Set Ready to Bill
-                          </QuietButton>
-
-                          <QuietButton onClick={() => markBillingStatus("not_ready")} disabled={billingSaving}>
-                            Set Not Ready
-                          </QuietButton>
-
-                          <QuietButton
-                            onClick={async () => {
-                              if (!ticket?.id) return;
-
-                              const win = window.open("about:blank", "_blank");
-
-                              try {
-                                const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ serviceTicketId: ticket.id }),
-                                });
-
-                                const data = await res.json();
-
-                                if (!res.ok) {
-                                  if (win) win.close();
-                                  alert(data?.error || "Failed to create QBO invoice.");
-                                  return;
-                                }
-
-                                alert(
-                                  `QBO Invoice Created\nInvoice ID: ${data.qboInvoiceId}${
-                                    data.docNumber ? `\nDoc #: ${data.docNumber}` : ""
-                                  }`
-                                );
-
-                                const url: string | null = data?.qboInvoiceUrl || null;
-
-                                if (win && url) {
-                                  win.location.href = url;
-                                  win.focus();
-                                  return;
-                                }
-
-                                if (!win) {
-                                  alert("Popup blocked. Please allow popups for dcflow.app, then try again.");
-                                } else {
-                                  alert("Could not auto-open QBO invoice URL.");
-                                }
-
-                                if (url) window.open(url, "_blank");
-                              } catch (e: any) {
-                                if (win) win.close();
-                                alert(e?.message || "Failed to create QBO invoice.");
-                              }
-                            }}
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                          <Button
+                            variant="outlined"
+                            onClick={() => markBillingStatus("invoiced")}
+                            disabled={billingSaving}
                           >
-                            Create QBO Invoice Draft
-                          </QuietButton>
+                            {billingSaving ? "Working..." : "Mark Invoiced"}
+                          </Button>
 
-                          {billingErr ? <Alert severity="error" sx={{ py: 0 }}>{billingErr}</Alert> : null}
-                          {billingOk ? <Alert severity="success" sx={{ py: 0 }}>{billingOk}</Alert> : null}
+                          <Button
+                            variant="outlined"
+                            onClick={() => markBillingStatus("ready_to_bill")}
+                            disabled={billingSaving}
+                          >
+                            Set Ready to Bill
+                          </Button>
+
+                          <Button
+                            variant="outlined"
+                            onClick={() => markBillingStatus("not_ready")}
+                            disabled={billingSaving}
+                          >
+                            Set Not Ready
+                          </Button>
                         </Stack>
-                      ) : (
-                        <Alert severity="info" variant="outlined">
-                          Billing controls are limited to Admin/Manager/Dispatcher/Billing.
-                        </Alert>
-                      )}
+                      ) : null}
+
+                      {billingErr ? <Alert severity="error">{billingErr}</Alert> : null}
+                      {billingOk ? <Alert severity="success">{billingOk}</Alert> : null}
                     </Stack>
                   )}
-                </SectionCard>
+                </Section>
 
-                <SectionCard title="System" icon={<BuildRoundedIcon color="primary" />}>
-                  <Stack spacing={0.75}>
-                    <Typography variant="body1">
+                <Section title="System" icon={<BuildRoundedIcon color="primary" />}>
+                  <Stack spacing={0.5}>
+                    <Typography variant="body2">
                       <strong>Active:</strong> {String(ticket.active)}
                     </Typography>
-                    <Typography variant="body1">
+                    <Typography variant="body2">
                       <strong>Created At:</strong> {ticket.createdAt || "—"}
                     </Typography>
-                    <Typography variant="body1">
+                    <Typography variant="body2">
                       <strong>Updated At:</strong> {ticket.updatedAt || "—"}
                     </Typography>
                   </Stack>
-                </SectionCard>
+                </Section>
               </Stack>
             </Box>
 
-            <Dialog open={canDispatch && Boolean(editTripId)} onClose={closeEditTrip} fullWidth maxWidth="sm">
+            <Dialog open={Boolean(editTripId)} onClose={() => setEditTripId(null)} fullWidth maxWidth="sm">
               <DialogTitle>Edit / Reschedule Trip</DialogTitle>
 
               <DialogContent dividers>
                 <Stack spacing={2} sx={{ pt: 0.5 }}>
-                  <Box sx={twoColSx}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="date"
-                      label="Date"
-                      value={editTripDate}
-                      onChange={(e) => setEditTripDate(e.target.value)}
-                      disabled={editTripSaving}
-                      InputLabelProps={{ shrink: true }}
-                    />
-
-                    <TextField
-                      select
-                      fullWidth
-                      size="small"
-                      label="Time Window"
-                      value={editTripTimeWindow}
-                      onChange={(e) => setEditTripTimeWindow(e.target.value as TripTimeWindow)}
-                      disabled={editTripSaving}
-                    >
-                      <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
-                      <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
-                      <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
-                      <MenuItem value="custom">Custom</MenuItem>
-                    </TextField>
-
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="time"
-                      label="Start Time"
-                      value={editTripStartTime}
-                      onChange={(e) => setEditTripStartTime(e.target.value)}
-                      disabled={editTripSaving}
-                      InputLabelProps={{ shrink: true }}
-                    />
-
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="time"
-                      label="End Time"
-                      value={editTripEndTime}
-                      onChange={(e) => setEditTripEndTime(e.target.value)}
-                      disabled={editTripSaving}
-                      InputLabelProps={{ shrink: true }}
-                    />
-                  </Box>
+                  <TextField
+                    type="date"
+                    label="Date"
+                    value={editTripDate}
+                    onChange={(e) => setEditTripDate(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
 
                   <TextField
-                    fullWidth
+                    select
+                    label="Time Window"
+                    value={editTripTimeWindow}
+                    onChange={(e) => setEditTripTimeWindow(e.target.value as TripTimeWindow)}
+                  >
+                    <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
+                    <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
+                    <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
+                    <MenuItem value="custom">Custom</MenuItem>
+                  </TextField>
+
+                  <TextField
+                    type="time"
+                    label="Start Time"
+                    value={editTripStartTime}
+                    onChange={(e) => setEditTripStartTime(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
+
+                  <TextField
+                    type="time"
+                    label="End Time"
+                    value={editTripEndTime}
+                    onChange={(e) => setEditTripEndTime(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
+
+                  <TextField
                     multiline
                     minRows={3}
                     label="Trip Notes"
                     value={editTripNotes}
                     onChange={(e) => setEditTripNotes(e.target.value)}
-                    disabled={editTripSaving}
                   />
 
                   {editTripErr ? <Alert severity="error">{editTripErr}</Alert> : null}
-                  {editTripOk ? <Alert severity="success">{editTripOk}</Alert> : null}
 
                   <Typography variant="body2" color="text.secondary">
-                    This modal is intentionally separate from “Schedule New Trip” so rescheduling never feels like it’s using the same fields.
+                    Only planned trips can be edited or rescheduled now.
                   </Typography>
                 </Stack>
               </DialogContent>
 
-              <DialogActions sx={{ p: 2 }}>
-                <Button onClick={closeEditTrip} disabled={editTripSaving} sx={{ textTransform: "none", borderRadius: 999 }}>
-                  Close
-                </Button>
-                <M3Button tone="blue" onClick={handleSaveTripEdits} disabled={editTripSaving}>
+              <DialogActions>
+                <Button onClick={() => setEditTripId(null)}>Close</Button>
+                <Button variant="contained" onClick={handleSaveTripEdit} disabled={editTripSaving}>
                   {editTripSaving ? "Saving..." : "Save Changes"}
-                </M3Button>
+                </Button>
               </DialogActions>
             </Dialog>
-
-            {isMobile && (() => {
-              const trip = trips.find((t) => String(t.status || "") === "in_progress");
-              if (!trip) return null;
-
-              const finishMode = finishModeByTrip[trip.id] || "none";
-              const showPanel = mobileFinishOpen && finishMode !== "none";
-
-              const timerState = String(trip.timerState || (trip.status === "in_progress" ? "running" : "not_started"));
-              const isPaused = timerState === "paused";
-
-              const pausedMins = sumPausedMinutes(trip.pauseBlocks);
-              const liveGrossMins =
-                trip.actualStartAt && !trip.actualEndAt
-                  ? minutesBetweenIso(trip.actualStartAt, nowIso())
-                  : trip.actualStartAt && trip.actualEndAt
-                    ? minutesBetweenIso(trip.actualStartAt, trip.actualEndAt)
-                    : 0;
-
-              const computedBillable = Math.max(0, liveGrossMins - pausedMins);
-              const computedHours = roundToHalf(computedBillable / 60);
-
-              const hoursToUse =
-                typeof hoursOverrideByTrip[trip.id] === "number"
-                  ? roundToHalf(hoursOverrideByTrip[trip.id])
-                  : computedHours;
-
-              const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
-
-              const savingThis = Boolean(tripActionSaving[trip.id]);
-              const canAct = canCurrentUserActOnTrip(trip);
-
-              return (
-                <Paper
-                  elevation={6}
-                  sx={{
-                    position: "fixed",
-                    left: 12,
-                    right: 12,
-                    bottom: 148,
-                    zIndex: 30,
-                    borderRadius: 4,
-                    border: `1px solid ${alpha(theme.palette.info.main, 0.24)}`,
-                    p: 1.5,
-                  }}
-                >
-                  <Stack spacing={1.5}>
-                    <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start" flexWrap="wrap">
-                      <Box>
-                        <Typography variant="subtitle1" fontWeight={700}>
-                          Trip in progress
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {trip.date} • {formatTripWindow(String(trip.timeWindow || ""))} • {trip.startTime}-{trip.endTime}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-                          Timer: <strong>{timerState}</strong> • Minutes: <strong>{computedBillable}</strong> (gross {liveGrossMins} - paused {pausedMins})
-                        </Typography>
-                      </Box>
-
-                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                        {isPaused ? (
-                          <QuietButton onClick={() => handleResumeTrip(trip)} disabled={!canAct || savingThis} startIcon={<PlayArrowRoundedIcon />}>
-                            Resume
-                          </QuietButton>
-                        ) : (
-                          <QuietButton onClick={() => handlePauseTrip(trip)} disabled={!canAct || savingThis} startIcon={<PauseRoundedIcon />}>
-                            Pause
-                          </QuietButton>
-                        )}
-
-                        <QuietButton
-                          onClick={() => {
-                            setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "follow_up" }));
-                            setMobileFinishOpen(true);
-                          }}
-                          disabled={!canAct || savingThis}
-                        >
-                          Follow-Up
-                        </QuietButton>
-
-                        <QuietButton
-                          onClick={() => {
-                            setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "resolved" }));
-                            setMobileFinishOpen(true);
-                          }}
-                          disabled={!canAct || savingThis}
-                        >
-                          Resolved
-                        </QuietButton>
-
-                        {finishMode !== "none" ? (
-                          <>
-                            <QuietButton onClick={() => setMobileFinishOpen((v) => !v)} disabled={!canAct || savingThis}>
-                              {showPanel ? "Hide" : "Show"} Fields
-                            </QuietButton>
-
-                            <QuietButton
-                              onClick={() => {
-                                setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-                                setMobileFinishOpen(false);
-                              }}
-                              disabled={!canAct || savingThis}
-                            >
-                              Clear
-                            </QuietButton>
-                          </>
-                        ) : null}
-                      </Stack>
-                    </Stack>
-
-                    <Collapse in={showPanel}>
-                      <Paper
-                        variant="outlined"
-                        sx={{
-                          p: 1.5,
-                          borderRadius: 3,
-                          bgcolor:
-                            finishMode === "resolved"
-                              ? alpha(theme.palette.success.main, 0.06)
-                              : alpha(theme.palette.warning.main, 0.08),
-                          borderColor:
-                            finishMode === "resolved"
-                              ? alpha(theme.palette.success.main, 0.3)
-                              : alpha(theme.palette.warning.main, 0.28),
-                        }}
-                      >
-                        <Stack spacing={1.5}>
-                          <Typography variant="subtitle1" fontWeight={700}>
-                            {finishMode === "resolved" ? "Finish Trip: Resolved" : "Finish Trip: Follow-Up"}
-                          </Typography>
-
-                          <TextField
-                            label="Hours (override)"
-                            type="number"
-                            size="small"
-                            fullWidth
-                            inputProps={{ min: 0, step: 0.5 }}
-                            value={hoursToUse}
-                            onChange={(e) =>
-                              setHoursOverrideByTrip((prev) => ({
-                                ...prev,
-                                [trip.id]: Number(e.target.value),
-                              }))
-                            }
-                            disabled={!canAct || savingThis}
-                            helperText={`Timer default: ${computedHours} hr`}
-                          />
-
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={helperConfirmedByTrip[trip.id] ?? true}
-                                onChange={(e) =>
-                                  setHelperConfirmedByTrip((prev) => ({
-                                    ...prev,
-                                    [trip.id]: e.target.checked,
-                                  }))
-                                }
-                                disabled={!canAct || savingThis}
-                              />
-                            }
-                            label="Include helper in payroll"
-                          />
-
-                          {finishMode === "follow_up" ? (
-                            <>
-                              <TextField
-                                label="Follow-Up Notes"
-                                multiline
-                                minRows={4}
-                                fullWidth
-                                value={tripFollowUpNotes[trip.id] ?? ""}
-                                onChange={(e) => setTripFollowUpNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
-                                disabled={!canAct || savingThis}
-                              />
-                              <M3Button
-                                fullWidth
-                                tone="blue"
-                                onClick={() => handleFollowUpTrip(trip)}
-                                disabled={!canAct || savingThis}
-                              >
-                                Complete as Follow-Up
-                              </M3Button>
-                            </>
-                          ) : null}
-
-                          {finishMode === "resolved" ? (
-                            <>
-                              <TextField
-                                label="Resolution Notes"
-                                multiline
-                                minRows={4}
-                                fullWidth
-                                value={tripResolutionNotes[trip.id] ?? ""}
-                                onChange={(e) => setTripResolutionNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))}
-                                disabled={!canAct || savingThis}
-                              />
-
-                              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
-                                <Stack spacing={1.25}>
-                                  <Typography variant="subtitle1" fontWeight={700}>
-                                    Materials
-                                  </Typography>
-
-                                  {mats.length === 0 ? (
-                                    <Alert severity="info" variant="outlined">
-                                      No materials added yet.
-                                    </Alert>
-                                  ) : (
-                                    <Stack spacing={1.25}>
-                                      {mats.map((m, idx) => (
-                                        <Paper key={`mobile-mat-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
-                                          <Stack spacing={1}>
-                                            <Box sx={materialsTwoColSx}>
-                                              <TextField
-                                                label="Name"
-                                                size="small"
-                                                fullWidth
-                                                value={m.name}
-                                                onChange={(e) => updateMaterialRow(trip.id, idx, { name: e.target.value })}
-                                                disabled={!canAct || savingThis}
-                                              />
-                                              <TextField
-                                                label="Qty"
-                                                type="number"
-                                                size="small"
-                                                fullWidth
-                                                inputProps={{ min: 0.01, step: 0.01 }}
-                                                value={Number.isFinite(Number(m.qty)) ? m.qty : 1}
-                                                onChange={(e) => updateMaterialRow(trip.id, idx, { qty: Number(e.target.value) })}
-                                                disabled={!canAct || savingThis}
-                                              />
-                                            </Box>
-
-                                            <QuietButton
-                                              onClick={() => removeMaterialRow(trip.id, idx)}
-                                              disabled={!canAct || savingThis}
-                                              startIcon={<DeleteOutlineRoundedIcon />}
-                                            >
-                                              Remove
-                                            </QuietButton>
-                                          </Stack>
-                                        </Paper>
-                                      ))}
-                                    </Stack>
-                                  )}
-
-                                  <QuietButton
-                                    onClick={() => addMaterialRow(trip.id)}
-                                    disabled={!canAct || savingThis}
-                                    startIcon={<AddRoundedIcon />}
-                                  >
-                                    Add Material
-                                  </QuietButton>
-                                </Stack>
-                              </Paper>
-
-                              <M3Button
-                                fullWidth
-                                tone="green"
-                                onClick={() => handleResolveTrip(trip)}
-                                disabled={!canAct || savingThis}
-                              >
-                                Complete as Resolved — Ready to Bill
-                              </M3Button>
-                            </>
-                          ) : null}
-                        </Stack>
-                      </Paper>
-                    </Collapse>
-                  </Stack>
-                </Paper>
-              );
-            })()}
-          </Box>
+          </Stack>
         ) : null}
       </AppShell>
     </ProtectedPage>

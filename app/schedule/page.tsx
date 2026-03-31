@@ -1,6 +1,3 @@
-// app/schedule/page.tsx
-// app/schedule/page.tsx
-
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -2177,7 +2174,10 @@ export default function SchedulePage() {
     );
   }
 
-  function renderTripCard(t: TripDoc, opts?: { showTechName?: boolean }) {
+  function renderTripCard(
+    t: TripDoc,
+    opts?: { showTechName?: boolean; keyValue?: string }
+  ) {
     const type = (t.type || "").toLowerCase();
     const isService = type === "service";
     const isProject = type === "project";
@@ -2208,8 +2208,13 @@ export default function SchedulePage() {
     const showProgress =
       isProject && prog && prog.requiredCount > 0 && !isCompletedStatus(t.status);
 
+    const cardKey =
+      opts?.keyValue ||
+      `${t.id}_${String(t.date || "")}_${String(t.startTime || "")}_${String(t.endTime || "")}`;
+
     return (
       <SharedTripCard
+        key={cardKey}
         title={titleText}
         status={t.status}
         tripType={t.type}
@@ -2565,7 +2570,10 @@ export default function SchedulePage() {
 
                                     <Stack spacing={0.75}>
                                       {dayTrips.slice(0, 6).map((t) =>
-                                        renderTripCard(t, { showTechName: techFilter === "ALL" })
+                                        renderTripCard(t, {
+                                          showTechName: techFilter === "ALL",
+                                          keyValue: `month_${iso}_${t.id}`,
+                                        })
                                       )}
                                       {dayTrips.length > 6 ? (
                                         <Typography variant="caption" color="text.secondary">
@@ -2687,7 +2695,13 @@ export default function SchedulePage() {
                                           />
                                         ) : null}
 
-                                        {amTrips.length ? <Stack spacing={1}>{amTrips.map((t) => renderTripCard(t))}</Stack> : null}
+                                        {amTrips.length ? (
+                                          <Stack spacing={1}>
+                                            {amTrips.map((t) =>
+                                              renderTripCard(t, { keyValue: `mobile_am_${iso}_${rowKey}_${t.id}` })
+                                            )}
+                                          </Stack>
+                                        ) : null}
 
                                         {canShowPlus && !pmBusy ? (
                                           <ScheduleSlotButton
@@ -2696,7 +2710,13 @@ export default function SchedulePage() {
                                           />
                                         ) : null}
 
-                                        {pmTrips.length ? <Stack spacing={1}>{pmTrips.map((t) => renderTripCard(t))}</Stack> : null}
+                                        {pmTrips.length ? (
+                                          <Stack spacing={1}>
+                                            {pmTrips.map((t) =>
+                                              renderTripCard(t, { keyValue: `mobile_pm_${iso}_${rowKey}_${t.id}` })
+                                            )}
+                                          </Stack>
+                                        ) : null}
 
                                         {amTrips.length === 0 && pmTrips.length === 0 ? (
                                           <Typography variant="caption" color="text.secondary">
@@ -2844,7 +2864,13 @@ export default function SchedulePage() {
                                               />
                                             ) : null}
 
-                                            {amTrips.length ? <Stack spacing={1}>{amTrips.map((t) => renderTripCard(t))}</Stack> : null}
+                                            {amTrips.length ? (
+                                              <Stack spacing={1}>
+                                                {amTrips.map((t) =>
+                                                  renderTripCard(t, { keyValue: `desk_am_${iso}_${rowKey}_${t.id}` })
+                                                )}
+                                              </Stack>
+                                            ) : null}
 
                                             {canShowPlus && !pmBusy ? (
                                               <ScheduleSlotButton
@@ -2853,7 +2879,13 @@ export default function SchedulePage() {
                                               />
                                             ) : null}
 
-                                            {pmTrips.length ? <Stack spacing={1}>{pmTrips.map((t) => renderTripCard(t))}</Stack> : null}
+                                            {pmTrips.length ? (
+                                              <Stack spacing={1}>
+                                                {pmTrips.map((t) =>
+                                                  renderTripCard(t, { keyValue: `desk_pm_${iso}_${rowKey}_${t.id}` })
+                                                )}
+                                              </Stack>
+                                            ) : null}
 
                                             {amTrips.length === 0 && pmTrips.length === 0 ? (
                                               <Typography variant="caption" color="text.secondary">

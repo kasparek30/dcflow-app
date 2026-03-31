@@ -1,3 +1,4 @@
+// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -35,6 +36,7 @@ import {
   ListItemText,
   Paper,
   Stack,
+  SwipeableDrawer,
   Toolbar,
   Typography,
   useMediaQuery,
@@ -61,6 +63,11 @@ import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import MapRoundedIcon from "@mui/icons-material/MapRounded";
 import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
 import WaterDropRoundedIcon from "@mui/icons-material/WaterDropRounded";
+import KeyboardArrowUpRoundedIcon from "@mui/icons-material/KeyboardArrowUpRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
+import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
+import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 
 type PauseBlock = {
   startAt: string;
@@ -120,7 +127,7 @@ type NavEntry = {
 
 const DESKTOP_DRAWER_WIDTH = 296;
 const MOBILE_BOTTOM_NAV_HEIGHT = 68;
-const MOBILE_ACTIVE_TRIP_HEIGHT = 120;
+const MOBILE_ACTIVE_TRIP_HEIGHT = 118;
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
@@ -322,16 +329,16 @@ async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
         secondaryLine = truncate(issue, 52);
       } else {
         primaryLine = "Service Ticket";
-        secondaryLine = `Trip ${tripId}`;
+        secondaryLine = "Tap to return";
       }
     } catch {
       primaryLine = "Service Ticket";
-      secondaryLine = `Trip ${tripId}`;
+      secondaryLine = "Tap to return";
     }
   } else {
     const type = safeTrim(trip.type).toLowerCase();
     primaryLine = type === "project" ? "Project Trip" : "Active Trip";
-    secondaryLine = `Trip ${tripId}`;
+    secondaryLine = "Tap to return";
   }
 
   const ts = safeTrim(trip.timerState).toLowerCase();
@@ -578,6 +585,7 @@ export default function AppShell({
     role === "apprentice";
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [activeTripSheetOpen, setActiveTripSheetOpen] = useState(false);
 
   useEffect(() => {
     setDrawerOpen(false);
@@ -605,6 +613,10 @@ export default function AppShell({
     };
   }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId]);
 
+  useEffect(() => {
+    if (!activeTripCard) setActiveTripSheetOpen(false);
+  }, [activeTripCard]);
+
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
@@ -628,6 +640,7 @@ export default function AppShell({
   );
 
   const isPaused = timerState === "paused";
+  const hasServiceTicketTarget = Boolean(safeTrim(activeTrip?.link?.serviceTicketId));
 
   const canQuickAct = useMemo(() => {
     if (!activeTrip) return false;
@@ -686,6 +699,28 @@ export default function AppShell({
     } finally {
       setPillActionBusy(false);
     }
+  }
+
+  function navigateToActiveTrip(action?: "note" | "follow_up" | "resolved") {
+    if (!activeTripCard) return;
+
+    if (!hasServiceTicketTarget || !action) {
+      router.push(activeTripCard.href);
+      setActiveTripSheetOpen(false);
+      return;
+    }
+
+    const url = new URL(activeTripCard.href, window.location.origin);
+
+    if (action === "note") {
+      url.hash = `trip-work-notes-${activeTripCard.tripId}`;
+    } else {
+      url.searchParams.set("tripAction", action);
+      url.searchParams.set("tripId", activeTripCard.tripId);
+    }
+
+    router.push(`${url.pathname}${url.search}${url.hash}`);
+    setActiveTripSheetOpen(false);
   }
 
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
@@ -975,6 +1010,8 @@ export default function AppShell({
     return items.slice(0, 3);
   }, [showMyDay, showSchedule]);
 
+  const suppressGlobalActiveTripSurface = false;
+
   const mobileBottomNavValue = useMemo(() => {
     const activeItem = mobilePrimaryNav.find((item) =>
       isActivePath(pathname, item.href)
@@ -984,7 +1021,9 @@ export default function AppShell({
 
   const mobileBottomPadding =
     MOBILE_BOTTOM_NAV_HEIGHT +
-    (activeTripCard && isMobile ? MOBILE_ACTIVE_TRIP_HEIGHT : 0) +
+    (activeTripCard && isMobile && !suppressGlobalActiveTripSurface
+      ? MOBILE_ACTIVE_TRIP_HEIGHT
+      : 0) +
     18;
 
   const mondayReminderBanner =
@@ -1122,38 +1161,49 @@ export default function AppShell({
     </Box>
   );
 
-  const activeTripSurface = isMobile && activeTripCard ? (
-    <Paper
-      elevation={4}
-      sx={{
-        position: "fixed",
-        left: 16,
-        right: 16,
-        bottom: MOBILE_BOTTOM_NAV_HEIGHT + 16,
-        zIndex: 1201,
-        borderRadius: 3,
-        overflow: "hidden",
-        bgcolor: "background.paper",
-        backgroundImage: "none",
-        border: "1px solid",
-        borderColor: "divider",
-        boxShadow: theme.shadows[8],
-      }}
-    >
-      <Box
-        sx={{
-          height: 4,
-          bgcolor: isPaused ? "warning.main" : "primary.main",
-        }}
-      />
+  const tripAccentMain = isPaused
+    ? theme.palette.warning.main
+    : theme.palette.primary.main;
+  const tripAccentSoft = alpha(tripAccentMain, 0.12);
+  const tripAccentBorder = alpha(tripAccentMain, 0.24);
 
-      <Stack spacing={0}>
-        <Stack
-          direction="row"
-          spacing={1.25}
-          alignItems="flex-start"
-          sx={{ px: 1.5, pt: 1.5, pb: 1.25 }}
-        >
+  const collapsedTripDock =
+    isMobile &&
+    activeTripCard &&
+    !activeTripSheetOpen &&
+    !suppressGlobalActiveTripSurface ? (
+      <Paper
+        elevation={6}
+        onClick={() => setActiveTripSheetOpen(true)}
+        sx={{
+          position: "fixed",
+          left: 16,
+          right: 16,
+          bottom: MOBILE_BOTTOM_NAV_HEIGHT + 16,
+          zIndex: 1201,
+          borderRadius: 3,
+          border: `1px solid ${tripAccentBorder}`,
+          backgroundColor: theme.palette.background.paper,
+          backgroundImage: "none",
+          boxShadow: theme.shadows[8],
+          overflow: "hidden",
+          cursor: "pointer",
+        }}
+      >
+        <Box sx={{ px: 2, pt: 1 }}>
+          <Box
+            sx={{
+              width: 36,
+              height: 4,
+              borderRadius: 999,
+              mx: "auto",
+              mb: 1,
+              backgroundColor: tripAccentSoft,
+            }}
+          />
+        </Box>
+
+        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 2, pb: 1.5 }}>
           <Box
             sx={{
               width: 44,
@@ -1162,145 +1212,207 @@ export default function AppShell({
               display: "grid",
               placeItems: "center",
               flexShrink: 0,
-              bgcolor: isPaused
-                ? alpha(theme.palette.warning.main, 0.14)
-                : alpha(theme.palette.primary.main, 0.14),
-              color: isPaused ? "warning.main" : "primary.main",
+              backgroundColor: tripAccentSoft,
+              color: tripAccentMain,
             }}
           >
-            <DirectionsRunRoundedIcon sx={{ fontSize: 20 }} />
+            <PlayArrowRoundedIcon />
           </Box>
 
-          <Box
-            onClick={() => router.push(activeTripCard.href)}
-            sx={{
-              minWidth: 0,
-              flex: 1,
-              cursor: "pointer",
-            }}
-          >
-            <Chip
-              size="small"
-              label={`${activeTripCard.statusLabel} • ${liveMinutes} min`}
-              sx={{
-                mb: 0.875,
-                height: 24,
-                borderRadius: 999,
-                fontSize: 11,
-                fontWeight: 700,
-                color: isPaused ? "warning.main" : "primary.main",
-                bgcolor: isPaused
-                  ? alpha(theme.palette.warning.main, 0.12)
-                  : alpha(theme.palette.primary.main, 0.12),
-                border: `1px solid ${
-                  isPaused
-                    ? alpha(theme.palette.warning.main, 0.24)
-                    : alpha(theme.palette.primary.main, 0.24)
-                }`,
-              }}
-            />
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+              <Typography variant="subtitle2" fontWeight={700} sx={{ color: tripAccentMain }}>
+                {isPaused ? "Paused" : "Running"}
+              </Typography>
 
-            <Typography
-              variant="subtitle2"
-              sx={{
-                fontWeight: 700,
-                lineHeight: 1.25,
-                color: "text.primary",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
+              <Chip
+                size="small"
+                label={`${liveMinutes} min`}
+                variant="outlined"
+                sx={{
+                  color: tripAccentMain,
+                  backgroundColor: tripAccentSoft,
+                  borderColor: tripAccentBorder,
+                  fontWeight: 700,
+                }}
+              />
+            </Stack>
+
+            <Typography variant="body2" sx={{ mt: 0.25 }} noWrap>
               {activeTripCard.primaryLine}
             </Typography>
 
-            <Typography
-              variant="caption"
-              sx={{
-                mt: 0.375,
-                display: "block",
-                color: "text.secondary",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
+            <Typography variant="caption" color="text.secondary" noWrap>
               {activeTripCard.secondaryLine}
             </Typography>
           </Box>
 
-          {canQuickAct ? (
-            isPaused ? (
-              <IconButton
-                onClick={handleQuickResume}
-                disabled={pillActionBusy}
-                aria-label="Resume active trip"
+          <KeyboardArrowUpRoundedIcon sx={{ color: tripAccentMain }} />
+        </Stack>
+      </Paper>
+    ) : null;
+
+  const activeTripBottomSheet =
+    isMobile && activeTripCard && !suppressGlobalActiveTripSurface ? (
+      <SwipeableDrawer
+        anchor="bottom"
+        open={activeTripSheetOpen}
+        onOpen={() => setActiveTripSheetOpen(true)}
+        onClose={() => setActiveTripSheetOpen(false)}
+        disableSwipeToOpen={false}
+        PaperProps={{
+          sx: {
+            borderTopLeftRadius: 20,
+            borderTopRightRadius: 20,
+            backgroundColor: theme.palette.background.paper,
+            backgroundImage: "none",
+            pb: "calc(16px + env(safe-area-inset-bottom))",
+          },
+        }}
+      >
+        <Box sx={{ p: 2 }}>
+          <Box
+            sx={{
+              width: 40,
+              height: 4,
+              borderRadius: 999,
+              mx: "auto",
+              mb: 2,
+              backgroundColor: tripAccentSoft,
+            }}
+          />
+
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={1.25} alignItems="center">
+              <Box
                 sx={{
                   width: 44,
                   height: 44,
-                  borderRadius: "50%",
+                  borderRadius: 2,
+                  display: "grid",
+                  placeItems: "center",
                   flexShrink: 0,
-                  color: "warning.main",
-                  border: "1px solid",
-                  borderColor: "divider",
-                  bgcolor: "background.paper",
+                  backgroundColor: tripAccentSoft,
+                  color: tripAccentMain,
                 }}
               >
                 <PlayArrowRoundedIcon />
+              </Box>
+
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="subtitle1" fontWeight={700} sx={{ color: tripAccentMain }}>
+                  {isPaused ? "Paused" : "Running"}
+                </Typography>
+                <Typography variant="body2" noWrap>
+                  {activeTripCard.primaryLine}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {activeTripCard.secondaryLine}
+                </Typography>
+              </Box>
+
+              <IconButton onClick={() => setActiveTripSheetOpen(false)}>
+                <CloseRoundedIcon />
               </IconButton>
-            ) : (
-              <IconButton
-                onClick={handleQuickPause}
-                disabled={pillActionBusy}
-                aria-label="Pause active trip"
-                sx={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  color: "primary.main",
-                  border: "1px solid",
-                  borderColor: "divider",
-                  bgcolor: "background.paper",
+            </Stack>
+
+            <Divider />
+
+            <Typography variant="subtitle2" fontWeight={700}>
+              Trip Actions
+            </Typography>
+
+            <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
+              {canQuickAct ? (
+                isPaused ? (
+                  <Button
+                    variant="contained"
+                    color="warning"
+                    startIcon={<PlayArrowRoundedIcon />}
+                    disabled={pillActionBusy}
+                    onClick={async () => {
+                      await handleQuickResume();
+                      setActiveTripSheetOpen(false);
+                    }}
+                  >
+                    Resume
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    startIcon={<PauseRoundedIcon />}
+                    disabled={pillActionBusy}
+                    onClick={async () => {
+                      await handleQuickPause();
+                      setActiveTripSheetOpen(false);
+                    }}
+                  >
+                    Pause Timer
+                  </Button>
+                )
+              ) : (
+                <Button
+                  variant="outlined"
+                  color={isPaused ? "warning" : "primary"}
+                  startIcon={<ArrowOutwardRoundedIcon />}
+                  onClick={() => {
+                    router.push(activeTripCard.href);
+                    setActiveTripSheetOpen(false);
+                  }}
+                >
+                  Open Trip
+                </Button>
+              )}
+
+              <Button
+                variant="outlined"
+                color={isPaused ? "warning" : "primary"}
+                startIcon={<ReceiptLongRoundedIcon />}
+                onClick={() => {
+                  router.push(activeTripCard.href);
+                  setActiveTripSheetOpen(false);
                 }}
               >
-                <PauseRoundedIcon />
-              </IconButton>
-            )
-          ) : null}
-        </Stack>
+                {hasServiceTicketTarget ? "Open Ticket" : "Open Trip"}
+              </Button>
 
-        <Divider />
+              {hasServiceTicketTarget ? (
+                <>
+                  <Button
+                    variant="outlined"
+                    color={isPaused ? "warning" : "primary"}
+                    startIcon={<NoteAltOutlinedIcon />}
+                    onClick={() => navigateToActiveTrip("note")}
+                  >
+                    Add Note
+                  </Button>
 
-        <Box
-          sx={{
-            px: 1.25,
-            py: 1.25,
-            bgcolor: alpha(
-              theme.palette.primary.main,
-              theme.palette.mode === "dark" ? 0.08 : 0.04
-            ),
-          }}
-        >
-          <Button
-            fullWidth
-            variant="contained"
-            startIcon={<ReceiptLongRoundedIcon />}
-            onClick={() => router.push(activeTripCard.href)}
-            sx={{
-              minHeight: 40,
-              borderRadius: 999,
-              textTransform: "none",
-              fontWeight: 700,
-              boxShadow: "none",
-            }}
-          >
-            Open trip
-          </Button>
+                  <Button
+                    variant="outlined"
+                    color={isPaused ? "warning" : "primary"}
+                    startIcon={<ArrowOutwardRoundedIcon />}
+                    onClick={() => navigateToActiveTrip("follow_up")}
+                  >
+                    Follow-Up
+                  </Button>
+
+                  <Button
+                    variant="contained"
+                    color="success"
+                    startIcon={<CheckRoundedIcon />}
+                    sx={{ gridColumn: "1 / -1" }}
+                    onClick={() => navigateToActiveTrip("resolved")}
+                  >
+                    Resolved
+                  </Button>
+                </>
+              ) : null}
+            </Box>
+          </Stack>
         </Box>
-      </Stack>
-    </Paper>
-  ) : null;
+      </SwipeableDrawer>
+    ) : null;
 
   if (!isMobile) {
     return (
@@ -1394,13 +1506,14 @@ export default function AppShell({
               label={`${isPaused ? "Paused" : "Running"} • ${liveMinutes}m`}
               size="small"
               sx={{
+                color: isPaused ? "warning.main" : "primary.main",
                 backgroundColor: isPaused
                   ? alpha(theme.palette.warning.main, 0.12)
-                  : alpha(theme.palette.success.main, 0.12),
+                  : alpha(theme.palette.primary.main, 0.12),
                 border: `1px solid ${
                   isPaused
                     ? alpha(theme.palette.warning.main, 0.22)
-                    : alpha(theme.palette.success.main, 0.22)
+                    : alpha(theme.palette.primary.main, 0.22)
                 }`,
               }}
             />
@@ -1436,7 +1549,8 @@ export default function AppShell({
         {children}
       </Box>
 
-      {activeTripSurface}
+      {collapsedTripDock}
+      {activeTripBottomSheet}
 
       <Paper
         elevation={0}
