@@ -476,7 +476,7 @@ export default function AutoSuggestSyncPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Auto-Suggest Time Sync">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
           <div>

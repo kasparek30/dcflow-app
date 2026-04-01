@@ -232,7 +232,7 @@ export default function AdminUnavailabilityPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Employee Unavailability">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "16px" }}>
           Employee Unavailability

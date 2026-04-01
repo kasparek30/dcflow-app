@@ -92,7 +92,7 @@ export default function AdminHolidaysPage() {
   }, [holidays, selectedYear]);
 
   return (
-    <ProtectedPage fallbackTitle="Company Holidays">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <div
           style={{

@@ -1,3 +1,4 @@
+// app/dashboard/page.tsx
 "use client";
 
 import { Stack, Typography } from "@mui/material";
@@ -9,7 +10,16 @@ export default function DashboardPage() {
   const { authUser, appUser } = useAuthContext();
 
   return (
-    <ProtectedPage fallbackTitle="Dashboard">
+    <ProtectedPage
+      fallbackTitle="Dashboard"
+      allowedRoles={[
+        "admin",
+        "dispatcher",
+        "manager",
+        "billing",
+        "office_display",
+      ]}
+    >
       <AppShell appUser={appUser}>
         <Stack spacing={2}>
           <Typography variant="h5">Dashboard</Typography>

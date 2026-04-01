@@ -290,7 +290,7 @@ export default function AdminUsersPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Admin Users">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
           <Stack spacing={4}>

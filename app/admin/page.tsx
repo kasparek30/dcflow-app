@@ -1,3 +1,4 @@
+// app/admin/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -276,7 +277,7 @@ export default function AdminHomePage() {
   ];
 
   return (
-    <ProtectedPage fallbackTitle="Admin">
+    <ProtectedPage fallbackTitle="Admin" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
           <Stack spacing={4}>

@@ -1186,7 +1186,17 @@ export default function TechnicianMyDayPage() {
   const holidayBlocks = Boolean(holiday?.scheduleBlocked);
 
   return (
-    <ProtectedPage fallbackTitle="My Day">
+    <ProtectedPage
+  fallbackTitle="My Day"
+  allowedRoles={[
+    "admin",
+    "dispatcher",
+    "manager",
+    "technician",
+    "helper",
+    "apprentice",
+  ]}
+>
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1240, mx: "auto" }}>
           <Stack spacing={3}>

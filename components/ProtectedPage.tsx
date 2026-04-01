@@ -1,17 +1,41 @@
 // components/ProtectedPage.tsx
 "use client";
 
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { useAuthContext } from "../src/context/auth-context";
 import { signOut } from "firebase/auth";
 import { auth } from "../src/lib/firebase";
+import { useAuthContext } from "../src/context/auth-context";
 
 type Props = {
   children: ReactNode;
   fallbackTitle?: string;
   allowedRoles?: string[];
 };
+
+function normalizeRole(role: unknown) {
+  return String(role ?? "").trim().toLowerCase();
+}
+
+function getDefaultRouteForRole(role: string) {
+  if (
+    [
+      "admin",
+      "dispatcher",
+      "manager",
+      "billing",
+      "office_display",
+    ].includes(role)
+  ) {
+    return "/dashboard";
+  }
+
+  if (["technician", "helper", "apprentice"].includes(role)) {
+    return "/technician/my-day";
+  }
+
+  return "/login";
+}
 
 export default function ProtectedPage({
   children,
@@ -23,46 +47,55 @@ export default function ProtectedPage({
 
   const { loading, error, authUser, appUser } = useAuthContext();
 
-  const [authGraceExpired, setAuthGraceExpired] = useState(false);
-
-  useEffect(() => {
-    setAuthGraceExpired(false);
-    const t = window.setTimeout(() => setAuthGraceExpired(true), 3000);
-    return () => window.clearTimeout(t);
-  }, [pathname]);
-
-  const isLoginRoute = useMemo(() => {
-    return (pathname || "").startsWith("/login");
-  }, [pathname]);
-
+  const isLoginRoute = (pathname || "").startsWith("/login");
   const isLoggedIn = Boolean(authUser?.uid);
 
-  // Redirect if definitely not logged in
+  const normalizedRole = normalizeRole(appUser?.role);
+  const normalizedAllowedRoles = (allowedRoles || [])
+    .map((r) => normalizeRole(r))
+    .filter(Boolean);
+
+  const requiresRoleCheck = normalizedAllowedRoles.length > 0;
+
+  const roleAllowed = !requiresRoleCheck
+    ? true
+    : Boolean(normalizedRole) && normalizedAllowedRoles.includes(normalizedRole);
+
+  const unauthorizedRedirectTo = getDefaultRouteForRole(normalizedRole);
+
   useEffect(() => {
     if (isLoginRoute) return;
-    if (!authGraceExpired) return;
     if (loading) return;
-    if (isLoggedIn) return;
 
-    const next = pathname ? `?next=${encodeURIComponent(pathname)}` : "";
-    router.replace(`/login${next}`);
-  }, [isLoginRoute, authGraceExpired, loading, isLoggedIn, router, pathname]);
-
-  const roleAllowed = useMemo(() => {
-    if (!allowedRoles || allowedRoles.length === 0) return true;
-    const role = String(appUser?.role || "").trim();
-    return Boolean(role) && allowedRoles.includes(role);
-  }, [allowedRoles, appUser?.role]);
-
-  useEffect(() => {
-    if (!allowedRoles || allowedRoles.length === 0) return;
-    if (!loading && isLoggedIn && appUser && !roleAllowed) {
-      router.replace("/dashboard");
+    if (!isLoggedIn) {
+      const next = pathname ? `?next=${encodeURIComponent(pathname)}` : "";
+      router.replace(`/login${next}`);
+      return;
     }
-  }, [allowedRoles, loading, isLoggedIn, appUser, roleAllowed, router]);
 
-  // ✅ Loading UX: use the ACTUAL auth-context loading flag
-  if (!isLoginRoute && (loading || (!authGraceExpired && !isLoggedIn))) {
+    if (authUser && !appUser) {
+      return;
+    }
+
+    if (requiresRoleCheck && appUser && !roleAllowed) {
+      router.replace(unauthorizedRedirectTo);
+    }
+  }, [
+    isLoginRoute,
+    loading,
+    isLoggedIn,
+    pathname,
+    router,
+    authUser,
+    appUser,
+    requiresRoleCheck,
+    roleAllowed,
+    unauthorizedRedirectTo,
+  ]);
+
+  if (isLoginRoute) return <>{children}</>;
+
+  if (loading) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>
@@ -75,11 +108,7 @@ export default function ProtectedPage({
     );
   }
 
-  // Always allow login page to render
-  if (isLoginRoute) return <>{children}</>;
-
-  // If not logged in (after grace + not loading), show redirecting
-  if (authGraceExpired && !loading && !isLoggedIn) {
+  if (!isLoggedIn) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>Redirecting…</h1>
@@ -87,7 +116,6 @@ export default function ProtectedPage({
     );
   }
 
-  // ✅ If logged in but user profile failed to load, STOP infinite loading and show the real problem
   if (isLoggedIn && !appUser) {
     return (
       <div style={{ padding: 24, maxWidth: 720 }}>
@@ -96,7 +124,8 @@ export default function ProtectedPage({
         </h1>
 
         <div style={{ marginTop: 10, fontSize: 13, color: "#666" }}>
-          Firebase login succeeded, but DCFlow couldn’t read your profile doc in Firestore:
+          Firebase login succeeded, but DCFlow couldn’t read your profile doc in
+          Firestore:
         </div>
 
         <div
@@ -113,12 +142,15 @@ export default function ProtectedPage({
         >
           {error || "Unknown error."}
           {"\n\n"}
-          Fix: ensure Firestore allows reading users/{"{uid}"} and that a document exists for this UID:
+          Fix: ensure Firestore allows reading users/{"{uid}"} and that a
+          document exists for this UID:
           {"\n"}
           <strong>{`users/${authUser?.uid}`}</strong>
         </div>
 
-        <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}
+        >
           <button
             type="button"
             onClick={async () => {
@@ -156,8 +188,7 @@ export default function ProtectedPage({
     );
   }
 
-  // Role gating (avoid flash)
-  if (allowedRoles && allowedRoles.length > 0 && appUser && !roleAllowed) {
+  if (requiresRoleCheck && appUser && !roleAllowed) {
     return (
       <div style={{ padding: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 900 }}>Access denied</h1>

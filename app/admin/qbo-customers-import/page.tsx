@@ -53,7 +53,7 @@ export default function QboCustomersImportPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Import Customers">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <h1 style={{ fontSize: "24px", fontWeight: 900, marginBottom: "10px" }}>
           Import QBO Customers → DCFlow

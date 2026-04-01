@@ -177,7 +177,7 @@ export default function QboLinkCustomersPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="QBO Link Customers">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <h1 style={{ fontSize: "24px", fontWeight: 900, marginBottom: "10px" }}>
           QBO Link Customers

@@ -234,7 +234,7 @@ export default function AdminDailyCrewOverridesPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Daily Crew Overrides">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "16px" }}>
           Daily Crew Overrides

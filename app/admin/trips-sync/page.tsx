@@ -53,7 +53,7 @@ export default function TripsSyncAdminPage() {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Trips Sync">
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <h1 style={{ fontSize: "24px", fontWeight: 900, marginBottom: "10px" }}>
           Trips Sync (v1)
