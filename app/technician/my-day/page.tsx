@@ -9,17 +9,17 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
-  where,
   runTransaction,
+  where,
 } from "firebase/firestore";
 import {
   Alert,
   Box,
   Button,
   Card,
-  CardActionArea,
   CardContent,
   Checkbox,
   Chip,
@@ -45,15 +45,12 @@ import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import EngineeringRoundedIcon from "@mui/icons-material/EngineeringRounded";
-import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
-import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
 import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
-import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
-import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
+import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -502,8 +499,8 @@ function MyDaySection({
   children: React.ReactNode;
 }) {
   return (
-<Card elevation={0} sx={{ borderRadius: 4 }}>
-        <Box sx={{ px: { xs: 2, md: 2.5 }, pt: { xs: 2, md: 2.5 }, pb: 1.5 }}>
+    <Card elevation={0} sx={{ borderRadius: 4 }}>
+      <Box sx={{ px: { xs: 2, md: 2.5 }, pt: { xs: 2, md: 2.5 }, pb: 1.5 }}>
         <Stack direction="row" spacing={1} alignItems="center">
           {icon ? (
             <Box sx={{ display: "grid", placeItems: "center", color: "primary.light" }}>{icon}</Box>
@@ -530,7 +527,7 @@ function MyDaySection({
 
       <Divider />
 
-<Box sx={{ p: { xs: 1.5, md: 2.5 } }}>{children}</Box>
+      <Box sx={{ p: { xs: 1.5, md: 2.5 } }}>{children}</Box>
     </Card>
   );
 }
@@ -573,6 +570,10 @@ export default function TechnicianMyDayPage() {
 
   const canViewOtherEmployees =
     myRole === "admin" || myRole === "dispatcher" || myRole === "manager";
+
+  const whoUid = useMemo(() => {
+    return canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+  }, [canViewOtherEmployees, selectedEmployeeUid, myUid]);
 
   useEffect(() => {
     if (!selectedEmployeeUid && myUid) {
@@ -629,24 +630,23 @@ export default function TechnicianMyDayPage() {
   }
 
   useEffect(() => {
-    async function load() {
-      setLoading(true);
-      setError("");
+    setLoading(true);
+    setError("");
 
-      try {
-        const whoUid = canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
+    const unsubs: Array<() => void> = [];
 
-        try {
-          const hsnap = await getDocs(
-            query(
-              collection(db, "companyHolidays"),
-              where("holidayDate", "==", todayIso),
-              where("active", "==", true)
-            )
-          );
+    const holidayQ = query(
+      collection(db, "companyHolidays"),
+      where("holidayDate", "==", todayIso),
+      where("active", "==", true)
+    );
 
-          if (!hsnap.empty) {
-            const hdoc = hsnap.docs[0];
+    unsubs.push(
+      onSnapshot(
+        holidayQ,
+        (snap) => {
+          if (!snap.empty) {
+            const hdoc = snap.docs[0];
             const d = hdoc.data() as any;
 
             setHoliday({
@@ -659,32 +659,24 @@ export default function TechnicianMyDayPage() {
           } else {
             setHoliday(null);
           }
-        } catch {
+        },
+        () => {
           setHoliday(null);
         }
+      )
+    );
 
-        try {
-          let esnap;
-          try {
-            esnap = await getDocs(
-              query(
-                collection(db, "companyEvents"),
-                where("date", "==", todayIso),
-                where("active", "==", true),
-                orderBy("startTime", "asc")
-              )
-            );
-          } catch {
-            esnap = await getDocs(
-              query(
-                collection(db, "companyEvents"),
-                where("date", "==", todayIso),
-                where("active", "==", true)
-              )
-            );
-          }
+    const eventsQ = query(
+      collection(db, "companyEvents"),
+      where("date", "==", todayIso),
+      where("active", "==", true)
+    );
 
-          const events: CompanyEvent[] = esnap.docs
+    unsubs.push(
+      onSnapshot(
+        eventsQ,
+        (snap) => {
+          const events: CompanyEvent[] = snap.docs
             .map((ds) => {
               const d = ds.data() as any;
               return {
@@ -707,63 +699,93 @@ export default function TechnicianMyDayPage() {
           );
 
           setCompanyEvents(events);
-        } catch {
+        },
+        () => {
           setCompanyEvents([]);
         }
+      )
+    );
 
-        const tripsSnap = await getDocs(
-          query(collection(db, "trips"), where("date", "==", todayIso))
-        );
+    const tripsQ = query(collection(db, "trips"), where("date", "==", todayIso));
 
-        const todayTripItems: Trip[] = tripsSnap.docs.map((docSnap) => {
-          const d = docSnap.data() as any;
-          return {
-            id: docSnap.id,
-            active: typeof d.active === "boolean" ? d.active : true,
-            type: d.type ?? undefined,
-            status: d.status ?? undefined,
-            date: d.date ?? undefined,
-            timeWindow: d.timeWindow ?? undefined,
-            startTime: d.startTime ?? undefined,
-            endTime: d.endTime ?? undefined,
-            crew: d.crew ?? undefined,
-            link: d.link ?? undefined,
-            cancelReason: d.cancelReason ?? null,
-            confirmedBy: (d.confirmedBy ?? null) as any,
-            completedAt: d.completedAt ?? null,
-            completedByUid: d.completedByUid ?? null,
-          };
-        });
-
-        let foundOverride: DailyCrewOverride | null = null;
-
-        if (isHelperRole && whoUid) {
-          const overrideSnap = await getDocs(
-            query(
-              collection(db, "dailyCrewOverrides"),
-              where("date", "==", todayIso),
-              where("helperUid", "==", whoUid),
-              where("active", "==", true)
-            )
-          );
-
-          if (!overrideSnap.empty) {
-            const docSnap = overrideSnap.docs[0];
+    unsubs.push(
+      onSnapshot(
+        tripsQ,
+        (snap) => {
+          const todayTripItems: Trip[] = snap.docs.map((docSnap) => {
             const d = docSnap.data() as any;
-            foundOverride = {
+            return {
               id: docSnap.id,
               active: typeof d.active === "boolean" ? d.active : true,
-              date: d.date ?? todayIso,
-              helperUid: d.helperUid ?? "",
-              assignedTechUid: d.assignedTechUid ?? "",
-              note: d.note ?? null,
+              type: d.type ?? undefined,
+              status: d.status ?? undefined,
+              date: d.date ?? undefined,
+              timeWindow: d.timeWindow ?? undefined,
+              startTime: d.startTime ?? undefined,
+              endTime: d.endTime ?? undefined,
+              crew: d.crew ?? undefined,
+              link: d.link ?? undefined,
+              cancelReason: d.cancelReason ?? null,
+              confirmedBy: (d.confirmedBy ?? null) as any,
+              completedAt: d.completedAt ?? null,
+              completedByUid: d.completedByUid ?? null,
             };
-          }
+          });
+
+          setTrips(todayTripItems);
+          setLoading(false);
+        },
+        (err) => {
+          setError(err instanceof Error ? err.message : "Failed to load My Day.");
+          setLoading(false);
         }
+      )
+    );
 
-        setTrips(todayTripItems);
-        setOverride(foundOverride);
+    if (!canViewOtherEmployees && isHelperRole && whoUid) {
+      const overrideQ = query(
+        collection(db, "dailyCrewOverrides"),
+        where("date", "==", todayIso),
+        where("helperUid", "==", whoUid),
+        where("active", "==", true)
+      );
 
+      unsubs.push(
+        onSnapshot(
+          overrideQ,
+          (snap) => {
+            if (!snap.empty) {
+              const docSnap = snap.docs[0];
+              const d = docSnap.data() as any;
+              setOverride({
+                id: docSnap.id,
+                active: typeof d.active === "boolean" ? d.active : true,
+                date: d.date ?? todayIso,
+                helperUid: d.helperUid ?? "",
+                assignedTechUid: d.assignedTechUid ?? "",
+                note: d.note ?? null,
+              });
+            } else {
+              setOverride(null);
+            }
+          },
+          () => {
+            setOverride(null);
+          }
+        )
+      );
+    } else {
+      setOverride(null);
+    }
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [todayIso, whoUid, isHelperRole, canViewOtherEmployees]);
+
+  useEffect(() => {
+    async function loadRecent() {
+      try {
         const start = addDays(fromIsoDate(todayIso), -14);
         start.setHours(0, 0, 0, 0);
         const startIso = toIsoDate(start);
@@ -812,81 +834,13 @@ export default function TechnicianMyDayPage() {
         });
 
         setRecentTrips(recentItems);
-
-        const ticketIds = Array.from(
-          new Set(todayTripItems.map((t) => t.link?.serviceTicketId || "").filter(Boolean))
-        );
-
-        const nextTicketMap: Record<string, ServiceTicketLite> = {};
-        await Promise.all(
-          ticketIds.map(async (tid) => {
-            try {
-              const snap = await getDoc(doc(db, "serviceTickets", tid));
-              if (!snap.exists()) return;
-
-              const d = snap.data() as any;
-              nextTicketMap[tid] = {
-                id: tid,
-                issueSummary: d.issueSummary ?? "",
-                issueDetails: d.issueDetails ?? "",
-                status: d.status ?? "",
-                customerDisplayName: d.customerDisplayName ?? "",
-                customerPhone: d.customerPhone ?? d.phone ?? "",
-                serviceAddressLabel: d.serviceAddressesLabel ?? d.serviceAddressLabel ?? "",
-                serviceAddressLine1: d.serviceAddressLine1 ?? "",
-                serviceAddressLine2: d.serviceAddressLine2 ?? "",
-                serviceCity: d.serviceCity ?? "",
-                serviceState: d.serviceState ?? "",
-                servicePostalCode: d.servicePostalCode ?? "",
-              };
-            } catch {
-              // ignore
-            }
-          })
-        );
-        setTicketById(nextTicketMap);
-
-        const followUpMap: Record<string, string> = {};
-        await Promise.all(
-          ticketIds.map(async (tid) => {
-            try {
-              const t = nextTicketMap[tid];
-              if (!t) return;
-              if (normalizeStatus(t.status) !== "follow_up") return;
-
-              const qTrip = query(
-                collection(db, "trips"),
-                where("link.serviceTicketId", "==", tid),
-                where("outcome", "==", "follow_up"),
-                orderBy("updatedAt", "desc"),
-                limit(1)
-              );
-
-              const snap = await getDocs(qTrip);
-              if (snap.empty) return;
-
-              const d = snap.docs[0].data() as any;
-              const note = String(d.followUpNotes ?? "").trim();
-              if (note) followUpMap[tid] = note;
-            } catch {
-              // ignore
-            }
-          })
-        );
-        setFollowUpByTicketId(followUpMap);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load My Day.");
-      } finally {
-        setLoading(false);
+      } catch {
+        setRecentTrips([]);
       }
     }
 
-    load();
-  }, [todayIso, myUid, isHelperRole, canViewOtherEmployees, selectedEmployeeUid]);
-
-  const whoUid = useMemo(() => {
-    return canViewOtherEmployees ? (selectedEmployeeUid || myUid) : myUid;
-  }, [canViewOtherEmployees, selectedEmployeeUid, myUid]);
+    loadRecent();
+  }, [todayIso]);
 
   const visibleTrips = useMemo(() => {
     if (!whoUid) return [];
@@ -908,6 +862,106 @@ export default function TechnicianMyDayPage() {
 
     return explicitCrewTrips;
   }, [trips, whoUid, isHelperRole, override, canViewOtherEmployees]);
+
+  const visibleServiceTicketIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          visibleTrips.map((t) => String(t.link?.serviceTicketId || "").trim()).filter(Boolean)
+        )
+      ),
+    [visibleTrips]
+  );
+
+  useEffect(() => {
+    if (visibleServiceTicketIds.length === 0) {
+      setTicketById({});
+      return;
+    }
+
+    setTicketById({});
+    const unsubs: Array<() => void> = [];
+
+    for (const tid of visibleServiceTicketIds) {
+      const ref = doc(db, "serviceTickets", tid);
+      unsubs.push(
+        onSnapshot(
+          ref,
+          (snap) => {
+            if (!snap.exists()) return;
+            const d = snap.data() as any;
+
+            setTicketById((prev) => ({
+              ...prev,
+              [tid]: {
+                id: tid,
+                issueSummary: d.issueSummary ?? "",
+                issueDetails: d.issueDetails ?? "",
+                status: d.status ?? "",
+                customerDisplayName: d.customerDisplayName ?? "",
+                customerPhone: d.customerPhone ?? d.phone ?? "",
+                serviceAddressLabel: d.serviceAddressesLabel ?? d.serviceAddressLabel ?? "",
+                serviceAddressLine1: d.serviceAddressLine1 ?? "",
+                serviceAddressLine2: d.serviceAddressLine2 ?? "",
+                serviceCity: d.serviceCity ?? "",
+                serviceState: d.serviceState ?? "",
+                servicePostalCode: d.servicePostalCode ?? "",
+              },
+            }));
+          },
+          () => {
+            // ignore live ticket errors for now
+          }
+        )
+      );
+    }
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [visibleServiceTicketIds]);
+
+  useEffect(() => {
+    async function loadFollowUpNotes() {
+      if (visibleServiceTicketIds.length === 0) {
+        setFollowUpByTicketId({});
+        return;
+      }
+
+      const followUpMap: Record<string, string> = {};
+
+      await Promise.all(
+        visibleServiceTicketIds.map(async (tid) => {
+          try {
+            const t = ticketById[tid];
+            if (!t) return;
+            if (normalizeStatus(t.status) !== "follow_up") return;
+
+            const qTrip = query(
+              collection(db, "trips"),
+              where("link.serviceTicketId", "==", tid),
+              where("outcome", "==", "follow_up"),
+              orderBy("updatedAt", "desc"),
+              limit(1)
+            );
+
+            const snap = await getDocs(qTrip);
+            if (snap.empty) return;
+
+            const d = snap.docs[0].data() as any;
+            const note = String(d.followUpNotes ?? "").trim();
+            if (note) followUpMap[tid] = note;
+          } catch {
+            // ignore
+          }
+        })
+      );
+
+      setFollowUpByTicketId(followUpMap);
+    }
+
+    loadFollowUpNotes();
+  }, [visibleServiceTicketIds, ticketById]);
 
   const unconfirmedPastTrips = useMemo(() => {
     if (!whoUid) return [];
@@ -931,11 +985,11 @@ export default function TechnicianMyDayPage() {
         return d < todayIso;
       });
 
-    out.sort((a, b) => {
-      const aKey = `${a.date || ""}_${timeSortKey(a.startTime, a.timeWindow)}_${a.id}`;
-      const bKey = `${b.date || ""}_${timeSortKey(b.startTime, b.timeWindow)}_${b.id}`;
-      return bKey.localeCompare(aKey);
-    });
+      out.sort((a, b) => {
+        const aKey = `${a.date || ""}_${timeSortKey(a.startTime, a.timeWindow)}_${a.id}`;
+        const bKey = `${b.date || ""}_${timeSortKey(b.startTime, b.timeWindow)}_${b.id}`;
+        return bKey.localeCompare(aKey);
+      });
 
     return out.slice(0, 20);
   }, [recentTrips, whoUid, todayIso]);
@@ -1187,21 +1241,21 @@ export default function TechnicianMyDayPage() {
 
   return (
     <ProtectedPage
-  fallbackTitle="My Day"
-  allowedRoles={[
-    "admin",
-    "dispatcher",
-    "manager",
-    "technician",
-    "helper",
-    "apprentice",
-  ]}
->
+      fallbackTitle="My Day"
+      allowedRoles={[
+        "admin",
+        "dispatcher",
+        "manager",
+        "technician",
+        "helper",
+        "apprentice",
+      ]}
+    >
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1240, mx: "auto" }}>
           <Stack spacing={3}>
-<Card elevation={0} sx={{ borderRadius: 4 }}>
-                <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+            <Card elevation={0} sx={{ borderRadius: 4 }}>
+              <Box sx={{ p: { xs: 2, md: 2.5 } }}>
                 <Stack
                   direction={{ xs: "column", lg: "row" }}
                   spacing={2}
@@ -1373,16 +1427,21 @@ export default function TechnicianMyDayPage() {
                               </Button>
                             </Stack>
 
-<Stack
-  direction="row"
-  spacing={0.6}
-  flexWrap="wrap"
-  useFlexGap
-  sx={{ rowGap: 0.6 }}
->                              <Chip size="small" label={`Tech: ${crew.primary}`} variant="outlined" />
+                            <Stack
+                              direction="row"
+                              spacing={0.6}
+                              flexWrap="wrap"
+                              useFlexGap
+                              sx={{ rowGap: 0.6 }}
+                            >
+                              <Chip size="small" label={`Tech: ${crew.primary}`} variant="outlined" />
                               {crew.helper ? <Chip size="small" label={crew.helper} variant="outlined" /> : null}
-                              {crew.secondaryTech ? <Chip size="small" label={crew.secondaryTech} variant="outlined" /> : null}
-                              {crew.secondaryHelper ? <Chip size="small" label={crew.secondaryHelper} variant="outlined" /> : null}
+                              {crew.secondaryTech ? (
+                                <Chip size="small" label={crew.secondaryTech} variant="outlined" />
+                              ) : null}
+                              {crew.secondaryHelper ? (
+                                <Chip size="small" label={crew.secondaryHelper} variant="outlined" />
+                              ) : null}
                             </Stack>
 
                             <Typography variant="caption" color="text.secondary">
@@ -1469,8 +1528,8 @@ export default function TechnicianMyDayPage() {
             ) : null}
 
             {loading ? (
-<Card elevation={0} sx={{ borderRadius: 4 }}>
-                  <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+              <Card elevation={0} sx={{ borderRadius: 4 }}>
+                <Box sx={{ p: { xs: 2, md: 2.5 } }}>
                   <Typography variant="body2" color="text.secondary">
                     Loading your day...
                   </Typography>
@@ -1495,180 +1554,180 @@ export default function TechnicianMyDayPage() {
                 ) : (
                   <Stack spacing={1.5}>
                     {items.map((item) => {
-  const isProject = String(item.tripType || "").toLowerCase() === "project";
-  const isService = String(item.tripType || "").toLowerCase() === "service";
-  const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
+                      const isProject = String(item.tripType || "").toLowerCase() === "project";
+                      const isService = String(item.tripType || "").toLowerCase() === "service";
+                      const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
 
-  return (
-    <SharedTripCard
-      key={item.id}
-      title={item.headerText}
-      status={item.status}
-      tripType={item.tripType}
-      subtitle={item.subLine}
-      crewChips={
-        <Stack
-          direction="row"
-          spacing={0.6}
-          flexWrap="wrap"
-          useFlexGap
-          sx={{ rowGap: 0.6 }}
-        >
-          <Chip
-            size="small"
-            icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
-            label={item.techText}
-            variant="outlined"
-            sx={{ borderRadius: 1.5 }}
-          />
-          {item.helperText ? (
-            <Chip
-              size="small"
-              label={item.helperText}
-              variant="outlined"
-              sx={{ borderRadius: 1.5 }}
-            />
-          ) : null}
-          {item.secondaryTechText ? (
-            <Chip
-              size="small"
-              label={item.secondaryTechText}
-              variant="outlined"
-              sx={{ borderRadius: 1.5 }}
-            />
-          ) : null}
-          {item.secondaryHelperText ? (
-            <Chip
-              size="small"
-              label={item.secondaryHelperText}
-              variant="outlined"
-              sx={{ borderRadius: 1.5 }}
-            />
-          ) : null}
-        </Stack>
-      }
-      detailBlock={
-        item.issueDetailsText ? (
-          <Box
-            sx={{
-              px: 1.25,
-              py: 1,
-              borderRadius: 2,
-              border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
-              backgroundColor: alpha(theme.palette.primary.main, 0.06),
-            }}
-          >
-            <Stack direction="row" spacing={1} alignItems="flex-start">
-              <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
-                  Issue
-                </Typography>
-                <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
-                  {item.issueDetailsText}
-                </Typography>
-              </Box>
-            </Stack>
-          </Box>
-        ) : undefined
-      }
-      followUpBlock={
-        item.followUpText ? (
-          <Box
-            sx={{
-              px: 1.25,
-              py: 1,
-              borderRadius: 2,
-              border: "1px solid #FFE2A8",
-              backgroundColor: "#FFF7E6",
-            }}
-          >
-            <Stack direction="row" spacing={1} alignItems="flex-start">
-              <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
-                  Follow-up notes
-                </Typography>
-                <Typography
-                  variant="body2"
-                  sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
-                >
-                  {item.followUpText}
-                </Typography>
-              </Box>
-            </Stack>
-          </Box>
-        ) : undefined
-      }
-      trailingContent={
-        isProject && item.confirmed ? (
-          <Chip
-            size="small"
-            icon={<TaskAltRoundedIcon sx={{ fontSize: 16 }} />}
-            label={`Confirmed (${Number(item.confirmed.hours).toFixed(2)}h)`}
-            color="success"
-            variant="outlined"
-            sx={{
-              height: 24,
-              borderRadius: 1.5,
-              fontSize: 11,
-              fontWeight: 600,
-            }}
-          />
-        ) : undefined
-      }
-      footer={
-        isProject ? (
-          !item.confirmed ? (
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              spacing={1.25}
-              alignItems={{ xs: "stretch", sm: "center" }}
-              justifyContent="space-between"
-            >
-              <Box>
-                <Typography variant="body2" color="text.secondary">
-                  Confirm your project hours for payroll.
-                </Typography>
-                {!canConfirm ? (
-                  <Typography variant="caption" color="text.secondary">
-                    Only the employee or Admin/Dispatcher/Manager can confirm project hours.
-                  </Typography>
-                ) : null}
-              </Box>
+                      return (
+                        <SharedTripCard
+                          key={item.id}
+                          title={item.headerText}
+                          status={item.status}
+                          tripType={item.tripType}
+                          subtitle={item.subLine}
+                          crewChips={
+                            <Stack
+                              direction="row"
+                              spacing={0.6}
+                              flexWrap="wrap"
+                              useFlexGap
+                              sx={{ rowGap: 0.6 }}
+                            >
+                              <Chip
+                                size="small"
+                                icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
+                                label={item.techText}
+                                variant="outlined"
+                                sx={{ borderRadius: 1.5 }}
+                              />
+                              {item.helperText ? (
+                                <Chip
+                                  size="small"
+                                  label={item.helperText}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                              ) : null}
+                              {item.secondaryTechText ? (
+                                <Chip
+                                  size="small"
+                                  label={item.secondaryTechText}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                              ) : null}
+                              {item.secondaryHelperText ? (
+                                <Chip
+                                  size="small"
+                                  label={item.secondaryHelperText}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                              ) : null}
+                            </Stack>
+                          }
+                          detailBlock={
+                            item.issueDetailsText ? (
+                              <Box
+                                sx={{
+                                  px: 1.25,
+                                  py: 1,
+                                  borderRadius: 2,
+                                  border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
+                                  backgroundColor: alpha(theme.palette.primary.main, 0.06),
+                                }}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="flex-start">
+                                  <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
+                                  <Box sx={{ minWidth: 0 }}>
+                                    <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
+                                      Issue
+                                    </Typography>
+                                    <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
+                                      {item.issueDetailsText}
+                                    </Typography>
+                                  </Box>
+                                </Stack>
+                              </Box>
+                            ) : undefined
+                          }
+                          followUpBlock={
+                            item.followUpText ? (
+                              <Box
+                                sx={{
+                                  px: 1.25,
+                                  py: 1,
+                                  borderRadius: 2,
+                                  border: "1px solid #FFE2A8",
+                                  backgroundColor: "#FFF7E6",
+                                }}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="flex-start">
+                                  <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
+                                  <Box sx={{ minWidth: 0 }}>
+                                    <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
+                                      Follow-up notes
+                                    </Typography>
+                                    <Typography
+                                      variant="body2"
+                                      sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
+                                    >
+                                      {item.followUpText}
+                                    </Typography>
+                                  </Box>
+                                </Stack>
+                              </Box>
+                            ) : undefined
+                          }
+                          trailingContent={
+                            isProject && item.confirmed ? (
+                              <Chip
+                                size="small"
+                                icon={<TaskAltRoundedIcon sx={{ fontSize: 16 }} />}
+                                label={`Confirmed (${Number(item.confirmed.hours).toFixed(2)}h)`}
+                                color="success"
+                                variant="outlined"
+                                sx={{
+                                  height: 24,
+                                  borderRadius: 1.5,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                }}
+                              />
+                            ) : undefined
+                          }
+                          footer={
+                            isProject ? (
+                              !item.confirmed ? (
+                                <Stack
+                                  direction={{ xs: "column", sm: "row" }}
+                                  spacing={1.25}
+                                  alignItems={{ xs: "stretch", sm: "center" }}
+                                  justifyContent="space-between"
+                                >
+                                  <Box>
+                                    <Typography variant="body2" color="text.secondary">
+                                      Confirm your project hours for payroll.
+                                    </Typography>
+                                    {!canConfirm ? (
+                                      <Typography variant="caption" color="text.secondary">
+                                        Only the employee or Admin/Dispatcher/Manager can confirm project hours.
+                                      </Typography>
+                                    ) : null}
+                                  </Box>
 
-              <Button
-                variant="contained"
-                color="success"
-                startIcon={<TaskAltRoundedIcon />}
-                disabled={!canConfirm}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (!canConfirm) return;
-                  openConfirmModal(item);
-                }}
-              >
-                Confirm Trip
-              </Button>
-            </Stack>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              Confirmed time will appear in <strong>Time Entries</strong> for payroll.
-            </Typography>
-          )
-        ) : isService ? (
-          <Typography variant="caption" color="text.secondary">
-            Open the service ticket for full details and workflow actions.
-          </Typography>
-        ) : undefined
-      }
-      onClick={() => {
-        window.location.href = item.href;
-      }}
-    />
-  );
-})}
+                                  <Button
+                                    variant="contained"
+                                    color="success"
+                                    startIcon={<TaskAltRoundedIcon />}
+                                    disabled={!canConfirm}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (!canConfirm) return;
+                                      openConfirmModal(item);
+                                    }}
+                                  >
+                                    Confirm Trip
+                                  </Button>
+                                </Stack>
+                              ) : (
+                                <Typography variant="body2" color="text.secondary">
+                                  Confirmed time will appear in <strong>Time Entries</strong> for payroll.
+                                </Typography>
+                              )
+                            ) : isService ? (
+                              <Typography variant="caption" color="text.secondary">
+                                Open the service ticket for full details and workflow actions.
+                              </Typography>
+                            ) : undefined
+                          }
+                          onClick={() => {
+                            window.location.href = item.href;
+                          }}
+                        />
+                      );
+                    })}
                   </Stack>
                 )}
               </MyDaySection>

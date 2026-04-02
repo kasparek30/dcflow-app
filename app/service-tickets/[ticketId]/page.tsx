@@ -1,3 +1,4 @@
+// app/service-tickets/[ticketId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -740,6 +741,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
   const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] = useState("240");
+  const [ticketIssueSummaryEdit, setTicketIssueSummaryEdit] = useState("");
   const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
   const [ticketEditSaving, setTicketEditSaving] = useState(false);
   const [ticketEditErr, setTicketEditErr] = useState("");
@@ -768,6 +770,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [editTripNotes, setEditTripNotes] = useState("");
   const [editTripSaving, setEditTripSaving] = useState(false);
   const [editTripErr, setEditTripErr] = useState("");
+  const [editTripPrimaryTechUid, setEditTripPrimaryTechUid] = useState("");
+  const [editTripSecondaryTechUid, setEditTripSecondaryTechUid] = useState("");
+  const [editTripUseDefaultHelper, setEditTripUseDefaultHelper] = useState(true);
+  const [editTripHelperUid, setEditTripHelperUid] = useState("");
+  const [editTripSecondaryHelperUid, setEditTripSecondaryHelperUid] = useState("");
 
   const [billingSaving, setBillingSaving] = useState(false);
   const [billingErr, setBillingErr] = useState("");
@@ -797,6 +804,21 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (!techUid) return "";
     return helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid)?.uid || "";
   }, [tripPrimaryTechUid, helperCandidates]);
+
+  const defaultHelperForEditPrimary = useMemo(() => {
+    const techUid = editTripPrimaryTechUid.trim();
+    if (!techUid) return "";
+    return helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid)?.uid || "";
+  }, [editTripPrimaryTechUid, helperCandidates]);
+
+  useEffect(() => {
+    if (!editTripUseDefaultHelper) return;
+    if (!editTripPrimaryTechUid.trim()) {
+      setEditTripHelperUid("");
+      return;
+    }
+    setEditTripHelperUid(defaultHelperForEditPrimary);
+  }, [editTripUseDefaultHelper, editTripPrimaryTechUid, defaultHelperForEditPrimary]);
 
   useEffect(() => {
     async function loadAll() {
@@ -846,6 +868,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTicket(nextTicket);
         setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
         setTicketEstimatedMinutesEdit(String(nextTicket.estimatedDurationMinutes || 60));
+        setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
 
         const [usersSnap, profilesSnap, tripSnap] = await Promise.all([
@@ -1151,6 +1174,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         return;
       }
 
+      const summary = ticketIssueSummaryEdit.trim();
+      if (!summary) {
+        setTicketEditErr("Issue summary is required.");
+        return;
+      }
+
       const nextStatus = ticketStatusEdit as TicketStatus;
       const guard = getManualTicketStatusError({
         nextStatus,
@@ -1167,6 +1196,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         status: nextStatus,
+        issueSummary: summary,
         estimatedDurationMinutes: minutes,
         issueDetails: ticketIssueDetailsEdit.trim() || null,
         updatedAt: now,
@@ -1177,6 +1207,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           ? {
               ...prev,
               status: nextStatus,
+              issueSummary: summary,
               estimatedDurationMinutes: minutes,
               issueDetails: ticketIssueDetailsEdit.trim() || undefined,
               updatedAt: now,
@@ -1819,6 +1850,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   function openEditTrip(trip: TripDoc) {
     if (!canEditTripSchedule(trip.status, trip.timerState)) return;
+
+    setEditTripPrimaryTechUid(String(trip.crew?.primaryTechUid || ""));
+    setEditTripSecondaryTechUid(String(trip.crew?.secondaryTechUid || ""));
+    setEditTripHelperUid(String(trip.crew?.helperUid || ""));
+    setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
+
+    const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
+    const tripHelperUid = String(trip.crew?.helperUid || "").trim();
+    const defaultHelperUid =
+      helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid)?.uid || "";
+
+    setEditTripUseDefaultHelper(Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid));
+
     setEditTripId(trip.id);
     setEditTripDate(trip.date || isoTodayLocal());
     setEditTripTimeWindow((trip.timeWindow as TripTimeWindow) || "custom");
@@ -1829,7 +1873,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }
 
   async function handleSaveTripEdit() {
-    if (!canDispatch || !editTripId) return;
+    if (!canDispatch || !editTripId || !ticket?.id) return;
+
     const trip = trips.find((t) => t.id === editTripId);
     if (!trip) return;
 
@@ -1840,23 +1885,79 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       if (!canEditTripSchedule(trip.status, trip.timerState)) {
         throw new Error("Only planned trips can be edited.");
       }
+
       if (!editTripDate.trim()) {
         throw new Error("Trip date is required.");
       }
+
+      if (!editTripPrimaryTechUid.trim()) {
+        throw new Error("Primary technician is required.");
+      }
+
       if (!editTripStartTime.trim() || !editTripEndTime.trim() || editTripEndTime <= editTripStartTime) {
         throw new Error("Enter a valid start and end time.");
       }
 
       const now = nowIso();
 
+      const helperUid = editTripHelperUid.trim() || "";
+      const secondaryTechUid = editTripSecondaryTechUid.trim() || "";
+      const secondaryHelperUid = editTripSecondaryHelperUid.trim() || "";
+
+      const primaryName = findTechName(editTripPrimaryTechUid) || "Unnamed Technician";
+      const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
+      const secondaryTechName =
+        secondaryTechUid ? findTechName(secondaryTechUid) || "Unnamed Technician" : null;
+      const secondaryHelperName =
+        secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
+
+      const nextCrew: TripCrew = {
+        primaryTechUid: editTripPrimaryTechUid || null,
+        primaryTechName: editTripPrimaryTechUid ? primaryName : null,
+        helperUid: helperUid || null,
+        helperName,
+        secondaryTechUid: secondaryTechUid || null,
+        secondaryTechName,
+        secondaryHelperUid: secondaryHelperUid || null,
+        secondaryHelperName,
+      };
+
       await updateDoc(doc(db, "trips", trip.id), {
         date: editTripDate,
         timeWindow: editTripTimeWindow,
         startTime: editTripStartTime,
         endTime: editTripEndTime,
+        crew: nextCrew,
+        crewConfirmed: null,
         notes: editTripNotes.trim() || null,
         updatedAt: now,
         updatedByUid: myUid || null,
+      });
+
+      const helperIds = helperUid ? [helperUid] : [];
+      const helperNames = helperName ? [helperName] : [];
+
+      const assignedTechnicianIds = [editTripPrimaryTechUid];
+      if (secondaryTechUid && secondaryTechUid !== editTripPrimaryTechUid) {
+        assignedTechnicianIds.push(secondaryTechUid);
+      }
+      if (helperUid && !assignedTechnicianIds.includes(helperUid)) {
+        assignedTechnicianIds.push(helperUid);
+      }
+      if (secondaryHelperUid && !assignedTechnicianIds.includes(secondaryHelperUid)) {
+        assignedTechnicianIds.push(secondaryHelperUid);
+      }
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        assignedTechnicianId: editTripPrimaryTechUid,
+        assignedTechnicianName: primaryName,
+        primaryTechnicianId: editTripPrimaryTechUid,
+        secondaryTechnicianId: secondaryTechUid || null,
+        secondaryTechnicianName: secondaryTechUid ? secondaryTechName : null,
+        helperIds: helperIds.length ? helperIds : null,
+        helperNames: helperNames.length ? helperNames : null,
+        assignedTechnicianIds,
+        updatedAt: now,
       });
 
       setTrips((prev) =>
@@ -1868,12 +1969,31 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 timeWindow: editTripTimeWindow,
                 startTime: editTripStartTime,
                 endTime: editTripEndTime,
+                crew: nextCrew,
+                crewConfirmed: null,
                 notes: editTripNotes.trim() || null,
                 updatedAt: now,
                 updatedByUid: myUid || null,
               }
             : t
         )
+      );
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              assignedTechnicianId: editTripPrimaryTechUid,
+              assignedTechnicianName: primaryName,
+              primaryTechnicianId: editTripPrimaryTechUid,
+              secondaryTechnicianId: secondaryTechUid || undefined,
+              secondaryTechnicianName: secondaryTechName || undefined,
+              helperIds: helperIds.length ? helperIds : undefined,
+              helperNames: helperNames.length ? helperNames : undefined,
+              assignedTechnicianIds,
+              updatedAt: now,
+            }
+          : prev
       );
 
       setEditTripId(null);
@@ -2169,11 +2289,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                       {ticket.customerDisplayName || "Customer"}
                     </Typography>
 
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{ mt: 0.5 }}
-                    >
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                       {ticket.issueSummary || "Service Ticket"}
                     </Typography>
 
@@ -2549,6 +2665,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                       </Box>
 
                       <TextField
+                        size="small"
+                        label="Issue Summary"
+                        value={ticketIssueSummaryEdit}
+                        onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
+                      />
+
+                      <TextField
                         multiline
                         minRows={4}
                         label="Issue Details"
@@ -2572,6 +2695,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     <Stack spacing={1}>
                       <Typography variant="body1">
                         <strong>Status:</strong> {formatTicketStatus(ticket.status)}
+                      </Typography>
+                      <Typography variant="body1">
+                        <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
                       </Typography>
                       <Typography variant="body1">
                         <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
@@ -3301,6 +3427,77 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     onChange={(e) => setEditTripEndTime(e.target.value)}
                     InputLabelProps={{ shrink: true }}
                   />
+
+                  <TextField
+                    select
+                    label="Primary Technician"
+                    value={editTripPrimaryTechUid}
+                    onChange={(e) => setEditTripPrimaryTechUid(e.target.value)}
+                  >
+                    <MenuItem value="">Select a technician…</MenuItem>
+                    {technicians.map((tech) => (
+                      <MenuItem key={tech.uid} value={tech.uid}>
+                        {tech.displayName}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+
+                  <TextField
+                    select
+                    label="Secondary Technician (optional)"
+                    value={editTripSecondaryTechUid}
+                    onChange={(e) => setEditTripSecondaryTechUid(e.target.value)}
+                  >
+                    <MenuItem value="">— None —</MenuItem>
+                    {technicians
+                      .filter((tech) => tech.uid !== editTripPrimaryTechUid)
+                      .map((tech) => (
+                        <MenuItem key={tech.uid} value={tech.uid}>
+                          {tech.displayName}
+                        </MenuItem>
+                      ))}
+                  </TextField>
+
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={editTripUseDefaultHelper}
+                        onChange={(e) => setEditTripUseDefaultHelper(e.target.checked)}
+                      />
+                    }
+                    label="Use default helper pairing"
+                  />
+
+                  <TextField
+                    select
+                    label="Helper / Apprentice (optional)"
+                    value={editTripHelperUid}
+                    onChange={(e) => {
+                      setEditTripUseDefaultHelper(false);
+                      setEditTripHelperUid(e.target.value);
+                    }}
+                  >
+                    <MenuItem value="">— None —</MenuItem>
+                    {helperCandidates.map((helper) => (
+                      <MenuItem key={helper.uid} value={helper.uid}>
+                        {helper.name} ({helper.laborRole})
+                      </MenuItem>
+                    ))}
+                  </TextField>
+
+                  <TextField
+                    select
+                    label="Secondary Helper (optional)"
+                    value={editTripSecondaryHelperUid}
+                    onChange={(e) => setEditTripSecondaryHelperUid(e.target.value)}
+                  >
+                    <MenuItem value="">— None —</MenuItem>
+                    {helperCandidates.map((helper) => (
+                      <MenuItem key={helper.uid} value={helper.uid}>
+                        {helper.name} ({helper.laborRole})
+                      </MenuItem>
+                    ))}
+                  </TextField>
 
                   <TextField
                     multiline

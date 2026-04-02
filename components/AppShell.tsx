@@ -1,4 +1,3 @@
-// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -902,9 +901,64 @@ export default function AppShell({
     setShowMondayReminder(false);
   }
 
+  const [followUpTicketIds, setFollowUpTicketIds] = useState<string[]>([]);
+  const [readyToBillTicketIds, setReadyToBillTicketIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!showDashboard) {
+      setFollowUpTicketIds([]);
+      setReadyToBillTicketIds([]);
+      return;
+    }
+
+    const followUpQuery = query(
+      collection(db, "serviceTickets"),
+      where("status", "==", "follow_up"),
+      limit(100)
+    );
+
+    const readyToBillQuery = query(
+      collection(db, "serviceTickets"),
+      where("billing.status", "==", "ready_to_bill"),
+      limit(100)
+    );
+
+    const unsubFollowUp = onSnapshot(
+      followUpQuery,
+      (snap) => {
+        setFollowUpTicketIds(snap.docs.map((d) => d.id));
+      },
+      () => setFollowUpTicketIds([])
+    );
+
+    const unsubReady = onSnapshot(
+      readyToBillQuery,
+      (snap) => {
+        setReadyToBillTicketIds(snap.docs.map((d) => d.id));
+      },
+      () => setReadyToBillTicketIds([])
+    );
+
+    return () => {
+      unsubFollowUp();
+      unsubReady();
+    };
+  }, [showDashboard]);
+
+  const dashboardAttentionCount = useMemo(() => {
+    return new Set([...followUpTicketIds, ...readyToBillTicketIds]).size;
+  }, [followUpTicketIds, readyToBillTicketIds]);
+
   const topNav: NavEntry[] = [
     ...(showDashboard
-      ? [{ href: "/dashboard", label: "Dashboard", icon: <DashboardRoundedIcon /> }]
+      ? [
+          {
+            href: "/dashboard",
+            label: "Dashboard",
+            icon: <DashboardRoundedIcon />,
+            badgeCount: dashboardAttentionCount,
+          },
+        ]
       : []),
     ...(showDispatch
       ? [{ href: "/dispatch", label: "Dispatcher Board", icon: <MapRoundedIcon /> }]
