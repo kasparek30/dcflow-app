@@ -1,4 +1,3 @@
-// app/technician/my-day/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -94,6 +93,7 @@ type Trip = {
   confirmedBy?: Record<string, TripConfirmedEntry> | null;
   completedAt?: string | null;
   completedByUid?: string | null;
+  timerState?: string | null;
 };
 
 type DailyCrewOverride = {
@@ -126,6 +126,9 @@ type MyDayItem = {
   projectId?: string | null;
   projectStageKey?: string | null;
   confirmed?: TripConfirmedEntry | null;
+  timerState?: string;
+  isActive?: boolean;
+  isPaused?: boolean;
 };
 
 type EmployeeOption = {
@@ -308,6 +311,16 @@ function buildAddressLine(t: ServiceTicketLite) {
 
 function normalizeStatus(s?: string) {
   return (s || "").toLowerCase().trim();
+}
+
+function normalizeTimerState(timerState?: string | null, status?: string) {
+  const ts = String(timerState || "").toLowerCase().trim();
+  if (ts === "running" || ts === "paused" || ts === "complete") return ts;
+
+  const s = normalizeStatus(status);
+  if (s === "in_progress") return "running";
+  if (s === "complete" || s === "completed" || s === "cancelled") return "complete";
+  return "not_started";
 }
 
 function timeSortKey(startTime?: string, window?: string) {
@@ -729,6 +742,7 @@ export default function TechnicianMyDayPage() {
               confirmedBy: (d.confirmedBy ?? null) as any,
               completedAt: d.completedAt ?? null,
               completedByUid: d.completedByUid ?? null,
+              timerState: d.timerState ?? null,
             };
           });
 
@@ -830,6 +844,7 @@ export default function TechnicianMyDayPage() {
             confirmedBy: (d.confirmedBy ?? null) as any,
             completedAt: d.completedAt ?? null,
             completedByUid: d.completedByUid ?? null,
+            timerState: d.timerState ?? null,
           };
         });
 
@@ -985,11 +1000,11 @@ export default function TechnicianMyDayPage() {
         return d < todayIso;
       });
 
-      out.sort((a, b) => {
-        const aKey = `${a.date || ""}_${timeSortKey(a.startTime, a.timeWindow)}_${a.id}`;
-        const bKey = `${b.date || ""}_${timeSortKey(b.startTime, b.timeWindow)}_${b.id}`;
-        return bKey.localeCompare(aKey);
-      });
+    out.sort((a, b) => {
+      const aKey = `${a.date || ""}_${timeSortKey(a.startTime, a.timeWindow)}_${a.id}`;
+      const bKey = `${b.date || ""}_${timeSortKey(b.startTime, b.timeWindow)}_${b.id}`;
+      return bKey.localeCompare(aKey);
+    });
 
     return out.slice(0, 20);
   }, [recentTrips, whoUid, todayIso]);
@@ -1012,6 +1027,9 @@ export default function TechnicianMyDayPage() {
             : windowText;
 
         const status = normalizeStatus(t.status) || "planned";
+        const timerState = normalizeTimerState(t.timerState, t.status);
+        const isPaused = status === "in_progress" && timerState === "paused";
+        const isActive = status === "in_progress";
 
         const serviceTicketId = t.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
@@ -1043,9 +1061,9 @@ export default function TechnicianMyDayPage() {
             ? (safeStr(followUpByTicketId[serviceTicketId]).trim() || "")
             : "";
 
-        const inProgBoost = status === "in_progress" ? "0" : "1";
+        const activeBoost = isActive ? (isPaused ? "1" : "0") : "2";
         const tKey = timeSortKey(t.startTime, t.timeWindow);
-        const sortKey = `${inProgBoost}_${tKey}_${t.id}`;
+        const sortKey = `${activeBoost}_${tKey}_${t.id}`;
 
         const confirmed = whoUid && t.confirmedBy ? ((t.confirmedBy as any)[whoUid] as any) : null;
 
@@ -1070,6 +1088,9 @@ export default function TechnicianMyDayPage() {
           projectId: t.link?.projectId ?? null,
           projectStageKey: t.link?.projectStageKey ?? null,
           confirmed: confirmed || null,
+          timerState,
+          isActive,
+          isPaused,
         };
       });
 
@@ -1558,174 +1579,229 @@ export default function TechnicianMyDayPage() {
                       const isService = String(item.tripType || "").toLowerCase() === "service";
                       const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
 
-                      return (
-                        <SharedTripCard
-                          key={item.id}
-                          title={item.headerText}
-                          status={item.status}
-                          tripType={item.tripType}
-                          subtitle={item.subLine}
-                          crewChips={
-                            <Stack
-                              direction="row"
-                              spacing={0.6}
-                              flexWrap="wrap"
-                              useFlexGap
-                              sx={{ rowGap: 0.6 }}
-                            >
-                              <Chip
-                                size="small"
-                                icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
-                                label={item.techText}
-                                variant="outlined"
-                                sx={{ borderRadius: 1.5 }}
-                              />
-                              {item.helperText ? (
-                                <Chip
-                                  size="small"
-                                  label={item.helperText}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 1.5 }}
-                                />
-                              ) : null}
-                              {item.secondaryTechText ? (
-                                <Chip
-                                  size="small"
-                                  label={item.secondaryTechText}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 1.5 }}
-                                />
-                              ) : null}
-                              {item.secondaryHelperText ? (
-                                <Chip
-                                  size="small"
-                                  label={item.secondaryHelperText}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 1.5 }}
-                                />
-                              ) : null}
-                            </Stack>
-                          }
-                          detailBlock={
-                            item.issueDetailsText ? (
-                              <Box
-                                sx={{
-                                  px: 1.25,
-                                  py: 1,
-                                  borderRadius: 2,
-                                  border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
-                                  backgroundColor: alpha(theme.palette.primary.main, 0.06),
-                                }}
-                              >
-                                <Stack direction="row" spacing={1} alignItems="flex-start">
-                                  <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
-                                  <Box sx={{ minWidth: 0 }}>
-                                    <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
-                                      Issue
-                                    </Typography>
-                                    <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
-                                      {item.issueDetailsText}
-                                    </Typography>
-                                  </Box>
-                                </Stack>
-                              </Box>
-                            ) : undefined
-                          }
-                          followUpBlock={
-                            item.followUpText ? (
-                              <Box
-                                sx={{
-                                  px: 1.25,
-                                  py: 1,
-                                  borderRadius: 2,
-                                  border: "1px solid #FFE2A8",
-                                  backgroundColor: "#FFF7E6",
-                                }}
-                              >
-                                <Stack direction="row" spacing={1} alignItems="flex-start">
-                                  <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
-                                  <Box sx={{ minWidth: 0 }}>
-                                    <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
-                                      Follow-up notes
-                                    </Typography>
-                                    <Typography
-                                      variant="body2"
-                                      sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
-                                    >
-                                      {item.followUpText}
-                                    </Typography>
-                                  </Box>
-                                </Stack>
-                              </Box>
-                            ) : undefined
-                          }
-                          trailingContent={
-                            isProject && item.confirmed ? (
-                              <Chip
-                                size="small"
-                                icon={<TaskAltRoundedIcon sx={{ fontSize: 16 }} />}
-                                label={`Confirmed (${Number(item.confirmed.hours).toFixed(2)}h)`}
-                                color="success"
-                                variant="outlined"
-                                sx={{
-                                  height: 24,
-                                  borderRadius: 1.5,
-                                  fontSize: 11,
-                                  fontWeight: 600,
-                                }}
-                              />
-                            ) : undefined
-                          }
-                          footer={
-                            isProject ? (
-                              !item.confirmed ? (
-                                <Stack
-                                  direction={{ xs: "column", sm: "row" }}
-                                  spacing={1.25}
-                                  alignItems={{ xs: "stretch", sm: "center" }}
-                                  justifyContent="space-between"
-                                >
-                                  <Box>
-                                    <Typography variant="body2" color="text.secondary">
-                                      Confirm your project hours for payroll.
-                                    </Typography>
-                                    {!canConfirm ? (
-                                      <Typography variant="caption" color="text.secondary">
-                                        Only the employee or Admin/Dispatcher/Manager can confirm project hours.
-                                      </Typography>
-                                    ) : null}
-                                  </Box>
-
-                                  <Button
-                                    variant="contained"
-                                    color="success"
-                                    startIcon={<TaskAltRoundedIcon />}
-                                    disabled={!canConfirm}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      if (!canConfirm) return;
-                                      openConfirmModal(item);
-                                    }}
-                                  >
-                                    Confirm Trip
-                                  </Button>
-                                </Stack>
-                              ) : (
-                                <Typography variant="body2" color="text.secondary">
-                                  Confirmed time will appear in <strong>Time Entries</strong> for payroll.
-                                </Typography>
-                              )
-                            ) : isService ? (
-                              <Typography variant="caption" color="text.secondary">
-                                Open the service ticket for full details and workflow actions.
-                              </Typography>
-                            ) : undefined
-                          }
-                          onClick={() => {
-                            window.location.href = item.href;
+                      const activeBadge = item.isActive ? (
+                        <Chip
+                          size="small"
+                          color={item.isPaused ? "warning" : "success"}
+                          variant="outlined"
+                          label={item.isPaused ? "Paused Trip" : "Active Trip"}
+                          sx={{
+                            height: 24,
+                            borderRadius: 1.5,
+                            fontSize: 11,
+                            fontWeight: 700,
                           }}
                         />
+                      ) : null;
+
+                      const confirmedBadge =
+                        isProject && item.confirmed ? (
+                          <Chip
+                            size="small"
+                            icon={<TaskAltRoundedIcon sx={{ fontSize: 16 }} />}
+                            label={`Confirmed (${Number(item.confirmed.hours).toFixed(2)}h)`}
+                            color="success"
+                            variant="outlined"
+                            sx={{
+                              height: 24,
+                              borderRadius: 1.5,
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          />
+                        ) : null;
+
+                      return (
+                        <Box
+                          key={item.id}
+                          sx={
+                            item.isActive
+                              ? item.isPaused
+                                ? {
+                                    p: 0.5,
+                                    borderRadius: 4,
+                                    border: `1px solid ${alpha(theme.palette.warning.main, 0.38)}`,
+                                    background: `linear-gradient(180deg, ${alpha(
+                                      theme.palette.warning.light,
+                                      0.16
+                                    )} 0%, ${alpha(theme.palette.warning.main, 0.08)} 100%)`,
+                                    boxShadow: `0 14px 28px ${alpha(theme.palette.warning.main, 0.08)}`,
+                                  }
+                                : {
+                                    p: 0.5,
+                                    borderRadius: 4,
+                                    border: `1px solid ${alpha(theme.palette.success.main, 0.32)}`,
+                                    background: `linear-gradient(180deg, ${alpha(
+                                      theme.palette.success.light,
+                                      0.15
+                                    )} 0%, ${alpha(theme.palette.success.main, 0.07)} 100%)`,
+                                    boxShadow: `0 16px 30px ${alpha(theme.palette.success.main, 0.08)}`,
+                                  }
+                              : undefined
+                          }
+                        >
+                          <SharedTripCard
+                            title={item.headerText}
+                            status={item.status}
+                            tripType={item.tripType}
+                            subtitle={item.subLine}
+                            crewChips={
+                              <Stack
+                                direction="row"
+                                spacing={0.6}
+                                flexWrap="wrap"
+                                useFlexGap
+                                sx={{ rowGap: 0.6 }}
+                              >
+                                <Chip
+                                  size="small"
+                                  icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
+                                  label={item.techText}
+                                  variant="outlined"
+                                  sx={{ borderRadius: 1.5 }}
+                                />
+                                {item.helperText ? (
+                                  <Chip
+                                    size="small"
+                                    label={item.helperText}
+                                    variant="outlined"
+                                    sx={{ borderRadius: 1.5 }}
+                                  />
+                                ) : null}
+                                {item.secondaryTechText ? (
+                                  <Chip
+                                    size="small"
+                                    label={item.secondaryTechText}
+                                    variant="outlined"
+                                    sx={{ borderRadius: 1.5 }}
+                                  />
+                                ) : null}
+                                {item.secondaryHelperText ? (
+                                  <Chip
+                                    size="small"
+                                    label={item.secondaryHelperText}
+                                    variant="outlined"
+                                    sx={{ borderRadius: 1.5 }}
+                                  />
+                                ) : null}
+                              </Stack>
+                            }
+                            detailBlock={
+                              item.issueDetailsText ? (
+                                <Box
+                                  sx={{
+                                    px: 1.25,
+                                    py: 1,
+                                    borderRadius: 2,
+                                    border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
+                                    backgroundColor: alpha(theme.palette.primary.main, 0.06),
+                                  }}
+                                >
+                                  <Stack direction="row" spacing={1} alignItems="flex-start">
+                                    <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
+                                    <Box sx={{ minWidth: 0 }}>
+                                      <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
+                                        Issue
+                                      </Typography>
+                                      <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
+                                        {item.issueDetailsText}
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+                                </Box>
+                              ) : undefined
+                            }
+                            followUpBlock={
+                              item.followUpText ? (
+                                <Box
+                                  sx={{
+                                    px: 1.25,
+                                    py: 1,
+                                    borderRadius: 2,
+                                    border: "1px solid #FFE2A8",
+                                    backgroundColor: "#FFF7E6",
+                                  }}
+                                >
+                                  <Stack direction="row" spacing={1} alignItems="flex-start">
+                                    <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
+                                    <Box sx={{ minWidth: 0 }}>
+                                      <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
+                                        Follow-up notes
+                                      </Typography>
+                                      <Typography
+                                        variant="body2"
+                                        sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
+                                      >
+                                        {item.followUpText}
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+                                </Box>
+                              ) : undefined
+                            }
+                            trailingContent={
+                              activeBadge || confirmedBadge ? (
+                                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                                  {activeBadge}
+                                  {confirmedBadge}
+                                </Stack>
+                              ) : undefined
+                            }
+                            footer={
+                              isProject ? (
+                                !item.confirmed ? (
+                                  <Stack
+                                    direction={{ xs: "column", sm: "row" }}
+                                    spacing={1.25}
+                                    alignItems={{ xs: "stretch", sm: "center" }}
+                                    justifyContent="space-between"
+                                  >
+                                    <Box>
+                                      <Typography variant="body2" color="text.secondary">
+                                        Confirm your project hours for payroll.
+                                      </Typography>
+                                      {!canConfirm ? (
+                                        <Typography variant="caption" color="text.secondary">
+                                          Only the employee or Admin/Dispatcher/Manager can confirm project hours.
+                                        </Typography>
+                                      ) : null}
+                                    </Box>
+
+                                    <Button
+                                      variant="contained"
+                                      color="success"
+                                      startIcon={<TaskAltRoundedIcon />}
+                                      disabled={!canConfirm}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (!canConfirm) return;
+                                        openConfirmModal(item);
+                                      }}
+                                    >
+                                      Confirm Trip
+                                    </Button>
+                                  </Stack>
+                                ) : (
+                                  <Typography variant="body2" color="text.secondary">
+                                    Confirmed time will appear in <strong>Time Entries</strong> for payroll.
+                                  </Typography>
+                                )
+                              ) : isService ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  {item.isActive
+                                    ? item.isPaused
+                                      ? "Paused trip — open the service ticket to resume or finish."
+                                      : "Active trip — open the service ticket for quick actions."
+                                    : "Open the service ticket for full details and workflow actions."}
+                                </Typography>
+                              ) : undefined
+                            }
+                            onClick={() => {
+                              window.location.href = item.href;
+                            }}
+                          />
+                        </Box>
                       );
                     })}
                   </Stack>
