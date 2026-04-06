@@ -286,13 +286,20 @@ function minutesBetweenIso(aIso: string, bIso: string) {
   return Math.max(0, Math.round((b - a) / 60000));
 }
 
-function sumPausedMinutes(blocks?: PauseBlock[]) {
+function sumPausedMinutes(blocks?: PauseBlock[], openPauseEndIso?: string) {
   if (!Array.isArray(blocks)) return 0;
+
   let total = 0;
+
   for (const block of blocks) {
-    if (!block?.startAt || !block?.endAt) continue;
-    total += minutesBetweenIso(block.startAt, block.endAt);
+    if (!block?.startAt) continue;
+
+    const effectiveEnd = block.endAt || openPauseEndIso;
+    if (!effectiveEnd) continue;
+
+    total += minutesBetweenIso(block.startAt, effectiveEnd);
   }
+
   return total;
 }
 
@@ -1685,7 +1692,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
       const startAt = trip.actualStartAt || now;
       const gross = minutesBetweenIso(startAt, now);
-      const paused = sumPausedMinutes(pauseBlocks);
+      const paused = sumPausedMinutes(pauseBlocks, now);
       const actualMinutes = Math.max(0, gross - paused);
 
       if (!trip.date) {
@@ -2323,7 +2330,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                               Math.max(
                                 0,
                                 (() => {
-                                  const paused = sumPausedMinutes(mobileFinishTrip.pauseBlocks);
+                                  const paused = sumPausedMinutes(
+                                    mobileFinishTrip.pauseBlocks,
+                                    liveNowIso
+                                  );
                                   const gross =
                                     mobileFinishTrip.actualStartAt && !mobileFinishTrip.actualEndAt
                                       ? minutesBetweenIso(mobileFinishTrip.actualStartAt, liveNowIso)
@@ -2736,7 +2746,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                         trip.timerState ||
                           (normalizeTripStatus(trip.status) === "in_progress" ? "running" : "not_started")
                       );
-                      const pausedMinutes = sumPausedMinutes(trip.pauseBlocks);
+                      const pausedMinutes = sumPausedMinutes(trip.pauseBlocks, liveNowIso);
                       const grossMinutes =
                         trip.actualStartAt && !trip.actualEndAt
                           ? minutesBetweenIso(trip.actualStartAt, liveNowIso)

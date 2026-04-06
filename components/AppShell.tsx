@@ -1,3 +1,4 @@
+// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -148,15 +149,24 @@ function minutesBetweenMs(aMs: number, bMs: number) {
   return Math.max(0, Math.round((bMs - aMs) / 60000));
 }
 
-function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null) {
+function sumPausedMinutes(
+  pauseBlocks?: PauseBlock[] | null,
+  referenceNowMs: number = Date.now()
+) {
   if (!Array.isArray(pauseBlocks) || pauseBlocks.length === 0) return 0;
+
   let total = 0;
+
   for (const p of pauseBlocks) {
     const s = parseIsoMs(p?.startAt || null);
-    const e = parseIsoMs(p?.endAt || null);
+    const e = p?.endAt ? parseIsoMs(p.endAt) : referenceNowMs;
+
     if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+    if (e <= s) continue;
+
     total += minutesBetweenMs(s, e);
   }
+
   return total;
 }
 
@@ -628,7 +638,7 @@ export default function AppShell({
     if (!activeTrip) return 0;
     const startMs = parseIsoMs(activeTrip.actualStartAt || null);
     if (!Number.isFinite(startMs)) return 0;
-    const pausedMins = sumPausedMinutes(activeTrip.pauseBlocks || null);
+    const pausedMins = sumPausedMinutes(activeTrip.pauseBlocks || null, nowMs);
     const grossMins = minutesBetweenMs(startMs, nowMs);
     return Math.max(0, grossMins - pausedMins);
   }, [activeTrip, nowMs]);
