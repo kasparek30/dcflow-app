@@ -53,6 +53,28 @@ type PayrollDay = {
   isoDate: string;
 };
 
+type ServiceTicketMini = {
+  id: string;
+  customerDisplayName: string;
+  issueSummary: string;
+};
+
+type ProjectMini = {
+  id: string;
+  projectName: string;
+};
+
+type CompanyHoliday = {
+  id: string;
+  date: string;
+  name: string;
+  active: boolean;
+};
+
+type DisplayTimeEntry = TimeEntry & {
+  synthetic?: boolean;
+};
+
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -145,6 +167,50 @@ function isWorkedHoursCategory(category: TimeEntry["category"]) {
     c === "service_ticket" ||
     c === "project_stage"
   );
+}
+
+function normalizeCategory(raw: unknown) {
+  const c = safeTrim(raw).toLowerCase();
+
+  if (c === "service_ticket") return "service";
+  if (c === "project_stage") return "project";
+
+  if (c === "service") return "service";
+  if (c === "project") return "project";
+  if (c === "meeting") return "meeting";
+  if (c === "shop") return "shop";
+  if (c === "office") return "office";
+  if (c === "pto") return "pto";
+  if (c === "holiday") return "holiday";
+  if (c === "manual_other") return "manual_other";
+
+  return c || "other";
+}
+
+function getEntryKind(entry: TimeEntry | DisplayTimeEntry) {
+  const category = normalizeCategory((entry as any).category);
+  const payType = safeTrim((entry as any).payType).toLowerCase();
+
+  if (category === "holiday" || payType === "holiday") return "holiday";
+  if (category === "pto" || payType === "pto") return "pto";
+  return "worked";
+}
+
+function isHolidayEligibleUser(user: AppUser | null | undefined) {
+  if (!user) return false;
+
+  if (typeof user.holidayEligible === "boolean") {
+    return user.holidayEligible;
+  }
+
+  const role = safeTrim(user.role).toLowerCase();
+  return role === "technician" || role === "helper" || role === "apprentice";
+}
+
+function getDefaultHolidayHours(user: AppUser | null | undefined) {
+  const n = Number((user as any)?.defaultDailyHolidayHours);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 8;
 }
 
 function nowIso() {
@@ -242,17 +308,6 @@ function getCategoryChipColor(category: string) {
   }
 }
 
-type ServiceTicketMini = {
-  id: string;
-  customerDisplayName: string;
-  issueSummary: string;
-};
-
-type ProjectMini = {
-  id: string;
-  projectName: string;
-};
-
 export default function WeeklyTimesheetPage() {
   const { appUser } = useAuthContext();
   const theme = useTheme();
@@ -263,6 +318,7 @@ export default function WeeklyTimesheetPage() {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [timesheet, setTimesheet] = useState<WeeklyTimesheet | null>(null);
+  const [holidayByDate, setHolidayByDate] = useState<Record<string, CompanyHoliday>>({});
 
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
@@ -368,6 +424,44 @@ export default function WeeklyTimesheetPage() {
   }, [users, selectedEmployeeId]);
 
   useEffect(() => {
+    async function loadHolidays() {
+      if (!weekStart || !weekEnd) {
+        setHolidayByDate({});
+        return;
+      }
+
+      try {
+        const snap = await getDocs(collection(db, "companyHolidays"));
+        const map: Record<string, CompanyHoliday> = {};
+
+        for (const ds of snap.docs) {
+          const d = ds.data() as any;
+
+          const active = typeof d.active === "boolean" ? d.active : true;
+          if (!active) continue;
+
+          const rawDate = String(d.date ?? d.holidayDate ?? d.holiday_date ?? "").trim();
+          if (!rawDate || !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) continue;
+          if (rawDate < weekStart || rawDate > weekEnd) continue;
+
+          map[rawDate] = {
+            id: ds.id,
+            date: rawDate,
+            name: String(d.name ?? d.title ?? "Holiday"),
+            active: true,
+          };
+        }
+
+        setHolidayByDate(map);
+      } catch {
+        setHolidayByDate({});
+      }
+    }
+
+    loadHolidays();
+  }, [weekStart, weekEnd]);
+
+  useEffect(() => {
     async function loadTimesheetDoc() {
       setError("");
       setSaveMsg("");
@@ -435,7 +529,7 @@ export default function WeeklyTimesheetPage() {
     loadTimesheetDoc();
   }, [selectedEmployeeId, weekStart]);
 
-  const weekEntries = useMemo(() => {
+  const rawWeekEntries = useMemo(() => {
     if (!selectedEmployeeId) return [];
     return entries
       .filter(
@@ -450,6 +544,69 @@ export default function WeeklyTimesheetPage() {
         return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
       });
   }, [entries, selectedEmployeeId, weekStart, weekEnd]);
+
+  const syntheticHolidayEntries = useMemo<DisplayTimeEntry[]>(() => {
+    if (!selectedEmployee) return [];
+    if (!isHolidayEligibleUser(selectedEmployee)) return [];
+
+    const out: DisplayTimeEntry[] = [];
+
+    for (const day of payrollWeekDays) {
+      const holiday = holidayByDate[day.isoDate];
+      if (!holiday) continue;
+
+      const alreadyHasHolidayEntry = rawWeekEntries.some((entry) => {
+        return (
+          entry.employeeId === selectedEmployee.uid &&
+          entry.entryDate === day.isoDate &&
+          getEntryKind(entry) === "holiday"
+        );
+      });
+
+      if (alreadyHasHolidayEntry) continue;
+
+      out.push({
+        id: `synthetic_holiday_${selectedEmployee.uid}_${day.isoDate}`,
+        employeeId: selectedEmployee.uid,
+        employeeName: selectedEmployee.displayName,
+        employeeRole: selectedEmployee.role,
+        laborRoleType: selectedEmployee.laborRoleType ?? undefined,
+        entryDate: day.isoDate,
+        weekStartDate: weekStart,
+        weekEndDate: weekEnd,
+        category: "holiday" as TimeEntry["category"],
+        hours: getDefaultHolidayHours(selectedEmployee),
+        payType: "holiday",
+        billable: false,
+        source: "system_generated_holiday",
+        serviceTicketId: undefined,
+        projectId: undefined,
+        projectStageKey: undefined,
+        linkedTechnicianId: undefined,
+        linkedTechnicianName: undefined,
+        notes: holiday.name || "Company Holiday",
+        timesheetId: undefined,
+        entryStatus: "draft",
+        createdAt: undefined,
+        updatedAt: undefined,
+        synthetic: true,
+      });
+    }
+
+    return out;
+  }, [holidayByDate, payrollWeekDays, rawWeekEntries, selectedEmployee, weekEnd, weekStart]);
+
+  const weekEntries = useMemo<DisplayTimeEntry[]>(() => {
+    return [...rawWeekEntries, ...syntheticHolidayEntries].sort((a, b) => {
+      const byDate = a.entryDate.localeCompare(b.entryDate);
+      if (byDate !== 0) return byDate;
+      return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
+    });
+  }, [rawWeekEntries, syntheticHolidayEntries]);
+
+  const persistedTimeEntryIds = useMemo(() => {
+    return weekEntries.filter((entry) => !entry.synthetic).map((entry) => entry.id);
+  }, [weekEntries]);
 
   useEffect(() => {
     async function hydrate() {
@@ -524,7 +681,7 @@ export default function WeeklyTimesheetPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekEntries]);
 
-  function renderTitleAndSubtitle(entry: TimeEntry) {
+  function renderTitleAndSubtitle(entry: DisplayTimeEntry) {
     const cat = safeTrim((entry as any).category).toLowerCase();
 
     if (cat === "service" || cat === "service_ticket") {
@@ -550,14 +707,46 @@ export default function WeeklyTimesheetPage() {
       return { title, subtitle };
     }
 
+    if (cat === "pto") {
+      return {
+        title: "Paid Time Off",
+        subtitle:
+          truncateLine(firstMeaningfulLine((entry as any).notes), 60) ||
+          "Approved PTO for this day",
+      };
+    }
+
+    if (cat === "holiday") {
+      return {
+        title: "Company Holiday",
+        subtitle:
+          truncateLine(firstMeaningfulLine((entry as any).notes), 60) ||
+          "Paid holiday time",
+      };
+    }
+
+    if (cat === "shop") {
+      return {
+        title: "Shop Time",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 60),
+      };
+    }
+
+    if (cat === "office") {
+      return {
+        title: "Office Time",
+        subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 60),
+      };
+    }
+
     return {
       title: safeTrim((entry as any).category) || "Entry",
-      subtitle: "",
+      subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 60),
     };
   }
 
   const entriesByDay = useMemo(() => {
-    const result: Record<string, TimeEntry[]> = {};
+    const result: Record<string, DisplayTimeEntry[]> = {};
     for (const day of payrollWeekDays) result[day.isoDate] = [];
     for (const entry of weekEntries) {
       if (!result[entry.entryDate]) continue;
@@ -570,7 +759,7 @@ export default function WeeklyTimesheetPage() {
     const result: Record<string, number> = {};
     for (const day of payrollWeekDays) {
       result[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce(
-        (sum, entry) => sum + entry.hours,
+        (sum, entry) => sum + Number(entry.hours || 0),
         0
       );
     }
@@ -585,12 +774,17 @@ export default function WeeklyTimesheetPage() {
     let nonBillableHours = 0;
 
     for (const entry of weekEntries) {
-      const cat = String(entry.category || "").toLowerCase();
-      if (isWorkedHoursCategory(entry.category)) workedHours += entry.hours;
-      if (cat === "pto") ptoHours += entry.hours;
-      if (cat === "holiday") holidayHours += entry.hours;
-      if (entry.billable) billableHours += entry.hours;
-      else nonBillableHours += entry.hours;
+      const kind = getEntryKind(entry);
+
+      if (kind === "worked" && isWorkedHoursCategory(entry.category)) {
+        workedHours += Number(entry.hours || 0);
+      }
+
+      if (kind === "pto") ptoHours += Number(entry.hours || 0);
+      if (kind === "holiday") holidayHours += Number(entry.hours || 0);
+
+      if (entry.billable) billableHours += Number(entry.hours || 0);
+      else nonBillableHours += Number(entry.hours || 0);
     }
 
     const regularHours = Math.min(workedHours, 40);
@@ -647,7 +841,7 @@ export default function WeeklyTimesheetPage() {
         employeeRole: selectedEmployee.role,
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
-        timeEntryIds: weekEntries.map((entry) => entry.id),
+        timeEntryIds: persistedTimeEntryIds,
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
@@ -683,7 +877,7 @@ export default function WeeklyTimesheetPage() {
         employeeRole: selectedEmployee.role,
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
-        timeEntryIds: weekEntries.map((entry) => entry.id),
+        timeEntryIds: persistedTimeEntryIds,
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
@@ -733,7 +927,7 @@ export default function WeeklyTimesheetPage() {
           employeeRole: selectedEmployee.role,
           weekStartDate: weekStart,
           weekEndDate: weekEnd,
-          timeEntryIds: weekEntries.map((entry) => entry.id),
+          timeEntryIds: persistedTimeEntryIds,
           totalHours: computedTotals.totalHours,
           regularHours: computedTotals.regularHours,
           overtimeHours: computedTotals.overtimeHours,
@@ -758,7 +952,7 @@ export default function WeeklyTimesheetPage() {
         employeeRole: selectedEmployee.role,
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
-        timeEntryIds: weekEntries.map((entry) => entry.id),
+        timeEntryIds: persistedTimeEntryIds,
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
@@ -1155,6 +1349,15 @@ export default function WeeklyTimesheetPage() {
                                             variant="outlined"
                                             sx={{ fontWeight: 600 }}
                                           />
+                                          {entry.synthetic ? (
+                                            <Chip
+                                              size="small"
+                                              label="Calendar holiday"
+                                              color="success"
+                                              variant="outlined"
+                                              sx={{ fontWeight: 600 }}
+                                            />
+                                          ) : null}
                                         </Stack>
                                       </Stack>
                                     </Stack>
