@@ -1,3 +1,4 @@
+// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -1304,20 +1305,35 @@ export default function AppShell({
         </Box>
 
         <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 2, pb: 1.5 }}>
-          <Box
+          <IconButton
+            onClick={async (e) => {
+              e.stopPropagation();
+              if (!canQuickAct || pillActionBusy) return;
+              if (isPaused) {
+                await handleQuickResume();
+              } else {
+                await handleQuickPause();
+              }
+            }}
+            disabled={!canQuickAct || pillActionBusy}
             sx={{
-              width: 44,
-              height: 44,
+              width: 52,
+              height: 52,
               borderRadius: 2,
-              display: "grid",
-              placeItems: "center",
               flexShrink: 0,
               backgroundColor: tripAccentSoft,
               color: tripAccentMain,
+              "&:hover": {
+                backgroundColor: alpha(tripAccentMain, 0.18),
+              },
+              "&.Mui-disabled": {
+                color: alpha(tripAccentMain, 0.5),
+                backgroundColor: alpha(tripAccentMain, 0.08),
+              },
             }}
           >
-            <PlayArrowRoundedIcon />
-          </Box>
+            {isPaused ? <PlayArrowRoundedIcon /> : <PauseRoundedIcon />}
+          </IconButton>
 
           <Box sx={{ minWidth: 0, flex: 1 }}>
             <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
@@ -1396,7 +1412,7 @@ export default function AppShell({
                   color: tripAccentMain,
                 }}
               >
-                <PlayArrowRoundedIcon />
+                {isPaused ? <PlayArrowRoundedIcon /> : <PauseRoundedIcon />}
               </Box>
 
               <Box sx={{ minWidth: 0, flex: 1 }}>
