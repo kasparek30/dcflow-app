@@ -327,10 +327,6 @@ export default function DashboardPage() {
     ]).size;
   }, [followUpTickets, reviewTickets]);
 
-  const showReviewQueue = reviewTickets.length > 0;
-  const showFollowUpQueue = followUpTickets.length > 0;
-  const showAnyQueue = showReviewQueue || showFollowUpQueue;
-
   return (
     <ProtectedPage
       fallbackTitle="Dashboard"
@@ -421,90 +417,90 @@ export default function DashboardPage() {
               </CardContent>
             </Card>
 
-            {showAnyQueue ? (
-              <Box
-                sx={{
-                  display: "grid",
-                  gap: 2,
-                  gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" },
-                }}
-              >
-                {showReviewQueue ? (
-                  <SectionCard
-                    title="Needs Review"
-                    subtitle="Completed work that is ready for office review and billing follow-through."
-                    icon={<AssignmentTurnedInRoundedIcon />}
-                    count={reviewTickets.length}
-                    accent="primary"
-                  >
-                    <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
-                      {reviewTickets.map((item) => (
-                        <TicketRow key={item.id} item={item} mode="review" />
-                      ))}
-                    </Stack>
-                  </SectionCard>
-                ) : null}
-
-                {showFollowUpQueue ? (
-                  <SectionCard
-                    title="Follow-Up Needed"
-                    subtitle="Tickets that still have billable context but are waiting on the next action."
-                    icon={<AutorenewRoundedIcon />}
-                    count={followUpTickets.length}
-                    accent="warning"
-                  >
-                    <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
-                      {followUpTickets.map((item) => (
-                        <TicketRow key={item.id} item={item} mode="follow_up" />
-                      ))}
-                    </Stack>
-                  </SectionCard>
-                ) : null}
-              </Box>
-            ) : null}
-
-            {!showAnyQueue ? (
+            {attentionCount === 0 ? (
               <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
                 Nice — there are no current office attention items in the service workflow.
               </Alert>
             ) : null}
 
-            <Card
-              elevation={0}
+            <Box
               sx={{
-                borderRadius: 4,
-                border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-                backgroundColor: "background.paper",
+                display: "grid",
+                gap: 2,
+                gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" },
               }}
             >
-              <CardContent sx={{ p: { xs: 2, md: 2.5 }, "&:last-child": { pb: { xs: 2, md: 2.5 } } }}>
-                <Stack
-                  direction={{ xs: "column", md: "row" }}
-                  spacing={2}
-                  justifyContent="space-between"
-                  alignItems={{ xs: "flex-start", md: "center" }}
+              {reviewTickets.length > 0 ? (
+                <SectionCard
+                  title="Needs Review"
+                  subtitle="Completed work that is ready for office review and billing follow-through."
+                  icon={<AssignmentTurnedInRoundedIcon />}
+                  count={reviewTickets.length}
+                  accent="primary"
                 >
-                  <Box>
-                    <Typography variant="h6" fontWeight={800}>
-                      Attention summary
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      Needs Review: {reviewTickets.length} • Follow-Up Needed: {followUpTickets.length}
-                    </Typography>
-                  </Box>
+                  <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                    {reviewTickets.map((item) => (
+                      <TicketRow key={item.id} item={item} mode="review" />
+                    ))}
+                  </Stack>
+                </SectionCard>
+              ) : null}
 
-                  <Button
-                    component={Link}
-                    href="/service-tickets"
-                    variant="contained"
-                    startIcon={<ReceiptLongRoundedIcon />}
-                    sx={{ borderRadius: 999 }}
+              {followUpTickets.length > 0 ? (
+                <SectionCard
+                  title="Follow-Up Needed"
+                  subtitle="Tickets that still have billable context but are waiting on the next action."
+                  icon={<AutorenewRoundedIcon />}
+                  count={followUpTickets.length}
+                  accent="warning"
+                >
+                  <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                    {followUpTickets.map((item) => (
+                      <TicketRow key={item.id} item={item} mode="follow_up" />
+                    ))}
+                  </Stack>
+                </SectionCard>
+              ) : null}
+            </Box>
+
+            {attentionCount > 0 ? (
+              <Card
+                elevation={0}
+                sx={{
+                  borderRadius: 4,
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                  backgroundColor: "background.paper",
+                }}
+              >
+                <CardContent sx={{ p: { xs: 2, md: 2.5 }, "&:last-child": { pb: { xs: 2, md: 2.5 } } }}>
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={2}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", md: "center" }}
                   >
-                    Manage Service Workflow
-                  </Button>
-                </Stack>
-              </CardContent>
-            </Card>
+                    <Box>
+                      <Typography variant="h6" fontWeight={800}>
+                        Attention summary
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                        Needs Review: {reviewTickets.length} • Follow-Up Needed: {followUpTickets.length}
+                      </Typography>
+                    </Box>
+
+                    <Button
+                      component={Link}
+                      href="/service-tickets"
+                      variant="contained"
+                      startIcon={<ReceiptLongRoundedIcon />}
+                      sx={{ borderRadius: 999 }}
+                    >
+                      Manage Service Workflow
+                    </Button>
+                  </Stack>
+                </CardContent>
+              </Card>
+            ) : null}
           </Stack>
         </Box>
       </AppShell>

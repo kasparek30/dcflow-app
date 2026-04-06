@@ -1,4 +1,3 @@
-// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -57,7 +56,6 @@ import AdminPanelSettingsRoundedIcon from "@mui/icons-material/AdminPanelSetting
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
-import DirectionsRunRoundedIcon from "@mui/icons-material/DirectionsRunRounded";
 import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
 import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import MapRoundedIcon from "@mui/icons-material/MapRounded";
@@ -205,6 +203,24 @@ function pickLatestTrip(trips: TripDoc[]) {
     .sort((a, b) => (b.ms || 0) - (a.ms || 0));
 
   return scored[0]?.t ?? null;
+}
+
+function getMobilePageLabel(pathname: string) {
+  if (pathname.startsWith("/dashboard")) return "Dashboard";
+  if (pathname.startsWith("/dispatch")) return "Dispatcher Board";
+  if (pathname.startsWith("/technician/my-day")) return "My Day";
+  if (pathname.startsWith("/schedule")) return "Schedule";
+  if (pathname.startsWith("/office-display")) return "Office Display";
+  if (pathname.startsWith("/projects")) return "Projects";
+  if (pathname.startsWith("/customers")) return "Customers";
+  if (pathname.startsWith("/service-tickets/")) return "Service Ticket";
+  if (pathname.startsWith("/service-tickets")) return "Service Tickets";
+  if (pathname.startsWith("/time-entries")) return "Time Entries";
+  if (pathname.startsWith("/weekly-timesheet")) return "Weekly Timesheet";
+  if (pathname.startsWith("/pto-requests")) return "PTO Requests";
+  if (pathname.startsWith("/timesheet-review")) return "Timesheet Review";
+  if (pathname.startsWith("/admin")) return "Admin";
+  return "DCFlow";
 }
 
 function useRealtimeActiveTrip(uid: string) {
@@ -592,6 +608,9 @@ export default function AppShell({
     role === "technician" ||
     role === "helper" ||
     role === "apprentice";
+
+  const showMobileBottomNav =
+    role === "technician" || role === "helper" || role === "apprentice";
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeTripSheetOpen, setActiveTripSheetOpen] = useState(false);
@@ -1074,6 +1093,23 @@ export default function AppShell({
     return items.slice(0, 3);
   }, [showMyDay, showSchedule]);
 
+  const mobileMoreItems = useMemo(() => {
+    if (!showMobileBottomNav) {
+      return [...topNav, ...bottomNav];
+    }
+
+    return [
+      ...topNav.filter(
+        (item) => !mobilePrimaryNav.some((primary) => primary.href === item.href)
+      ),
+      ...bottomNav,
+    ];
+  }, [showMobileBottomNav, topNav, bottomNav, mobilePrimaryNav]);
+
+  const mobileMoreBadgeCount = useMemo(() => {
+    return mobileMoreItems.reduce((sum, item) => sum + (item.badgeCount || 0), 0);
+  }, [mobileMoreItems]);
+
   const suppressGlobalActiveTripSurface = false;
 
   const mobileBottomNavValue = useMemo(() => {
@@ -1084,7 +1120,7 @@ export default function AppShell({
   }, [pathname, mobilePrimaryNav]);
 
   const mobileBottomPadding =
-    MOBILE_BOTTOM_NAV_HEIGHT +
+    (showMobileBottomNav ? MOBILE_BOTTOM_NAV_HEIGHT : 0) +
     (activeTripCard && isMobile && !suppressGlobalActiveTripSurface
       ? MOBILE_ACTIVE_TRIP_HEIGHT
       : 0) +
@@ -1243,7 +1279,7 @@ export default function AppShell({
           position: "fixed",
           left: 16,
           right: 16,
-          bottom: MOBILE_BOTTOM_NAV_HEIGHT + 16,
+          bottom: showMobileBottomNav ? MOBILE_BOTTOM_NAV_HEIGHT + 16 : 16,
           zIndex: 1201,
           borderRadius: 3,
           border: `1px solid ${tripAccentBorder}`,
@@ -1478,6 +1514,8 @@ export default function AppShell({
       </SwipeableDrawer>
     ) : null;
 
+  const currentPageLabel = useMemo(() => getMobilePageLabel(pathname), [pathname]);
+
   if (!isMobile) {
     return (
       <Box
@@ -1564,24 +1602,18 @@ export default function AppShell({
 
           <Box sx={{ flex: 1 }} />
 
-          {activeTripCard ? (
-            <Chip
-              icon={<DirectionsRunRoundedIcon />}
-              label={`${isPaused ? "Paused" : "Running"} • ${liveMinutes}m`}
-              size="small"
-              sx={{
-                color: isPaused ? "warning.main" : "primary.main",
-                backgroundColor: isPaused
-                  ? alpha(theme.palette.warning.main, 0.12)
-                  : alpha(theme.palette.primary.main, 0.12),
-                border: `1px solid ${
-                  isPaused
-                    ? alpha(theme.palette.warning.main, 0.22)
-                    : alpha(theme.palette.primary.main, 0.22)
-                }`,
-              }}
-            />
-          ) : null}
+          <Box sx={{ minWidth: 0, maxWidth: 152, textAlign: "right" }}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", lineHeight: 1.1 }}
+            >
+              Current page
+            </Typography>
+            <Typography variant="subtitle2" noWrap>
+              {currentPageLabel}
+            </Typography>
+          </Box>
         </Toolbar>
       </AppBar>
 
@@ -1616,51 +1648,66 @@ export default function AppShell({
       {collapsedTripDock}
       {activeTripBottomSheet}
 
-      <Paper
-        elevation={0}
-        sx={{
-          position: "fixed",
-          left: 12,
-          right: 12,
-          bottom: 12,
-          zIndex: 1200,
-          borderRadius: 2.5,
-          overflow: "hidden",
-          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-          backgroundColor: "background.paper",
-        }}
-      >
-        <BottomNavigation
-          showLabels
-          value={mobileBottomNavValue}
-          onChange={(_, nextValue) => {
-            if (nextValue === "more") {
-              setDrawerOpen(true);
-              return;
-            }
-            router.push(nextValue);
-          }}
+      {showMobileBottomNav ? (
+        <Paper
+          elevation={0}
           sx={{
-            height: MOBILE_BOTTOM_NAV_HEIGHT,
-            background: "transparent",
+            position: "fixed",
+            left: 12,
+            right: 12,
+            bottom: 12,
+            zIndex: 1200,
+            borderRadius: 2.5,
+            overflow: "hidden",
+            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            backgroundColor: "background.paper",
           }}
         >
-          {mobilePrimaryNav.map((item) => (
-            <BottomNavigationAction
-              key={item.href}
-              label={item.label}
-              value={item.href}
-              icon={item.icon}
-            />
-          ))}
+          <BottomNavigation
+            showLabels
+            value={mobileBottomNavValue}
+            onChange={(_, nextValue) => {
+              if (nextValue === "more") {
+                setDrawerOpen(true);
+                return;
+              }
+              router.push(nextValue);
+            }}
+            sx={{
+              height: MOBILE_BOTTOM_NAV_HEIGHT,
+              background: "transparent",
+            }}
+          >
+            {mobilePrimaryNav.map((item) => (
+              <BottomNavigationAction
+                key={item.href}
+                label={item.label}
+                value={item.href}
+                icon={item.icon}
+              />
+            ))}
 
-          <BottomNavigationAction
-            label="More"
-            value="more"
-            icon={<MoreHorizRoundedIcon />}
-          />
-        </BottomNavigation>
-      </Paper>
+            <BottomNavigationAction
+              label="More"
+              value="more"
+              icon={
+                <Badge
+                  color="error"
+                  badgeContent={mobileMoreBadgeCount > 99 ? "99+" : mobileMoreBadgeCount}
+                  invisible={mobileMoreBadgeCount < 1}
+                  sx={{
+                    "& .MuiBadge-badge": {
+                      fontWeight: 700,
+                    },
+                  }}
+                >
+                  <MoreHorizRoundedIcon />
+                </Badge>
+              }
+            />
+          </BottomNavigation>
+        </Paper>
+      ) : null}
     </Box>
   );
 }
