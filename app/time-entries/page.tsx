@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   collection,
   doc,
@@ -39,6 +39,9 @@ import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
 import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import FilterAltRoundedIcon from "@mui/icons-material/FilterAltRounded";
+import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -107,7 +110,7 @@ function getMondayForWeekOffset(weekOffset: number) {
   base.setHours(12, 0, 0, 0);
   base.setDate(today.getDate() + weekOffset * 7);
 
-  const day = base.getDay(); // Sun 0 ... Sat 6
+  const day = base.getDay();
   const mondayOffset = day === 0 ? -6 : 1 - day;
 
   const monday = new Date(base);
@@ -147,6 +150,22 @@ function formatDisplayDate(isoDate: string) {
     day: "numeric",
     year: "2-digit",
   });
+}
+
+function isIsoDate(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(safeTrim(value));
+}
+
+function getWeekOffsetForWeekStart(weekStartIso: string) {
+  if (!isIsoDate(weekStartIso)) return 0;
+
+  const currentMonday = getMondayForWeekOffset(0);
+  const targetMonday = new Date(`${weekStartIso}T12:00:00`);
+
+  const diffMs = targetMonday.getTime() - currentMonday.getTime();
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+
+  return Math.round(diffMs / weekMs);
 }
 
 function firstMeaningfulLine(notes?: string) {
@@ -344,8 +363,9 @@ function isSyntheticHolidayEntry(entry: DisplayTimeEntry) {
   return Boolean(entry.synthetic);
 }
 
-export default function TimeEntriesPage() {
+function TimeEntriesPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
@@ -364,10 +384,23 @@ export default function TimeEntriesPage() {
   const [ticketMiniById, setTicketMiniById] = useState<Record<string, ServiceTicketMini>>({});
   const [projectMiniById, setProjectMiniById] = useState<Record<string, ProjectMini>>({});
 
+  const [rejectedWeekReason, setRejectedWeekReason] = useState("");
+  const [rejectedWeekStatus, setRejectedWeekStatus] = useState("");
+
   const canSeeAll =
     appUser?.role === "admin" ||
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
+
+  const requestedWeekStart = safeTrim(searchParams.get("weekStart"));
+  const showRejectedFocus = searchParams.get("showRejected") === "1";
+
+  useEffect(() => {
+    if (!isIsoDate(requestedWeekStart)) return;
+
+    const nextOffset = getWeekOffsetForWeekStart(requestedWeekStart);
+    setWeekOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+  }, [requestedWeekStart]);
 
   useEffect(() => {
     async function loadBaseData() {
@@ -539,6 +572,62 @@ export default function TimeEntriesPage() {
 
     return () => unsub();
   }, [appUser?.uid, canSeeAll, weekEnd, weekStart]);
+
+  useEffect(() => {
+    if (canSeeAll || !showRejectedFocus) {
+      setRejectedWeekReason("");
+      setRejectedWeekStatus("");
+      return;
+    }
+
+    const uid = safeTrim(appUser?.uid);
+    if (!uid || !weekStart || !weekEnd) {
+      setRejectedWeekReason("");
+      setRejectedWeekStatus("");
+      return;
+    }
+
+    const qTs = query(
+      collection(db, "weeklyTimesheets"),
+      where("employeeId", "==", uid),
+      where("weekStartDate", "==", weekStart),
+      where("weekEndDate", "==", weekEnd),
+      limit(1)
+    );
+
+    const unsub = onSnapshot(
+      qTs,
+      (snap) => {
+        if (snap.empty) {
+          setRejectedWeekReason("");
+          setRejectedWeekStatus("");
+          return;
+        }
+
+        const d: any = snap.docs[0].data();
+        const status = safeTrim(d.status).toLowerCase();
+        setRejectedWeekStatus(status);
+
+        const reason =
+          safeTrim(d.rejectionReason) ||
+          safeTrim(d.reviewNotes) ||
+          safeTrim(d.reviewerNotes) ||
+          "";
+
+        if (status === "rejected") {
+          setRejectedWeekReason(reason);
+        } else {
+          setRejectedWeekReason("");
+        }
+      },
+      () => {
+        setRejectedWeekReason("");
+        setRejectedWeekStatus("");
+      }
+    );
+
+    return () => unsub();
+  }, [appUser?.uid, canSeeAll, showRejectedFocus, weekEnd, weekStart]);
 
   const currentUserRecord = useMemo(() => {
     const uid = safeTrim(appUser?.uid);
@@ -782,6 +871,12 @@ export default function TimeEntriesPage() {
     );
   }, [visibleEntries]);
 
+  const rejectedEntriesThisWeek = useMemo(() => {
+    return visibleEntries.filter((entry) => entry.entryStatus === "rejected");
+  }, [visibleEntries]);
+
+  const rejectedEntryCountForWeek = rejectedEntriesThisWeek.length;
+
   function renderTitleAndSubtitle(entry: DisplayTimeEntry) {
     const cat = normalizeCategory((entry as any).category);
 
@@ -851,6 +946,93 @@ export default function TimeEntriesPage() {
     <ProtectedPage fallbackTitle="Time Entries">
       <AppShell appUser={appUser}>
         <Stack spacing={2.5}>
+          {!canSeeAll && showRejectedFocus ? (
+            <Alert
+              severity="error"
+              icon={<ErrorOutlineRoundedIcon />}
+              sx={{
+                borderRadius: 3,
+                "& .MuiAlert-message": {
+                  width: "100%",
+                },
+              }}
+            >
+              <Stack spacing={1.5}>
+                <Box>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                    You’re here to fix a rejected timesheet
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Review and update your time entries for the week of{" "}
+                    <strong>{buildWeekRangeLabel(weekStart, weekEnd)}</strong>, then return to
+                    your weekly timesheet and resubmit it.
+                  </Typography>
+
+                  {rejectedWeekStatus === "rejected" && rejectedWeekReason ? (
+                    <Typography variant="body2" sx={{ mt: 1 }}>
+                      <strong>Reviewer note:</strong> {rejectedWeekReason}
+                    </Typography>
+                  ) : null}
+                </Box>
+
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Chip
+                    color="error"
+                    label={`${rejectedEntryCountForWeek} rejected ${
+                      rejectedEntryCountForWeek === 1 ? "entry" : "entries"
+                    } visible this week`}
+                    variant="outlined"
+                  />
+
+                  {statusFilter === "rejected" ? (
+                    <Chip
+                      color="info"
+                      label="Filtered: Rejected only"
+                      variant="filled"
+                    />
+                  ) : (
+                    <Chip
+                      label="Showing all statuses"
+                      variant="outlined"
+                    />
+                  )}
+                </Stack>
+
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+                  {statusFilter !== "rejected" ? (
+                    <Button
+                      variant="contained"
+                      color="error"
+                      startIcon={<FilterAltRoundedIcon />}
+                      onClick={() => setStatusFilter("rejected")}
+                    >
+                      Show rejected only
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outlined"
+                      color="inherit"
+                      startIcon={<FilterAltRoundedIcon />}
+                      onClick={() => setStatusFilter("all")}
+                    >
+                      Show all statuses
+                    </Button>
+                  )}
+
+                  <Button
+                    variant="outlined"
+                    startIcon={<TaskAltRoundedIcon />}
+                    onClick={() =>
+                      router.push(`/weekly-timesheet?weekOffset=${weekOffset}`)
+                    }
+                  >
+                    Review Weekly Timesheet
+                  </Button>
+                </Stack>
+              </Stack>
+            </Alert>
+          ) : null}
+
           <Card variant="outlined" sx={{ borderRadius: 4 }}>
             <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
               <Stack spacing={2.5}>
@@ -923,6 +1105,14 @@ export default function TimeEntriesPage() {
                   ) : (
                     <Chip label="All employees" variant="outlined" />
                   )}
+
+                  {showRejectedFocus ? (
+                    <Chip
+                      color="error"
+                      variant="outlined"
+                      label="Rejected-timesheet correction flow"
+                    />
+                  ) : null}
                 </Stack>
 
                 {!canSeeAll && myWeekLocked ? (
@@ -934,7 +1124,7 @@ export default function TimeEntriesPage() {
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
                   <Button
                     variant="contained"
-                    onClick={() => router.push("/weekly-timesheet")}
+                    onClick={() => router.push(`/weekly-timesheet?weekOffset=${weekOffset}`)}
                     endIcon={<ArrowForwardRoundedIcon />}
                   >
                     Review Weekly Timesheet
@@ -1382,5 +1572,45 @@ export default function TimeEntriesPage() {
         ) : null}
       </AppShell>
     </ProtectedPage>
+  );
+}
+
+export default function TimeEntriesPage() {
+  return (
+    <Suspense
+      fallback={
+        <ProtectedPage fallbackTitle="Time Entries">
+          <AppShell appUser={null}>
+            <Stack spacing={2.5}>
+              <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                  <Stack spacing={1.5}>
+                    <Skeleton variant="text" width={220} height={40} />
+                    <Skeleton variant="text" width={180} height={24} />
+                    <Skeleton variant="rectangular" height={52} sx={{ borderRadius: 3 }} />
+                  </Stack>
+                </CardContent>
+              </Card>
+
+              <Stack spacing={2}>
+                {[0, 1, 2].map((i) => (
+                  <Card key={i} variant="outlined" sx={{ borderRadius: 4 }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                      <Stack spacing={1.5}>
+                        <Skeleton variant="text" width={220} height={36} />
+                        <Skeleton variant="rectangular" height={64} sx={{ borderRadius: 3 }} />
+                        <Skeleton variant="rectangular" height={64} sx={{ borderRadius: 3 }} />
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                ))}
+              </Stack>
+            </Stack>
+          </AppShell>
+        </ProtectedPage>
+      }
+    >
+      <TimeEntriesPageContent />
+    </Suspense>
   );
 }

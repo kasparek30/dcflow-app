@@ -34,6 +34,7 @@ import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
 import EngineeringRoundedIcon from "@mui/icons-material/EngineeringRounded";
 import PlayCircleRoundedIcon from "@mui/icons-material/PlayCircleRounded";
 import PauseCircleRoundedIcon from "@mui/icons-material/PauseCircleRounded";
+import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -72,6 +73,34 @@ declare global {
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
+}
+
+function normalizeStatus(status?: string) {
+  return safeTrim(status).toLowerCase();
+}
+
+function hasAssignedCrew(item: DashboardTicketItem) {
+  return Boolean(safeTrim(item.assignedTechnicianName) || safeTrim(item.assignedHelperName));
+}
+
+function hasMappableAddress(item: DashboardTicketItem) {
+  return Boolean(buildAddress(item));
+}
+
+function isFieldVisibleStatus(status?: string) {
+  const normalized = normalizeStatus(status);
+
+  return [
+    "in_progress",
+    "paused",
+    "dispatched",
+    "assigned",
+    "on_site",
+  ].includes(normalized);
+}
+
+function isFieldVisibleTicket(item: DashboardTicketItem) {
+  return isFieldVisibleStatus(item.status) && hasAssignedCrew(item) && hasMappableAddress(item);
 }
 
 function formatWhen(value?: string | null) {
@@ -118,9 +147,10 @@ function buildStaticMapUrl(items: DashboardTicketItem[]) {
   if (!apiKey) return "";
 
   const addresses = items
+    .filter(isFieldVisibleTicket)
     .map((item) => buildAddress(item))
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, 6);
 
   if (addresses.length === 0) return "";
 
@@ -134,6 +164,11 @@ function buildStaticMapUrl(items: DashboardTicketItem[]) {
   if (addresses.length === 1) {
     params.set("center", addresses[0]);
     params.set("zoom", "12");
+  } else {
+    // This tells Google Static Maps to auto-frame all locations so both/all pins stay visible.
+    addresses.forEach((address) => {
+      params.append("visible", address);
+    });
   }
 
   addresses.forEach((address, index) => {
@@ -381,14 +416,22 @@ function TicketRow({
   );
 }
 
-function getActiveStatusMeta(status?: string) {
-  const normalized = safeTrim(status).toLowerCase();
+function getFieldStatusMeta(status?: string) {
+  const normalized = normalizeStatus(status);
 
   if (normalized === "paused") {
     return {
       label: "Paused",
       color: "warning" as const,
       icon: <PauseCircleRoundedIcon sx={{ fontSize: 14 }} />,
+    };
+  }
+
+  if (normalized === "dispatched" || normalized === "assigned" || normalized === "on_site") {
+    return {
+      label: "Assigned Today",
+      color: "info" as const,
+      icon: <AssignmentRoundedIcon sx={{ fontSize: 14 }} />,
     };
   }
 
@@ -400,7 +443,7 @@ function getActiveStatusMeta(status?: string) {
 }
 
 function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
-  const statusMeta = getActiveStatusMeta(item.status);
+  const statusMeta = getFieldStatusMeta(item.status);
   const address = buildAddress(item);
   const assignedPeople = buildAssignedPeople(item);
 
@@ -511,7 +554,7 @@ function AreaSnapshotDialog({
   const [mapError, setMapError] = useState("");
   const [selectedTicketId, setSelectedTicketId] = useState<string>("");
 
-  function openMarkerForTicket(ticketId: string, shouldBounce = false) {
+  function openMarkerForTicket(ticketId: string, shouldBounce = false, shouldZoomTight = true) {
     const google = window.google;
     const entry = markersByTicketIdRef.current[ticketId];
     const map = mapInstanceRef.current;
@@ -521,9 +564,11 @@ function AreaSnapshotDialog({
 
     map.panTo(entry.marker.getPosition());
 
-    const currentZoom = Number(map.getZoom?.() ?? 0);
-    if (currentZoom < 13) {
-      map.setZoom(13);
+    if (shouldZoomTight) {
+      const currentZoom = Number(map.getZoom?.() ?? 0);
+      if (currentZoom < 13) {
+        map.setZoom(13);
+      }
     }
 
     infoWindow.setContent(entry.infoHtml);
@@ -554,6 +599,7 @@ function AreaSnapshotDialog({
     }
 
     const addresses = activeTickets
+      .filter(isFieldVisibleTicket)
       .map((item) => ({
         item,
         address: buildAddress(item),
@@ -629,7 +675,7 @@ function AreaSnapshotDialog({
             animation: google.maps.Animation.DROP,
           });
 
-          const statusMeta = getActiveStatusMeta(item.status);
+          const statusMeta = getFieldStatusMeta(item.status);
           const infoHtml = `
             <div style="min-width:220px;max-width:280px;padding:4px 2px 2px 2px;font-family:Arial,sans-serif;">
               <div style="font-size:14px;font-weight:700;color:#111827;line-height:1.35;">
@@ -686,13 +732,19 @@ function AreaSnapshotDialog({
             map.setCenter(bounds.getCenter());
             map.setZoom(13);
           } else if (!bounds.isEmpty()) {
-            map.fitBounds(bounds, 64);
+            map.fitBounds(bounds, {
+              top: 72,
+              right: 72,
+              bottom: 72,
+              left: 72,
+            });
           }
 
           if (markerEntries.length > 0) {
             const firstTicketId = markerEntries[0].item.id;
             window.setTimeout(() => {
-              openMarkerForTicket(firstTicketId, false);
+              // Open the info window without snapping the map away from the fitted multi-pin view.
+              openMarkerForTicket(firstTicketId, false, markerEntries.length === 1);
             }, 250);
           }
         }
@@ -713,6 +765,11 @@ function AreaSnapshotDialog({
       isCancelled = true;
     };
   }, [open, apiKey, activeTickets]);
+
+  const visibleFieldTickets = useMemo(
+    () => activeTickets.filter(isFieldVisibleTicket),
+    [activeTickets]
+  );
 
   return (
     <Dialog
@@ -765,7 +822,7 @@ function AreaSnapshotDialog({
             <Chip
               size="small"
               icon={<MyLocationRoundedIcon sx={{ fontSize: 16 }} />}
-              label={`${activeTickets.length} active in field`}
+              label={`${visibleFieldTickets.length} active in field`}
               variant="outlined"
               sx={{ fontWeight: 700 }}
             />
@@ -821,7 +878,7 @@ function AreaSnapshotDialog({
             ) : null}
           </Box>
 
-          {activeTickets.length > 0 ? (
+          {visibleFieldTickets.length > 0 ? (
             <Box
               sx={{
                 display: "grid",
@@ -829,10 +886,10 @@ function AreaSnapshotDialog({
                 gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
               }}
             >
-              {activeTickets.map((item, index) => {
+              {visibleFieldTickets.map((item, index) => {
                 const address = buildAddress(item);
                 const assignedPeople = buildAssignedPeople(item);
-                const statusMeta = getActiveStatusMeta(item.status);
+                const statusMeta = getFieldStatusMeta(item.status);
                 const isSelected = selectedTicketId === item.id;
 
                 return (
@@ -856,7 +913,7 @@ function AreaSnapshotDialog({
                     }}
                   >
                     <CardActionArea
-                      onClick={() => openMarkerForTicket(item.id, true)}
+                      onClick={() => openMarkerForTicket(item.id, true, true)}
                       sx={{
                         borderRadius: 3,
                       }}
@@ -963,7 +1020,11 @@ function AreaSnapshotDialog({
 
 function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketItem[] }) {
   const theme = useTheme();
-  const mapUrl = useMemo(() => buildStaticMapUrl(activeTickets), [activeTickets]);
+  const visibleFieldTickets = useMemo(
+    () => activeTickets.filter(isFieldVisibleTicket),
+    [activeTickets]
+  );
+  const mapUrl = useMemo(() => buildStaticMapUrl(visibleFieldTickets), [visibleFieldTickets]);
   const [isExpandedOpen, setIsExpandedOpen] = useState(false);
 
   return (
@@ -1135,7 +1196,7 @@ function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketIte
       <AreaSnapshotDialog
         open={isExpandedOpen}
         onClose={() => setIsExpandedOpen(false)}
-        activeTickets={activeTickets}
+        activeTickets={visibleFieldTickets}
       />
     </>
   );
@@ -1164,8 +1225,8 @@ export default function DashboardPage() {
 
     const activeWorkQuery = query(
       collection(db, "serviceTickets"),
-      where("status", "in", ["in_progress", "paused"]),
-      limit(12)
+      where("status", "in", ["in_progress", "paused", "dispatched", "assigned", "on_site"]),
+      limit(20)
     );
 
     const unsubFollowUp = onSnapshot(
@@ -1240,6 +1301,7 @@ export default function DashboardPage() {
               status: d.status ?? "",
             } as DashboardTicketItem;
           })
+          .filter(isFieldVisibleTicket)
           .sort(statusSort);
 
         setActiveTickets(items);

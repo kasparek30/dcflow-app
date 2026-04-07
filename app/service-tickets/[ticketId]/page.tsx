@@ -1,3 +1,4 @@
+// app/service-tickets/[ticketId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -67,7 +68,6 @@ import {
   canPauseTrip,
   canResumeTrip,
   canStartTrip,
-  deriveTicketStatusFromTrips,
   formatLifecycleTripStatus,
   getManualTicketStatusError,
   hasInProgressTrips,
@@ -1125,13 +1125,83 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return helperCandidates.find((h) => h.uid === uid)?.name || "";
   }
 
-  function deriveNextTicketStatus(nextTrips: TripDoc[], lastCompletedOutcome?: string | null) {
-    return deriveTicketStatusFromTrips({
-      currentStatus: ticket?.status,
-      trips: nextTrips,
-      lastCompletedOutcome: lastCompletedOutcome ?? null,
-    }) as TicketStatus;
+function deriveNextTicketStatus(
+  nextTrips: TripDoc[],
+  lastCompletedOutcome?: string | null
+): TicketStatus {
+  const activeTrips = nextTrips.filter((trip) => trip.active !== false);
+
+  if (activeTrips.length === 0) {
+    return "new";
   }
+
+  const sortedTrips = [...activeTrips].sort((a, b) => {
+    const dateCompare = String(a.date || "").localeCompare(String(b.date || ""));
+    if (dateCompare !== 0) return dateCompare;
+
+    const startCompare = String(a.startTime || "").localeCompare(String(b.startTime || ""));
+    if (startCompare !== 0) return startCompare;
+
+    const updatedCompare = String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
+    if (updatedCompare !== 0) return updatedCompare;
+
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+
+  const hasInProgress = sortedTrips.some(
+    (trip) => normalizeTripStatus(trip.status) === "in_progress"
+  );
+  if (hasInProgress) {
+    return "in_progress";
+  }
+
+  const openTrips = sortedTrips.filter((trip) => isOpenTripRecord(trip));
+  if (openTrips.length > 0) {
+    const hasCompletedFollowUpHistory = sortedTrips.some(
+      (trip) =>
+        normalizeTripStatus(trip.status) === "complete" &&
+        String(trip.outcome || "").trim().toLowerCase() === "follow_up"
+    );
+
+    return hasCompletedFollowUpHistory || ticket?.status === "follow_up"
+      ? "follow_up"
+      : "scheduled";
+  }
+
+  const completedTrips = sortedTrips.filter(
+    (trip) => normalizeTripStatus(trip.status) === "complete"
+  );
+
+  if (completedTrips.length > 0) {
+    const latestCompletedTrip = completedTrips[completedTrips.length - 1];
+    const finalOutcome = String(
+      lastCompletedOutcome ??
+        latestCompletedTrip.outcome ??
+        (latestCompletedTrip.readyToBillAt ? "resolved" : "")
+    )
+      .trim()
+      .toLowerCase();
+
+    if (finalOutcome === "resolved") {
+      return "completed";
+    }
+
+    if (finalOutcome === "follow_up") {
+      return "follow_up";
+    }
+
+    return "completed";
+  }
+
+  const hasCancelledTrips = sortedTrips.some(
+    (trip) => normalizeTripStatus(trip.status) === "cancelled"
+  );
+  if (hasCancelledTrips) {
+    return "cancelled";
+  }
+
+  return ticket?.status === "follow_up" ? "follow_up" : "scheduled";
+}
 
   async function persistTicketStatus(
     nextStatus: TicketStatus,

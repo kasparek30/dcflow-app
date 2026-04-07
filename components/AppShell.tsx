@@ -66,6 +66,7 @@ import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 
 type PauseBlock = {
   startAt: string;
@@ -123,9 +124,19 @@ type NavEntry = {
   badgeCount?: number;
 };
 
+type RejectedTimesheetNotice = {
+  id: string;
+  weekStartDate: string;
+  updatedAt?: string | null;
+  reviewedAt?: string | null;
+  rejectionReason?: string | null;
+};
+
 const DESKTOP_DRAWER_WIDTH = 296;
 const MOBILE_BOTTOM_NAV_HEIGHT = 68;
 const MOBILE_ACTIVE_TRIP_HEIGHT = 118;
+const MOBILE_TOP_REJECTED_OVERLAY_HEIGHT = 128;
+const REJECTED_BANNER_DISMISS_KEY = "dcflow_dismissedRejectedBannerKey";
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
@@ -139,6 +150,19 @@ function truncate(s: string, max = 44) {
 
 function parseIsoMs(iso?: string | null) {
   const t = iso ? new Date(iso).getTime() : NaN;
+  return Number.isFinite(t) ? t : NaN;
+}
+
+function parseFlexibleDateMs(value?: string | null) {
+  const v = safeTrim(value);
+  if (!v) return NaN;
+
+  const isoDateOnly = /^\d{4}-\d{2}-\d{2}$/;
+  if (isoDateOnly.test(v)) {
+    return new Date(`${v}T12:00:00`).getTime();
+  }
+
+  const t = new Date(v).getTime();
   return Number.isFinite(t) ? t : NaN;
 }
 
@@ -205,6 +229,28 @@ function pickLatestTrip(trips: TripDoc[]) {
   return scored[0]?.t ?? null;
 }
 
+function pickLatestRejectedNotice(notices: RejectedTimesheetNotice[]) {
+  if (!notices.length) return null;
+
+  const sorted = [...notices].sort((a, b) => {
+    const aMs =
+      parseFlexibleDateMs(a.reviewedAt) ||
+      parseFlexibleDateMs(a.updatedAt) ||
+      parseFlexibleDateMs(a.weekStartDate) ||
+      0;
+
+    const bMs =
+      parseFlexibleDateMs(b.reviewedAt) ||
+      parseFlexibleDateMs(b.updatedAt) ||
+      parseFlexibleDateMs(b.weekStartDate) ||
+      0;
+
+    return bMs - aMs;
+  });
+
+  return sorted[0] ?? null;
+}
+
 function getMobilePageLabel(pathname: string) {
   if (pathname.startsWith("/dashboard")) return "Dashboard";
   if (pathname.startsWith("/dispatch")) return "Dispatcher Board";
@@ -221,6 +267,46 @@ function getMobilePageLabel(pathname: string) {
   if (pathname.startsWith("/timesheet-review")) return "Timesheet Review";
   if (pathname.startsWith("/admin")) return "Admin";
   return "DCFlow";
+}
+
+function formatDisplayDate(isoDate?: string | null) {
+  const raw = safeTrim(isoDate);
+  if (!raw) return "";
+
+  const ms = parseFlexibleDateMs(raw);
+  if (!Number.isFinite(ms)) return raw;
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(ms));
+  } catch {
+    return raw;
+  }
+}
+
+function buildRejectedFixHref(notice: RejectedTimesheetNotice | null) {
+  const params = new URLSearchParams();
+  params.set("showRejected", "1");
+
+  const weekStart = safeTrim(notice?.weekStartDate);
+  if (weekStart) {
+    params.set("weekStart", weekStart);
+  }
+
+  return `/time-entries?${params.toString()}`;
+}
+
+function buildRejectedBannerKey(notice: RejectedTimesheetNotice | null) {
+  if (!notice) return "";
+  const stamp =
+    safeTrim(notice.reviewedAt) ||
+    safeTrim(notice.updatedAt) ||
+    safeTrim(notice.weekStartDate) ||
+    "rejected";
+  return `${notice.id}:${stamp}`;
 }
 
 function useRealtimeActiveTrip(uid: string) {
@@ -526,6 +612,109 @@ function BannerCard({
   );
 }
 
+function MobileTopActionCard({
+  title,
+  body,
+  action,
+  onDismiss,
+}: {
+  title: string;
+  body: React.ReactNode;
+  action: React.ReactNode;
+  onDismiss: () => void;
+}) {
+  const theme = useTheme();
+  const accent = theme.palette.error.main;
+
+  return (
+    <Paper
+      elevation={8}
+      sx={{
+        borderRadius: 4,
+        overflow: "hidden",
+        backgroundColor: theme.palette.background.paper,
+        backgroundImage: "none",
+        border: `1px solid ${alpha(accent, 0.24)}`,
+        boxShadow: theme.shadows[8],
+      }}
+    >
+      <Box sx={{ px: 1.5, pt: 1.25, pb: 1.5 }}>
+        <Stack direction="row" spacing={1.25} alignItems="flex-start">
+          <Box
+            sx={{
+              width: 52,
+              height: 52,
+              borderRadius: 2.5,
+              flexShrink: 0,
+              display: "grid",
+              placeItems: "center",
+              backgroundColor: alpha(accent, 0.14),
+              color: accent,
+            }}
+          >
+            <ErrorOutlineRoundedIcon />
+          </Box>
+
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography
+              variant="overline"
+              sx={{
+                display: "block",
+                lineHeight: 1.1,
+                letterSpacing: 0.5,
+                color: alpha(accent, 0.95),
+                fontWeight: 700,
+                mb: 0.5,
+              }}
+            >
+              Payroll needs attention
+            </Typography>
+
+            <Typography
+              variant="subtitle1"
+              sx={{
+                fontWeight: 800,
+                lineHeight: 1.15,
+                mb: 0.5,
+              }}
+            >
+              {title}
+            </Typography>
+
+            {body}
+          </Box>
+
+          <IconButton
+            size="small"
+            aria-label="Dismiss payroll alert"
+            onClick={onDismiss}
+            sx={{
+              mt: -0.25,
+              mr: -0.5,
+              color: "text.secondary",
+            }}
+          >
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        </Stack>
+
+        <Box sx={{ mt: 1.25, ml: "64px" }}>{action}</Box>
+
+        <Box
+          sx={{
+            width: 36,
+            height: 4,
+            borderRadius: 999,
+            mx: "auto",
+            mt: 1.4,
+            backgroundColor: alpha(accent, 0.22),
+          }}
+        />
+      </Box>
+    </Paper>
+  );
+}
+
 export default function AppShell({
   children,
   appUser,
@@ -803,11 +992,16 @@ export default function AppShell({
   }, [showPTORequests, role]);
 
   const [myRejectedCount, setMyRejectedCount] = useState(0);
+  const [latestRejectedNotice, setLatestRejectedNotice] =
+    useState<RejectedTimesheetNotice | null>(null);
+  const [dismissedRejectedBannerKey, setDismissedRejectedBannerKey] =
+    useState<string>("");
 
   useEffect(() => {
     const uid = safeTrim(myUid);
     if (!uid) {
       setMyRejectedCount(0);
+      setLatestRejectedNotice(null);
       return;
     }
 
@@ -821,6 +1015,7 @@ export default function AppShell({
 
     if (!canReceive) {
       setMyRejectedCount(0);
+      setLatestRejectedNotice(null);
       return;
     }
 
@@ -833,12 +1028,84 @@ export default function AppShell({
 
     const unsub = onSnapshot(
       qRef,
-      (snap) => setMyRejectedCount(snap.size || 0),
-      () => {}
+      (snap) => {
+        const notices: RejectedTimesheetNotice[] = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            weekStartDate:
+              safeTrim(data.weekStartDate) || safeTrim(data.weekStart) || "",
+            updatedAt: data.updatedAt ?? null,
+            reviewedAt: data.reviewedAt ?? data.rejectedAt ?? null,
+            rejectionReason:
+              safeTrim(data.rejectionReason) ||
+              safeTrim(data.reviewNotes) ||
+              safeTrim(data.reviewerNotes) ||
+              null,
+          };
+        });
+
+        setMyRejectedCount(notices.length);
+        setLatestRejectedNotice(pickLatestRejectedNotice(notices));
+      },
+      () => {
+        setMyRejectedCount(0);
+        setLatestRejectedNotice(null);
+      }
     );
 
     return () => unsub();
   }, [myUid, role]);
+
+  const rejectedBannerKey = useMemo(
+    () => buildRejectedBannerKey(latestRejectedNotice),
+    [latestRejectedNotice]
+  );
+
+  useEffect(() => {
+    if (!rejectedBannerKey) {
+      setDismissedRejectedBannerKey("");
+      return;
+    }
+
+    try {
+      if (typeof window !== "undefined") {
+        const saved = window.sessionStorage.getItem(REJECTED_BANNER_DISMISS_KEY) || "";
+        setDismissedRejectedBannerKey(saved);
+      }
+    } catch {
+      setDismissedRejectedBannerKey("");
+    }
+  }, [rejectedBannerKey]);
+
+  function dismissRejectedBanner() {
+    if (!rejectedBannerKey) return;
+    try {
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(
+          REJECTED_BANNER_DISMISS_KEY,
+          rejectedBannerKey
+        );
+      }
+    } catch {}
+    setDismissedRejectedBannerKey(rejectedBannerKey);
+  }
+
+  const showRejectedBanner =
+    myRejectedCount > 0 &&
+    showWeeklyTimesheet &&
+    Boolean(latestRejectedNotice) &&
+    dismissedRejectedBannerKey !== rejectedBannerKey;
+
+  const rejectedFixHref = useMemo(
+    () => buildRejectedFixHref(latestRejectedNotice),
+    [latestRejectedNotice]
+  );
+
+  const latestRejectedWeekLabel = useMemo(
+    () => formatDisplayDate(latestRejectedNotice?.weekStartDate || ""),
+    [latestRejectedNotice?.weekStartDate]
+  );
 
   const [showMondayReminder, setShowMondayReminder] = useState(false);
   const [prevWeekStart, setPrevWeekStart] = useState<string>("");
@@ -1161,13 +1428,19 @@ export default function AppShell({
     ) : null;
 
   const rejectedBanner =
-    myRejectedCount > 0 && showWeeklyTimesheet ? (
+    showRejectedBanner && showWeeklyTimesheet ? (
       <BannerCard
         severity="error"
         title="Your timesheet was rejected and needs changes"
         body={
           <>
-            {myRejectedCount} rejected timesheet{myRejectedCount === 1 ? "" : "s"} found.
+            {myRejectedCount} rejected timesheet{myRejectedCount === 1 ? "" : "s"} found
+            {latestRejectedWeekLabel ? (
+              <>
+                {" "}
+                • Latest week: <strong>{latestRejectedWeekLabel}</strong>
+              </>
+            ) : null}
           </>
         }
         action={
@@ -1175,7 +1448,7 @@ export default function AppShell({
             size="small"
             variant="contained"
             color="error"
-            onClick={() => router.push("/weekly-timesheet?showRejected=1")}
+            onClick={() => router.push(rejectedFixHref)}
           >
             Fix now
           </Button>
@@ -1543,6 +1816,76 @@ export default function AppShell({
 
   const currentPageLabel = useMemo(() => getMobilePageLabel(pathname), [pathname]);
 
+  const mobileRejectedOverlay =
+    isMobile && showRejectedBanner ? (
+      <Box
+        sx={{
+          position: "fixed",
+          left: 12,
+          right: 12,
+          top: "calc(env(safe-area-inset-top) + 72px)",
+          zIndex: 1202,
+          pointerEvents: "none",
+        }}
+      >
+        <Box sx={{ pointerEvents: "auto" }}>
+          <MobileTopActionCard
+            title="Timesheet needs changes"
+            body={
+              <Box>
+                <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                  Open <strong>Time Entries</strong> to correct and resubmit your rejected
+                  timesheet.
+                </Typography>
+
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  flexWrap="wrap"
+                  useFlexGap
+                  sx={{ mt: 1 }}
+                >
+                  <Chip
+                    size="small"
+                    color="error"
+                    label={`${myRejectedCount} rejected ${
+                      myRejectedCount === 1 ? "timesheet" : "timesheets"
+                    }`}
+                    sx={{ fontWeight: 700 }}
+                  />
+
+                  {latestRejectedWeekLabel ? (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={`Week of ${latestRejectedWeekLabel}`}
+                    />
+                  ) : null}
+                </Stack>
+              </Box>
+            }
+            action={
+              <Button
+                fullWidth
+                variant="contained"
+                color="error"
+                startIcon={<AccessTimeFilledRoundedIcon />}
+                onClick={() => router.push(rejectedFixHref)}
+                sx={{
+                  minHeight: 44,
+                  borderRadius: 999,
+                  fontWeight: 700,
+                }}
+              >
+                Fix now in Time Entries
+              </Button>
+            }
+            onDismiss={dismissRejectedBanner}
+          />
+        </Box>
+      </Box>
+    ) : null;
+
   if (!isMobile) {
     return (
       <Box
@@ -1659,15 +2002,17 @@ export default function AppShell({
         {drawerContent}
       </Drawer>
 
+      {mobileRejectedOverlay}
+
       <Box
         component="main"
         sx={{
           px: 1.5,
-          pt: 1.5,
+          pt: showRejectedBanner ? `${MOBILE_TOP_REJECTED_OVERLAY_HEIGHT}px` : 1.5,
           pb: `${mobileBottomPadding}px`,
         }}
       >
-        {rejectedBanner}
+        {!showRejectedBanner ? rejectedBanner : null}
         {mondayReminderBanner}
         {children}
       </Box>
