@@ -1,3 +1,4 @@
+// app/technician/my-day/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -1579,20 +1580,23 @@ export default function TechnicianMyDayPage() {
                       const isService = String(item.tripType || "").toLowerCase() === "service";
                       const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
 
-                      const activeBadge = item.isActive ? (
-                        <Chip
-                          size="small"
-                          color={item.isPaused ? "warning" : "success"}
-                          variant="outlined"
-                          label={item.isPaused ? "Paused Trip" : "Active Trip"}
-                          sx={{
-                            height: 24,
-                            borderRadius: 1.5,
-                            fontSize: 11,
-                            fontWeight: 700,
-                          }}
-                        />
-                      ) : null;
+const activeBadge = item.isActive ? (
+  <Chip
+    size="small"
+    label={item.isPaused ? "Paused Trip" : "Active Trip"}
+    sx={{
+      height: 24,
+      borderRadius: 1.5,
+      fontSize: 11,
+      fontWeight: 700,
+      color: item.isPaused ? "warning.dark" : "success.dark",
+      backgroundColor: item.isPaused
+        ? alpha(theme.palette.warning.main, 0.14)
+        : alpha(theme.palette.success.main, 0.14),
+      border: "none",
+    }}
+  />
+) : null;
 
                       const confirmedBadge =
                         isProject && item.confirmed ? (
@@ -1611,198 +1615,197 @@ export default function TechnicianMyDayPage() {
                           />
                         ) : null;
 
-                      return (
-                        <Box
-                          key={item.id}
-                          sx={
-                            item.isActive
-                              ? item.isPaused
-                                ? {
-                                    p: 0.5,
-                                    borderRadius: 4,
-                                    border: `1px solid ${alpha(theme.palette.warning.main, 0.38)}`,
-                                    background: `linear-gradient(180deg, ${alpha(
-                                      theme.palette.warning.light,
-                                      0.16
-                                    )} 0%, ${alpha(theme.palette.warning.main, 0.08)} 100%)`,
-                                    boxShadow: `0 14px 28px ${alpha(theme.palette.warning.main, 0.08)}`,
-                                  }
-                                : {
-                                    p: 0.5,
-                                    borderRadius: 4,
-                                    border: `1px solid ${alpha(theme.palette.success.main, 0.32)}`,
-                                    background: `linear-gradient(180deg, ${alpha(
-                                      theme.palette.success.light,
-                                      0.15
-                                    )} 0%, ${alpha(theme.palette.success.main, 0.07)} 100%)`,
-                                    boxShadow: `0 16px 30px ${alpha(theme.palette.success.main, 0.08)}`,
-                                  }
-                              : undefined
-                          }
-                        >
-                          <SharedTripCard
-                            title={item.headerText}
-                            status={item.status}
-                            tripType={item.tripType}
-                            subtitle={item.subLine}
-                            crewChips={
-                              <Stack
-                                direction="row"
-                                spacing={0.6}
-                                flexWrap="wrap"
-                                useFlexGap
-                                sx={{ rowGap: 0.6 }}
-                              >
-                                <Chip
-                                  size="small"
-                                  icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
-                                  label={item.techText}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 1.5 }}
-                                />
-                                {item.helperText ? (
-                                  <Chip
-                                    size="small"
-                                    label={item.helperText}
-                                    variant="outlined"
-                                    sx={{ borderRadius: 1.5 }}
-                                  />
-                                ) : null}
-                                {item.secondaryTechText ? (
-                                  <Chip
-                                    size="small"
-                                    label={item.secondaryTechText}
-                                    variant="outlined"
-                                    sx={{ borderRadius: 1.5 }}
-                                  />
-                                ) : null}
-                                {item.secondaryHelperText ? (
-                                  <Chip
-                                    size="small"
-                                    label={item.secondaryHelperText}
-                                    variant="outlined"
-                                    sx={{ borderRadius: 1.5 }}
-                                  />
-                                ) : null}
-                              </Stack>
-                            }
-                            detailBlock={
-                              item.issueDetailsText ? (
-                                <Box
-                                  sx={{
-                                    px: 1.25,
-                                    py: 1,
-                                    borderRadius: 2,
-                                    border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
-                                    backgroundColor: alpha(theme.palette.primary.main, 0.06),
-                                  }}
-                                >
-                                  <Stack direction="row" spacing={1} alignItems="flex-start">
-                                    <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
-                                    <Box sx={{ minWidth: 0 }}>
-                                      <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
-                                        Issue
-                                      </Typography>
-                                      <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
-                                        {item.issueDetailsText}
-                                      </Typography>
-                                    </Box>
-                                  </Stack>
-                                </Box>
-                              ) : undefined
-                            }
-                            followUpBlock={
-                              item.followUpText ? (
-                                <Box
-                                  sx={{
-                                    px: 1.25,
-                                    py: 1,
-                                    borderRadius: 2,
-                                    border: "1px solid #FFE2A8",
-                                    backgroundColor: "#FFF7E6",
-                                  }}
-                                >
-                                  <Stack direction="row" spacing={1} alignItems="flex-start">
-                                    <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
-                                    <Box sx={{ minWidth: 0 }}>
-                                      <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
-                                        Follow-up notes
-                                      </Typography>
-                                      <Typography
-                                        variant="body2"
-                                        sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
-                                      >
-                                        {item.followUpText}
-                                      </Typography>
-                                    </Box>
-                                  </Stack>
-                                </Box>
-                              ) : undefined
-                            }
-                            trailingContent={
-                              activeBadge || confirmedBadge ? (
-                                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-                                  {activeBadge}
-                                  {confirmedBadge}
-                                </Stack>
-                              ) : undefined
-                            }
-                            footer={
-                              isProject ? (
-                                !item.confirmed ? (
-                                  <Stack
-                                    direction={{ xs: "column", sm: "row" }}
-                                    spacing={1.25}
-                                    alignItems={{ xs: "stretch", sm: "center" }}
-                                    justifyContent="space-between"
-                                  >
-                                    <Box>
-                                      <Typography variant="body2" color="text.secondary">
-                                        Confirm your project hours for payroll.
-                                      </Typography>
-                                      {!canConfirm ? (
-                                        <Typography variant="caption" color="text.secondary">
-                                          Only the employee or Admin/Dispatcher/Manager can confirm project hours.
-                                        </Typography>
-                                      ) : null}
-                                    </Box>
+return (
+  <Box
+    key={item.id}
+    sx={
+      item.isActive
+        ? {
+            position: "relative",
+            borderRadius: 4,
+            "&::before": {
+              content: '""',
+              position: "absolute",
+              left: 10,
+              top: 16,
+              bottom: 16,
+              width: 4,
+              borderRadius: 999,
+              backgroundColor: item.isPaused
+                ? alpha(theme.palette.warning.main, 0.72)
+                : alpha(theme.palette.success.main, 0.72),
+              pointerEvents: "none",
+              zIndex: 1,
+            },
+          }
+        : undefined
+    }
+  >
+    <Box sx={item.isActive ? { position: "relative", zIndex: 2 } : undefined}>
+      <SharedTripCard
+        title={item.headerText}
+        status={item.status}
+        tripType={item.tripType}
+        subtitle={item.subLine}
+        crewChips={
+          <Stack
+            direction="row"
+            spacing={0.6}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ rowGap: 0.6 }}
+          >
+            <Chip
+              size="small"
+              icon={<EngineeringRoundedIcon sx={{ fontSize: 16 }} />}
+              label={item.techText}
+              variant="outlined"
+              sx={{ borderRadius: 1.5 }}
+            />
+            {item.helperText ? (
+              <Chip
+                size="small"
+                label={item.helperText}
+                variant="outlined"
+                sx={{ borderRadius: 1.5 }}
+              />
+            ) : null}
+            {item.secondaryTechText ? (
+              <Chip
+                size="small"
+                label={item.secondaryTechText}
+                variant="outlined"
+                sx={{ borderRadius: 1.5 }}
+              />
+            ) : null}
+            {item.secondaryHelperText ? (
+              <Chip
+                size="small"
+                label={item.secondaryHelperText}
+                variant="outlined"
+                sx={{ borderRadius: 1.5 }}
+              />
+            ) : null}
+          </Stack>
+        }
+        detailBlock={
+          item.issueDetailsText ? (
+            <Box
+              sx={{
+                px: 1.25,
+                py: 1,
+                borderRadius: 2,
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
+                backgroundColor: alpha(theme.palette.primary.main, 0.06),
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="flex-start">
+                <NotesRoundedIcon sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: "primary.light" }}>
+                    Issue
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}>
+                    {item.issueDetailsText}
+                  </Typography>
+                </Box>
+              </Stack>
+            </Box>
+          ) : undefined
+        }
+        followUpBlock={
+          item.followUpText ? (
+            <Box
+              sx={{
+                px: 1.25,
+                py: 1,
+                borderRadius: 2,
+                border: "1px solid #FFE2A8",
+                backgroundColor: "#FFF7E6",
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="flex-start">
+                <WarningAmberRoundedIcon sx={{ fontSize: 18, color: "#7A4B00", mt: 0.1 }} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: "#7A4B00" }}>
+                    Follow-up notes
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{ mt: 0.25, color: "#7A4B00", whiteSpace: "pre-wrap" }}
+                  >
+                    {item.followUpText}
+                  </Typography>
+                </Box>
+              </Stack>
+            </Box>
+          ) : undefined
+        }
+        trailingContent={
+          activeBadge || confirmedBadge ? (
+            <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+              {activeBadge}
+              {confirmedBadge}
+            </Stack>
+          ) : undefined
+        }
+        footer={
+          isProject ? (
+            !item.confirmed ? (
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1.25}
+                alignItems={{ xs: "stretch", sm: "center" }}
+                justifyContent="space-between"
+              >
+                <Box>
+                  <Typography variant="body2" color="text.secondary">
+                    Confirm your project hours for payroll.
+                  </Typography>
+                  {!canConfirm ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Only the employee or Admin/Dispatcher/Manager can confirm project hours.
+                    </Typography>
+                  ) : null}
+                </Box>
 
-                                    <Button
-                                      variant="contained"
-                                      color="success"
-                                      startIcon={<TaskAltRoundedIcon />}
-                                      disabled={!canConfirm}
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        if (!canConfirm) return;
-                                        openConfirmModal(item);
-                                      }}
-                                    >
-                                      Confirm Trip
-                                    </Button>
-                                  </Stack>
-                                ) : (
-                                  <Typography variant="body2" color="text.secondary">
-                                    Confirmed time will appear in <strong>Time Entries</strong> for payroll.
-                                  </Typography>
-                                )
-                              ) : isService ? (
-                                <Typography variant="caption" color="text.secondary">
-                                  {item.isActive
-                                    ? item.isPaused
-                                      ? "Paused trip — open the service ticket to resume or finish."
-                                      : "Active trip — open the service ticket for quick actions."
-                                    : "Open the service ticket for full details and workflow actions."}
-                                </Typography>
-                              ) : undefined
-                            }
-                            onClick={() => {
-                              window.location.href = item.href;
-                            }}
-                          />
-                        </Box>
-                      );
+                <Button
+                  variant="contained"
+                  color="success"
+                  startIcon={<TaskAltRoundedIcon />}
+                  disabled={!canConfirm}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!canConfirm) return;
+                    openConfirmModal(item);
+                  }}
+                >
+                  Confirm Trip
+                </Button>
+              </Stack>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                Confirmed time will appear in <strong>Time Entries</strong> for payroll.
+              </Typography>
+            )
+          ) : isService ? (
+            <Typography variant="caption" color="text.secondary">
+              {item.isActive
+                ? item.isPaused
+                  ? "Paused trip — open the service ticket to resume or finish."
+                  : "Active trip — open the service ticket for quick actions."
+                : "Open the service ticket for full details and workflow actions."}
+            </Typography>
+          ) : undefined
+        }
+        onClick={() => {
+          window.location.href = item.href;
+        }}
+      />
+    </Box>
+  </Box>
+);
                     })}
                   </Stack>
                 )}

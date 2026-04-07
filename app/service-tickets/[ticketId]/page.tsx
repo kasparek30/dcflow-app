@@ -213,7 +213,9 @@ function isoTodayLocal() {
 }
 
 function hhmmLocal(d: Date) {
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes()
+  ).padStart(2, "0")}`;
 }
 
 function addMinutes(date: Date, mins: number) {
@@ -312,9 +314,13 @@ function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
   );
 }
 
-function crewMembersFromTrip(trip: { crewConfirmed?: TripCrew | null; crew?: TripCrew | null }) {
+function crewMembersFromTrip(trip: {
+  crewConfirmed?: TripCrew | null;
+  crew?: TripCrew | null;
+}) {
   const crew = trip.crewConfirmed || trip.crew || {};
-  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> = [];
+  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> =
+    [];
 
   if (crew.primaryTechUid) {
     out.push({
@@ -379,7 +385,13 @@ function normalizeTripTimerState(trip?: TripDoc | null) {
 
   if (timer === "running" || timer === "paused" || timer === "complete") return timer;
   if (status === "in_progress") return "running";
-  if (status === "complete" || status === "completed" || status === "cancelled") return "complete";
+  if (
+    status === "complete" ||
+    status === "completed" ||
+    status === "cancelled"
+  ) {
+    return "complete";
+  }
 
   return "not_started";
 }
@@ -392,10 +404,6 @@ function isTripPaused(trip?: TripDoc | null) {
   return normalizeTripTimerState(trip) === "paused";
 }
 
-function isTripCompleteState(trip?: TripDoc | null) {
-  return normalizeTripTimerState(trip) === "complete";
-}
-
 function canCurrentUserQuickStartTrip(args: {
   trip: TripDoc;
   role?: AppUser["role"];
@@ -405,38 +413,15 @@ function canCurrentUserQuickStartTrip(args: {
   const { trip, role, uid, canStartTripRole } = args;
 
   if (!canStartTripRole || !uid) return false;
-  if (isTripRunning(trip) || isTripPaused(trip) || isTripCompleteState(trip)) return false;
+  if (isTripRunning(trip) || isTripPaused(trip)) return false;
 
   const status = String(trip.status || "").toLowerCase().trim();
-  if (status === "cancelled") return false;
+  if (status === "cancelled" || status === "complete" || status === "completed") {
+    return false;
+  }
 
   if (role === "admin") return true;
   return isUidOnTripCrew(uid, trip.crew || null);
-}
-
-function tripActionSortKey(trip: TripDoc) {
-  const stateRank = isTripRunning(trip)
-    ? "0"
-    : isTripPaused(trip)
-      ? "1"
-      : isTripCompleteState(trip)
-        ? "9"
-        : "2";
-
-  const date = String(trip.date || "9999-99-99");
-  const timeWindow = String(trip.timeWindow || "").toLowerCase();
-  const fallback =
-    timeWindow === "am"
-      ? "08:00"
-      : timeWindow === "pm"
-        ? "13:00"
-        : timeWindow === "all_day"
-          ? "08:00"
-          : "99:99";
-
-  const start = String(trip.startTime || fallback);
-
-  return `${stateRank}_${date}_${start}_${trip.id}`;
 }
 
 function crewUidsFromCrew(crew?: TripCrew | null) {
@@ -452,7 +437,10 @@ function crewUidsFromCrew(crew?: TripCrew | null) {
   );
 }
 
-async function findOpenTripsForTicketId(serviceTicketId: string, excludeTripId?: string) {
+async function findOpenTripsForTicketId(
+  serviceTicketId: string,
+  excludeTripId?: string
+) {
   if (!serviceTicketId) return [];
 
   const queriesToRun = [
@@ -528,7 +516,9 @@ async function findRunningTripsForCrewUids(args: {
   for (const uid of cleanUids) {
     for (const fieldPath of fieldPaths) {
       queryPromises.push(
-        getDocs(query(collection(db, "trips"), where(fieldPath as any, "==", uid))).catch(() => null)
+        getDocs(
+          query(collection(db, "trips"), where(fieldPath as any, "==", uid))
+        ).catch(() => null)
       );
     }
   }
@@ -573,9 +563,9 @@ async function findRunningTripsForCrewUids(args: {
         status: String(data.status || ""),
         timerState: String(data.timerState || ""),
         primaryName,
-        summary: `${String(data.date || "No date")} • ${String(data.startTime || "—")}-${String(
-          data.endTime || "—"
-        )} • ${primaryName} • Trip ${docSnap.id}`,
+        summary: `${String(data.date || "No date")} • ${String(
+          data.startTime || "—"
+        )}-${String(data.endTime || "—")} • ${primaryName} • Trip ${docSnap.id}`,
       });
     }
   }
@@ -636,9 +626,13 @@ async function upsertTimeEntryFromTrip(args: {
   const timeEntryId = `trip_${args.trip.id}_${args.member.uid}`;
   const ref = doc(db, "timeEntries", timeEntryId);
   const existingSnap = await getDoc(ref);
-  const existing = existingSnap.exists() ? (existingSnap.data() as ExistingTimeEntry) : null;
+  const existing = existingSnap.exists()
+    ? (existingSnap.data() as ExistingTimeEntry)
+    : null;
   const hoursLocked = Boolean(existing?.hoursLocked);
-  const hoursToWrite = hoursLocked ? Number(existing?.hours ?? args.hoursGenerated) : args.hoursGenerated;
+  const hoursToWrite = hoursLocked
+    ? Number(existing?.hours ?? args.hoursGenerated)
+    : args.hoursGenerated;
 
   const noteLines: string[] = [];
   if (args.displayTitle) noteLines.push(`Title: ${args.displayTitle}`);
@@ -674,7 +668,9 @@ async function upsertTimeEntryFromTrip(args: {
       entryStatus: "draft",
       notes: noteLines.join("\n"),
       createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
-      createdByUid: existingSnap.exists() ? existing?.createdByUid ?? null : args.createdByUid || null,
+      createdByUid: existingSnap.exists()
+        ? existing?.createdByUid ?? null
+        : args.createdByUid || null,
       updatedAt: now,
       updatedByUid: args.createdByUid || null,
     }),
@@ -711,7 +707,9 @@ function validateMaterialsForResolved(materials: TripMaterial[]) {
   return { ok: true as const, cleaned };
 }
 
-function getTicketTone(status?: string): "default" | "success" | "warning" | "error" | "info" {
+function getTicketTone(
+  status?: string
+): "default" | "success" | "warning" | "error" | "info" {
   const s = String(status || "").toLowerCase();
   if (s === "completed") return "success";
   if (s === "in_progress") return "info";
@@ -720,7 +718,9 @@ function getTicketTone(status?: string): "default" | "success" | "warning" | "er
   return "default";
 }
 
-function getTripTone(status?: string): "default" | "success" | "warning" | "error" | "info" {
+function getTripTone(
+  status?: string
+): "default" | "success" | "warning" | "error" | "info" {
   const s = normalizeTripStatus(status);
   if (s === "complete") return "success";
   if (s === "in_progress") return "info";
@@ -782,6 +782,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     appUser?.role === "dispatcher" ||
     appUser?.role === "billing";
 
+  const isFieldUser =
+    appUser?.role === "technician" ||
+    appUser?.role === "helper" ||
+    appUser?.role === "apprentice";
+
   const myUid = appUser?.uid || "";
 
   const [mobileFinishTripId, setMobileFinishTripId] = useState<string | null>(null);
@@ -800,19 +805,36 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
 
   const [trips, setTrips] = useState<TripDoc[]>([]);
-  const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>({});
+  const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>(
+    {}
+  );
   const [tripActionError, setTripActionError] = useState<Record<string, string>>({});
-  const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>({});
+  const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>(
+    {}
+  );
   const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>({});
-  const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>({});
-  const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>({});
-  const [tripMaterials, setTripMaterials] = useState<Record<string, TripMaterial[]>>({});
-  const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>({});
-  const [hoursOverrideByTrip, setHoursOverrideByTrip] = useState<Record<string, number>>({});
-  const [helperConfirmedByTrip, setHelperConfirmedByTrip] = useState<Record<string, boolean>>({});
+  const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>(
+    {}
+  );
+  const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>(
+    {}
+  );
+  const [tripMaterials, setTripMaterials] = useState<Record<string, TripMaterial[]>>(
+    {}
+  );
+  const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>(
+    {}
+  );
+  const [hoursOverrideByTrip, setHoursOverrideByTrip] = useState<
+    Record<string, number>
+  >({});
+  const [helperConfirmedByTrip, setHelperConfirmedByTrip] = useState<
+    Record<string, boolean>
+  >({});
 
   const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
-  const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] = useState("240");
+  const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] =
+    useState("240");
   const [ticketIssueSummaryEdit, setTicketIssueSummaryEdit] = useState("");
   const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
   const [ticketEditSaving, setTicketEditSaving] = useState(false);
@@ -854,7 +876,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const helperCandidates = useMemo(() => {
     const items = employeeProfiles
-      .filter((p) => String(p.employmentStatus || "current").toLowerCase() === "current")
+      .filter(
+        (p) => String(p.employmentStatus || "current").toLowerCase() === "current"
+      )
       .filter((p) => {
         const labor = normalizeRole(p.laborRole);
         return labor === "helper" || labor === "apprentice";
@@ -874,13 +898,21 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const defaultHelperForPrimary = useMemo(() => {
     const techUid = tripPrimaryTechUid.trim();
     if (!techUid) return "";
-    return helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid)?.uid || "";
+    return (
+      helperCandidates.find(
+        (h) => String(h.defaultPairedTechUid || "").trim() === techUid
+      )?.uid || ""
+    );
   }, [tripPrimaryTechUid, helperCandidates]);
 
   const defaultHelperForEditPrimary = useMemo(() => {
     const techUid = editTripPrimaryTechUid.trim();
     if (!techUid) return "";
-    return helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === techUid)?.uid || "";
+    return (
+      helperCandidates.find(
+        (h) => String(h.defaultPairedTechUid || "").trim() === techUid
+      )?.uid || ""
+    );
   }, [editTripPrimaryTechUid, helperCandidates]);
 
   useEffect(() => {
@@ -939,7 +971,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
         setTicket(nextTicket);
         setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
-        setTicketEstimatedMinutesEdit(String(nextTicket.estimatedDurationMinutes || 60));
+        setTicketEstimatedMinutesEdit(
+          String(nextTicket.estimatedDurationMinutes || 60)
+        );
         setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
 
@@ -1007,7 +1041,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             startedByUid: trip.startedByUid ?? null,
             endedByUid: trip.endedByUid ?? null,
             pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
-            actualMinutes: typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
+            actualMinutes:
+              typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
             workNotes: trip.workNotes ?? null,
             resolutionNotes: trip.resolutionNotes ?? null,
             followUpNotes: trip.followUpNotes ?? null,
@@ -1054,7 +1089,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           }
         }
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load service ticket.");
+        setError(
+          err instanceof Error ? err.message : "Failed to load service ticket."
+        );
       } finally {
         setLoading(false);
       }
@@ -1186,37 +1223,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const liveNowIso = useMemo(() => new Date(liveNowMs).toISOString(), [liveNowMs]);
 
-  const stickyStartCtaTrip = useMemo(() => {
-    if (!Array.isArray(trips) || trips.length === 0) return null;
-
-    const canActOnTripForSticky = (trip: TripDoc) => {
-      if (!myUid) return false;
-      if (appUser?.role === "admin") return true;
-      return isUidOnTripCrew(myUid, trip.crew || null);
-    };
-
-    const ordered = [...trips].sort((a, b) => tripActionSortKey(a).localeCompare(tripActionSortKey(b)));
-
-    return (
-      ordered.find((t) => (isTripRunning(t) || isTripPaused(t)) && canActOnTripForSticky(t)) ||
-      ordered.find((t) =>
-        canCurrentUserQuickStartTrip({
-          trip: t,
-          role: appUser?.role,
-          uid: myUid,
-          canStartTripRole,
-        })
-      ) ||
-      null
-    );
-  }, [trips, appUser?.role, myUid, canStartTripRole]);
-
   useEffect(() => {
     if (!ticket?.id || trips.length === 0) return;
 
     const action = String(searchParams.get("tripAction") || "").trim().toLowerCase();
     const targetTripId = String(searchParams.get("tripId") || "").trim();
-    const hash = typeof window !== "undefined" ? decodeURIComponent(window.location.hash || "") : "";
+    const hash =
+      typeof window !== "undefined"
+        ? decodeURIComponent(window.location.hash || "")
+        : "";
 
     let consumed = false;
 
@@ -1239,7 +1254,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       if (el) {
         setTimeout(() => {
           el.scrollIntoView({ behavior: "smooth", block: "center" });
-          if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+          if (
+            el instanceof HTMLTextAreaElement ||
+            el instanceof HTMLInputElement
+          ) {
             el.focus();
           }
         }, 120);
@@ -1314,7 +1332,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
       setTicketEditOk("Ticket updated.");
     } catch (err: unknown) {
-      setTicketEditErr(err instanceof Error ? err.message : "Failed to update ticket.");
+      setTicketEditErr(
+        err instanceof Error ? err.message : "Failed to update ticket."
+      );
     } finally {
       setTicketEditSaving(false);
     }
@@ -1328,12 +1348,16 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     setTripSaveSuccess("");
 
     if (isTicketTerminal(ticket.status)) {
-      setTripSaveError("Completed or cancelled tickets cannot receive new trips.");
+      setTripSaveError(
+        "Completed or cancelled tickets cannot receive new trips."
+      );
       return;
     }
 
     if (hasOpenTrips(trips)) {
-      setTripSaveError("This ticket already has an open trip. Complete or cancel it before scheduling another.");
+      setTripSaveError(
+        "This ticket already has an open trip. Complete or cancel it before scheduling another."
+      );
       return;
     }
 
@@ -1369,10 +1393,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const secondaryHelperUid = tripSecondaryHelperUid.trim() || "";
 
       const primaryName = findTechName(tripPrimaryTechUid) || "Unnamed Technician";
-      const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
-      const secondaryTechName = secondaryTechUid ? findTechName(secondaryTechUid) || "Unnamed Technician" : null;
-      const secondaryHelperName =
-        secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
+      const helperName = helperUid
+        ? findHelperName(helperUid) || "Unnamed Helper"
+        : null;
+      const secondaryTechName = secondaryTechUid
+        ? findTechName(secondaryTechUid) || "Unnamed Technician"
+        : null;
+      const secondaryHelperName = secondaryHelperUid
+        ? findHelperName(secondaryHelperUid) || "Unnamed Helper"
+        : null;
 
       const payload = {
         active: true,
@@ -1483,11 +1512,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
-      setTripSaveSuccess(`Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`);
+      setTripSaveSuccess(
+        `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`
+      );
       setTripNotes("");
       setScheduleOpen(false);
     } catch (err: unknown) {
-      setTripSaveError(err instanceof Error ? err.message : "Failed to create trip.");
+      setTripSaveError(
+        err instanceof Error ? err.message : "Failed to create trip."
+      );
     } finally {
       setTripSaving(false);
     }
@@ -1614,7 +1647,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks } : t))
+        prev.map((t) =>
+          t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks } : t
+        )
       );
 
       setTripOk(trip.id, "Paused.");
@@ -1688,7 +1723,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, timerState: "running", pauseBlocks } : t))
+        prev.map((t) =>
+          t.id === trip.id ? { ...t, timerState: "running", pauseBlocks } : t
+        )
       );
 
       setTripOk(trip.id, "Resumed.");
@@ -1937,7 +1974,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         await persistTicketStatus(nextStatus, now, billingOverride);
       }
 
-      setTripOk(trip.id, `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Hours: ${hoursToUse}.`);
+      setTripOk(
+        trip.id,
+        `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Hours: ${hoursToUse}.`
+      );
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to finish trip.");
     } finally {
@@ -1956,9 +1996,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
     const tripHelperUid = String(trip.crew?.helperUid || "").trim();
     const defaultHelperUid =
-      helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid)?.uid || "";
+      helperCandidates.find(
+        (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid
+      )?.uid || "";
 
-    setEditTripUseDefaultHelper(Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid));
+    setEditTripUseDefaultHelper(
+      Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid)
+    );
 
     setEditTripId(trip.id);
     setEditTripDate(trip.date || isoTodayLocal());
@@ -2002,11 +2046,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const secondaryHelperUid = editTripSecondaryHelperUid.trim() || "";
 
       const primaryName = findTechName(editTripPrimaryTechUid) || "Unnamed Technician";
-      const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
-      const secondaryTechName =
-        secondaryTechUid ? findTechName(secondaryTechUid) || "Unnamed Technician" : null;
-      const secondaryHelperName =
-        secondaryHelperUid ? findHelperName(secondaryHelperUid) || "Unnamed Helper" : null;
+      const helperName = helperUid
+        ? findHelperName(helperUid) || "Unnamed Helper"
+        : null;
+      const secondaryTechName = secondaryTechUid
+        ? findTechName(secondaryTechUid) || "Unnamed Technician"
+        : null;
+      const secondaryHelperName = secondaryHelperUid
+        ? findHelperName(secondaryHelperUid) || "Unnamed Helper"
+        : null;
 
       const nextCrew: TripCrew = {
         primaryTechUid: editTripPrimaryTechUid || null,
@@ -2095,7 +2143,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
       setEditTripId(null);
     } catch (err: unknown) {
-      setEditTripErr(err instanceof Error ? err.message : "Failed to update trip.");
+      setEditTripErr(
+        err instanceof Error ? err.message : "Failed to update trip."
+      );
     } finally {
       setEditTripSaving(false);
     }
@@ -2109,7 +2159,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       return;
     }
 
-    if (window.prompt(`Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`, "") !== "DELETE") {
+    if (
+      window.prompt(
+        `Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`,
+        ""
+      ) !== "DELETE"
+    ) {
       return;
     }
 
@@ -2152,7 +2207,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
       setTripOk(trip.id, "Trip removed.");
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to delete trip.");
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to delete trip."
+      );
     } finally {
       setTripSavingFlag(trip.id, false);
     }
@@ -2162,7 +2220,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (!ticket?.id || !myUid) return;
 
     const role = String(appUser?.role || "");
-    const canSelfDispatch = ["technician", "helper", "apprentice", "admin", "dispatcher", "manager"].includes(role);
+    const canSelfDispatch = [
+      "technician",
+      "helper",
+      "apprentice",
+      "admin",
+      "dispatcher",
+      "manager",
+    ].includes(role);
 
     if (!canSelfDispatch) {
       alert("You do not have permission to claim tickets.");
@@ -2196,7 +2261,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     const nowString = now.toISOString();
 
     const helperUid =
-      helperCandidates.find((h) => String(h.defaultPairedTechUid || "").trim() === myUid)?.uid || "";
+      helperCandidates.find(
+        (h) => String(h.defaultPairedTechUid || "").trim() === myUid
+      )?.uid || "";
     const helperName = helperUid
       ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
       : null;
@@ -2341,7 +2408,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       setTicket((prev) => (prev ? { ...prev, billing: next, updatedAt: now } : prev));
       setBillingOk(`Billing status updated: ${nextStatus.replaceAll("_", " ")}`);
     } catch (err: unknown) {
-      setBillingErr(err instanceof Error ? err.message : "Failed to update billing status.");
+      setBillingErr(
+        err instanceof Error ? err.message : "Failed to update billing status."
+      );
     } finally {
       setBillingSaving(false);
     }
@@ -2356,119 +2425,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   ]
     .filter(Boolean)
     .join(", ");
-
-  const stickyStartCta =
-    isMobile && stickyStartCtaTrip ? (
-      <Paper
-        variant="outlined"
-        sx={{
-          position: "sticky",
-          top: 8,
-          zIndex: 20,
-          p: 1.5,
-          borderRadius: 3,
-          borderColor: isTripRunning(stickyStartCtaTrip)
-            ? alpha(theme.palette.success.main, 0.5)
-            : isTripPaused(stickyStartCtaTrip)
-              ? alpha(theme.palette.warning.main, 0.5)
-              : alpha(theme.palette.info.main, 0.45),
-          backgroundColor: isTripRunning(stickyStartCtaTrip)
-            ? alpha(theme.palette.success.main, 0.08)
-            : isTripPaused(stickyStartCtaTrip)
-              ? alpha(theme.palette.warning.main, 0.12)
-              : alpha(theme.palette.info.main, 0.08),
-          boxShadow: isTripRunning(stickyStartCtaTrip)
-            ? `0 14px 28px ${alpha(theme.palette.success.main, 0.12)}`
-            : isTripPaused(stickyStartCtaTrip)
-              ? `0 14px 28px ${alpha(theme.palette.warning.main, 0.12)}`
-              : `0 14px 28px ${alpha(theme.palette.info.main, 0.10)}`,
-        }}
-      >
-        <Stack spacing={1.25}>
-          <Box>
-            <Typography
-              variant="overline"
-              sx={{
-                color: isTripRunning(stickyStartCtaTrip)
-                  ? "success.dark"
-                  : isTripPaused(stickyStartCtaTrip)
-                    ? "warning.dark"
-                    : "info.dark",
-                letterSpacing: "0.08em",
-                fontWeight: 800,
-              }}
-            >
-              {isTripRunning(stickyStartCtaTrip)
-                ? "Active trip"
-                : isTripPaused(stickyStartCtaTrip)
-                  ? "Paused trip"
-                  : "Next trip"}
-            </Typography>
-
-            <Typography variant="subtitle1" fontWeight={800}>
-              {ticket?.issueSummary || "Service Ticket"}
-            </Typography>
-
-            <Typography variant="body2" color="text.secondary">
-              {stickyStartCtaTrip.date} •{" "}
-              {stickyStartCtaTrip.startTime && stickyStartCtaTrip.endTime
-                ? `${stickyStartCtaTrip.startTime}-${stickyStartCtaTrip.endTime}`
-                : formatTripWindow(String(stickyStartCtaTrip.timeWindow || ""))}
-              {stickyStartCtaTrip.crew?.primaryTechName
-                ? ` • ${stickyStartCtaTrip.crew.primaryTechName}`
-                : ""}
-            </Typography>
-          </Box>
-
-          <Stack direction="row" spacing={1}>
-            {!isTripRunning(stickyStartCtaTrip) && !isTripPaused(stickyStartCtaTrip) ? (
-              <Button
-                variant="contained"
-                color="success"
-                fullWidth
-                startIcon={<PlayArrowRoundedIcon />}
-                onClick={() => handleStartTrip(stickyStartCtaTrip)}
-                disabled={
-                  !canCurrentUserQuickStartTrip({
-                    trip: stickyStartCtaTrip,
-                    role: appUser?.role,
-                    uid: myUid,
-                    canStartTripRole,
-                  }) || Boolean(tripActionSaving[stickyStartCtaTrip.id])
-                }
-              >
-                {tripActionSaving[stickyStartCtaTrip.id] ? "Starting..." : "Start Trip"}
-              </Button>
-            ) : null}
-
-            {isTripRunning(stickyStartCtaTrip) ? (
-              <Button
-                variant="outlined"
-                fullWidth
-                startIcon={<PauseRoundedIcon />}
-                onClick={() => handlePauseTrip(stickyStartCtaTrip)}
-                disabled={!canCurrentUserActOnTrip(stickyStartCtaTrip) || Boolean(tripActionSaving[stickyStartCtaTrip.id])}
-              >
-                {tripActionSaving[stickyStartCtaTrip.id] ? "Pausing..." : "Pause Trip"}
-              </Button>
-            ) : null}
-
-            {isTripPaused(stickyStartCtaTrip) ? (
-              <Button
-                variant="contained"
-                color="success"
-                fullWidth
-                startIcon={<PlayArrowRoundedIcon />}
-                onClick={() => handleResumeTrip(stickyStartCtaTrip)}
-                disabled={!canCurrentUserActOnTrip(stickyStartCtaTrip) || Boolean(tripActionSaving[stickyStartCtaTrip.id])}
-              >
-                {tripActionSaving[stickyStartCtaTrip.id] ? "Resuming..." : "Resume Trip"}
-              </Button>
-            ) : null}
-          </Stack>
-        </Stack>
-      </Paper>
-    ) : null;
 
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
@@ -2486,7 +2442,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               maxWidth="sm"
             >
               <DialogTitle sx={{ pb: 1 }}>
-                <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
+                <Stack
+                  direction="row"
+                  alignItems="flex-start"
+                  justifyContent="space-between"
+                  spacing={2}
+                >
                   <Box sx={{ minWidth: 0 }}>
                     <Typography
                       variant="overline"
@@ -2538,9 +2499,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                     liveNowIso
                                   );
                                   const gross =
-                                    mobileFinishTrip.actualStartAt && !mobileFinishTrip.actualEndAt
-                                      ? minutesBetweenIso(mobileFinishTrip.actualStartAt, liveNowIso)
-                                      : mobileFinishTrip.actualStartAt && mobileFinishTrip.actualEndAt
+                                    mobileFinishTrip.actualStartAt &&
+                                    !mobileFinishTrip.actualEndAt
+                                      ? minutesBetweenIso(
+                                          mobileFinishTrip.actualStartAt,
+                                          liveNowIso
+                                        )
+                                      : mobileFinishTrip.actualStartAt &&
+                                          mobileFinishTrip.actualEndAt
                                         ? minutesBetweenIso(
                                             mobileFinishTrip.actualStartAt,
                                             mobileFinishTrip.actualEndAt
@@ -2630,9 +2596,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                   onChange={(e) =>
                                     setTripMaterials((prev) => ({
                                       ...prev,
-                                      [mobileFinishTrip.id]: (prev[mobileFinishTrip.id] || []).map(
-                                        (row, rowIdx) =>
-                                          rowIdx === idx ? { ...row, name: e.target.value } : row
+                                      [mobileFinishTrip.id]: (
+                                        prev[mobileFinishTrip.id] || []
+                                      ).map((row, rowIdx) =>
+                                        rowIdx === idx
+                                          ? { ...row, name: e.target.value }
+                                          : row
                                       ),
                                     }))
                                   }
@@ -2646,9 +2615,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                   onChange={(e) =>
                                     setTripMaterials((prev) => ({
                                       ...prev,
-                                      [mobileFinishTrip.id]: (prev[mobileFinishTrip.id] || []).map(
-                                        (row, rowIdx) =>
-                                          rowIdx === idx ? { ...row, qty: Number(e.target.value) } : row
+                                      [mobileFinishTrip.id]: (
+                                        prev[mobileFinishTrip.id] || []
+                                      ).map((row, rowIdx) =>
+                                        rowIdx === idx
+                                          ? { ...row, qty: Number(e.target.value) }
+                                          : row
                                       ),
                                     }))
                                   }
@@ -2660,9 +2632,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                   onClick={() =>
                                     setTripMaterials((prev) => ({
                                       ...prev,
-                                      [mobileFinishTrip.id]: (prev[mobileFinishTrip.id] || []).filter(
-                                        (_, rowIdx) => rowIdx !== idx
-                                      ),
+                                      [mobileFinishTrip.id]: (
+                                        prev[mobileFinishTrip.id] || []
+                                      ).filter((_, rowIdx) => rowIdx !== idx),
                                     }))
                                   }
                                 >
@@ -2693,7 +2665,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 ) : null}
               </DialogContent>
 
-              <DialogActions sx={{ p: 2, pb: "calc(16px + env(safe-area-inset-bottom))" }}>
+              <DialogActions
+                sx={{ p: 2, pb: "calc(16px + env(safe-area-inset-bottom))" }}
+              >
                 <Button onClick={closeMobileFinishSheet}>Cancel</Button>
 
                 {mobileFinishTrip ? (
@@ -2701,7 +2675,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     variant="contained"
                     color={mobileFinishMode === "resolved" ? "success" : "primary"}
                     onClick={() =>
-                      finishTrip(mobileFinishTrip, mobileFinishMode as "resolved" | "follow_up")
+                      finishTrip(
+                        mobileFinishTrip,
+                        mobileFinishMode as "resolved" | "follow_up"
+                      )
                     }
                   >
                     {mobileFinishMode === "resolved"
@@ -2730,22 +2707,26 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                   />
                 </Stack>
 
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Chip label={`Ticket ID: ${ticketId}`} variant="outlined" />
-                  <IconButton
-                    size="small"
-                    onClick={() => navigator.clipboard.writeText(ticketId).catch(() => undefined)}
-                  >
-                    <ContentCopyRoundedIcon fontSize="small" />
-                  </IconButton>
-                </Stack>
+                {!isFieldUser ? (
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Chip label={`Ticket ID: ${ticketId}`} variant="outlined" />
+                    <IconButton
+                      size="small"
+                      onClick={() =>
+                        navigator.clipboard.writeText(ticketId).catch(() => undefined)
+                      }
+                    >
+                      <ContentCopyRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                ) : null}
               </Stack>
 
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
                 {!ticket.assignedTechnicianId && !hasOpenTrips(trips) ? (
                   <Button
                     variant="contained"
-                    color="success"
+                    color="primary"
                     onClick={handleClaimAndStartTrip}
                     startIcon={<PlayArrowRoundedIcon />}
                   >
@@ -2763,8 +2744,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 </Button>
               </Stack>
             </Stack>
-
-            {stickyStartCta}
 
             <Box
               sx={{
@@ -2793,54 +2772,65 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     ) : null
                   }
                 >
-                  <Stack spacing={2}>
-                    <Box>
-                      <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                        Customer
-                      </Typography>
-                      <Stack spacing={1}>
-                        <Typography variant="body1">
-                          <strong>Name:</strong> {ticket.customerDisplayName || "—"}
+                  <Stack spacing={1.5}>
+                    <Typography variant="h6" fontWeight={800}>
+                      {ticket.customerDisplayName || "—"}
+                    </Typography>
+
+                    <Stack spacing={0.25}>
+                      {ticket.serviceAddressLabel ? (
+                        <Typography variant="body2" color="text.secondary">
+                          {ticket.serviceAddressLabel}
                         </Typography>
+                      ) : null}
 
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <PhoneOutlinedIcon fontSize="small" color="action" />
-                          <Typography variant="body1">
-                            {customerPhone ? <a href={`tel:${customerPhone}`}>{customerPhone}</a> : "—"}
-                          </Typography>
-                        </Stack>
-
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <AlternateEmailRoundedIcon fontSize="small" color="action" />
-                          <Typography variant="body1">
-                            {customerEmail ? <a href={`mailto:${customerEmail}`}>{customerEmail}</a> : "—"}
-                          </Typography>
-                        </Stack>
-                      </Stack>
-                    </Box>
-
-                    <Divider />
-
-                    <Box>
-                      <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                        Service Address
+                      <Typography variant="body1">
+                        {ticket.serviceAddressLine1 || "—"}
                       </Typography>
-                      <Stack spacing={0.5}>
-                        <Typography variant="body1">{ticket.serviceAddressLabel || "—"}</Typography>
-                        <Typography variant="body1">{ticket.serviceAddressLine1 || "—"}</Typography>
-                        {ticket.serviceAddressLine2 ? (
-                          <Typography variant="body1">{ticket.serviceAddressLine2}</Typography>
-                        ) : null}
+
+                      {ticket.serviceAddressLine2 ? (
                         <Typography variant="body1">
-                          {ticket.serviceCity || "—"}, {ticket.serviceState || "—"}{" "}
-                          {ticket.servicePostalCode || ""}
+                          {ticket.serviceAddressLine2}
+                        </Typography>
+                      ) : null}
+
+                      <Typography variant="body1">
+                        {[ticket.serviceCity, ticket.serviceState, ticket.servicePostalCode]
+                          .filter(Boolean)
+                          .join(", ") || "—"}
+                      </Typography>
+                    </Stack>
+
+                    <Stack spacing={1}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <PhoneOutlinedIcon fontSize="small" color="action" />
+                        <Typography variant="body1">
+                          {customerPhone ? (
+                            <a href={`tel:${customerPhone}`}>{customerPhone}</a>
+                          ) : (
+                            "—"
+                          )}
                         </Typography>
                       </Stack>
-                    </Box>
+
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <AlternateEmailRoundedIcon fontSize="small" color="action" />
+                        <Typography variant="body1">
+                          {customerEmail ? (
+                            <a href={`mailto:${customerEmail}`}>{customerEmail}</a>
+                          ) : (
+                            "—"
+                          )}
+                        </Typography>
+                      </Stack>
+                    </Stack>
                   </Stack>
                 </Section>
 
-                <Section title="Ticket Overview" icon={<AssignmentTurnedInRoundedIcon color="primary" />}>
+                <Section
+                  title="Ticket Overview"
+                  icon={<AssignmentTurnedInRoundedIcon color="primary" />}
+                >
                   {canDispatch ? (
                     <Stack spacing={2}>
                       <Alert severity="info" variant="outlined">
@@ -2859,7 +2849,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                           size="small"
                           label="Status"
                           value={ticketStatusEdit}
-                          onChange={(e) => setTicketStatusEdit(e.target.value as TicketStatus)}
+                          onChange={(e) =>
+                            setTicketStatusEdit(e.target.value as TicketStatus)
+                          }
                         >
                           <MenuItem value="new">New</MenuItem>
                           <MenuItem value="scheduled">Scheduled</MenuItem>
@@ -2875,7 +2867,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                           label="Estimated Duration (minutes)"
                           inputProps={{ min: 1 }}
                           value={ticketEstimatedMinutesEdit}
-                          onChange={(e) => setTicketEstimatedMinutesEdit(e.target.value)}
+                          onChange={(e) =>
+                            setTicketEstimatedMinutesEdit(e.target.value)
+                          }
                         />
                       </Box>
 
@@ -2915,7 +2909,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                         <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
                       </Typography>
                       <Typography variant="body1">
-                        <strong>Estimated Duration:</strong> {ticket.estimatedDurationMinutes} minutes
+                        <strong>Estimated Duration:</strong>{" "}
+                        {ticket.estimatedDurationMinutes} minutes
                       </Typography>
                       <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
                         {ticket.issueDetails || "No additional issue details."}
@@ -2931,7 +2926,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                   icon={<ScheduleRoundedIcon color="primary" />}
                   action={
                     canDispatch ? (
-                      <Button variant="contained" onClick={() => setScheduleOpen((prev) => !prev)}>
+                      <Button
+                        variant="contained"
+                        onClick={() => setScheduleOpen((prev) => !prev)}
+                      >
                         {scheduleOpen ? "Close" : "Schedule Trip"}
                       </Button>
                     ) : null
@@ -2955,15 +2953,23 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                         trip.actualStartAt && !trip.actualEndAt
                           ? minutesBetweenIso(trip.actualStartAt, liveNowIso)
                           : trip.actualStartAt && trip.actualEndAt
-                            ? minutesBetweenIso(trip.actualStartAt, trip.actualEndAt)
+                            ? minutesBetweenIso(
+                                trip.actualStartAt,
+                                trip.actualEndAt
+                              )
                             : 0;
                       const billableMinutes = Math.max(0, grossMinutes - pausedMinutes);
                       const timerHours = roundToHalf(billableMinutes / 60);
-                      const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
+                      const mats = Array.isArray(tripMaterials[trip.id])
+                        ? tripMaterials[trip.id]
+                        : [];
                       const finishMode = finishModeByTrip[trip.id] || "none";
                       const showFinishPanel =
-                        normalizeTripStatus(trip.status) === "in_progress" && finishMode !== "none";
-                      const anotherTripInProgress = hasInProgressTrips(trips.filter((t) => t.id !== trip.id));
+                        normalizeTripStatus(trip.status) === "in_progress" &&
+                        finishMode !== "none";
+                      const anotherTripInProgress = hasInProgressTrips(
+                        trips.filter((t) => t.id !== trip.id)
+                      );
                       const canQuickStart = canCurrentUserQuickStartTrip({
                         trip,
                         role: appUser?.role,
@@ -2979,25 +2985,18 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                             p: 1.5,
                             borderRadius: 3,
                             borderColor: runningTrip
-                              ? alpha(theme.palette.success.main, 0.5)
+                              ? alpha(theme.palette.primary.main, 0.26)
                               : pausedTrip
-                                ? alpha(theme.palette.warning.main, 0.55)
-                                : normalizeTripStatus(trip.status) === "in_progress"
-                                  ? alpha(theme.palette.info.main, 0.3)
-                                  : "divider",
+                                ? alpha(theme.palette.warning.main, 0.3)
+                                : "divider",
                             backgroundColor: runningTrip
-                              ? alpha(theme.palette.success.main, 0.08)
+                              ? alpha(theme.palette.primary.main, 0.05)
                               : pausedTrip
-                                ? alpha(theme.palette.warning.main, 0.12)
+                                ? alpha(theme.palette.warning.main, 0.08)
                                 : "background.paper",
-                            boxShadow: runningTrip
-                              ? `0 14px 30px ${alpha(theme.palette.success.main, 0.10)}`
-                              : pausedTrip
-                                ? `0 14px 30px ${alpha(theme.palette.warning.main, 0.08)}`
-                                : "none",
                           }}
                         >
-                          <Stack spacing={1.25}>
+                          <Stack spacing={1.5}>
                             <Stack
                               direction="row"
                               justifyContent="space-between"
@@ -3013,10 +3012,26 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                 <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 0.75 }}>
                                   <Chip
                                     size="small"
-                                    label={pausedTrip ? "Paused" : runningTrip ? "In Progress" : formatLifecycleTripStatus(trip.status)}
-                                    color={pausedTrip ? "warning" : runningTrip ? "success" : getTripTone(trip.status)}
+                                    label={
+                                      pausedTrip
+                                        ? "Paused"
+                                        : runningTrip
+                                          ? "In Progress"
+                                          : formatLifecycleTripStatus(trip.status)
+                                    }
+                                    color={
+                                      pausedTrip
+                                        ? "warning"
+                                        : runningTrip
+                                          ? "info"
+                                          : getTripTone(trip.status)
+                                    }
                                   />
-                                  <Chip size="small" label={`Timer: ${timerState}`} variant="outlined" />
+                                  <Chip
+                                    size="small"
+                                    label={`Timer: ${timerState}`}
+                                    variant="outlined"
+                                  />
                                 </Stack>
                               </Box>
 
@@ -3040,103 +3055,137 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                               ) : null}
                             </Stack>
 
-                            <Stack
-                              direction={{ xs: "column", sm: "row" }}
-                              spacing={1}
-                              flexWrap="wrap"
-                              useFlexGap
-                            >
+                            <Stack spacing={1}>
                               {canStartTrip(trip.status, trip.timerState) ? (
                                 <Button
                                   variant="contained"
-                                  color="success"
+                                  color="primary"
+                                  size="large"
                                   startIcon={<PlayArrowRoundedIcon />}
                                   onClick={() => handleStartTrip(trip)}
                                   disabled={!canQuickStart || savingThis || anotherTripInProgress}
-                                  sx={{ width: { xs: "100%", sm: "auto" } }}
+                                  fullWidth
+                                  sx={{
+                                    minHeight: 48,
+                                    borderRadius: 999,
+                                    fontWeight: 700,
+                                  }}
                                 >
                                   Start Trip
                                 </Button>
                               ) : null}
 
-                              {canPauseTrip(trip.status, trip.timerState) ? (
-                                <Button
-                                  variant="outlined"
-                                  startIcon={<PauseRoundedIcon />}
-                                  onClick={() => handlePauseTrip(trip)}
-                                  disabled={!canAct || savingThis}
-                                  sx={{ width: { xs: "100%", sm: "auto" } }}
-                                >
-                                  Pause
-                                </Button>
-                              ) : null}
-
-                              {canResumeTrip(trip.status, trip.timerState) ? (
-                                <Button
-                                  variant="contained"
-                                  color="success"
-                                  startIcon={<PlayArrowRoundedIcon />}
-                                  onClick={() => handleResumeTrip(trip)}
-                                  disabled={!canAct || savingThis}
-                                  sx={{ width: { xs: "100%", sm: "auto" } }}
-                                >
-                                  Resume
-                                </Button>
-                              ) : null}
-
-                              {isMobile && normalizeTripStatus(trip.status) === "in_progress" ? (
-                                <Alert severity="info" variant="outlined" sx={{ py: 0, width: "100%" }}>
-                                  Finish actions still live in the trip finish sheet. Start, pause, and
-                                  resume are now available right here on the trip card.
-                                </Alert>
-                              ) : normalizeTripStatus(trip.status) === "in_progress" ? (
-                                <>
+                              <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                                useFlexGap
+                                flexWrap="wrap"
+                              >
+                                {canPauseTrip(trip.status, trip.timerState) ? (
                                   <Button
                                     variant="outlined"
-                                    onClick={() => {
-                                      setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "follow_up" }));
-                                    }}
-                                    disabled={!canAct || savingThis || !canFinishTrip(trip.status, trip.timerState)}
+                                    color="warning"
+                                    startIcon={<PauseRoundedIcon />}
+                                    onClick={() => handlePauseTrip(trip)}
+                                    disabled={!canAct || savingThis}
+                                    sx={{ minHeight: 44 }}
                                   >
-                                    Follow-Up
+                                    Pause
                                   </Button>
+                                ) : null}
 
+                                {canResumeTrip(trip.status, trip.timerState) ? (
                                   <Button
-                                    variant="outlined"
-                                    onClick={() => {
-                                      setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "resolved" }));
-                                    }}
-                                    disabled={!canAct || savingThis || !canFinishTrip(trip.status, trip.timerState)}
+                                    variant="contained"
+                                    color="primary"
+                                    startIcon={<PlayArrowRoundedIcon />}
+                                    onClick={() => handleResumeTrip(trip)}
+                                    disabled={!canAct || savingThis}
+                                    sx={{ minHeight: 44 }}
                                   >
-                                    Resolved
+                                    Resume
                                   </Button>
+                                ) : null}
 
-                                  {finishMode !== "none" ? (
+                                {!isMobile &&
+                                normalizeTripStatus(trip.status) === "in_progress" ? (
+                                  <>
                                     <Button
                                       variant="outlined"
                                       onClick={() =>
-                                        setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }))
+                                        setFinishModeByTrip((prev) => ({
+                                          ...prev,
+                                          [trip.id]: "follow_up",
+                                        }))
+                                      }
+                                      disabled={
+                                        !canAct ||
+                                        savingThis ||
+                                        !canFinishTrip(trip.status, trip.timerState)
                                       }
                                     >
-                                      Clear
+                                      Follow-Up
                                     </Button>
-                                  ) : null}
-                                </>
+
+                                    <Button
+                                      variant="outlined"
+                                      onClick={() =>
+                                        setFinishModeByTrip((prev) => ({
+                                          ...prev,
+                                          [trip.id]: "resolved",
+                                        }))
+                                      }
+                                      disabled={
+                                        !canAct ||
+                                        savingThis ||
+                                        !canFinishTrip(trip.status, trip.timerState)
+                                      }
+                                    >
+                                      Resolved
+                                    </Button>
+
+                                    {finishMode !== "none" ? (
+                                      <Button
+                                        variant="outlined"
+                                        onClick={() =>
+                                          setFinishModeByTrip((prev) => ({
+                                            ...prev,
+                                            [trip.id]: "none",
+                                          }))
+                                        }
+                                      >
+                                        Clear
+                                      </Button>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                              </Stack>
+
+                              {isMobile &&
+                              normalizeTripStatus(trip.status) === "in_progress" ? (
+                                <Alert severity="info" variant="outlined">
+                                  Finish actions still live in the trip finish sheet. Start,
+                                  pause, and resume are available directly on this card.
+                                </Alert>
                               ) : null}
                             </Stack>
 
                             <Typography variant="body2" color="text.secondary">
                               Tech: <strong>{trip.crew?.primaryTechName || "Unassigned"}</strong>
-                              {trip.crew?.helperName ? ` • Helper: ${trip.crew.helperName}` : ""}
-                              {trip.crew?.secondaryTechName ? ` • 2nd Tech: ${trip.crew.secondaryTechName}` : ""}
+                              {trip.crew?.helperName
+                                ? ` • Helper: ${trip.crew.helperName}`
+                                : ""}
+                              {trip.crew?.secondaryTechName
+                                ? ` • 2nd Tech: ${trip.crew.secondaryTechName}`
+                                : ""}
                               {trip.crew?.secondaryHelperName
                                 ? ` • 2nd Helper: ${trip.crew.secondaryHelperName}`
                                 : ""}
                             </Typography>
 
                             <Typography variant="body2" color="text.secondary">
-                              Timer minutes: <strong>{billableMinutes}</strong> (gross {grossMinutes} - paused{" "}
-                              {pausedMinutes})
+                              Timer minutes: <strong>{billableMinutes}</strong> (gross{" "}
+                              {grossMinutes} - paused {pausedMinutes})
                             </Typography>
 
                             <TextField
@@ -3146,9 +3195,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                               minRows={3}
                               value={tripWorkNotes[trip.id] ?? ""}
                               onChange={(e) =>
-                                setTripWorkNotes((prev) => ({ ...prev, [trip.id]: e.target.value }))
+                                setTripWorkNotes((prev) => ({
+                                  ...prev,
+                                  [trip.id]: e.target.value,
+                                }))
                               }
-                              disabled={!canAct || normalizeTripStatus(trip.status) === "cancelled"}
+                              disabled={
+                                !canAct ||
+                                normalizeTripStatus(trip.status) === "cancelled"
+                              }
                             />
 
                             <Button
@@ -3325,7 +3380,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                             onClick={() =>
                                               setTripMaterials((prev) => ({
                                                 ...prev,
-                                                [trip.id]: [...(prev[trip.id] || []), { name: "", qty: 1 }],
+                                                [trip.id]: [
+                                                  ...(prev[trip.id] || []),
+                                                  { name: "", qty: 1 },
+                                                ],
                                               }))
                                             }
                                           >
@@ -3394,7 +3452,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                               size="small"
                               label="Time Window"
                               value={tripTimeWindow}
-                              onChange={(e) => setTripTimeWindow(e.target.value as TripTimeWindow)}
+                              onChange={(e) =>
+                                setTripTimeWindow(e.target.value as TripTimeWindow)
+                              }
                             >
                               <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
                               <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
@@ -3519,7 +3579,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                           </Alert>
 
                           {tripSaveError ? <Alert severity="error">{tripSaveError}</Alert> : null}
-                          {tripSaveSuccess ? <Alert severity="success">{tripSaveSuccess}</Alert> : null}
+                          {tripSaveSuccess ? (
+                            <Alert severity="success">{tripSaveSuccess}</Alert>
+                          ) : null}
 
                           <Button variant="contained" type="submit" disabled={tripSaving}>
                             {tripSaving ? "Scheduling..." : "Schedule Trip"}
@@ -3547,7 +3609,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
                       <Typography variant="body1">
                         Total billed hours:{" "}
-                        <strong>{Number(ticket.billing.labor.totalHours || 0).toFixed(2)}</strong>
+                        <strong>
+                          {Number(ticket.billing.labor.totalHours || 0).toFixed(2)}
+                        </strong>
                       </Typography>
 
                       <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
@@ -3562,12 +3626,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                         {ticket.billing.workNotes || "—"}
                       </Typography>
 
-                      {Array.isArray(ticket.billing.materials) && ticket.billing.materials.length ? (
+                      {Array.isArray(ticket.billing.materials) &&
+                      ticket.billing.materials.length ? (
                         <Stack spacing={1}>
                           {ticket.billing.materials.map((material, idx) => (
                             <Paper key={`bill-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
                               <Typography variant="body1" fontWeight={700}>
-                                {material.name} • {Number(material.qty).toFixed(2)} {material.unit || ""}
+                                {material.name} • {Number(material.qty).toFixed(2)}{" "}
+                                {material.unit || ""}
                               </Typography>
                               {material.notes ? (
                                 <Typography variant="body2" color="text.secondary">
@@ -3629,7 +3695,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               </Stack>
             </Box>
 
-            <Dialog open={Boolean(editTripId)} onClose={() => setEditTripId(null)} fullWidth maxWidth="sm">
+            <Dialog
+              open={Boolean(editTripId)}
+              onClose={() => setEditTripId(null)}
+              fullWidth
+              maxWidth="sm"
+            >
               <DialogTitle>Edit / Reschedule Trip</DialogTitle>
 
               <DialogContent dividers>
@@ -3646,7 +3717,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     select
                     label="Time Window"
                     value={editTripTimeWindow}
-                    onChange={(e) => setEditTripTimeWindow(e.target.value as TripTimeWindow)}
+                    onChange={(e) =>
+                      setEditTripTimeWindow(e.target.value as TripTimeWindow)
+                    }
                   >
                     <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
                     <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
@@ -3759,7 +3832,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
               <DialogActions>
                 <Button onClick={() => setEditTripId(null)}>Close</Button>
-                <Button variant="contained" onClick={handleSaveTripEdit} disabled={editTripSaving}>
+                <Button
+                  variant="contained"
+                  onClick={handleSaveTripEdit}
+                  disabled={editTripSaving}
+                >
                   {editTripSaving ? "Saving..." : "Save Changes"}
                 </Button>
               </DialogActions>

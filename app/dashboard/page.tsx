@@ -1,17 +1,25 @@
+// app/dashboard/page.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { collection, limit, onSnapshot, query, where } from "firebase/firestore";
 import {
   Alert,
   Box,
   Button,
   Card,
+  CardActionArea,
   CardContent,
   Chip,
+  CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Divider,
+  IconButton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -27,6 +35,8 @@ import EngineeringRoundedIcon from "@mui/icons-material/EngineeringRounded";
 import PlayCircleRoundedIcon from "@mui/icons-material/PlayCircleRounded";
 import PauseCircleRoundedIcon from "@mui/icons-material/PauseCircleRounded";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
+import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -45,6 +55,20 @@ type DashboardTicketItem = {
   readyToBillAt?: string | null;
   status?: string;
 };
+
+type MarkerEntry = {
+  marker: any;
+  item: DashboardTicketItem;
+  address: string;
+  infoHtml: string;
+};
+
+declare global {
+  interface Window {
+    google?: any;
+    __dcflowGoogleMapsPromise?: Promise<any>;
+  }
+}
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
@@ -120,6 +144,58 @@ function buildStaticMapUrl(items: DashboardTicketItem[]) {
   params.set("key", apiKey);
 
   return `${base}?${params.toString()}`;
+}
+
+function loadGoogleMapsApi(apiKey: string) {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("Google Maps can only load in the browser."));
+  }
+
+  if (window.google?.maps) {
+    return Promise.resolve(window.google);
+  }
+
+  if (window.__dcflowGoogleMapsPromise) {
+    return window.__dcflowGoogleMapsPromise;
+  }
+
+  window.__dcflowGoogleMapsPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-google-maps="dcflow"]') as HTMLScriptElement | null;
+
+    if (existing) {
+      existing.addEventListener("load", () => {
+        if (window.google?.maps) resolve(window.google);
+        else reject(new Error("Google Maps failed to initialize."));
+      });
+      existing.addEventListener("error", () => reject(new Error("Google Maps script failed to load.")));
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleMaps = "dcflow";
+
+    script.onload = () => {
+      if (window.google?.maps) resolve(window.google);
+      else reject(new Error("Google Maps failed to initialize."));
+    };
+
+    script.onerror = () => reject(new Error("Google Maps script failed to load."));
+    document.head.appendChild(script);
+  });
+
+  return window.__dcflowGoogleMapsPromise;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function SectionCard({
@@ -415,156 +491,653 @@ function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
   );
 }
 
-function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketItem[] }) {
+function AreaSnapshotDialog({
+  open,
+  onClose,
+  activeTickets,
+}: {
+  open: boolean;
+  onClose: () => void;
+  activeTickets: DashboardTicketItem[];
+}) {
   const theme = useTheme();
-  const mapUrl = useMemo(() => buildStaticMapUrl(activeTickets), [activeTickets]);
+  const apiKey = safeTrim(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY);
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markersByTicketIdRef = useRef<Record<string, MarkerEntry>>({});
+  const infoWindowRef = useRef<any>(null);
+
+  const [isLoadingMap, setIsLoadingMap] = useState(false);
+  const [mapError, setMapError] = useState("");
+  const [selectedTicketId, setSelectedTicketId] = useState<string>("");
+
+  function openMarkerForTicket(ticketId: string, shouldBounce = false) {
+    const google = window.google;
+    const entry = markersByTicketIdRef.current[ticketId];
+    const map = mapInstanceRef.current;
+    const infoWindow = infoWindowRef.current;
+
+    if (!google || !entry || !map || !infoWindow) return;
+
+    map.panTo(entry.marker.getPosition());
+
+    const currentZoom = Number(map.getZoom?.() ?? 0);
+    if (currentZoom < 13) {
+      map.setZoom(13);
+    }
+
+    infoWindow.setContent(entry.infoHtml);
+    infoWindow.open({
+      anchor: entry.marker,
+      map,
+    });
+
+    if (shouldBounce && google.maps?.Animation) {
+      entry.marker.setAnimation(google.maps.Animation.BOUNCE);
+      window.setTimeout(() => {
+        entry.marker.setAnimation(null);
+      }, 1200);
+    }
+
+    setSelectedTicketId(ticketId);
+  }
+
+  useEffect(() => {
+    if (!open) {
+      setSelectedTicketId("");
+      return;
+    }
+
+    if (!apiKey) {
+      setMapError("Add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to enable the expanded live field work map.");
+      return;
+    }
+
+    const addresses = activeTickets
+      .map((item) => ({
+        item,
+        address: buildAddress(item),
+      }))
+      .filter((entry) => entry.address);
+
+    if (addresses.length === 0) {
+      setMapError("No mappable active ticket addresses are available right now.");
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function initializeMap() {
+      try {
+        setIsLoadingMap(true);
+        setMapError("");
+        setSelectedTicketId("");
+
+        const google = await loadGoogleMapsApi(apiKey);
+        if (isCancelled || !mapRef.current) return;
+
+        const map = new google.maps.Map(mapRef.current, {
+          center: { lat: 29.905, lng: -96.876 },
+          zoom: 11,
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+          clickableIcons: false,
+          gestureHandling: "greedy",
+          styles: [
+            {
+              featureType: "poi.business",
+              stylers: [{ visibility: "off" }],
+            },
+          ],
+        });
+
+        mapInstanceRef.current = map;
+        infoWindowRef.current = new google.maps.InfoWindow();
+        markersByTicketIdRef.current = {};
+
+        const geocoder = new google.maps.Geocoder();
+        const bounds = new google.maps.LatLngBounds();
+
+        for (let i = 0; i < addresses.length; i += 1) {
+          const { item, address } = addresses[i];
+
+          const result = await new Promise<any>((resolve, reject) => {
+            geocoder.geocode({ address }, (results: any, status: string) => {
+              if (status === "OK" && results?.[0]) {
+                resolve(results[0]);
+              } else {
+                reject(new Error(`Geocode failed for ${address}: ${status}`));
+              }
+            });
+          }).catch(() => null);
+
+          if (isCancelled || !result) continue;
+
+          const position = result.geometry.location;
+          bounds.extend(position);
+
+          const marker = new google.maps.Marker({
+            map,
+            position,
+            label: {
+              text: String(i + 1),
+              color: "#ffffff",
+              fontWeight: "700",
+            },
+            title: item.issueSummary || item.customerDisplayName || `Ticket ${i + 1}`,
+            animation: google.maps.Animation.DROP,
+          });
+
+          const statusMeta = getActiveStatusMeta(item.status);
+          const infoHtml = `
+            <div style="min-width:220px;max-width:280px;padding:4px 2px 2px 2px;font-family:Arial,sans-serif;">
+              <div style="font-size:14px;font-weight:700;color:#111827;line-height:1.35;">
+                ${escapeHtml(item.issueSummary || "Active Service Ticket")}
+              </div>
+              <div style="font-size:13px;color:#4b5563;margin-top:4px;">
+                ${escapeHtml(item.customerDisplayName || "Customer")}
+              </div>
+              <div style="margin-top:10px;font-size:12px;color:#111827;">
+                <strong>Status:</strong> ${escapeHtml(statusMeta.label)}
+              </div>
+              <div style="margin-top:6px;font-size:12px;color:#111827;">
+                <strong>Crew:</strong> ${escapeHtml(buildAssignedPeople(item) || "Unassigned")}
+              </div>
+              <div style="margin-top:6px;font-size:12px;color:#111827;">
+                <strong>Address:</strong> ${escapeHtml(address)}
+              </div>
+              <div style="margin-top:6px;font-size:12px;color:#111827;">
+                <strong>Updated:</strong> ${escapeHtml(formatWhen(item.updatedAt))}
+              </div>
+              <div style="margin-top:10px;">
+                <a
+                  href="/service-tickets/${encodeURIComponent(item.id)}"
+                  style="font-size:12px;font-weight:700;color:#1a73e8;text-decoration:none;"
+                >
+                  Open ticket →
+                </a>
+              </div>
+            </div>
+          `;
+
+          marker.addListener("click", () => {
+            setSelectedTicketId(item.id);
+            if (!infoWindowRef.current) return;
+            infoWindowRef.current.setContent(infoHtml);
+            infoWindowRef.current.open({
+              anchor: marker,
+              map,
+            });
+          });
+
+          markersByTicketIdRef.current[item.id] = {
+            marker,
+            item,
+            address,
+            infoHtml,
+          };
+        }
+
+        if (!isCancelled) {
+          const markerEntries = Object.values(markersByTicketIdRef.current);
+
+          if (markerEntries.length === 1) {
+            map.setCenter(bounds.getCenter());
+            map.setZoom(13);
+          } else if (!bounds.isEmpty()) {
+            map.fitBounds(bounds, 64);
+          }
+
+          if (markerEntries.length > 0) {
+            const firstTicketId = markerEntries[0].item.id;
+            window.setTimeout(() => {
+              openMarkerForTicket(firstTicketId, false);
+            }, 250);
+          }
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setMapError("Unable to load the expanded live field work map right now.");
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingMap(false);
+        }
+      }
+    }
+
+    initializeMap();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [open, apiKey, activeTickets]);
 
   return (
-    <Box
-      sx={{
-        borderRadius: 3,
-        border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-        overflow: "hidden",
-        background: `linear-gradient(135deg, ${alpha(theme.palette.primary.light, 0.16)}, ${alpha(
-          theme.palette.info.light,
-          0.08
-        )})`,
+    <Dialog
+      open={open}
+      onClose={onClose}
+      fullWidth
+      maxWidth="lg"
+      PaperProps={{
+        sx: {
+          borderRadius: { xs: 3, md: 4 },
+          backgroundColor: "background.paper",
+          border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+          overflow: "hidden",
+        },
       }}
     >
-      <Box
+      <DialogTitle
         sx={{
-          px: 1.5,
-          py: 1,
+          px: { xs: 2, md: 2.5 },
+          py: { xs: 1.5, md: 2 },
           borderBottom: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
         }}
       >
-        <Typography
-          variant="overline"
-          sx={{ letterSpacing: "0.12em", color: "text.secondary", fontWeight: 800 }}
-        >
-          Area Snapshot
-        </Typography>
-      </Box>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+          <Box>
+            <Typography variant="h6" fontWeight={800}>
+              Live Field Work Map
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>
+              Larger map view of active dispatched work with clickable field pins.
+            </Typography>
+          </Box>
 
-      {mapUrl ? (
-        <Box sx={{ position: "relative", height: 148 }}>
-          <Box
-            component="img"
-            src={mapUrl}
-            alt="Live field work area snapshot"
+          <IconButton
+            onClick={onClose}
+            aria-label="Close live field work map"
             sx={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              display: "block",
-              pointerEvents: "none",
-              userSelect: "none",
-            }}
-          />
-
-          <Box
-            sx={{
-              position: "absolute",
-              inset: 0,
-              background: "linear-gradient(to top, rgba(0,0,0,0.16), rgba(0,0,0,0.02))",
-              pointerEvents: "none",
-            }}
-          />
-
-          <Button
-            size="small"
-            variant="contained"
-            component={Link}
-            href="/office-display"
-            sx={{
-              position: "absolute",
-              right: 12,
-              bottom: 12,
-              borderRadius: 999,
-              textTransform: "none",
+              borderRadius: 2.5,
+              border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
             }}
           >
-            Open office display
-          </Button>
-        </Box>
-      ) : (
-        <Box
-          sx={{
-            position: "relative",
-            height: 148,
-            backgroundImage: `
-              radial-gradient(circle at 20% 25%, rgba(255,255,255,0.42), transparent 18%),
-              radial-gradient(circle at 72% 62%, rgba(255,255,255,0.28), transparent 20%),
-              linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))
-            `,
-          }}
-        >
-          <Box
-            sx={{
-              position: "absolute",
-              inset: 0,
-              opacity: 0.2,
-              backgroundImage:
-                "repeating-linear-gradient(135deg, transparent 0 16px, rgba(255,255,255,0.4) 16px 18px)",
-            }}
-          />
+            <CloseRoundedIcon />
+          </IconButton>
+        </Stack>
+      </DialogTitle>
 
-          <Box
-            sx={{
-              position: "absolute",
-              top: 30,
-              left: 40,
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              backgroundColor: "text.primary",
-              boxShadow: `0 0 0 6px ${alpha(theme.palette.common.white, 0.3)}`,
-            }}
-          />
-
-          <Box
-            sx={{
-              position: "absolute",
-              bottom: 30,
-              right: 54,
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              backgroundColor: "text.primary",
-              boxShadow: `0 0 0 6px ${alpha(theme.palette.common.white, 0.3)}`,
-            }}
-          />
-
-          <Stack
-            spacing={1}
-            sx={{
-              position: "absolute",
-              left: 12,
-              right: 12,
-              bottom: 12,
-            }}
-          >
-            <Alert severity="info" variant="filled" sx={{ borderRadius: 2 }}>
-              Add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to show a real static map preview here.
-            </Alert>
-
-            <Button
+      <DialogContent sx={{ p: { xs: 2, md: 2.5 } }}>
+        <Stack spacing={2}>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip
               size="small"
-              variant="contained"
-              component={Link}
-              href="/office-display"
+              icon={<MyLocationRoundedIcon sx={{ fontSize: 16 }} />}
+              label={`${activeTickets.length} active in field`}
+              variant="outlined"
+              sx={{ fontWeight: 700 }}
+            />
+            <Chip
+              size="small"
+              label="Click any pin or ticket card for details"
+              variant="outlined"
+              sx={{ fontWeight: 700 }}
+            />
+          </Stack>
+
+          {mapError ? (
+            <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+              {mapError}
+            </Alert>
+          ) : null}
+
+          <Box
+            sx={{
+              position: "relative",
+              minHeight: { xs: 320, md: 500 },
+              borderRadius: 3,
+              overflow: "hidden",
+              border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+              backgroundColor: alpha(theme.palette.common.white, 0.03),
+            }}
+          >
+            <Box
+              ref={mapRef}
               sx={{
-                alignSelf: "flex-end",
-                borderRadius: 999,
-                textTransform: "none",
+                position: "absolute",
+                inset: 0,
+              }}
+            />
+
+            {isLoadingMap ? (
+              <Stack
+                alignItems="center"
+                justifyContent="center"
+                spacing={1.25}
+                sx={{
+                  position: "absolute",
+                  inset: 0,
+                  backgroundColor: alpha(theme.palette.background.paper, 0.68),
+                  backdropFilter: "blur(4px)",
+                }}
+              >
+                <CircularProgress size={28} />
+                <Typography variant="body2" color="text.secondary">
+                  Loading live field map…
+                </Typography>
+              </Stack>
+            ) : null}
+          </Box>
+
+          {activeTickets.length > 0 ? (
+            <Box
+              sx={{
+                display: "grid",
+                gap: 1.25,
+                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
               }}
             >
-              Open office display
-            </Button>
-          </Stack>
+              {activeTickets.map((item, index) => {
+                const address = buildAddress(item);
+                const assignedPeople = buildAssignedPeople(item);
+                const statusMeta = getActiveStatusMeta(item.status);
+                const isSelected = selectedTicketId === item.id;
+
+                return (
+                  <Card
+                    key={item.id}
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      border: `1px solid ${
+                        isSelected
+                          ? alpha(theme.palette.primary.main, 0.45)
+                          : alpha(theme.palette.common.white, 0.08)
+                      }`,
+                      backgroundColor: isSelected
+                        ? alpha(theme.palette.primary.main, 0.12)
+                        : alpha(theme.palette.common.white, 0.02),
+                      transition: "all 180ms ease",
+                      boxShadow: isSelected
+                        ? `0 0 0 1px ${alpha(theme.palette.primary.main, 0.18)} inset`
+                        : "none",
+                    }}
+                  >
+                    <CardActionArea
+                      onClick={() => openMarkerForTicket(item.id, true)}
+                      sx={{
+                        borderRadius: 3,
+                      }}
+                    >
+                      <Box sx={{ px: 1.5, py: 1.35 }}>
+                        <Stack spacing={0.8}>
+                          <Stack direction="row" justifyContent="space-between" spacing={1}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                              <Chip
+                                size="small"
+                                label={index + 1}
+                                color={isSelected ? "primary" : "default"}
+                                sx={{ minWidth: 30, fontWeight: 800 }}
+                              />
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography variant="subtitle2" fontWeight={800} noWrap>
+                                  {item.issueSummary || "Active Service Ticket"}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" noWrap>
+                                  {item.customerDisplayName || "Customer"}
+                                </Typography>
+                              </Box>
+                            </Stack>
+
+                            <Chip
+                              size="small"
+                              icon={statusMeta.icon}
+                              label={statusMeta.label}
+                              color={statusMeta.color}
+                              variant="outlined"
+                              sx={{ fontWeight: 700, flexShrink: 0 }}
+                            />
+                          </Stack>
+
+                          {assignedPeople ? (
+                            <Typography variant="body2" color="text.secondary">
+                              <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                                Crew:
+                              </Box>{" "}
+                              {assignedPeople}
+                            </Typography>
+                          ) : null}
+
+                          {address ? (
+                            <Typography variant="body2" color="text.secondary">
+                              <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                                Address:
+                              </Box>{" "}
+                              {address}
+                            </Typography>
+                          ) : null}
+
+                          <Typography variant="body2" color="text.secondary">
+                            <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                              Updated:
+                            </Box>{" "}
+                            {formatWhen(item.updatedAt)}
+                          </Typography>
+
+                          <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                color: isSelected ? "primary.main" : "text.secondary",
+                                fontWeight: 700,
+                              }}
+                            >
+                              {isSelected ? "Focused on map" : "Tap to focus on map"}
+                            </Typography>
+
+                            <Button
+                              component={Link}
+                              href={`/service-tickets/${item.id}`}
+                              variant="text"
+                              endIcon={<ArrowForwardRoundedIcon />}
+                              onClick={(event) => event.stopPropagation()}
+                              sx={{
+                                px: 0,
+                                minWidth: 0,
+                                borderRadius: 999,
+                                fontWeight: 700,
+                              }}
+                            >
+                              Open Ticket
+                            </Button>
+                          </Stack>
+                        </Stack>
+                      </Box>
+                    </CardActionArea>
+                  </Card>
+                );
+              })}
+            </Box>
+          ) : (
+            <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+              No active field tickets are showing right now.
+            </Alert>
+          )}
+        </Stack>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketItem[] }) {
+  const theme = useTheme();
+  const mapUrl = useMemo(() => buildStaticMapUrl(activeTickets), [activeTickets]);
+  const [isExpandedOpen, setIsExpandedOpen] = useState(false);
+
+  return (
+    <>
+      <Box
+        sx={{
+          borderRadius: 3,
+          border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+          overflow: "hidden",
+          background: `linear-gradient(135deg, ${alpha(theme.palette.primary.light, 0.16)}, ${alpha(
+            theme.palette.info.light,
+            0.08
+          )})`,
+        }}
+      >
+        <Box
+          sx={{
+            px: 1.5,
+            py: 1,
+            borderBottom: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+          }}
+        >
+          <Typography
+            variant="overline"
+            sx={{ letterSpacing: "0.12em", color: "text.secondary", fontWeight: 800 }}
+          >
+            Area Snapshot
+          </Typography>
         </Box>
-      )}
-    </Box>
+
+        {mapUrl ? (
+          <Box sx={{ position: "relative", height: 148 }}>
+            <Box
+              component="img"
+              src={mapUrl}
+              alt="Live field work area snapshot"
+              sx={{
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                display: "block",
+                pointerEvents: "none",
+                userSelect: "none",
+              }}
+            />
+
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                background: "linear-gradient(to top, rgba(0,0,0,0.16), rgba(0,0,0,0.02))",
+                pointerEvents: "none",
+              }}
+            />
+
+            <Tooltip title="Expand live map">
+              <IconButton
+                onClick={() => setIsExpandedOpen(true)}
+                aria-label="Expand live field work map"
+                sx={{
+                  position: "absolute",
+                  top: 10,
+                  right: 10,
+                  width: 36,
+                  height: 36,
+                  borderRadius: 2.5,
+                  color: "#fff",
+                  backgroundColor: "rgba(7, 12, 20, 0.58)",
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.18)}`,
+                  backdropFilter: "blur(10px)",
+                  "&:hover": {
+                    backgroundColor: "rgba(7, 12, 20, 0.74)",
+                  },
+                }}
+              >
+                <OpenInFullRoundedIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        ) : (
+          <Box
+            sx={{
+              position: "relative",
+              height: 148,
+              backgroundImage: `
+                radial-gradient(circle at 20% 25%, rgba(255,255,255,0.42), transparent 18%),
+                radial-gradient(circle at 72% 62%, rgba(255,255,255,0.28), transparent 20%),
+                linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))
+              `,
+            }}
+          >
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                opacity: 0.2,
+                backgroundImage:
+                  "repeating-linear-gradient(135deg, transparent 0 16px, rgba(255,255,255,0.4) 16px 18px)",
+              }}
+            />
+
+            <Box
+              sx={{
+                position: "absolute",
+                top: 30,
+                left: 40,
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                backgroundColor: "text.primary",
+                boxShadow: `0 0 0 6px ${alpha(theme.palette.common.white, 0.3)}`,
+              }}
+            />
+
+            <Box
+              sx={{
+                position: "absolute",
+                bottom: 30,
+                right: 54,
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                backgroundColor: "text.primary",
+                boxShadow: `0 0 0 6px ${alpha(theme.palette.common.white, 0.3)}`,
+              }}
+            />
+
+            <Tooltip title="Expand live map">
+              <IconButton
+                onClick={() => setIsExpandedOpen(true)}
+                aria-label="Expand live field work map"
+                sx={{
+                  position: "absolute",
+                  top: 10,
+                  right: 10,
+                  width: 36,
+                  height: 36,
+                  borderRadius: 2.5,
+                  color: "#fff",
+                  backgroundColor: "rgba(7, 12, 20, 0.58)",
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.18)}`,
+                  backdropFilter: "blur(10px)",
+                  "&:hover": {
+                    backgroundColor: "rgba(7, 12, 20, 0.74)",
+                  },
+                }}
+              >
+                <OpenInFullRoundedIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
+
+            <Stack
+              spacing={1}
+              sx={{
+                position: "absolute",
+                left: 12,
+                right: 12,
+                bottom: 12,
+              }}
+            >
+              <Alert severity="info" variant="filled" sx={{ borderRadius: 2 }}>
+                Add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to show a real map preview and expanded live map.
+              </Alert>
+            </Stack>
+          </Box>
+        )}
+      </Box>
+
+      <AreaSnapshotDialog
+        open={isExpandedOpen}
+        onClose={() => setIsExpandedOpen(false)}
+        activeTickets={activeTickets}
+      />
+    </>
   );
 }
 

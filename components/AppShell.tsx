@@ -1,4 +1,3 @@
-// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -1306,33 +1305,45 @@ export default function AppShell({
 
         <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 2, pb: 1.5 }}>
           <IconButton
-            onClick={async (e) => {
-              e.stopPropagation();
-              if (!canQuickAct || pillActionBusy) return;
+            aria-label={isPaused ? "Resume trip" : "Pause trip"}
+            onClick={async (event) => {
+              event.stopPropagation();
+
+              if (pillActionBusy) return;
+
+              if (!canQuickAct) {
+                setActiveTripSheetOpen(true);
+                return;
+              }
+
               if (isPaused) {
                 await handleQuickResume();
-              } else {
-                await handleQuickPause();
+                return;
               }
+
+              await handleQuickPause();
             }}
-            disabled={!canQuickAct || pillActionBusy}
             sx={{
               width: 52,
               height: 52,
-              borderRadius: 2,
+              borderRadius: 999,
               flexShrink: 0,
               backgroundColor: tripAccentSoft,
               color: tripAccentMain,
               "&:hover": {
                 backgroundColor: alpha(tripAccentMain, 0.18),
               },
-              "&.Mui-disabled": {
-                color: alpha(tripAccentMain, 0.5),
-                backgroundColor: alpha(tripAccentMain, 0.08),
-              },
             }}
           >
-            {isPaused ? <PlayArrowRoundedIcon /> : <PauseRoundedIcon />}
+            {canQuickAct ? (
+              isPaused ? (
+                <PlayArrowRoundedIcon />
+              ) : (
+                <PauseRoundedIcon />
+              )
+            ) : (
+              <ArrowOutwardRoundedIcon />
+            )}
           </IconButton>
 
           <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -1443,7 +1454,7 @@ export default function AppShell({
                 isPaused ? (
                   <Button
                     variant="contained"
-                    color="warning"
+                    color="primary"
                     startIcon={<PlayArrowRoundedIcon />}
                     disabled={pillActionBusy}
                     onClick={async () => {
@@ -1464,7 +1475,7 @@ export default function AppShell({
                       setActiveTripSheetOpen(false);
                     }}
                   >
-                    Pause Timer
+                    Pause
                   </Button>
                 )
               ) : (
