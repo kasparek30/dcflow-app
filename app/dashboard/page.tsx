@@ -157,18 +157,28 @@ function buildStaticMapUrl(items: DashboardTicketItem[]) {
   const base = "https://maps.googleapis.com/maps/api/staticmap";
   const params = new URLSearchParams();
 
-  params.set("size", "1200x420");
+  // Match the wide/short dashboard card better so the preview does not crop away pins.
+  params.set("size", "1400x320");
   params.set("scale", "2");
   params.set("maptype", "roadmap");
 
   if (addresses.length === 1) {
     params.set("center", addresses[0]);
-    params.set("zoom", "12");
+    params.set("zoom", "11");
   } else {
-    // This tells Google Static Maps to auto-frame all locations so both/all pins stay visible.
+    // Ask Google to keep all markers visible in-frame.
     addresses.forEach((address) => {
       params.append("visible", address);
     });
+
+    // Slightly smaller markers help when jobs are spread apart.
+    addresses.forEach((address, index) => {
+      const label = String(index + 1);
+      params.append("markers", `size:small|color:0x1a73e8|label:${label}|${address}`);
+    });
+
+    params.set("key", apiKey);
+    return `${base}?${params.toString()}`;
   }
 
   addresses.forEach((address, index) => {

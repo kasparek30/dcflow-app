@@ -1,16 +1,14 @@
-// src/types/service-ticket.ts
-
 export type ServiceTicketStatus =
   | "new"
   | "scheduled"
   | "in_progress"
   | "follow_up"
   | "completed"
+  | "invoiced"
   | "cancelled";
 
 export type ServiceTicket = {
   id: string;
-
   customerId: string;
   customerDisplayName: string;
 
@@ -33,24 +31,20 @@ export type ServiceTicket = {
   scheduledStartTime?: string;
   scheduledEndTime?: string;
 
-  // Existing single-tech fields (keep for backwards compatibility)
   assignedTechnicianId?: string;
   assignedTechnicianName?: string;
 
-  // ✅ NEW: Multi-tech foundation (additive + optional, does not break existing data)
-  primaryTechnicianId?: string;      // usually same as assignedTechnicianId for now
-  assignedTechnicianIds?: string[];  // includes primary + helper(s)
-
+  primaryTechnicianId?: string;
   secondaryTechnicianId?: string;
   secondaryTechnicianName?: string;
 
+  assignedTechnicianIds?: string[];
   helperIds?: string[];
   helperNames?: string[];
 
   internalNotes?: string;
 
   active: boolean;
-
   createdAt?: string;
   updatedAt?: string;
 };

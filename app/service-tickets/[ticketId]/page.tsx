@@ -77,19 +77,16 @@ import {
 } from "../../../src/lib/service-ticket-lifecycle";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
 import type { AppUser } from "../../../src/types/app-user";
-import type { ServiceTicket } from "../../../src/types/service-ticket";
+import type {
+  ServiceTicket,
+  ServiceTicketStatus,
+} from "../../../src/types/service-ticket";
 
 type Props = {
   params: Promise<{ ticketId: string }>;
 };
 
-type TicketStatus =
-  | "new"
-  | "scheduled"
-  | "in_progress"
-  | "follow_up"
-  | "completed"
-  | "cancelled";
+type TicketStatus = ServiceTicketStatus;
 
 type TripTimeWindow = "am" | "pm" | "all_day" | "custom";
 
@@ -152,7 +149,12 @@ type TripDoc = {
 };
 
 type BillingPacket = {
-  status: "not_ready" | "ready_to_bill" | "invoiced";
+  status:
+    | "not_ready"
+    | "ready_to_bill"
+    | "creating_invoice"
+    | "invoice_failed"
+    | "invoiced";
   readyToBillAt: string | null;
   readyToBillTripId: string | null;
   resolutionNotes: string | null;
@@ -167,7 +169,16 @@ type BillingPacket = {
     }>;
   };
   materials: TripMaterial[];
+  materialsSummary?: string | null;
+  materialsAmount?: number | null;
   photos: Array<{ url: string; caption?: string }>;
+  invoiceSource?: "manual" | "qbo" | null;
+  qboInvoiceId?: string | null;
+  qboDocNumber?: string | null;
+  qboInvoiceUrl?: string | null;
+  qboSyncedAt?: string | null;
+  qboInvoiceStatus?: string | null;
+  invoiceError?: string | null;
   updatedAt: string;
 };
 
@@ -258,11 +269,136 @@ function formatTicketStatus(value?: string) {
       return "Follow Up";
     case "completed":
       return "Completed";
+    case "invoiced":
+      return "Invoiced";
     case "cancelled":
       return "Cancelled";
     default:
       return value || "—";
   }
+}
+
+function formatBillingPacketStatus(value?: string) {
+  switch (String(value || "").toLowerCase()) {
+    case "not_ready":
+      return "Not Ready";
+    case "ready_to_bill":
+      return "Ready to Bill";
+    case "creating_invoice":
+      return "Creating Invoice";
+    case "invoice_failed":
+      return "Invoice Failed";
+    case "invoiced":
+      return "Invoiced";
+    default:
+      return value || "—";
+  }
+}
+
+function getBillingTone(
+  value?: string
+): "default" | "success" | "warning" | "error" | "info" {
+  const v = String(value || "").toLowerCase();
+  if (v === "invoiced") return "success";
+  if (v === "ready_to_bill") return "warning";
+  if (v === "creating_invoice") return "info";
+  if (v === "invoice_failed") return "error";
+  return "default";
+}
+
+function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
+  const items = Array.isArray(materials) ? materials : [];
+  return items
+    .filter((m) => String(m?.name || "").trim())
+    .map((m) => {
+      const qty = Number(m.qty || 0);
+      const unit = String(m.unit || "").trim();
+      return `${qty > 0 ? `${qty} of ` : ""}${String(m.name || "").trim()}${
+        unit ? ` (${unit})` : ""
+      }`;
+    })
+    .join(", ");
+}
+
+function mergeTripMaterials(trips: TripDoc[]) {
+  return trips.flatMap((trip) =>
+    Array.isArray(trip.materials) ? trip.materials : []
+  );
+}
+
+function buildBillingPacketFromResolvedTrips(args: {
+  trips: TripDoc[];
+  fallbackUpdatedAt: string;
+}) {
+  const resolvedTrips = args.trips
+    .filter((trip) => trip.active !== false)
+    .filter((trip) => normalizeTripStatus(trip.status) === "complete")
+    .filter(
+      (trip) => String(trip.outcome || "").trim().toLowerCase() === "resolved"
+    );
+
+  if (resolvedTrips.length === 0) {
+    return null;
+  }
+
+  const totalMinutes = resolvedTrips.reduce(
+    (sum, trip) => sum + Number(trip.actualMinutes || 0),
+    0
+  );
+
+  const totalHours = roundToHalf(totalMinutes / 60);
+
+  const materials = mergeTripMaterials(resolvedTrips);
+  const materialsSummary = buildMaterialsSummaryFromLines(materials) || null;
+
+  const uniqueResolutionNotes = Array.from(
+    new Set(
+      resolvedTrips
+        .map((trip) => String(trip.resolutionNotes || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const uniqueWorkNotes = Array.from(
+    new Set(
+      resolvedTrips
+        .map((trip) => String(trip.workNotes || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const latestResolvedTrip = [...resolvedTrips].sort((a, b) => {
+    const aTime = Date.parse(String(a.readyToBillAt || a.updatedAt || ""));
+    const bTime = Date.parse(String(b.readyToBillAt || b.updatedAt || ""));
+    return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+  })[0];
+
+  return {
+    status: "ready_to_bill" as const,
+    readyToBillAt:
+      latestResolvedTrip?.readyToBillAt ||
+      latestResolvedTrip?.updatedAt ||
+      args.fallbackUpdatedAt,
+    readyToBillTripId: latestResolvedTrip?.id || null,
+    resolutionNotes: uniqueResolutionNotes.join("\n\n") || null,
+    workNotes: uniqueWorkNotes.join("\n\n") || null,
+    labor: {
+      totalHours,
+      byCrew: [],
+    },
+    materials,
+    materialsSummary,
+    materialsAmount: null,
+    photos: [],
+    invoiceSource: null,
+    qboInvoiceId: null,
+    qboDocNumber: null,
+    qboInvoiceUrl: null,
+    qboSyncedAt: null,
+    qboInvoiceStatus: null,
+    invoiceError: null,
+    updatedAt: args.fallbackUpdatedAt,
+  };
 }
 
 function formatTripWindow(value?: string) {
@@ -711,6 +847,7 @@ function getTicketTone(
   status?: string
 ): "default" | "success" | "warning" | "error" | "info" {
   const s = String(status || "").toLowerCase();
+  if (s === "invoiced") return "success";
   if (s === "completed") return "success";
   if (s === "in_progress") return "info";
   if (s === "scheduled" || s === "follow_up") return "warning";
@@ -798,6 +935,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
 
+    const isInvoicedTicket = ticket?.status === "invoiced";
+
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
 
@@ -873,6 +1012,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [billingSaving, setBillingSaving] = useState(false);
   const [billingErr, setBillingErr] = useState("");
   const [billingOk, setBillingOk] = useState("");
+  const [billingMaterialsSummaryEdit, setBillingMaterialsSummaryEdit] = useState("");
+  const [billingMaterialsAmountEdit, setBillingMaterialsAmountEdit] = useState("");
 
   const helperCandidates = useMemo(() => {
     const items = employeeProfiles
@@ -925,6 +1066,28 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }, [editTripUseDefaultHelper, editTripPrimaryTechUid, defaultHelperForEditPrimary]);
 
   useEffect(() => {
+  if (!ticket?.billing) {
+    setBillingMaterialsSummaryEdit("");
+    setBillingMaterialsAmountEdit("");
+    return;
+  }
+
+  const summary =
+    String(ticket.billing.materialsSummary || "").trim() ||
+    buildMaterialsSummaryFromLines(ticket.billing.materials);
+
+  setBillingMaterialsSummaryEdit(summary);
+
+  const amount =
+    typeof ticket.billing.materialsAmount === "number" &&
+    Number.isFinite(ticket.billing.materialsAmount)
+      ? String(ticket.billing.materialsAmount)
+      : "";
+
+  setBillingMaterialsAmountEdit(amount);
+}, [ticket?.billing]);
+
+  useEffect(() => {
     async function loadAll() {
       try {
         const resolved = await params;
@@ -939,35 +1102,35 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         }
 
         const d = ticketSnap.data() as any;
-        const nextTicket: TicketWithBilling = {
-          id: ticketSnap.id,
-          customerId: d.customerId ?? "",
-          customerDisplayName: d.customerDisplayName ?? "",
-          serviceAddressLabel: d.serviceAddressLabel ?? undefined,
-          serviceAddressLine1: d.serviceAddressLine1 ?? "",
-          serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
-          serviceCity: d.serviceCity ?? "",
-          serviceState: d.serviceState ?? "",
-          servicePostalCode: d.servicePostalCode ?? "",
-          issueSummary: d.issueSummary ?? "",
-          issueDetails: d.issueDetails ?? undefined,
-          status: d.status ?? "new",
-          estimatedDurationMinutes: d.estimatedDurationMinutes ?? 60,
-          assignedTechnicianId: d.assignedTechnicianId ?? undefined,
-          assignedTechnicianName: d.assignedTechnicianName ?? undefined,
-          primaryTechnicianId: d.primaryTechnicianId ?? undefined,
-          assignedTechnicianIds: Array.isArray(d.assignedTechnicianIds)
-            ? d.assignedTechnicianIds
-            : undefined,
-          secondaryTechnicianId: d.secondaryTechnicianId ?? undefined,
-          secondaryTechnicianName: d.secondaryTechnicianName ?? undefined,
-          helperIds: Array.isArray(d.helperIds) ? d.helperIds : undefined,
-          helperNames: Array.isArray(d.helperNames) ? d.helperNames : undefined,
-          active: d.active ?? true,
-          createdAt: d.createdAt ?? undefined,
-          updatedAt: d.updatedAt ?? undefined,
-          billing: d.billing ?? null,
-        };
+const nextTicket: TicketWithBilling = {
+  id: ticketSnap.id,
+  customerId: d.customerId ?? "",
+  customerDisplayName: d.customerDisplayName ?? "",
+  serviceAddressLabel: d.serviceAddressLabel ?? undefined,
+  serviceAddressLine1: d.serviceAddressLine1 ?? "",
+  serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
+  serviceCity: d.serviceCity ?? "",
+  serviceState: d.serviceState ?? "",
+  servicePostalCode: d.servicePostalCode ?? "",
+  issueSummary: d.issueSummary ?? "",
+  issueDetails: d.issueDetails ?? undefined,
+  status: (d.status ?? "new") as ServiceTicketStatus,
+  estimatedDurationMinutes: d.estimatedDurationMinutes ?? 60,
+  assignedTechnicianId: d.assignedTechnicianId ?? undefined,
+  assignedTechnicianName: d.assignedTechnicianName ?? undefined,
+  primaryTechnicianId: d.primaryTechnicianId ?? undefined,
+  assignedTechnicianIds: Array.isArray(d.assignedTechnicianIds)
+    ? d.assignedTechnicianIds
+    : undefined,
+  secondaryTechnicianId: d.secondaryTechnicianId ?? undefined,
+  secondaryTechnicianName: d.secondaryTechnicianName ?? undefined,
+  helperIds: Array.isArray(d.helperIds) ? d.helperIds : undefined,
+  helperNames: Array.isArray(d.helperNames) ? d.helperNames : undefined,
+  active: d.active ?? true,
+  createdAt: d.createdAt ?? undefined,
+  updatedAt: d.updatedAt ?? undefined,
+  billing: d.billing ?? null,
+};
 
         setTicket(nextTicket);
         setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
@@ -1183,14 +1346,14 @@ function deriveNextTicketStatus(
       .toLowerCase();
 
     if (finalOutcome === "resolved") {
-      return "completed";
+      return ticket?.status === "invoiced" ? "invoiced" : "completed";
     }
 
     if (finalOutcome === "follow_up") {
       return "follow_up";
     }
 
-    return "completed";
+    return ticket?.status === "invoiced" ? "invoiced" : "completed";
   }
 
   const hasCancelledTrips = sortedTrips.some(
@@ -1345,74 +1508,83 @@ function deriveNextTicketStatus(
     setMobileFinishMode("none");
   }
 
-  async function handleSaveTicketOverview() {
-    if (!canDispatch || !ticket?.id) return;
+async function handleSaveTicketOverview() {
+  if (!canDispatch || !ticket?.id) return;
 
-    setTicketEditErr("");
-    setTicketEditOk("");
-    setTicketEditSaving(true);
-
-    try {
-      const minutes = Number(ticketEstimatedMinutesEdit);
-      if (!Number.isFinite(minutes) || minutes <= 0) {
-        setTicketEditErr("Estimated duration must be a number > 0.");
-        return;
-      }
-
-      const summary = ticketIssueSummaryEdit.trim();
-      if (!summary) {
-        setTicketEditErr("Issue summary is required.");
-        return;
-      }
-
-      const nextStatus = ticketStatusEdit as TicketStatus;
-      const guard = getManualTicketStatusError({
-        nextStatus,
-        currentStatus: ticket.status,
-        trips,
-      });
-
-      if (guard) {
-        setTicketEditErr(guard);
-        return;
-      }
-
-      const now = nowIso();
-
-      await updateDoc(doc(db, "serviceTickets", ticket.id), {
-        status: nextStatus,
-        issueSummary: summary,
-        estimatedDurationMinutes: minutes,
-        issueDetails: ticketIssueDetailsEdit.trim() || null,
-        updatedAt: now,
-      });
-
-      setTicket((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: nextStatus,
-              issueSummary: summary,
-              estimatedDurationMinutes: minutes,
-              issueDetails: ticketIssueDetailsEdit.trim() || undefined,
-              updatedAt: now,
-            }
-          : prev
-      );
-
-      setTicketEditOk("Ticket updated.");
-    } catch (err: unknown) {
-      setTicketEditErr(
-        err instanceof Error ? err.message : "Failed to update ticket."
-      );
-    } finally {
-      setTicketEditSaving(false);
-    }
+  if (ticket.status === "invoiced") {
+    setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+    return;
   }
+
+  setTicketEditErr("");
+  setTicketEditOk("");
+  setTicketEditSaving(true);
+
+  try {
+    const minutes = Number(ticketEstimatedMinutesEdit);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      setTicketEditErr("Estimated duration must be a number > 0.");
+      return;
+    }
+
+    const summary = ticketIssueSummaryEdit.trim();
+    if (!summary) {
+      setTicketEditErr("Issue summary is required.");
+      return;
+    }
+
+    const nextStatus = ticketStatusEdit as TicketStatus;
+    const guard = getManualTicketStatusError({
+      nextStatus,
+      currentStatus: ticket.status,
+      trips,
+    });
+
+    if (guard) {
+      setTicketEditErr(guard);
+      return;
+    }
+
+    const now = nowIso();
+
+    await updateDoc(doc(db, "serviceTickets", ticket.id), {
+      status: nextStatus,
+      issueSummary: summary,
+      estimatedDurationMinutes: minutes,
+      issueDetails: ticketIssueDetailsEdit.trim() || null,
+      updatedAt: now,
+    });
+
+    setTicket((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: nextStatus,
+            issueSummary: summary,
+            estimatedDurationMinutes: minutes,
+            issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+            updatedAt: now,
+          }
+        : prev
+    );
+
+    setTicketEditOk("Ticket updated.");
+  } catch (err: unknown) {
+    setTicketEditErr(
+      err instanceof Error ? err.message : "Failed to update ticket."
+    );
+  } finally {
+    setTicketEditSaving(false);
+  }
+}
 
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!ticket || !canDispatch) return;
+    if (ticket.status === "invoiced") {
+  setTripSaveError("Invoiced tickets are locked and cannot receive new trips.");
+  return;
+}
 
     setTripSaveError("");
     setTripSaveSuccess("");
@@ -2002,43 +2174,21 @@ function deriveNextTicketStatus(
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
       closeMobileFinishSheet();
 
-      const nextStatus = deriveNextTicketStatus(nextTrips, mode);
-      let billingOverride: BillingPacket | null | undefined = undefined;
+const nextStatus = deriveNextTicketStatus(nextTrips, mode);
+let billingOverride: BillingPacket | null | undefined = undefined;
 
-      if (mode === "resolved") {
-        if (nextStatus === "completed") {
-          const primaryUid = finalCrew?.primaryTechUid || "";
-          const primaryName = finalCrew?.primaryTechName || "Primary Tech";
-
-          billingOverride = {
-            status: "ready_to_bill",
-            readyToBillAt: now,
-            readyToBillTripId: trip.id,
-            resolutionNotes,
-            workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
-            labor: {
-              totalHours: hoursToUse,
-              byCrew: primaryUid
-                ? [
-                    {
-                      uid: primaryUid,
-                      name: primaryName,
-                      role: "technician",
-                      hours: hoursToUse,
-                    },
-                  ]
-                : [],
-            },
-            materials: materialCheck.cleaned,
-            photos: [],
-            updatedAt: now,
-          };
-        } else {
-          billingOverride = null;
-        }
-      } else {
-        billingOverride = null;
-      }
+if (mode === "resolved") {
+  if (nextStatus === "completed") {
+    billingOverride = buildBillingPacketFromResolvedTrips({
+      trips: nextTrips,
+      fallbackUpdatedAt: now,
+    });
+  } else {
+    billingOverride = null;
+  }
+} else {
+  billingOverride = null;
+}
 
       if (ticket?.id) {
         await persistTicketStatus(nextStatus, now, billingOverride);
@@ -2055,36 +2205,41 @@ function deriveNextTicketStatus(
     }
   }
 
-  function openEditTrip(trip: TripDoc) {
-    if (!canEditTripSchedule(trip.status, trip.timerState)) return;
+function openEditTrip(trip: TripDoc) {
+  if (ticket?.status === "invoiced") return;
+  if (!canEditTripSchedule(trip.status, trip.timerState)) return;
 
-    setEditTripPrimaryTechUid(String(trip.crew?.primaryTechUid || ""));
-    setEditTripSecondaryTechUid(String(trip.crew?.secondaryTechUid || ""));
-    setEditTripHelperUid(String(trip.crew?.helperUid || ""));
-    setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
+  setEditTripPrimaryTechUid(String(trip.crew?.primaryTechUid || ""));
+  setEditTripSecondaryTechUid(String(trip.crew?.secondaryTechUid || ""));
+  setEditTripHelperUid(String(trip.crew?.helperUid || ""));
+  setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
 
-    const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
-    const tripHelperUid = String(trip.crew?.helperUid || "").trim();
-    const defaultHelperUid =
-      helperCandidates.find(
-        (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid
-      )?.uid || "";
+  const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
+  const tripHelperUid = String(trip.crew?.helperUid || "").trim();
+  const defaultHelperUid =
+    helperCandidates.find(
+      (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid
+    )?.uid || "";
 
-    setEditTripUseDefaultHelper(
-      Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid)
-    );
+  setEditTripUseDefaultHelper(
+    Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid)
+  );
 
-    setEditTripId(trip.id);
-    setEditTripDate(trip.date || isoTodayLocal());
-    setEditTripTimeWindow((trip.timeWindow as TripTimeWindow) || "custom");
-    setEditTripStartTime(trip.startTime || "08:00");
-    setEditTripEndTime(trip.endTime || "12:00");
-    setEditTripNotes(String(trip.notes || ""));
-    setEditTripErr("");
-  }
+  setEditTripId(trip.id);
+  setEditTripDate(trip.date || isoTodayLocal());
+  setEditTripTimeWindow((trip.timeWindow as TripTimeWindow) || "custom");
+  setEditTripStartTime(trip.startTime || "08:00");
+  setEditTripEndTime(trip.endTime || "12:00");
+  setEditTripNotes(String(trip.notes || ""));
+  setEditTripErr("");
+}
 
   async function handleSaveTripEdit() {
     if (!canDispatch || !editTripId || !ticket?.id) return;
+    if (ticket.status === "invoiced") {
+  setEditTripErr("Invoiced tickets are locked and trip schedule cannot be edited.");
+  return;
+}
 
     const trip = trips.find((t) => t.id === editTripId);
     if (!trip) return;
@@ -2221,223 +2376,237 @@ function deriveNextTicketStatus(
     }
   }
 
-  async function handleSoftDeleteTrip(trip: TripDoc) {
-    if (!canDispatch) return;
+async function handleSoftDeleteTrip(trip: TripDoc) {
+  if (!canDispatch) return;
 
-    if (!canCancelTrip(trip.status, trip.timerState)) {
-      alert("Only planned trips can be removed.");
-      return;
-    }
-
-    if (
-      window.prompt(
-        `Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`,
-        ""
-      ) !== "DELETE"
-    ) {
-      return;
-    }
-
-    setTripSavingFlag(trip.id, true);
-    setTripErr(trip.id, "");
-    setTripOk(trip.id, "");
-
-    try {
-      const now = nowIso();
-
-      await updateDoc(doc(db, "trips", trip.id), {
-        status: "cancelled",
-        timerState: "complete",
-        active: false,
-        cancelReason: "deleted",
-        updatedAt: now,
-        updatedByUid: myUid || null,
-      });
-
-      const nextTrips = trips.map((t) =>
-        t.id === trip.id
-          ? {
-              ...t,
-              status: "cancelled",
-              timerState: "complete",
-              active: false,
-              cancelReason: "deleted",
-              updatedAt: now,
-              updatedByUid: myUid || null,
-            }
-          : t
-      );
-
-      setTrips(nextTrips);
-
-      const nextStatus = deriveNextTicketStatus(nextTrips);
-      if (ticket?.id && nextStatus !== ticket.status) {
-        await persistTicketStatus(nextStatus, now);
-      }
-
-      setTripOk(trip.id, "Trip removed.");
-    } catch (err: unknown) {
-      setTripErr(
-        trip.id,
-        err instanceof Error ? err.message : "Failed to delete trip."
-      );
-    } finally {
-      setTripSavingFlag(trip.id, false);
-    }
+  if (ticket?.status === "invoiced") {
+    alert("Invoiced tickets are locked and trips cannot be removed.");
+    return;
   }
 
-  async function handleClaimAndStartTrip() {
-    if (!ticket?.id || !myUid) return;
+  if (!canCancelTrip(trip.status, trip.timerState)) {
+    alert("Only planned trips can be removed.");
+    return;
+  }
 
-    const role = String(appUser?.role || "");
-    const canSelfDispatch = [
-      "technician",
-      "helper",
-      "apprentice",
-      "admin",
-      "dispatcher",
-      "manager",
-    ].includes(role);
+  if (
+    window.prompt(
+      `Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`,
+      ""
+    ) !== "DELETE"
+  ) {
+    return;
+  }
 
-    if (!canSelfDispatch) {
-      alert("You do not have permission to claim tickets.");
-      return;
-    }
+  setTripSavingFlag(trip.id, true);
+  setTripErr(trip.id, "");
+  setTripOk(trip.id, "");
 
-    if (ticket.assignedTechnicianId) {
-      alert("This ticket is already assigned.");
-      return;
-    }
+  try {
+    const now = nowIso();
 
-    if (isTicketTerminal(ticket.status)) {
-      alert("This ticket is not claimable.");
-      return;
-    }
-
-    if (hasOpenTrips(trips)) {
-      alert("This ticket already has an open trip.");
-      return;
-    }
-
-    const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
-    if (remoteOpenTrips.length > 0) {
-      alert(
-        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
-      );
-      return;
-    }
-
-    const now = new Date();
-    const nowString = now.toISOString();
-
-    const helperUid =
-      helperCandidates.find(
-        (h) => String(h.defaultPairedTechUid || "").trim() === myUid
-      )?.uid || "";
-    const helperName = helperUid
-      ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
-      : null;
-
-    const runningConflicts = await findRunningTripsForCrewUids({
-      crewUids: [myUid, ...(helperUid ? [helperUid] : [])],
+    await updateDoc(doc(db, "trips", trip.id), {
+      status: "cancelled",
+      timerState: "complete",
+      active: false,
+      cancelReason: "deleted",
+      updatedAt: now,
+      updatedByUid: myUid || null,
     });
 
-    if (runningConflicts.length > 0) {
-      alert(
-        `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
-      );
-      return;
+    const nextTrips = trips.map((t) =>
+      t.id === trip.id
+        ? {
+            ...t,
+            status: "cancelled",
+            timerState: "complete",
+            active: false,
+            cancelReason: "deleted",
+            updatedAt: now,
+            updatedByUid: myUid || null,
+          }
+        : t
+    );
+
+    setTrips(nextTrips);
+
+    const nextStatus = deriveNextTicketStatus(nextTrips);
+    if (ticket?.id && nextStatus !== ticket.status) {
+      await persistTicketStatus(nextStatus, now);
     }
 
-    try {
-      const ticketRef = doc(db, "serviceTickets", ticket.id);
-      const tripsRef = collection(db, "trips");
-      const newTripRef = doc(tripsRef);
+    setTripOk(trip.id, "Trip removed.");
+  } catch (err: unknown) {
+    setTripErr(
+      trip.id,
+      err instanceof Error ? err.message : "Failed to delete trip."
+    );
+  } finally {
+    setTripSavingFlag(trip.id, false);
+  }
+}
 
-      await runTransaction(db, async (tx) => {
-        const liveTicket = await tx.get(ticketRef);
-        if (!liveTicket.exists()) throw new Error("Ticket not found.");
+async function handleClaimAndStartTrip() {
+  if (!ticket?.id || !myUid) return;
 
-        const live = liveTicket.data() as any;
-        if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
-        if (isTicketTerminal(live.status)) throw new Error("Ticket is not claimable.");
-
-        tx.set(newTripRef, {
-          active: true,
-          type: "service",
-          status: "in_progress",
-          date: isoTodayLocal(),
-          timeWindow: "custom",
-          startTime: hhmmLocal(now),
-          endTime: hhmmLocal(addMinutes(now, 60)),
-          crew: {
-            primaryTechUid: myUid,
-            primaryTechName: appUser?.displayName || "Technician",
-            helperUid: helperUid || null,
-            helperName,
-            secondaryTechUid: null,
-            secondaryTechName: null,
-            secondaryHelperUid: null,
-            secondaryHelperName: null,
-          },
-          crewConfirmed: {
-            primaryTechUid: myUid,
-            primaryTechName: appUser?.displayName || "Technician",
-            helperUid: helperUid || null,
-            helperName,
-            secondaryTechUid: null,
-            secondaryTechName: null,
-            secondaryHelperUid: null,
-            secondaryHelperName: null,
-          },
-          link: {
-            serviceTicketId: ticket.id,
-            projectId: null,
-            projectStageKey: null,
-          },
-          notes: null,
-          cancelReason: null,
-          timerState: "running",
-          actualStartAt: nowString,
-          actualEndAt: null,
-          startedByUid: myUid,
-          endedByUid: null,
-          pauseBlocks: [],
-          actualMinutes: null,
-          workNotes: null,
-          resolutionNotes: null,
-          followUpNotes: null,
-          materials: [],
-          outcome: null,
-          readyToBillAt: null,
-          createdAt: nowString,
-          createdByUid: myUid,
-          updatedAt: nowString,
-          updatedByUid: myUid,
-        });
-
-        tx.update(ticketRef, {
-          status: "in_progress",
-          assignedTechnicianId: myUid,
-          assignedTechnicianName: appUser?.displayName || "Technician",
-          primaryTechnicianId: myUid,
-          secondaryTechnicianId: null,
-          secondaryTechnicianName: null,
-          helperIds: helperUid ? [helperUid] : null,
-          helperNames: helperName ? [helperName] : null,
-          assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
-          updatedAt: nowString,
-        });
-      });
-
-      window.location.reload();
-    } catch (err: any) {
-      alert(err?.message || "Failed to claim ticket.");
-    }
+  if (ticket.status === "invoiced") {
+    alert("Invoiced tickets are locked and cannot be claimed or started.");
+    return;
   }
 
-  async function markBillingStatus(nextStatus: BillingPacket["status"]) {
-    if (!ticket?.id || !canBill) return;
+  const role = String(appUser?.role || "");
+  const canSelfDispatch = [
+    "technician",
+    "helper",
+    "apprentice",
+    "admin",
+    "dispatcher",
+    "manager",
+  ].includes(role);
+
+  if (!canSelfDispatch) {
+    alert("You do not have permission to claim tickets.");
+    return;
+  }
+
+  if (ticket.assignedTechnicianId) {
+    alert("This ticket is already assigned.");
+    return;
+  }
+
+  if (isTicketTerminal(ticket.status)) {
+    alert("This ticket is not claimable.");
+    return;
+  }
+
+  if (hasOpenTrips(trips)) {
+    alert("This ticket already has an open trip.");
+    return;
+  }
+
+  const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
+  if (remoteOpenTrips.length > 0) {
+    alert(
+      `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
+    );
+    return;
+  }
+
+  const now = new Date();
+  const nowString = now.toISOString();
+
+  const helperUid =
+    helperCandidates.find(
+      (h) => String(h.defaultPairedTechUid || "").trim() === myUid
+    )?.uid || "";
+  const helperName = helperUid
+    ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
+    : null;
+
+  const runningConflicts = await findRunningTripsForCrewUids({
+    crewUids: [myUid, ...(helperUid ? [helperUid] : [])],
+  });
+
+  if (runningConflicts.length > 0) {
+    alert(
+      `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+    );
+    return;
+  }
+
+  try {
+    const ticketRef = doc(db, "serviceTickets", ticket.id);
+    const tripsRef = collection(db, "trips");
+    const newTripRef = doc(tripsRef);
+
+    await runTransaction(db, async (tx) => {
+      const liveTicket = await tx.get(ticketRef);
+      if (!liveTicket.exists()) throw new Error("Ticket not found.");
+
+      const live = liveTicket.data() as any;
+      if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
+      if (isTicketTerminal(live.status)) throw new Error("Ticket is not claimable.");
+
+      tx.set(newTripRef, {
+        active: true,
+        type: "service",
+        status: "in_progress",
+        date: isoTodayLocal(),
+        timeWindow: "custom",
+        startTime: hhmmLocal(now),
+        endTime: hhmmLocal(addMinutes(now, 60)),
+        crew: {
+          primaryTechUid: myUid,
+          primaryTechName: appUser?.displayName || "Technician",
+          helperUid: helperUid || null,
+          helperName,
+          secondaryTechUid: null,
+          secondaryTechName: null,
+          secondaryHelperUid: null,
+          secondaryHelperName: null,
+        },
+        crewConfirmed: {
+          primaryTechUid: myUid,
+          primaryTechName: appUser?.displayName || "Technician",
+          helperUid: helperUid || null,
+          helperName,
+          secondaryTechUid: null,
+          secondaryTechName: null,
+          secondaryHelperUid: null,
+          secondaryHelperName: null,
+        },
+        link: {
+          serviceTicketId: ticket.id,
+          projectId: null,
+          projectStageKey: null,
+        },
+        notes: null,
+        cancelReason: null,
+        timerState: "running",
+        actualStartAt: nowString,
+        actualEndAt: null,
+        startedByUid: myUid,
+        endedByUid: null,
+        pauseBlocks: [],
+        actualMinutes: null,
+        workNotes: null,
+        resolutionNotes: null,
+        followUpNotes: null,
+        materials: [],
+        outcome: null,
+        readyToBillAt: null,
+        createdAt: nowString,
+        createdByUid: myUid,
+        updatedAt: nowString,
+        updatedByUid: myUid,
+      });
+
+      tx.update(ticketRef, {
+        status: "in_progress",
+        assignedTechnicianId: myUid,
+        assignedTechnicianName: appUser?.displayName || "Technician",
+        primaryTechnicianId: myUid,
+        secondaryTechnicianId: null,
+        secondaryTechnicianName: null,
+        helperIds: helperUid ? [helperUid] : null,
+        helperNames: helperName ? [helperName] : null,
+        assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
+        updatedAt: nowString,
+      });
+    });
+
+    window.location.reload();
+  } catch (err: any) {
+    alert(err?.message || "Failed to claim ticket.");
+  }
+}
+
+    async function handleSaveBillingPacketDetails() {
+    if (!ticket?.id || !canBill || !ticket.billing) return;
+    if (ticket.status === "invoiced") {
+  setBillingErr("Invoiced tickets are locked and billing details cannot be changed.");
+  return;
+}
 
     setBillingErr("");
     setBillingOk("");
@@ -2445,6 +2614,70 @@ function deriveNextTicketStatus(
 
     try {
       const now = nowIso();
+
+      const parsedAmount =
+        billingMaterialsAmountEdit.trim() === ""
+          ? null
+          : Number(billingMaterialsAmountEdit);
+
+      if (
+        parsedAmount !== null &&
+        (!Number.isFinite(parsedAmount) || parsedAmount < 0)
+      ) {
+        throw new Error("Materials Amount must be blank or a number 0 or greater.");
+      }
+
+      const nextBilling: BillingPacket = {
+        ...ticket.billing,
+        materialsSummary: billingMaterialsSummaryEdit.trim() || null,
+        materialsAmount: parsedAmount,
+        updatedAt: now,
+      };
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        billing: nextBilling,
+        updatedAt: now,
+      });
+
+      setTicket((prev) =>
+        prev ? { ...prev, billing: nextBilling, updatedAt: now } : prev
+      );
+
+      setBillingOk("Billing packet details saved.");
+    } catch (err: unknown) {
+      setBillingErr(
+        err instanceof Error ? err.message : "Failed to save billing packet details."
+      );
+    } finally {
+      setBillingSaving(false);
+    }
+  }
+
+  async function markBillingStatus(nextStatus: BillingPacket["status"]) {
+    if (!ticket?.id || !canBill) return;
+    if (ticket.status === "invoiced") {
+  setBillingErr("Invoiced tickets are locked and billing status cannot be changed.");
+  return;
+}
+
+    setBillingErr("");
+    setBillingOk("");
+    setBillingSaving(true);
+
+    try {
+      const now = nowIso();
+
+      const parsedAmount =
+        billingMaterialsAmountEdit.trim() === ""
+          ? null
+          : Number(billingMaterialsAmountEdit);
+
+      if (
+        parsedAmount !== null &&
+        (!Number.isFinite(parsedAmount) || parsedAmount < 0)
+      ) {
+        throw new Error("Materials Amount must be blank or a number 0 or greater.");
+      }
 
       const base: BillingPacket =
         ticket.billing || {
@@ -2455,28 +2688,68 @@ function deriveNextTicketStatus(
           workNotes: null,
           labor: { totalHours: 0, byCrew: [] },
           materials: [],
+          materialsSummary: null,
+          materialsAmount: null,
           photos: [],
+          invoiceSource: null,
+          qboInvoiceId: null,
+          qboDocNumber: null,
+          qboInvoiceUrl: null,
+          qboSyncedAt: null,
+          qboInvoiceStatus: null,
+          invoiceError: null,
           updatedAt: now,
         };
 
       const next: BillingPacket = {
         ...base,
         status: nextStatus,
+        materialsSummary: billingMaterialsSummaryEdit.trim() || null,
+        materialsAmount: parsedAmount,
         updatedAt: now,
       };
 
       if (nextStatus === "not_ready") {
         next.readyToBillAt = null;
         next.readyToBillTripId = null;
+        next.invoiceSource = null;
+        next.invoiceError = null;
       }
+
+      if (nextStatus === "ready_to_bill") {
+        next.invoiceSource = null;
+        next.invoiceError = null;
+      }
+
+      if (nextStatus === "invoiced") {
+        next.invoiceSource = next.invoiceSource || "manual";
+        next.qboInvoiceStatus = next.qboInvoiceStatus || "manual";
+        next.invoiceError = null;
+      }
+
+const nextTicketStatus: TicketStatus =
+  nextStatus === "invoiced" ? "invoiced" : ticket.status;
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         billing: next,
+        status: nextTicketStatus,
         updatedAt: now,
       });
 
-      setTicket((prev) => (prev ? { ...prev, billing: next, updatedAt: now } : prev));
-      setBillingOk(`Billing status updated: ${nextStatus.replaceAll("_", " ")}`);
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              billing: next,
+              status: nextTicketStatus,
+              updatedAt: now,
+            }
+          : prev
+      );
+
+      setTicketStatusEdit(nextTicketStatus);
+
+      setBillingOk(`Billing status updated: ${formatBillingPacketStatus(nextStatus)}`);
     } catch (err: unknown) {
       setBillingErr(
         err instanceof Error ? err.message : "Failed to update billing status."
@@ -2504,6 +2777,11 @@ function deriveNextTicketStatus(
 
         {!loading && !error && ticket ? (
           <Stack spacing={3}>
+            {isInvoicedTicket ? (
+  <Alert severity="success" variant="outlined">
+    This ticket has been invoiced and is now locked from dispatch, trip, and billing edits.
+  </Alert>
+) : null}
             <Dialog
               fullScreen={isMobile}
               open={Boolean(mobileFinishTrip)}
@@ -2799,6 +3077,7 @@ function deriveNextTicketStatus(
                     color="primary"
                     onClick={handleClaimAndStartTrip}
                     startIcon={<PlayArrowRoundedIcon />}
+                        disabled={isInvoicedTicket}
                   >
                     Claim & Start Trip
                   </Button>
@@ -2922,12 +3201,14 @@ function deriveNextTicketStatus(
                           onChange={(e) =>
                             setTicketStatusEdit(e.target.value as TicketStatus)
                           }
+                          disabled={isInvoicedTicket}
                         >
                           <MenuItem value="new">New</MenuItem>
                           <MenuItem value="scheduled">Scheduled</MenuItem>
                           <MenuItem value="in_progress">In Progress</MenuItem>
                           <MenuItem value="follow_up">Follow Up</MenuItem>
                           <MenuItem value="completed">Completed</MenuItem>
+                          <MenuItem value="invoiced">Invoiced</MenuItem>
                           <MenuItem value="cancelled">Cancelled</MenuItem>
                         </TextField>
 
@@ -2940,6 +3221,7 @@ function deriveNextTicketStatus(
                           onChange={(e) =>
                             setTicketEstimatedMinutesEdit(e.target.value)
                           }
+                            disabled={isInvoicedTicket}
                         />
                       </Box>
 
@@ -2948,6 +3230,7 @@ function deriveNextTicketStatus(
                         label="Issue Summary"
                         value={ticketIssueSummaryEdit}
                         onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
+                          disabled={isInvoicedTicket}
                       />
 
                       <TextField
@@ -2956,13 +3239,14 @@ function deriveNextTicketStatus(
                         label="Issue Details"
                         value={ticketIssueDetailsEdit}
                         onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+                          disabled={isInvoicedTicket}
                       />
 
                       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
                         <Button
                           variant="contained"
                           onClick={handleSaveTicketOverview}
-                          disabled={ticketEditSaving}
+  disabled={ticketEditSaving || isInvoicedTicket}
                         >
                           {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
                         </Button>
@@ -2994,16 +3278,17 @@ function deriveNextTicketStatus(
                 <Section
                   title="Trips"
                   icon={<ScheduleRoundedIcon color="primary" />}
-                  action={
-                    canDispatch ? (
-                      <Button
-                        variant="contained"
-                        onClick={() => setScheduleOpen((prev) => !prev)}
-                      >
-                        {scheduleOpen ? "Close" : "Schedule Trip"}
-                      </Button>
-                    ) : null
-                  }
+action={
+  canDispatch ? (
+    <Button
+      variant="contained"
+      onClick={() => setScheduleOpen((prev) => !prev)}
+      disabled={isInvoicedTicket}
+    >
+      {scheduleOpen ? "Close" : "Schedule Trip"}
+    </Button>
+  ) : null
+}
                 >
                   <Stack spacing={1.5}>
                     {trips.length === 0 ? (
@@ -3109,7 +3394,7 @@ function deriveNextTicketStatus(
                                 <Stack direction="row" spacing={1}>
                                   <IconButton
                                     onClick={() => openEditTrip(trip)}
-                                    disabled={!canEditTripSchedule(trip.status, trip.timerState)}
+  disabled={isInvoicedTicket || !canEditTripSchedule(trip.status, trip.timerState)}
                                   >
                                     <EditRoundedIcon />
                                   </IconButton>
@@ -3117,7 +3402,7 @@ function deriveNextTicketStatus(
                                   <IconButton
                                     color="error"
                                     onClick={() => handleSoftDeleteTrip(trip)}
-                                    disabled={!canCancelTrip(trip.status, trip.timerState)}
+  disabled={isInvoicedTicket || !canCancelTrip(trip.status, trip.timerState)}
                                   >
                                     <DeleteOutlineRoundedIcon />
                                   </IconButton>
@@ -3133,7 +3418,7 @@ function deriveNextTicketStatus(
                                   size="large"
                                   startIcon={<PlayArrowRoundedIcon />}
                                   onClick={() => handleStartTrip(trip)}
-                                  disabled={!canQuickStart || savingThis || anotherTripInProgress}
+                                  disabled={!canQuickStart || savingThis || anotherTripInProgress|| isInvoicedTicket}
                                   fullWidth
                                   sx={{
                                     minHeight: 48,
@@ -3157,7 +3442,7 @@ function deriveNextTicketStatus(
                                     color="warning"
                                     startIcon={<PauseRoundedIcon />}
                                     onClick={() => handlePauseTrip(trip)}
-                                    disabled={!canAct || savingThis}
+                                    disabled={!canAct || savingThis || isInvoicedTicket}
                                     sx={{ minHeight: 44 }}
                                   >
                                     Pause
@@ -3170,7 +3455,7 @@ function deriveNextTicketStatus(
                                     color="primary"
                                     startIcon={<PlayArrowRoundedIcon />}
                                     onClick={() => handleResumeTrip(trip)}
-                                    disabled={!canAct || savingThis}
+                                    disabled={!canAct || savingThis || isInvoicedTicket}
                                     sx={{ minHeight: 44 }}
                                   >
                                     Resume
@@ -3189,10 +3474,11 @@ function deriveNextTicketStatus(
                                         }))
                                       }
                                       disabled={
-                                        !canAct ||
-                                        savingThis ||
-                                        !canFinishTrip(trip.status, trip.timerState)
-                                      }
+  !canAct ||
+  savingThis ||
+  !canFinishTrip(trip.status, trip.timerState) ||
+  isInvoicedTicket
+}
                                     >
                                       Follow-Up
                                     </Button>
@@ -3206,10 +3492,11 @@ function deriveNextTicketStatus(
                                         }))
                                       }
                                       disabled={
-                                        !canAct ||
-                                        savingThis ||
-                                        !canFinishTrip(trip.status, trip.timerState)
-                                      }
+  !canAct ||
+  savingThis ||
+  !canFinishTrip(trip.status, trip.timerState) ||
+  isInvoicedTicket
+}
                                     >
                                       Resolved
                                     </Button>
@@ -3258,23 +3545,24 @@ function deriveNextTicketStatus(
                               {grossMinutes} - paused {pausedMinutes})
                             </Typography>
 
-                            <TextField
-                              id={`trip-work-notes-${trip.id}`}
-                              label="Work Notes"
-                              multiline
-                              minRows={3}
-                              value={tripWorkNotes[trip.id] ?? ""}
-                              onChange={(e) =>
-                                setTripWorkNotes((prev) => ({
-                                  ...prev,
-                                  [trip.id]: e.target.value,
-                                }))
-                              }
-                              disabled={
-                                !canAct ||
-                                normalizeTripStatus(trip.status) === "cancelled"
-                              }
-                            />
+<TextField
+  id={`trip-work-notes-${trip.id}`}
+  label="Work Notes"
+  multiline
+  minRows={3}
+  value={tripWorkNotes[trip.id] ?? ""}
+  onChange={(e) =>
+    setTripWorkNotes((prev) => ({
+      ...prev,
+      [trip.id]: e.target.value,
+    }))
+  }
+  disabled={
+    !canAct ||
+    normalizeTripStatus(trip.status) === "cancelled" ||
+    isInvoicedTicket
+  }
+/>
 
                             <Button
                               variant="outlined"
@@ -3283,7 +3571,8 @@ function deriveNextTicketStatus(
                               disabled={
                                 !canAct ||
                                 normalizeTripStatus(trip.status) === "cancelled" ||
-                                savingThis
+                                savingThis ||
+                                isInvoicedTicket
                               }
                             >
                               Save Notes
@@ -3353,7 +3642,7 @@ function deriveNextTicketStatus(
                                       <Button
                                         variant="contained"
                                         onClick={() => finishTrip(trip, "follow_up")}
-                                        disabled={!canAct || savingThis}
+                                        disabled={!canAct || savingThis || isInvoicedTicket}
                                       >
                                         Complete as Follow-Up
                                       </Button>
@@ -3466,7 +3755,7 @@ function deriveNextTicketStatus(
                                         variant="contained"
                                         color="success"
                                         onClick={() => finishTrip(trip, "resolved")}
-                                        disabled={!canAct || savingThis}
+                                        disabled={!canAct || savingThis || isInvoicedTicket}
                                       >
                                         Complete as Resolved — Ready to Bill
                                       </Button>
@@ -3653,7 +3942,7 @@ function deriveNextTicketStatus(
                             <Alert severity="success">{tripSaveSuccess}</Alert>
                           ) : null}
 
-                          <Button variant="contained" type="submit" disabled={tripSaving}>
+                          <Button variant="contained" type="submit" disabled={tripSaving || isInvoicedTicket}>
                             {tripSaving ? "Scheduling..." : "Schedule Trip"}
                           </Button>
                         </Stack>
@@ -3669,66 +3958,157 @@ function deriveNextTicketStatus(
                       <strong>Resolved — Ready to Bill</strong>.
                     </Alert>
                   ) : (
-                    <Stack spacing={1.5}>
-                      <Typography variant="body1">
-                        Status: <strong>{ticket.billing.status}</strong>
-                        {ticket.billing.readyToBillAt ? (
-                          <span> • Ready: {ticket.billing.readyToBillAt}</span>
-                        ) : null}
-                      </Typography>
-
-                      <Typography variant="body1">
-                        Total billed hours:{" "}
-                        <strong>
-                          {Number(ticket.billing.labor.totalHours || 0).toFixed(2)}
-                        </strong>
-                      </Typography>
-
-                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
-                        <strong>Resolution Notes:</strong>
-                        {"\n"}
-                        {ticket.billing.resolutionNotes || "—"}
-                      </Typography>
-
-                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
-                        <strong>Work Notes:</strong>
-                        {"\n"}
-                        {ticket.billing.workNotes || "—"}
-                      </Typography>
-
-                      {Array.isArray(ticket.billing.materials) &&
-                      ticket.billing.materials.length ? (
-                        <Stack spacing={1}>
-                          {ticket.billing.materials.map((material, idx) => (
-                            <Paper key={`bill-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
-                              <Typography variant="body1" fontWeight={700}>
-                                {material.name} • {Number(material.qty).toFixed(2)}{" "}
-                                {material.unit || ""}
-                              </Typography>
-                              {material.notes ? (
-                                <Typography variant="body2" color="text.secondary">
-                                  {material.notes}
-                                </Typography>
-                              ) : null}
-                            </Paper>
-                          ))}
+                    <Stack spacing={2}>
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        justifyContent="space-between"
+                        alignItems={{ xs: "flex-start", sm: "center" }}
+                        spacing={1}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                          <Typography variant="body1">
+                            Status:
+                          </Typography>
+                          <Chip
+                            size="small"
+                            color={getBillingTone(ticket.billing.status)}
+                            label={formatBillingPacketStatus(ticket.billing.status)}
+                          />
+                          {ticket.billing.invoiceSource ? (
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              label={`Source: ${ticket.billing.invoiceSource}`}
+                            />
+                          ) : null}
                         </Stack>
-                      ) : null}
+
+                        {ticket.billing.readyToBillAt ? (
+                          <Typography variant="body2" color="text.secondary">
+                            Ready: {ticket.billing.readyToBillAt}
+                          </Typography>
+                        ) : null}
+                      </Stack>
+
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle1" fontWeight={700}>
+                            Labor Summary
+                          </Typography>
+
+                          <Typography variant="body1">
+                            Total billed hours:{" "}
+                            <strong>
+                              {Number(ticket.billing.labor.totalHours || 0).toFixed(2)}
+                            </strong>
+                          </Typography>
+
+                          {ticket.billing.readyToBillTripId ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Ready-to-bill trip: {ticket.billing.readyToBillTripId}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      </Paper>
+
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                        <Stack spacing={1.5}>
+                          <Typography variant="subtitle1" fontWeight={700}>
+                            Materials Billing
+                          </Typography>
+
+                          <TextField
+                            label="Materials Summary"
+                            multiline
+                            minRows={4}
+                            value={billingMaterialsSummaryEdit}
+                            onChange={(e) => setBillingMaterialsSummaryEdit(e.target.value)}
+                            disabled={!canBill || billingSaving || isInvoicedTicket}
+                            placeholder={`Example: 5 of pex viega 1/2 tees, 4 of pex viega 1/2 90s, 1 3" PVC tee`}
+                            helperText="This will become the summarized materials line description for invoicing."
+                          />
+
+                          <TextField
+                            label="Materials Amount"
+                            type="number"
+                            inputProps={{ min: 0, step: 0.01 }}
+                            value={billingMaterialsAmountEdit}
+                            onChange={(e) => setBillingMaterialsAmountEdit(e.target.value)}
+                            disabled={!canBill || billingSaving || isInvoicedTicket}
+                            placeholder="0.00"
+                            helperText="Enter the total billed materials amount."
+                          />
+
+                          {canBill ? (
+                            <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                              <Button
+                                variant="contained"
+                                onClick={handleSaveBillingPacketDetails}
+                                disabled={billingSaving || isInvoicedTicket}
+                              >
+                                {billingSaving ? "Saving..." : "Save Billing Details"}
+                              </Button>
+                            </Stack>
+                          ) : null}
+                        </Stack>
+                      </Paper>
+
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle1" fontWeight={700}>
+                            Invoice Details
+                          </Typography>
+
+                          <Typography variant="body2" color="text.secondary">
+                            Resolution notes and work notes remain stored for office reference, but
+                            the future QBO invoice flow will use the service date range plus the
+                            summarized labor/materials billing model.
+                          </Typography>
+
+                          {ticket.billing.qboDocNumber ? (
+                            <Typography variant="body1">
+                              Invoice Number: <strong>{ticket.billing.qboDocNumber}</strong>
+                            </Typography>
+                          ) : null}
+
+                          {ticket.billing.qboSyncedAt ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Synced: {ticket.billing.qboSyncedAt}
+                            </Typography>
+                          ) : null}
+
+                          {ticket.billing.qboInvoiceUrl ? (
+                            <Button
+                              component="a"
+                              href={ticket.billing.qboInvoiceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              variant="outlined"
+                            >
+                              Open in QBO
+                            </Button>
+                          ) : null}
+
+                          {ticket.billing.invoiceError ? (
+                            <Alert severity="error">{ticket.billing.invoiceError}</Alert>
+                          ) : null}
+                        </Stack>
+                      </Paper>
 
                       {canBill ? (
                         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
                           <Button
                             variant="outlined"
                             onClick={() => markBillingStatus("invoiced")}
-                            disabled={billingSaving}
+                            disabled={billingSaving || isInvoicedTicket}
                           >
-                            {billingSaving ? "Working..." : "Mark Invoiced"}
+                            {billingSaving ? "Working..." : "Mark Invoiced Manually"}
                           </Button>
 
                           <Button
                             variant="outlined"
                             onClick={() => markBillingStatus("ready_to_bill")}
-                            disabled={billingSaving}
+                            disabled={billingSaving || isInvoicedTicket}
                           >
                             Set Ready to Bill
                           </Button>
@@ -3736,7 +4116,7 @@ function deriveNextTicketStatus(
                           <Button
                             variant="outlined"
                             onClick={() => markBillingStatus("not_ready")}
-                            disabled={billingSaving}
+                            disabled={billingSaving || isInvoicedTicket}
                           >
                             Set Not Ready
                           </Button>
@@ -3905,7 +4285,7 @@ function deriveNextTicketStatus(
                 <Button
                   variant="contained"
                   onClick={handleSaveTripEdit}
-                  disabled={editTripSaving}
+                  disabled={editTripSaving || isInvoicedTicket}
                 >
                   {editTripSaving ? "Saving..." : "Save Changes"}
                 </Button>

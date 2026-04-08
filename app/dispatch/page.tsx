@@ -7,7 +7,10 @@ import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
-import type { ServiceTicket, ServiceTicketStatus } from "../../src/types/service-ticket";
+import type {
+  ServiceTicket,
+  ServiceTicketStatus,
+} from "../../src/types/service-ticket";
 import type { AppUser } from "../../src/types/app-user";
 
 type TicketColumn = {
@@ -33,10 +36,23 @@ const COLUMNS: TicketColumn[] = [
   { key: "in_progress", label: "In Progress" },
   { key: "follow_up", label: "Follow Up" },
   { key: "completed", label: "Completed" },
+  { key: "invoiced", label: "Invoiced" },
   { key: "cancelled", label: "Cancelled" },
 ];
 
 const RECENT_HISTORY_DAYS = 7;
+
+function createEmptyGroupedTickets(): Record<ServiceTicketStatus, ServiceTicket[]> {
+  return {
+    new: [],
+    scheduled: [],
+    in_progress: [],
+    follow_up: [],
+    completed: [],
+    invoiced: [],
+    cancelled: [],
+  };
+}
 
 export default function DispatchBoardPage() {
   const { appUser } = useAuthContext();
@@ -75,13 +91,21 @@ export default function DispatchBoardPage() {
             servicePostalCode: data.servicePostalCode ?? "",
             issueSummary: data.issueSummary ?? "",
             issueDetails: data.issueDetails ?? undefined,
-            status: data.status ?? "new",
+            status: (data.status ?? "new") as ServiceTicketStatus,
             estimatedDurationMinutes: data.estimatedDurationMinutes ?? 0,
             scheduledDate: data.scheduledDate ?? undefined,
             scheduledStartTime: data.scheduledStartTime ?? undefined,
             scheduledEndTime: data.scheduledEndTime ?? undefined,
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+            assignedTechnicianIds: Array.isArray(data.assignedTechnicianIds)
+              ? data.assignedTechnicianIds
+              : undefined,
+            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+            helperIds: Array.isArray(data.helperIds) ? data.helperIds : undefined,
+            helperNames: Array.isArray(data.helperNames) ? data.helperNames : undefined,
             internalNotes: data.internalNotes ?? undefined,
             active: data.active ?? true,
             createdAt: data.createdAt ?? undefined,
@@ -158,7 +182,11 @@ export default function DispatchBoardPage() {
     const cutoffMs = Date.now() - RECENT_HISTORY_DAYS * 24 * 60 * 60 * 1000;
 
     const visibleTickets = tickets.filter((ticket) => {
-      if (ticket.status !== "completed" && ticket.status !== "cancelled") {
+      if (
+        ticket.status !== "completed" &&
+        ticket.status !== "cancelled" &&
+        ticket.status !== "invoiced"
+      ) {
         return true;
       }
 
@@ -182,14 +210,7 @@ export default function DispatchBoardPage() {
         );
         return acc;
       },
-      {
-        new: [],
-        scheduled: [],
-        in_progress: [],
-        follow_up: [],
-        completed: [],
-        cancelled: [],
-      }
+      createEmptyGroupedTickets()
     );
   }, [tickets]);
 
@@ -202,12 +223,18 @@ export default function DispatchBoardPage() {
       ...prev,
       [ticketId]: {
         ...(prev[ticketId] ?? { status: "new", assignedTechnicianId: "" }),
-        [field]: value,
+        [field]: value as TicketDraft[keyof TicketDraft],
       },
     }));
   }
 
   async function handleSaveQuickUpdate(ticket: ServiceTicket) {
+    if (ticket.status === "invoiced") {
+      setSaveError("Invoiced tickets are locked and cannot be quick-edited from dispatch.");
+      setSaveMessage("");
+      return;
+    }
+
     const draft = drafts[ticket.id];
     if (!draft) return;
 
@@ -286,7 +313,7 @@ export default function DispatchBoardPage() {
               Dispatcher Board
             </h1>
             <p style={{ marginTop: "4px", fontSize: "13px", color: "#666" }}>
-              Completed and Cancelled only show the last {RECENT_HISTORY_DAYS} days.
+              Completed, Invoiced, and Cancelled only show the last {RECENT_HISTORY_DAYS} days.
             </p>
           </div>
 
@@ -316,7 +343,7 @@ export default function DispatchBoardPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(6, minmax(260px, 1fr))",
+              gridTemplateColumns: `repeat(${COLUMNS.length}, minmax(260px, 1fr))`,
               gap: "12px",
               alignItems: "start",
               overflowX: "auto",
@@ -359,6 +386,8 @@ export default function DispatchBoardPage() {
                     </div>
                   ) : (
                     groupedTickets[column.key].map((ticket) => {
+                      const isLocked = ticket.status === "invoiced";
+
                       const draft = drafts[ticket.id] ?? {
                         status: ticket.status,
                         assignedTechnicianId: ticket.assignedTechnicianId ?? "",
@@ -372,6 +401,7 @@ export default function DispatchBoardPage() {
                             borderRadius: "10px",
                             padding: "10px",
                             background: "white",
+                            opacity: isLocked ? 0.88 : 1,
                           }}
                         >
                           <Link
@@ -437,6 +467,23 @@ export default function DispatchBoardPage() {
                             ETA: {ticket.estimatedDurationMinutes} min
                           </div>
 
+                          {isLocked ? (
+                            <div
+                              style={{
+                                marginTop: "10px",
+                                padding: "8px 10px",
+                                border: "1px solid #d6e4d6",
+                                borderRadius: "8px",
+                                background: "#f6fbf6",
+                                fontSize: "12px",
+                                color: "#2f5d2f",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Locked: this ticket has been invoiced.
+                            </div>
+                          ) : null}
+
                           <div style={{ marginTop: "10px" }}>
                             <label
                               style={{
@@ -456,6 +503,7 @@ export default function DispatchBoardPage() {
                                   e.target.value
                                 )
                               }
+                              disabled={isLocked}
                               style={{
                                 display: "block",
                                 width: "100%",
@@ -468,6 +516,7 @@ export default function DispatchBoardPage() {
                               <option value="in_progress">In Progress</option>
                               <option value="follow_up">Follow Up</option>
                               <option value="completed">Completed</option>
+                              <option value="invoiced">Invoiced</option>
                               <option value="cancelled">Cancelled</option>
                             </select>
                           </div>
@@ -491,6 +540,7 @@ export default function DispatchBoardPage() {
                                   e.target.value
                                 )
                               }
+                              disabled={isLocked}
                               style={{
                                 display: "block",
                                 width: "100%",
@@ -510,14 +560,14 @@ export default function DispatchBoardPage() {
                           <button
                             type="button"
                             onClick={() => handleSaveQuickUpdate(ticket)}
-                            disabled={savingTicketId === ticket.id}
+                            disabled={savingTicketId === ticket.id || isLocked}
                             style={{
                               marginTop: "10px",
                               padding: "8px 10px",
                               border: "1px solid #ccc",
                               borderRadius: "8px",
                               background: "white",
-                              cursor: "pointer",
+                              cursor: isLocked ? "not-allowed" : "pointer",
                               fontWeight: 600,
                               fontSize: "12px",
                               width: "100%",
@@ -525,7 +575,9 @@ export default function DispatchBoardPage() {
                           >
                             {savingTicketId === ticket.id
                               ? "Saving..."
-                              : "Save Quick Update"}
+                              : isLocked
+                                ? "Locked"
+                                : "Save Quick Update"}
                           </button>
                         </div>
                       );

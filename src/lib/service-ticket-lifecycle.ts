@@ -1,10 +1,12 @@
 // src/lib/service-ticket-lifecycle.ts
+
 export type LifecycleTicketStatus =
   | "new"
   | "scheduled"
   | "in_progress"
   | "follow_up"
   | "completed"
+  | "invoiced"
   | "cancelled";
 
 export type LifecycleTripStatus = "planned" | "in_progress" | "complete" | "cancelled";
@@ -23,6 +25,7 @@ export function normalizeTicketStatus(value?: string | null): LifecycleTicketSta
   if (v === "in_progress") return "in_progress";
   if (v === "follow_up") return "follow_up";
   if (v === "completed") return "completed";
+  if (v === "invoiced") return "invoiced";
   if (v === "cancelled" || v === "canceled") return "cancelled";
   return "new";
 }
@@ -45,7 +48,7 @@ export function formatLifecycleTripStatus(value?: string | null) {
 
 export function isTicketTerminal(status?: string | null) {
   const v = normalizeTicketStatus(status);
-  return v === "completed" || v === "cancelled";
+  return v === "completed" || v === "invoiced" || v === "cancelled";
 }
 
 export function isTripCancelled(status?: string | null) {
@@ -142,7 +145,7 @@ export function deriveTicketStatusFromTrips(args: {
   }
 
   if (latestCompletedOutcome === "resolved") {
-    return "completed";
+    return currentStatus === "invoiced" ? "invoiced" : "completed";
   }
 
   if (latestCompletedOutcome === "follow_up") {
@@ -150,7 +153,7 @@ export function deriveTicketStatusFromTrips(args: {
   }
 
   if (completedTrips) {
-    return "completed";
+    return currentStatus === "invoiced" ? "invoiced" : "completed";
   }
 
   const onlyCancelledOrEmpty = !trips.some((trip) => !isTripCancelled(trip.status));
@@ -177,6 +180,10 @@ export function getManualTicketStatusError(args: {
   const followUpHistory = hasFollowUpHistory(trips);
   const latestCompletedOutcome = getLatestCompletedOutcome(trips);
   const onlyCancelledOrEmpty = !trips.some((trip) => !isTripCancelled(trip.status));
+
+  if (currentStatus === "invoiced" && nextStatus !== "invoiced") {
+    return "Invoiced tickets are locked and cannot be moved back into dispatch or editing flows.";
+  }
 
   if (nextStatus === "new" && !onlyCancelledOrEmpty) {
     return "Use New only when the ticket has no open or completed trips.";
@@ -223,6 +230,18 @@ export function getManualTicketStatusError(args: {
     }
     if (latestCompletedOutcome === "follow_up") {
       return "Completed cannot be set because the latest completed trip outcome is Follow Up.";
+    }
+  }
+
+  if (nextStatus === "invoiced") {
+    if (openTrips || inProgressTrips) {
+      return "Invoiced cannot be set while this ticket still has an open trip.";
+    }
+    if (!completedTrips) {
+      return "Invoiced requires at least one completed trip.";
+    }
+    if (latestCompletedOutcome === "follow_up") {
+      return "Invoiced cannot be set because the latest completed trip outcome is Follow Up.";
     }
   }
 
