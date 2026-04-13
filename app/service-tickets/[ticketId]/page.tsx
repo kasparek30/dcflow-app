@@ -138,10 +138,12 @@ type TripDoc = {
   endedByUid?: string | null;
   pauseBlocks?: PauseBlock[];
   actualMinutes?: number | null;
+  billableHours?: number | null;
   workNotes?: string | null;
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
   materials?: TripMaterial[] | null;
+  noMaterialsUsed?: boolean | null;
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
   updatedAt?: string;
@@ -321,34 +323,48 @@ function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
 }
 
 function mergeTripMaterials(trips: TripDoc[]) {
-  return trips.flatMap((trip) =>
-    Array.isArray(trip.materials) ? trip.materials : []
-  );
+  return trips
+    .flatMap((trip) => (Array.isArray(trip.materials) ? trip.materials : []))
+    .filter((item) => String(item?.name || "").trim());
+}
+
+function getDefaultBillableHours(actualMinutes: number) {
+  const safeMinutes = Math.max(0, Number(actualMinutes || 0));
+  return Math.max(1, roundToHalf(safeMinutes / 60));
+}
+
+function getStoredOrComputedBillableHours(
+  trip: Pick<TripDoc, "billableHours" | "actualMinutes">
+) {
+  const stored = Number(trip.billableHours);
+  if (Number.isFinite(stored) && stored > 0) {
+    return roundToHalf(stored);
+  }
+  return getDefaultBillableHours(Number(trip.actualMinutes || 0));
 }
 
 function buildBillingPacketFromResolvedTrips(args: {
   trips: TripDoc[];
   fallbackUpdatedAt: string;
 }) {
-  const resolvedTrips = args.trips
+  const completedTrips = args.trips
     .filter((trip) => trip.active !== false)
-    .filter((trip) => normalizeTripStatus(trip.status) === "complete")
-    .filter(
-      (trip) => String(trip.outcome || "").trim().toLowerCase() === "resolved"
-    );
+    .filter((trip) => normalizeTripStatus(trip.status) === "complete");
 
-  if (resolvedTrips.length === 0) {
+  const resolvedTrips = completedTrips.filter(
+    (trip) => String(trip.outcome || "").trim().toLowerCase() === "resolved"
+  );
+
+  if (completedTrips.length === 0 || resolvedTrips.length === 0) {
     return null;
   }
 
-  const totalMinutes = resolvedTrips.reduce(
-    (sum, trip) => sum + Number(trip.actualMinutes || 0),
+  const totalHours = completedTrips.reduce(
+    (sum, trip) => sum + getStoredOrComputedBillableHours(trip),
     0
   );
 
-  const totalHours = roundToHalf(totalMinutes / 60);
-
-  const materials = mergeTripMaterials(resolvedTrips);
+  const materials = mergeTripMaterials(completedTrips);
   const materialsSummary = buildMaterialsSummaryFromLines(materials) || null;
 
   const uniqueResolutionNotes = Array.from(
@@ -361,7 +377,7 @@ function buildBillingPacketFromResolvedTrips(args: {
 
   const uniqueWorkNotes = Array.from(
     new Set(
-      resolvedTrips
+      completedTrips
         .map((trip) => String(trip.workNotes || "").trim())
         .filter(Boolean)
     )
@@ -383,7 +399,7 @@ function buildBillingPacketFromResolvedTrips(args: {
     resolutionNotes: uniqueResolutionNotes.join("\n\n") || null,
     workNotes: uniqueWorkNotes.join("\n\n") || null,
     labor: {
-      totalHours,
+      totalHours: roundToHalf(totalHours),
       byCrew: [],
     },
     materials,
@@ -399,6 +415,38 @@ function buildBillingPacketFromResolvedTrips(args: {
     invoiceError: null,
     updatedAt: args.fallbackUpdatedAt,
   };
+}
+
+function validateTripMaterialsCapture(args: {
+  materials: TripMaterial[];
+  noMaterialsUsed: boolean;
+}) {
+  const cleaned = (args.materials || [])
+    .map((m) => ({
+      name: String(m.name || "").trim(),
+      qty: Number(m.qty),
+      unit: String(m.unit || "").trim(),
+      notes: String(m.notes || "").trim(),
+    }))
+    .filter((m) => m.name);
+
+  for (const m of cleaned) {
+    if (!Number.isFinite(m.qty) || m.qty <= 0) {
+      return {
+        ok: false as const,
+        message: `Material "${m.name}" must have qty > 0.`,
+      };
+    }
+  }
+
+  if (!args.noMaterialsUsed && cleaned.length < 1) {
+    return {
+      ok: false as const,
+      message: "Add at least 1 material line item or check No materials used.",
+    };
+  }
+
+  return { ok: true as const, cleaned };
 }
 
 function formatTripWindow(value?: string) {
@@ -498,7 +546,10 @@ function crewMembersFromTrip(trip: {
   });
 }
 
-function isOpenTripRecord(tripLike: { active?: boolean | null; status?: string | null }) {
+function isOpenTripRecord(tripLike: {
+  active?: boolean | null;
+  status?: string | null;
+}) {
   if (tripLike.active === false) return false;
   const status = normalizeTripStatus(tripLike.status);
   return status === "planned" || status === "in_progress";
@@ -814,35 +865,6 @@ async function upsertTimeEntryFromTrip(args: {
   );
 }
 
-function validateMaterialsForResolved(materials: TripMaterial[]) {
-  const cleaned = (materials || [])
-    .map((m) => ({
-      name: String(m.name || "").trim(),
-      qty: Number(m.qty),
-      unit: String(m.unit || "").trim(),
-      notes: String(m.notes || "").trim(),
-    }))
-    .filter((m) => m.name);
-
-  if (cleaned.length < 1) {
-    return {
-      ok: false as const,
-      message: "Resolved requires at least 1 material line item (name + qty).",
-    };
-  }
-
-  for (const m of cleaned) {
-    if (!Number.isFinite(m.qty) || m.qty <= 0) {
-      return {
-        ok: false as const,
-        message: `Material "${m.name}" must have qty > 0.`,
-      };
-    }
-  }
-
-  return { ok: true as const, cleaned };
-}
-
 function getTicketTone(
   status?: string
 ): "default" | "success" | "warning" | "error" | "info" {
@@ -961,6 +983,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [tripMaterials, setTripMaterials] = useState<Record<string, TripMaterial[]>>(
     {}
   );
+  const [tripNoMaterialsUsed, setTripNoMaterialsUsed] = useState<
+    Record<string, boolean>
+  >({});
   const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>(
     {}
   );
@@ -1206,10 +1231,13 @@ const nextTicket: TicketWithBilling = {
             pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
             actualMinutes:
               typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
+            billableHours:
+              typeof trip.billableHours === "number" ? trip.billableHours : null,
             workNotes: trip.workNotes ?? null,
             resolutionNotes: trip.resolutionNotes ?? null,
             followUpNotes: trip.followUpNotes ?? null,
             materials: Array.isArray(trip.materials) ? trip.materials : [],
+            noMaterialsUsed: Boolean(trip.noMaterialsUsed),
             outcome: trip.outcome ?? null,
             readyToBillAt: trip.readyToBillAt ?? null,
             updatedAt: trip.updatedAt ?? undefined,
@@ -1223,6 +1251,7 @@ const nextTicket: TicketWithBilling = {
         const nextResolution: Record<string, string> = {};
         const nextFollow: Record<string, string> = {};
         const nextMaterials: Record<string, TripMaterial[]> = {};
+        const nextNoMaterials: Record<string, boolean> = {};
         const nextFinish: Record<string, FinishMode> = {};
         const nextHelperConfirmed: Record<string, boolean> = {};
 
@@ -1231,6 +1260,7 @@ const nextTicket: TicketWithBilling = {
           nextResolution[trip.id] = String(trip.resolutionNotes || "");
           nextFollow[trip.id] = String(trip.followUpNotes || "");
           nextMaterials[trip.id] = Array.isArray(trip.materials) ? trip.materials : [];
+          nextNoMaterials[trip.id] = Boolean(trip.noMaterialsUsed);
           nextFinish[trip.id] = "none";
           nextHelperConfirmed[trip.id] = true;
         }
@@ -1239,6 +1269,7 @@ const nextTicket: TicketWithBilling = {
         setTripResolutionNotes(nextResolution);
         setTripFollowUpNotes(nextFollow);
         setTripMaterials(nextMaterials);
+        setTripNoMaterialsUsed(nextNoMaterials);
         setFinishModeByTrip(nextFinish);
         setHelperConfirmedByTrip(nextHelperConfirmed);
 
@@ -1435,7 +1466,7 @@ function deriveNextTicketStatus(
     if (typeof override === "number" && Number.isFinite(override) && override >= 0) {
       return roundToHalf(override);
     }
-    return roundToHalf(computedMinutes / 60);
+    return getDefaultBillableHours(computedMinutes);
   }
 
   const mobileFinishTrip = useMemo(
@@ -1506,6 +1537,124 @@ function deriveNextTicketStatus(
   function closeMobileFinishSheet() {
     setMobileFinishTripId(null);
     setMobileFinishMode("none");
+  }
+
+    function renderTripMaterialsEditor(tripId: string) {
+    const materials = Array.isArray(tripMaterials[tripId]) ? tripMaterials[tripId] : [];
+    const noMaterialsUsed = Boolean(tripNoMaterialsUsed[tripId]);
+
+    return (
+      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+        <Stack spacing={1}>
+          <Typography variant="subtitle1" fontWeight={700}>
+            Materials Used
+          </Typography>
+
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={noMaterialsUsed}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setTripNoMaterialsUsed((prev) => ({
+                    ...prev,
+                    [tripId]: checked,
+                  }));
+
+                  if (checked) {
+                    setTripMaterials((prev) => ({
+                      ...prev,
+                      [tripId]: [],
+                    }));
+                  }
+                }}
+              />
+            }
+            label="No materials used on this trip"
+          />
+
+          {noMaterialsUsed ? (
+            <Alert severity="success" variant="outlined">
+              This trip is marked as no materials used.
+            </Alert>
+          ) : (
+            <>
+              {materials.length === 0 ? (
+                <Alert severity="info" variant="outlined">
+                  No materials added yet.
+                </Alert>
+              ) : null}
+
+              {materials.map((m, idx) => (
+                <Stack
+                  key={`${tripId}-${idx}`}
+                  direction={{ xs: "column", md: "row" }}
+                  spacing={1}
+                >
+                  <TextField
+                    size="small"
+                    label="Name"
+                    value={m.name}
+                    onChange={(e) =>
+                      setTripMaterials((prev) => ({
+                        ...prev,
+                        [tripId]: (prev[tripId] || []).map((row, rowIdx) =>
+                          rowIdx === idx ? { ...row, name: e.target.value } : row
+                        ),
+                      }))
+                    }
+                  />
+
+                  <TextField
+                    size="small"
+                    label="Qty"
+                    type="number"
+                    value={m.qty}
+                    onChange={(e) =>
+                      setTripMaterials((prev) => ({
+                        ...prev,
+                        [tripId]: (prev[tripId] || []).map((row, rowIdx) =>
+                          rowIdx === idx
+                            ? { ...row, qty: Number(e.target.value) }
+                            : row
+                        ),
+                      }))
+                    }
+                  />
+
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    onClick={() =>
+                      setTripMaterials((prev) => ({
+                        ...prev,
+                        [tripId]: (prev[tripId] || []).filter(
+                          (_, rowIdx) => rowIdx !== idx
+                        ),
+                      }))
+                    }
+                  >
+                    Remove
+                  </Button>
+                </Stack>
+              ))}
+
+              <Button
+                variant="outlined"
+                onClick={() =>
+                  setTripMaterials((prev) => ({
+                    ...prev,
+                    [tripId]: [...(prev[tripId] || []), { name: "", qty: 1 }],
+                  }))
+                }
+              >
+                Add Material
+              </Button>
+            </>
+          )}
+        </Stack>
+      </Paper>
+    );
   }
 
 async function handleSaveTicketOverview() {
@@ -1653,6 +1802,8 @@ async function handleSaveTicketOverview() {
         timeWindow: tripTimeWindow,
         startTime: tripStartTime,
         endTime: tripEndTime,
+        billableHours: null,
+noMaterialsUsed: false,
         crew: {
           primaryTechUid: tripPrimaryTechUid,
           primaryTechName: primaryName,
@@ -1752,7 +1903,8 @@ async function handleSaveTicketOverview() {
       setTripResolutionNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripFollowUpNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
-      setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
+      setTripNoMaterialsUsed((prev) => ({ ...prev, [createdTrip.id]: false }));
+            setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
       setTripSaveSuccess(
         `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`
@@ -2042,10 +2194,11 @@ async function handleSaveTicketOverview() {
       }
 
       const mats = Array.isArray(tripMaterials[trip.id]) ? tripMaterials[trip.id] : [];
-      const materialCheck =
-        mode === "resolved"
-          ? validateMaterialsForResolved(mats)
-          : { ok: true as const, cleaned: [] as TripMaterial[] };
+      const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
+      const materialCheck = validateTripMaterialsCapture({
+        materials: mats,
+        noMaterialsUsed,
+      });
 
       if (!materialCheck.ok) {
         throw new Error(materialCheck.message);
@@ -2102,12 +2255,14 @@ async function handleSaveTicketOverview() {
           endedByUid: myUid,
           pauseBlocks,
           actualMinutes,
+          billableHours: hoursToUse,
           workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
           resolutionNotes: mode === "resolved" ? resolutionNotes : null,
           followUpNotes: mode === "follow_up" ? followNotes : null,
           outcome: mode,
           readyToBillAt: mode === "resolved" ? now : null,
-          materials: mode === "resolved" ? materialCheck.cleaned : [],
+          materials: materialCheck.cleaned,
+          noMaterialsUsed,
           crewConfirmed: finalCrew,
           updatedAt: now,
           updatedByUid: myUid,
@@ -2159,12 +2314,14 @@ async function handleSaveTicketOverview() {
               endedByUid: myUid,
               pauseBlocks,
               actualMinutes,
+              billableHours: hoursToUse,
               workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
               resolutionNotes: mode === "resolved" ? resolutionNotes : null,
               followUpNotes: mode === "follow_up" ? followNotes : null,
               outcome: mode,
               readyToBillAt: mode === "resolved" ? now : null,
-              materials: mode === "resolved" ? materialCheck.cleaned : [],
+              materials: materialCheck.cleaned,
+              noMaterialsUsed,
               crewConfirmed: finalCrew,
             }
           : t
@@ -2174,21 +2331,21 @@ async function handleSaveTicketOverview() {
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
       closeMobileFinishSheet();
 
-const nextStatus = deriveNextTicketStatus(nextTrips, mode);
-let billingOverride: BillingPacket | null | undefined = undefined;
+      const nextStatus = deriveNextTicketStatus(nextTrips, mode);
+      let billingOverride: BillingPacket | null | undefined = undefined;
 
-if (mode === "resolved") {
-  if (nextStatus === "completed") {
-    billingOverride = buildBillingPacketFromResolvedTrips({
-      trips: nextTrips,
-      fallbackUpdatedAt: now,
-    });
-  } else {
-    billingOverride = null;
-  }
-} else {
-  billingOverride = null;
-}
+      if (mode === "resolved") {
+        if (nextStatus === "completed") {
+          billingOverride = buildBillingPacketFromResolvedTrips({
+            trips: nextTrips,
+            fallbackUpdatedAt: now,
+          });
+        } else {
+          billingOverride = null;
+        }
+      } else {
+        billingOverride = null;
+      }
 
       if (ticket?.id) {
         await persistTicketStatus(nextStatus, now, billingOverride);
@@ -2196,7 +2353,7 @@ if (mode === "resolved") {
 
       setTripOk(
         trip.id,
-        `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Hours: ${hoursToUse}.`
+        `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Billable hours: ${hoursToUse}.`
       );
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to finish trip.");
@@ -2535,6 +2692,8 @@ async function handleClaimAndStartTrip() {
         timeWindow: "custom",
         startTime: hhmmLocal(now),
         endTime: hhmmLocal(addMinutes(now, 60)),
+        billableHours: null,
+noMaterialsUsed: false,
         crew: {
           primaryTechUid: myUid,
           primaryTechName: appUser?.displayName || "Technician",
@@ -2838,7 +2997,7 @@ const nextTicketStatus: TicketStatus =
                       value={
                         typeof hoursOverrideByTrip[mobileFinishTrip.id] === "number"
                           ? hoursOverrideByTrip[mobileFinishTrip.id]
-                          : roundToHalf(
+                          : getDefaultBillableHours(
                               Math.max(
                                 0,
                                 (() => {
@@ -2862,7 +3021,7 @@ const nextTicketStatus: TicketStatus =
                                         : 0;
                                   return gross - paused;
                                 })()
-                              ) / 60
+                              )
                             )
                       }
                       onChange={(e) =>
@@ -2890,18 +3049,22 @@ const nextTicketStatus: TicketStatus =
                     />
 
                     {mobileFinishMode === "follow_up" ? (
-                      <TextField
-                        label="Follow-Up Notes"
-                        multiline
-                        minRows={5}
-                        value={tripFollowUpNotes[mobileFinishTrip.id] ?? ""}
-                        onChange={(e) =>
-                          setTripFollowUpNotes((prev) => ({
-                            ...prev,
-                            [mobileFinishTrip.id]: e.target.value,
-                          }))
-                        }
-                      />
+                      <>
+                        <TextField
+                          label="Follow-Up Notes"
+                          multiline
+                          minRows={5}
+                          value={tripFollowUpNotes[mobileFinishTrip.id] ?? ""}
+                          onChange={(e) =>
+                            setTripFollowUpNotes((prev) => ({
+                              ...prev,
+                              [mobileFinishTrip.id]: e.target.value,
+                            }))
+                          }
+                        />
+
+                        {renderTripMaterialsEditor(mobileFinishTrip.id)}
+                      </>
                     ) : null}
 
                     {mobileFinishMode === "resolved" ? (
@@ -2919,94 +3082,7 @@ const nextTicketStatus: TicketStatus =
                           }
                         />
 
-                        <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
-                          <Stack spacing={1.25}>
-                            <Typography variant="subtitle1" fontWeight={700}>
-                              Materials
-                            </Typography>
-
-                            {(tripMaterials[mobileFinishTrip.id] || []).length === 0 ? (
-                              <Alert severity="info" variant="outlined">
-                                No materials added yet.
-                              </Alert>
-                            ) : null}
-
-                            {(tripMaterials[mobileFinishTrip.id] || []).map((m, idx) => (
-                              <Stack
-                                key={`${mobileFinishTrip.id}-${idx}`}
-                                direction={{ xs: "column", sm: "row" }}
-                                spacing={1}
-                              >
-                                <TextField
-                                  size="small"
-                                  label="Name"
-                                  value={m.name}
-                                  onChange={(e) =>
-                                    setTripMaterials((prev) => ({
-                                      ...prev,
-                                      [mobileFinishTrip.id]: (
-                                        prev[mobileFinishTrip.id] || []
-                                      ).map((row, rowIdx) =>
-                                        rowIdx === idx
-                                          ? { ...row, name: e.target.value }
-                                          : row
-                                      ),
-                                    }))
-                                  }
-                                />
-
-                                <TextField
-                                  size="small"
-                                  label="Qty"
-                                  type="number"
-                                  value={m.qty}
-                                  onChange={(e) =>
-                                    setTripMaterials((prev) => ({
-                                      ...prev,
-                                      [mobileFinishTrip.id]: (
-                                        prev[mobileFinishTrip.id] || []
-                                      ).map((row, rowIdx) =>
-                                        rowIdx === idx
-                                          ? { ...row, qty: Number(e.target.value) }
-                                          : row
-                                      ),
-                                    }))
-                                  }
-                                />
-
-                                <Button
-                                  variant="outlined"
-                                  color="error"
-                                  onClick={() =>
-                                    setTripMaterials((prev) => ({
-                                      ...prev,
-                                      [mobileFinishTrip.id]: (
-                                        prev[mobileFinishTrip.id] || []
-                                      ).filter((_, rowIdx) => rowIdx !== idx),
-                                    }))
-                                  }
-                                >
-                                  Remove
-                                </Button>
-                              </Stack>
-                            ))}
-
-                            <Button
-                              variant="outlined"
-                              onClick={() =>
-                                setTripMaterials((prev) => ({
-                                  ...prev,
-                                  [mobileFinishTrip.id]: [
-                                    ...(prev[mobileFinishTrip.id] || []),
-                                    { name: "", qty: 1 },
-                                  ],
-                                }))
-                              }
-                            >
-                              Add Material
-                            </Button>
-                          </Stack>
-                        </Paper>
+                        {renderTripMaterialsEditor(mobileFinishTrip.id)}
                       </>
                     ) : null}
                   </Stack>
@@ -3314,10 +3390,6 @@ action={
                               )
                             : 0;
                       const billableMinutes = Math.max(0, grossMinutes - pausedMinutes);
-                      const timerHours = roundToHalf(billableMinutes / 60);
-                      const mats = Array.isArray(tripMaterials[trip.id])
-                        ? tripMaterials[trip.id]
-                        : [];
                       const finishMode = finishModeByTrip[trip.id] || "none";
                       const showFinishPanel =
                         normalizeTripStatus(trip.status) === "in_progress" &&
@@ -3544,6 +3616,14 @@ action={
                               Timer minutes: <strong>{billableMinutes}</strong> (gross{" "}
                               {grossMinutes} - paused {pausedMinutes})
                             </Typography>
+                                                        {normalizeTripStatus(trip.status) === "complete" ? (
+                              <Typography variant="body2" color="text.secondary">
+                                Billable Hours:{" "}
+                                <strong>
+                                  {getStoredOrComputedBillableHours(trip).toFixed(2)}
+                                </strong>
+                              </Typography>
+                            ) : null}
 
 <TextField
   id={`trip-work-notes-${trip.id}`}
@@ -3599,8 +3679,8 @@ action={
                                     value={
                                       typeof hoursOverrideByTrip[trip.id] === "number"
                                         ? hoursOverrideByTrip[trip.id]
-                                        : timerHours
-                                    }
+                                        : getDefaultBillableHours(billableMinutes)
+                                                                          }
                                     onChange={(e) =>
                                       setHoursOverrideByTrip((prev) => ({
                                         ...prev,
@@ -3639,6 +3719,8 @@ action={
                                         }
                                       />
 
+                                      {renderTripMaterialsEditor(trip.id)}
+
                                       <Button
                                         variant="contained"
                                         onClick={() => finishTrip(trip, "follow_up")}
@@ -3648,7 +3730,6 @@ action={
                                       </Button>
                                     </>
                                   ) : null}
-
                                   {finishMode === "resolved" ? (
                                     <>
                                       <TextField
@@ -3664,92 +3745,7 @@ action={
                                         }
                                       />
 
-                                      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
-                                        <Stack spacing={1}>
-                                          <Typography variant="subtitle1" fontWeight={700}>
-                                            Materials
-                                          </Typography>
-
-                                          {mats.length === 0 ? (
-                                            <Alert severity="info" variant="outlined">
-                                              No materials added yet.
-                                            </Alert>
-                                          ) : null}
-
-                                          {mats.map((m, idx) => (
-                                            <Stack
-                                              key={`${trip.id}-${idx}`}
-                                              direction={{ xs: "column", md: "row" }}
-                                              spacing={1}
-                                            >
-                                              <TextField
-                                                size="small"
-                                                label="Name"
-                                                value={m.name}
-                                                onChange={(e) =>
-                                                  setTripMaterials((prev) => ({
-                                                    ...prev,
-                                                    [trip.id]: (prev[trip.id] || []).map(
-                                                      (row, rowIdx) =>
-                                                        rowIdx === idx
-                                                          ? { ...row, name: e.target.value }
-                                                          : row
-                                                    ),
-                                                  }))
-                                                }
-                                              />
-
-                                              <TextField
-                                                size="small"
-                                                label="Qty"
-                                                type="number"
-                                                value={m.qty}
-                                                onChange={(e) =>
-                                                  setTripMaterials((prev) => ({
-                                                    ...prev,
-                                                    [trip.id]: (prev[trip.id] || []).map(
-                                                      (row, rowIdx) =>
-                                                        rowIdx === idx
-                                                          ? { ...row, qty: Number(e.target.value) }
-                                                          : row
-                                                    ),
-                                                  }))
-                                                }
-                                              />
-
-                                              <Button
-                                                variant="outlined"
-                                                color="error"
-                                                onClick={() =>
-                                                  setTripMaterials((prev) => ({
-                                                    ...prev,
-                                                    [trip.id]: (prev[trip.id] || []).filter(
-                                                      (_, rowIdx) => rowIdx !== idx
-                                                    ),
-                                                  }))
-                                                }
-                                              >
-                                                Remove
-                                              </Button>
-                                            </Stack>
-                                          ))}
-
-                                          <Button
-                                            variant="outlined"
-                                            onClick={() =>
-                                              setTripMaterials((prev) => ({
-                                                ...prev,
-                                                [trip.id]: [
-                                                  ...(prev[trip.id] || []),
-                                                  { name: "", qty: 1 },
-                                                ],
-                                              }))
-                                            }
-                                          >
-                                            Add Material
-                                          </Button>
-                                        </Stack>
-                                      </Paper>
+                                      {renderTripMaterialsEditor(trip.id)}
 
                                       <Button
                                         variant="contained"
