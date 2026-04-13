@@ -9,7 +9,7 @@ import { adminDb } from "../../admin-db";
 
 const QBO_LABOR_ITEM_LABEL = "Labor N/T";
 const QBO_LABOR_ITEM_ID_OVERRIDE = "7";
-const QBO_MATERIALS_ITEM_LABEL = "Materials:Materials";
+const QBO_MATERIALS_ITEM_LABEL = "Materials";
 const USE_MATERIALS_ITEM = true;
 
 type TripMaterial = {
