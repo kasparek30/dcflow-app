@@ -2815,9 +2815,9 @@ noMaterialsUsed: false,
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
     if (!ticket?.id || !canBill) return;
     if (ticket.status === "invoiced") {
-  setBillingErr("Invoiced tickets are locked and billing status cannot be changed.");
-  return;
-}
+      setBillingErr("Invoiced tickets are locked and billing status cannot be changed.");
+      return;
+    }
 
     setBillingErr("");
     setBillingOk("");
@@ -2913,6 +2913,109 @@ const nextTicketStatus: TicketStatus =
       setBillingErr(
         err instanceof Error ? err.message : "Failed to update billing status."
       );
+    } finally {
+      setBillingSaving(false);
+    }
+  }
+
+    async function handleCreateQboInvoice() {
+    if (!ticket?.id || !canBill || !ticket.billing) return;
+    if (isInvoicedTicket) {
+      setBillingErr("This ticket is already invoiced.");
+      return;
+    }
+
+    if (
+      ticket.billing.status !== "ready_to_bill" &&
+      ticket.billing.status !== "invoice_failed"
+    ) {
+      setBillingErr("Billing packet must be Ready to Bill before creating a QBO invoice.");
+      return;
+    }
+
+    setBillingErr("");
+    setBillingOk("");
+    setBillingSaving(true);
+
+    const optimisticAt = nowIso();
+
+    setTicket((prev) =>
+      prev && prev.billing
+        ? {
+            ...prev,
+            billing: {
+              ...prev.billing,
+              status: "creating_invoice",
+              invoiceError: null,
+              updatedAt: optimisticAt,
+            },
+            updatedAt: optimisticAt,
+          }
+        : prev
+    );
+
+    try {
+      const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          serviceTicketId: ticket.id,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          String(
+            data?.error ||
+              data?.qboBody?.Fault?.Error?.[0]?.Message ||
+              "Failed to create QBO invoice."
+          )
+        );
+      }
+
+      const updatedAt = String(data?.updatedAt || nowIso());
+      const updatedBilling = (data?.updatedBilling || null) as BillingPacket | null;
+      const updatedTicketStatus = (data?.updatedTicketStatus || "invoiced") as TicketStatus;
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: updatedTicketStatus,
+              billing: updatedBilling || prev.billing || null,
+              updatedAt,
+            }
+          : prev
+      );
+
+      setTicketStatusEdit(updatedTicketStatus);
+      setBillingOk("QBO invoice created successfully.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to create QBO invoice.";
+      const failedAt = nowIso();
+
+      setTicket((prev) =>
+        prev && prev.billing
+          ? {
+              ...prev,
+              billing: {
+                ...prev.billing,
+                status: "invoice_failed",
+                invoiceSource: "qbo",
+                invoiceError: message,
+                updatedAt: failedAt,
+              },
+              updatedAt: failedAt,
+            }
+          : prev
+      );
+
+      setBillingErr(message);
     } finally {
       setBillingSaving(false);
     }
@@ -3955,6 +4058,11 @@ action={
                     </Alert>
                   ) : (
                     <Stack spacing={2}>
+                                            {ticket.billing.status === "creating_invoice" ? (
+                        <Alert severity="info" variant="outlined">
+                          Creating invoice in QuickBooks…
+                        </Alert>
+                      ) : null}
                       <Stack
                         direction={{ xs: "column", sm: "row" }}
                         justifyContent="space-between"
@@ -4091,33 +4199,48 @@ action={
                         </Stack>
                       </Paper>
 
-                      {canBill ? (
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                          <Button
-                            variant="outlined"
-                            onClick={() => markBillingStatus("invoiced")}
-                            disabled={billingSaving || isInvoicedTicket}
-                          >
-                            {billingSaving ? "Working..." : "Mark Invoiced Manually"}
-                          </Button>
+{canBill ? (
+  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+    {(ticket.billing.status === "ready_to_bill" ||
+      ticket.billing.status === "invoice_failed") && !isInvoicedTicket ? (
+      <Button
+        variant="contained"
+        onClick={handleCreateQboInvoice}
+        disabled={billingSaving}
+      >
+        {billingSaving
+          ? "Creating QBO Invoice..."
+          : ticket.billing.status === "invoice_failed"
+            ? "Retry QBO Invoice"
+            : "Create QBO Invoice"}
+      </Button>
+    ) : null}
 
-                          <Button
-                            variant="outlined"
-                            onClick={() => markBillingStatus("ready_to_bill")}
-                            disabled={billingSaving || isInvoicedTicket}
-                          >
-                            Set Ready to Bill
-                          </Button>
+    <Button
+      variant="outlined"
+      onClick={() => markBillingStatus("invoiced")}
+      disabled={billingSaving || isInvoicedTicket}
+    >
+      {billingSaving ? "Working..." : "Mark Invoiced Manually"}
+    </Button>
 
-                          <Button
-                            variant="outlined"
-                            onClick={() => markBillingStatus("not_ready")}
-                            disabled={billingSaving || isInvoicedTicket}
-                          >
-                            Set Not Ready
-                          </Button>
-                        </Stack>
-                      ) : null}
+    <Button
+      variant="outlined"
+      onClick={() => markBillingStatus("ready_to_bill")}
+      disabled={billingSaving || isInvoicedTicket}
+    >
+      Set Ready to Bill
+    </Button>
+
+    <Button
+      variant="outlined"
+      onClick={() => markBillingStatus("not_ready")}
+      disabled={billingSaving || isInvoicedTicket}
+    >
+      Set Not Ready
+    </Button>
+  </Stack>
+) : null}
 
                       {billingErr ? <Alert severity="error">{billingErr}</Alert> : null}
                       {billingOk ? <Alert severity="success">{billingOk}</Alert> : null}

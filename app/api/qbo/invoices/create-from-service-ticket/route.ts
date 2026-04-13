@@ -1,3 +1,4 @@
+// app/api/qbo/invoices/create-from-service-ticket/route.ts
 import { NextResponse } from "next/server";
 import {
   qboFetchWithAutoRefresh,
@@ -6,14 +7,10 @@ import {
 } from "../../_lib";
 import { adminDb } from "../../admin-db";
 
-/**
- * ✅ CONFIG
- * Put what you SEE in QBO UI here (we’ll match it against Name OR FullyQualifiedName).
- */
 const QBO_LABOR_ITEM_LABEL = "Labor N/T";
-const QBO_LABOR_ITEM_ID_OVERRIDE = "7"; // <-- from https://qbo.intuit.com/app/item?itemId=7
-const QBO_MATERIALS_ITEM_LABEL = "Materials:Materials"; // optional, see USE_MATERIALS_ITEM
-const USE_MATERIALS_ITEM = false; // v1 recommended = false (description-only)
+const QBO_LABOR_ITEM_ID_OVERRIDE = "7";
+const QBO_MATERIALS_ITEM_LABEL = "Materials:Materials";
+const USE_MATERIALS_ITEM = true;
 
 type TripMaterial = {
   name: string;
@@ -31,34 +28,38 @@ type QboItem = {
   SalesPrice?: number;
 };
 
-function asArray<T>(x: unknown): T[] {
-  if (!x) return [];
-  return Array.isArray(x) ? (x as T[]) : [x as T];
-}
-
-function roundToQuarter(hours: number) {
-  return Math.round(hours * 4) / 4;
-}
-
 function safeNumber(n: unknown, fallback = 0) {
   const v = typeof n === "number" ? n : Number(n);
   return Number.isFinite(v) ? v : fallback;
 }
 
-function normalize(s: unknown) {
-  return String(s ?? "")
+function normalize(value: unknown) {
+  return String(value ?? "")
     .trim()
     .toLowerCase();
 }
 
-function buildMaterialsDescription(m: TripMaterial) {
-  const qty = safeNumber(m.qty, 1);
-  const unit = (m.unit || "").trim();
-  const notes = (m.notes || "").trim();
+function asArray<T>(x: unknown): T[] {
+  if (!x) return [];
+  return Array.isArray(x) ? (x as T[]) : [x as T];
+}
 
-  let line = `• ${m.name} — Qty: ${qty}${unit ? ` ${unit}` : ""}`;
-  if (notes) line += ` (${notes})`;
-  return line;
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
+  const items = Array.isArray(materials) ? materials : [];
+  return items
+    .filter((m) => String(m?.name || "").trim())
+    .map((m) => {
+      const qty = Number(m.qty || 0);
+      const unit = String(m.unit || "").trim();
+      return `${qty > 0 ? `${qty} of ` : ""}${String(m.name || "").trim()}${
+        unit ? ` (${unit})` : ""
+      }`;
+    })
+    .join(", ");
 }
 
 async function qboQuery(realmId: string, queryStr: string) {
@@ -73,10 +74,8 @@ async function getQboItemById(realmId: string, itemId: string) {
   const url = `${base}/v3/company/${realmId}/item/${encodeURIComponent(itemId)}`;
 
   const { res, body } = await qboFetchWithAutoRefresh(url);
-
   if (!res.ok) return null;
 
-  // QBO usually returns { Item: {...} }
   const item = (body?.Item ?? body) as any;
   if (!item?.Id) return null;
 
@@ -85,12 +84,9 @@ async function getQboItemById(realmId: string, itemId: string) {
 
 function pickBestItemMatch(items: QboItem[], label: string) {
   const want = normalize(label);
-
-  // Prefer Active first, but if nothing active, we’ll still take an inactive match
   const actives = items.filter((i) => i?.Active !== false);
   const pool = actives.length ? actives : items;
 
-  // Score by exact match on Name / FQN, then contains
   const scored = pool
     .filter((i) => String(i?.Id || "").trim())
     .map((i) => {
@@ -114,7 +110,6 @@ function pickBestItemMatch(items: QboItem[], label: string) {
 async function findQboItemFlexible(realmId: string, label: string) {
   const escaped = label.replace(/"/g, '\\"');
 
-  // 1) Exact Name
   {
     const { res, body } = await qboQuery(
       realmId,
@@ -127,7 +122,6 @@ async function findQboItemFlexible(realmId: string, label: string) {
     }
   }
 
-  // 2) Exact FullyQualifiedName
   {
     const { res, body } = await qboQuery(
       realmId,
@@ -140,7 +134,6 @@ async function findQboItemFlexible(realmId: string, label: string) {
     }
   }
 
-  // 3) LIKE Name
   {
     const { res, body } = await qboQuery(
       realmId,
@@ -153,7 +146,6 @@ async function findQboItemFlexible(realmId: string, label: string) {
     }
   }
 
-  // 4) LIKE FullyQualifiedName
   {
     const { res, body } = await qboQuery(
       realmId,
@@ -166,15 +158,7 @@ async function findQboItemFlexible(realmId: string, label: string) {
     }
   }
 
-  // 5) Final fallback: search for "Labor" so we can SHOW you what QBO returns
-  {
-    const { res, body } = await qboQuery(
-      realmId,
-      `select * from Item where Name LIKE "%Labor%" maxresults 50`
-    );
-    const items = res.ok ? asArray<QboItem>(body?.QueryResponse?.Item) : [];
-    return { item: null, candidates: items };
-  }
+  return { item: null, candidates: [] as QboItem[] };
 }
 
 function getItemRate(item: QboItem) {
@@ -184,11 +168,11 @@ function getItemRate(item: QboItem) {
       : typeof item.SalesPrice === "number"
         ? item.SalesPrice
         : null;
+
   return unitPrice && unitPrice > 0 ? unitPrice : null;
 }
 
 async function getLaborItemAndRate(realmId: string) {
-  // ✅ 0) If override is set, fetch directly by Id (bulletproof)
   if (QBO_LABOR_ITEM_ID_OVERRIDE) {
     const byId = await getQboItemById(realmId, QBO_LABOR_ITEM_ID_OVERRIDE);
     if (!byId?.Id) {
@@ -200,7 +184,7 @@ async function getLaborItemAndRate(realmId: string) {
     const unitPrice = getItemRate(byId);
     if (!unitPrice) {
       throw new Error(
-        `Found QBO labor item by Id (${byId.Id}) but it has no UnitPrice/SalesPrice. Set the sales price in QBO.`
+        `Found QBO labor item by Id (${byId.Id}) but it has no UnitPrice/SalesPrice.`
       );
     }
 
@@ -211,31 +195,23 @@ async function getLaborItemAndRate(realmId: string) {
     };
   }
 
-  // ✅ 1) Otherwise fall back to name/FQN matching
-  const { item, candidates } = await findQboItemFlexible(realmId, QBO_LABOR_ITEM_LABEL);
+  const { item, candidates } = await findQboItemFlexible(
+    realmId,
+    QBO_LABOR_ITEM_LABEL
+  );
 
   if (!item?.Id) {
-    const list = (candidates || [])
-      .slice(0, 25)
-      .map((i) => ({
-        Id: i.Id || "",
-        Name: i.Name || "",
-        FullyQualifiedName: i.FullyQualifiedName || "",
-        Active: i.Active !== false,
-        UnitPrice: i.UnitPrice ?? i.SalesPrice ?? null,
-      }));
-
     throw new Error(
-      `Could not find QBO Item matching "${QBO_LABOR_ITEM_LABEL}". ` +
-        `I searched Name + FullyQualifiedName. ` +
-        `Sample Labor-related items returned by QBO: ${JSON.stringify(list)}`
+      `Could not find QBO labor item "${QBO_LABOR_ITEM_LABEL}". Candidates: ${JSON.stringify(
+        (candidates || []).slice(0, 10)
+      )}`
     );
   }
 
   const unitPrice = getItemRate(item);
   if (!unitPrice) {
     throw new Error(
-      `Found QBO labor item (Id: ${item.Id}, Name: ${item.Name}, FQN: ${item.FullyQualifiedName}) but it has no UnitPrice/SalesPrice. Set the sales price in QBO.`
+      `Found QBO labor item (Id: ${item.Id}) but it has no UnitPrice/SalesPrice.`
     );
   }
 
@@ -253,6 +229,10 @@ async function getMaterialsItem(realmId: string) {
 }
 
 export async function POST(req: Request) {
+  const db = adminDb();
+  let ticketRef: FirebaseFirestore.DocumentReference | null = null;
+  let existingBilling: any = null;
+
   try {
     const { realmId } = await getQboCookieValues();
     if (!realmId) {
@@ -264,6 +244,7 @@ export async function POST(req: Request) {
 
     const body = await req.json().catch(() => ({}));
     const serviceTicketId = String(body?.serviceTicketId || "").trim();
+
     if (!serviceTicketId) {
       return NextResponse.json(
         { error: "Missing required field: serviceTicketId" },
@@ -271,175 +252,211 @@ export async function POST(req: Request) {
       );
     }
 
-    const db = adminDb();
-
-    // 1) Load service ticket
-    const ticketRef = db.collection("serviceTickets").doc(serviceTicketId);
+    ticketRef = db.collection("serviceTickets").doc(serviceTicketId);
     const ticketSnap = await ticketRef.get();
+
     if (!ticketSnap.exists) {
-      return NextResponse.json({ error: "Service ticket not found." }, { status: 404 });
+      return NextResponse.json(
+        { error: "Service ticket not found." },
+        { status: 404 }
+      );
     }
+
     const ticket = ticketSnap.data() || {};
+    existingBilling = (ticket.billing || {}) as any;
 
-    const billing = (ticket.billing || {}) as any;
-    const billingStatus = String(billing.status || "").trim();
-
-    if (billingStatus !== "ready_to_bill") {
+    if (String(existingBilling.status || "").trim() !== "ready_to_bill") {
       return NextResponse.json(
         {
-          error: `Ticket billing status must be "ready_to_bill". Current: ${billingStatus || "unset"}`,
+          error: `Ticket billing status must be "ready_to_bill". Current: ${
+            String(existingBilling.status || "").trim() || "unset"
+          }`,
         },
-        { status: 400 }
-      );
-    }
-
-    const resolutionNotes = String(billing.resolutionNotes || "").trim();
-    if (!resolutionNotes) {
-      return NextResponse.json(
-        { error: "Billing resolutionNotes is required before invoicing." },
-        { status: 400 }
-      );
-    }
-
-    const readyTripId = String(billing.readyToBillTripId || "").trim();
-    if (!readyTripId) {
-      return NextResponse.json(
-        { error: "billing.readyToBillTripId missing. Set Ready to Bill from a completed trip first." },
         { status: 400 }
       );
     }
 
     const customerId = String(ticket.customerId || "").trim();
     if (!customerId) {
-      return NextResponse.json({ error: "Ticket is missing customerId." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Ticket is missing customerId." },
+        { status: 400 }
+      );
     }
 
-    // 2) Load customer + qboCustomerId
     const customerRef = db.collection("customers").doc(customerId);
     const customerSnap = await customerRef.get();
+
     if (!customerSnap.exists) {
-      return NextResponse.json({ error: "Customer not found." }, { status: 404 });
+      return NextResponse.json(
+        { error: "Customer not found." },
+        { status: 404 }
+      );
     }
+
     const customer = customerSnap.data() || {};
     const qboCustomerId = String(customer.qboCustomerId || "").trim();
+
     if (!qboCustomerId) {
       return NextResponse.json(
-        { error: "Customer is missing qboCustomerId. (Import/link QBO customers first.)" },
+        {
+          error:
+            "Customer is missing qboCustomerId. Import/link the QBO customer first.",
+        },
         { status: 400 }
       );
     }
 
-    // 3) Load the completed trip
-    const tripRef = db.collection("trips").doc(readyTripId);
-    const tripSnap = await tripRef.get();
-    if (!tripSnap.exists) {
-      return NextResponse.json({ error: "Ready-to-bill trip not found." }, { status: 404 });
-    }
-    const trip = tripSnap.data() || {};
-
-    const actualMinutes = safeNumber(trip.actualMinutes, 0);
-    if (actualMinutes <= 0) {
+    const laborHours = safeNumber(existingBilling?.labor?.totalHours, 0);
+    if (laborHours <= 0) {
       return NextResponse.json(
-        { error: "Trip has 0 actualMinutes. Cannot invoice labor hours." },
+        { error: "Billing packet labor.totalHours must be greater than 0." },
         { status: 400 }
       );
     }
 
-    const hours = roundToQuarter(actualMinutes / 60);
-    if (hours <= 0) {
+    const materialsSummary =
+      String(existingBilling.materialsSummary || "").trim() ||
+      buildMaterialsSummaryFromLines(existingBilling.materials || []);
+
+    const materialsAmount = safeNumber(existingBilling.materialsAmount, 0);
+    if (materialsAmount > 0 && !materialsSummary) {
       return NextResponse.json(
-        { error: "Trip hours rounded to 0. Cannot invoice." },
+        {
+          error:
+            "Materials Amount is greater than 0, but Materials Summary is blank.",
+        },
         { status: 400 }
       );
     }
 
-    // 4) Pull labor item + current rate from QBO (flex match Name/FQN)
-    const { laborItemId, laborItemName, laborUnitPrice } = await getLaborItemAndRate(realmId);
+    const resolutionNotes = String(existingBilling.resolutionNotes || "").trim();
+    const workNotes = String(existingBilling.workNotes || "").trim();
+    const issueSummary = String(ticket.issueSummary || "").trim();
 
-    // 5) Build invoice lines
-    const laborAmount = Number((hours * laborUnitPrice).toFixed(2));
+    const creatingAt = nowIso();
+    const creatingBilling = {
+      ...existingBilling,
+      status: "creating_invoice",
+      invoiceError: null,
+      updatedAt: creatingAt,
+    };
+
+    await ticketRef.set(
+      {
+        billing: creatingBilling,
+        updatedAt: creatingAt,
+      },
+      { merge: true }
+    );
+
+    const { laborItemId, laborItemName, laborUnitPrice } =
+      await getLaborItemAndRate(realmId);
+
+    const laborAmount = Number((laborHours * laborUnitPrice).toFixed(2));
+
+    const laborDescriptionParts = [
+      `Labor (${laborHours.toFixed(2)} hr)`,
+      issueSummary || "Service Ticket",
+      resolutionNotes || "",
+    ].filter(Boolean);
 
     const laborLine = {
       DetailType: "SalesItemLineDetail",
       Amount: laborAmount,
-      Description: `Labor (${hours} hr) — ${resolutionNotes}`,
+      Description: laborDescriptionParts.join(" — "),
       SalesItemLineDetail: {
         ItemRef: { value: laborItemId, name: laborItemName },
-        Qty: hours,
+        Qty: laborHours,
         UnitPrice: laborUnitPrice,
       },
     };
 
-    const materials: TripMaterial[] = Array.isArray(billing.materials) ? billing.materials : [];
-    const cleanedMaterials = materials
-      .filter((m) => m && String(m.name || "").trim())
-      .map((m) => ({
-        name: String(m.name || "").trim(),
-        qty: safeNumber(m.qty, 1),
-        unit: String(m.unit || ""),
-        notes: String(m.notes || ""),
-      }));
+    const lines: any[] = [laborLine];
 
-    let materialLines: any[] = [];
-    if (cleanedMaterials.length > 0) {
-      if (USE_MATERIALS_ITEM) {
-        const matItem = await getMaterialsItem(realmId);
-        if (!matItem) {
-          throw new Error(
-            `USE_MATERIALS_ITEM=true but could not find QBO Item matching "${QBO_MATERIALS_ITEM_LABEL}".`
-          );
-        }
-        const desc = ["Materials Used:", ...cleanedMaterials.map(buildMaterialsDescription)].join("\n");
-
-        materialLines = [
-          {
-            DetailType: "SalesItemLineDetail",
-            Amount: 0,
-            Description: desc,
-            SalesItemLineDetail: {
-              ItemRef: { value: matItem.id, name: matItem.name },
-              Qty: 1,
-              UnitPrice: 0,
-            },
-          },
-        ];
-      } else {
-        materialLines = [
-          { DetailType: "DescriptionOnly", Description: "Materials Used:" },
-          ...cleanedMaterials.map((m) => ({
-            DetailType: "DescriptionOnly",
-            Description: buildMaterialsDescription(m),
-          })),
-        ];
+    if (materialsAmount > 0) {
+      if (!USE_MATERIALS_ITEM) {
+        throw new Error(
+          "Materials amount exists, but USE_MATERIALS_ITEM is false."
+        );
       }
+
+      const matItem = await getMaterialsItem(realmId);
+      if (!matItem) {
+        throw new Error(
+          `Could not find QBO materials item "${QBO_MATERIALS_ITEM_LABEL}".`
+        );
+      }
+
+      lines.push({
+        DetailType: "SalesItemLineDetail",
+        Amount: Number(materialsAmount.toFixed(2)),
+        Description: materialsSummary || "Materials",
+        SalesItemLineDetail: {
+          ItemRef: { value: matItem.id, name: matItem.name },
+          Qty: 1,
+          UnitPrice: Number(materialsAmount.toFixed(2)),
+        },
+      });
     }
+
+    const privateNoteParts = [
+      `DCFlow Ticket ${serviceTicketId}`,
+      existingBilling.readyToBillTripId
+        ? `Ready Trip ${existingBilling.readyToBillTripId}`
+        : "",
+      workNotes || "",
+    ].filter(Boolean);
 
     const invoicePayload = {
       CustomerRef: { value: qboCustomerId },
-      PrivateNote: `DCFlow Ticket ${serviceTicketId} • Trip ${readyTripId}`,
-      Line: [laborLine, ...materialLines],
+      PrivateNote: privateNoteParts.join(" • "),
+      Line: lines,
     };
 
-    // 6) Create invoice in QBO
     const base = getQboApiBaseUrl();
     const url = `${base}/v3/company/${realmId}/invoice`;
 
-    const { res, body: qboBody, intuitTid, attempt } = await qboFetchWithAutoRefresh(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(invoicePayload),
-    });
+    const { res, body: qboBody, intuitTid, attempt } =
+      await qboFetchWithAutoRefresh(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(invoicePayload),
+      });
 
     if (!res.ok) {
+      const failedAt = nowIso();
+      const invoiceError =
+        qboBody?.Fault?.Error?.[0]?.Message ||
+        qboBody?.fault?.error?.[0]?.message ||
+        "QBO invoice create failed.";
+
+      const failedBilling = {
+        ...creatingBilling,
+        status: "invoice_failed",
+        invoiceSource: "qbo",
+        invoiceError,
+        updatedAt: failedAt,
+      };
+
+      await ticketRef.set(
+        {
+          billing: failedBilling,
+          updatedAt: failedAt,
+        },
+        { merge: true }
+      );
+
       return NextResponse.json(
         {
           ok: false,
-          error: "QBO invoice create failed.",
+          error: invoiceError,
           status: res.status,
           intuit_tid: intuitTid || "",
           attempt: attempt || "original",
           qboBody,
-          payloadSent: invoicePayload,
         },
         { status: 500 }
       );
@@ -447,60 +464,71 @@ export async function POST(req: Request) {
 
     const qboInvoice = qboBody?.Invoice || qboBody;
     const qboInvoiceId = String(qboInvoice?.Id || "").trim();
-    const docNumber = String(qboInvoice?.DocNumber || "").trim();
+    const qboDocNumber = String(qboInvoice?.DocNumber || "").trim();
 
     if (!qboInvoiceId) {
-      return NextResponse.json(
-        { ok: false, error: "QBO returned success but no Invoice.Id was found.", qboBody },
-        { status: 500 }
-      );
+      throw new Error("QBO returned success but no Invoice.Id was found.");
     }
 
-    // 7) Save linkage back to ticket
-    const nowIso = new Date().toISOString();
+    const qboInvoiceUrl = `https://qbo.intuit.com/app/invoice?txnId=${qboInvoiceId}`;
+    const syncedAt = nowIso();
+
+    const nextBilling = {
+      ...creatingBilling,
+      status: "invoiced",
+      invoiceSource: "qbo",
+      qboInvoiceId,
+      qboDocNumber: qboDocNumber || null,
+      qboInvoiceUrl,
+      qboSyncedAt: syncedAt,
+      qboInvoiceStatus: "created",
+      invoiceError: null,
+      updatedAt: syncedAt,
+    };
+
     await ticketRef.set(
       {
-        billing: {
-          ...billing,
-          qboInvoiceId,
-          qboDocNumber: docNumber || null,
-          qboSyncedAt: nowIso,
-          qboLastSyncIntuitTid: intuitTid || null,
-          qboSyncAttempt: attempt || null,
-          qboInvoiceStatus: "created",
-        },
-        updatedAt: nowIso,
+        status: "invoiced",
+        billing: nextBilling,
+        updatedAt: syncedAt,
       },
       { merge: true }
     );
 
-const qboInvoiceUrl = qboInvoiceId
-  ? `https://qbo.intuit.com/app/invoice?txnId=${qboInvoiceId}`
-  : null;
-
-
-return NextResponse.json({
-  ok: true,
-  message: "Invoice created in QBO from DCFlow service ticket.",
-  realmId,
-  serviceTicketId,
-  qboCustomerId,
-  qboInvoiceId,
-  qboInvoiceUrl, // ✅ add this
-  docNumber: docNumber || null,
-  labor: {
-    hours,
-    unitPrice: laborUnitPrice,
-    amount: laborAmount,
-    itemId: laborItemId,
-    itemName: laborItemName,
-  },
-  materialsCount: cleanedMaterials.length,
-  materialsMode: USE_MATERIALS_ITEM ? "materials_item_single_line" : "description_only_lines",
-  intuit_tid: intuitTid || "",
-  attempt: attempt || "original",
-});
+    return NextResponse.json({
+      ok: true,
+      message: "Invoice created in QBO.",
+      serviceTicketId,
+      qboInvoiceId,
+      qboDocNumber: qboDocNumber || null,
+      qboInvoiceUrl,
+      updatedAt: syncedAt,
+      updatedTicketStatus: "invoiced",
+      updatedBilling: nextBilling,
+      intuit_tid: intuitTid || "",
+      attempt: attempt || "original",
+    });
   } catch (err: unknown) {
+    if (ticketRef && existingBilling) {
+      const failedAt = nowIso();
+      const message =
+        err instanceof Error ? err.message : "Invoice create failed.";
+
+      await ticketRef.set(
+        {
+          billing: {
+            ...existingBilling,
+            status: "invoice_failed",
+            invoiceSource: "qbo",
+            invoiceError: message,
+            updatedAt: failedAt,
+          },
+          updatedAt: failedAt,
+        },
+        { merge: true }
+      );
+    }
+
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Invoice create failed." },
       { status: 500 }
