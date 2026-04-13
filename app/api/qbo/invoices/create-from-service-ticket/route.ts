@@ -10,6 +10,7 @@ import { adminDb } from "../../admin-db";
 const QBO_LABOR_ITEM_LABEL = "Labor N/T";
 const QBO_LABOR_ITEM_ID_OVERRIDE = "7";
 const QBO_MATERIALS_ITEM_LABEL = "Materials";
+const QBO_MATERIALS_ITEM_ID_OVERRIDE = "6";
 const USE_MATERIALS_ITEM = true;
 
 type TripMaterial = {
@@ -223,9 +224,27 @@ async function getLaborItemAndRate(realmId: string) {
 }
 
 async function getMaterialsItem(realmId: string) {
+  if (QBO_MATERIALS_ITEM_ID_OVERRIDE) {
+    const byId = await getQboItemById(realmId, QBO_MATERIALS_ITEM_ID_OVERRIDE);
+    if (!byId?.Id) {
+      throw new Error(
+        `Materials item override Id "${QBO_MATERIALS_ITEM_ID_OVERRIDE}" not found in QBO for this realm.`
+      );
+    }
+
+    return {
+      id: String(byId.Id),
+      name: byId.Name || QBO_MATERIALS_ITEM_LABEL,
+    };
+  }
+
   const { item } = await findQboItemFlexible(realmId, QBO_MATERIALS_ITEM_LABEL);
   if (!item?.Id) return null;
-  return { id: String(item.Id), name: item.Name || QBO_MATERIALS_ITEM_LABEL };
+
+  return {
+    id: String(item.Id),
+    name: item.Name || QBO_MATERIALS_ITEM_LABEL,
+  };
 }
 
 export async function POST(req: Request) {
