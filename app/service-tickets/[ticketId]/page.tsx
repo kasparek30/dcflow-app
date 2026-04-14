@@ -2918,26 +2918,106 @@ const nextTicketStatus: TicketStatus =
     }
   }
 
-    async function handleCreateQboInvoice() {
-    if (!ticket?.id || !canBill || !ticket.billing) return;
-    if (isInvoicedTicket) {
-      setBillingErr("This ticket is already invoiced.");
-      return;
+async function handleCreateQboInvoice() {
+  if (!ticket?.id || !canBill || !ticket.billing) return;
+  if (isInvoicedTicket) {
+    setBillingErr("This ticket is already invoiced.");
+    return;
+  }
+
+  if (
+    ticket.billing.status !== "ready_to_bill" &&
+    ticket.billing.status !== "invoice_failed"
+  ) {
+    setBillingErr("Billing packet must be Ready to Bill before creating a QBO invoice.");
+    return;
+  }
+
+  setBillingErr("");
+  setBillingOk("");
+  setBillingSaving(true);
+
+  const optimisticAt = nowIso();
+
+  const invoiceWindow =
+    typeof window !== "undefined"
+      ? window.open("", "_blank", "noopener,noreferrer")
+      : null;
+
+  setTicket((prev) =>
+    prev && prev.billing
+      ? {
+          ...prev,
+          billing: {
+            ...prev.billing,
+            status: "creating_invoice",
+            invoiceError: null,
+            updatedAt: optimisticAt,
+          },
+          updatedAt: optimisticAt,
+        }
+      : prev
+  );
+
+  try {
+    const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        serviceTicketId: ticket.id,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      throw new Error(
+        String(
+          data?.error ||
+            data?.qboBody?.Fault?.Error?.[0]?.Message ||
+            "Failed to create QBO invoice."
+        )
+      );
     }
 
-    if (
-      ticket.billing.status !== "ready_to_bill" &&
-      ticket.billing.status !== "invoice_failed"
-    ) {
-      setBillingErr("Billing packet must be Ready to Bill before creating a QBO invoice.");
-      return;
+    const updatedAt = String(data?.updatedAt || nowIso());
+    const updatedBilling = (data?.updatedBilling || null) as BillingPacket | null;
+    const updatedTicketStatus = (data?.updatedTicketStatus || "invoiced") as TicketStatus;
+    const qboInvoiceUrl = String(data?.qboInvoiceUrl || "").trim();
+
+    setTicket((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: updatedTicketStatus,
+            billing: updatedBilling || prev.billing || null,
+            updatedAt,
+          }
+        : prev
+    );
+
+    setTicketStatusEdit(updatedTicketStatus);
+    setBillingOk("QBO invoice created successfully.");
+
+    if (qboInvoiceUrl) {
+      if (invoiceWindow) {
+        invoiceWindow.location.href = qboInvoiceUrl;
+      } else if (typeof window !== "undefined") {
+        window.open(qboInvoiceUrl, "_blank", "noopener,noreferrer");
+      }
+    } else if (invoiceWindow) {
+      invoiceWindow.close();
     }
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Failed to create QBO invoice.";
+    const failedAt = nowIso();
 
-    setBillingErr("");
-    setBillingOk("");
-    setBillingSaving(true);
-
-    const optimisticAt = nowIso();
+    if (invoiceWindow) {
+      invoiceWindow.close();
+    }
 
     setTicket((prev) =>
       prev && prev.billing
@@ -2945,81 +3025,21 @@ const nextTicketStatus: TicketStatus =
             ...prev,
             billing: {
               ...prev.billing,
-              status: "creating_invoice",
-              invoiceError: null,
-              updatedAt: optimisticAt,
+              status: "invoice_failed",
+              invoiceSource: "qbo",
+              invoiceError: message,
+              updatedAt: failedAt,
             },
-            updatedAt: optimisticAt,
+            updatedAt: failedAt,
           }
         : prev
     );
 
-    try {
-      const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          serviceTicketId: ticket.id,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(
-          String(
-            data?.error ||
-              data?.qboBody?.Fault?.Error?.[0]?.Message ||
-              "Failed to create QBO invoice."
-          )
-        );
-      }
-
-      const updatedAt = String(data?.updatedAt || nowIso());
-      const updatedBilling = (data?.updatedBilling || null) as BillingPacket | null;
-      const updatedTicketStatus = (data?.updatedTicketStatus || "invoiced") as TicketStatus;
-
-      setTicket((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: updatedTicketStatus,
-              billing: updatedBilling || prev.billing || null,
-              updatedAt,
-            }
-          : prev
-      );
-
-      setTicketStatusEdit(updatedTicketStatus);
-      setBillingOk("QBO invoice created successfully.");
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Failed to create QBO invoice.";
-      const failedAt = nowIso();
-
-      setTicket((prev) =>
-        prev && prev.billing
-          ? {
-              ...prev,
-              billing: {
-                ...prev.billing,
-                status: "invoice_failed",
-                invoiceSource: "qbo",
-                invoiceError: message,
-                updatedAt: failedAt,
-              },
-              updatedAt: failedAt,
-            }
-          : prev
-      );
-
-      setBillingErr(message);
-    } finally {
-      setBillingSaving(false);
-    }
+    setBillingErr(message);
+  } finally {
+    setBillingSaving(false);
   }
+}
 
   const mapsAddress = [
     ticket?.serviceAddressLine1 || "",

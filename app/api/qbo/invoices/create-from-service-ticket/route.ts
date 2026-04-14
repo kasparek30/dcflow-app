@@ -394,6 +394,39 @@ export async function POST(req: Request) {
 
 const lines: any[] = [laborLine];
 
+if (materialsAmount > 0) {
+  if (!USE_MATERIALS_ITEM) {
+    throw new Error(
+      "Materials amount exists, but USE_MATERIALS_ITEM is false."
+    );
+  }
+
+  const matItem = await getMaterialsItem(realmId);
+  if (!matItem) {
+    throw new Error(
+      `Could not find QBO materials item "${QBO_MATERIALS_ITEM_LABEL}".`
+    );
+  }
+
+  lines.push({
+    DetailType: "SalesItemLineDetail",
+    Amount: Number(materialsAmount.toFixed(2)),
+    Description: materialsSummary
+      ? `Materials: ${materialsSummary}`
+      : "Materials",
+    SalesItemLineDetail: {
+      ItemRef: { value: matItem.id, name: matItem.name },
+      Qty: 1,
+      UnitPrice: Number(materialsAmount.toFixed(2)),
+    },
+  });
+} else if (materialsSummary) {
+  lines.push({
+    DetailType: "DescriptionOnly",
+    Description: `Materials: ${materialsSummary}`,
+  });
+}
+
 // Always push a visible materials description line if summary exists,
 // even when Materials Amount is blank or 0.
 if (materialsSummary) {
