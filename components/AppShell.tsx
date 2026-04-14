@@ -1,3 +1,4 @@
+// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -1199,6 +1200,7 @@ export default function AppShell({
 
   const [followUpTicketIds, setFollowUpTicketIds] = useState<string[]>([]);
   const [readyToBillTicketIds, setReadyToBillTicketIds] = useState<string[]>([]);
+  const [newUntouchedServiceTicketCount, setNewUntouchedServiceTicketCount] = useState(0);
 
   useEffect(() => {
     if (!showDashboard) {
@@ -1240,6 +1242,32 @@ export default function AppShell({
       unsubReady();
     };
   }, [showDashboard]);
+
+  useEffect(() => {
+    const ticketsQuery = query(
+      collection(db, "serviceTickets"),
+      where("status", "==", "new"),
+      limit(200)
+    );
+
+    const unsub = onSnapshot(
+      ticketsQuery,
+      (snap) => {
+        const count = snap.docs.reduce((total, docSnap) => {
+          const data = docSnap.data() as any;
+          const hasAssignedTech = Boolean(
+            safeTrim(data.assignedTechnicianId) || safeTrim(data.assignedTechnicianName)
+          );
+          return hasAssignedTech ? total : total + 1;
+        }, 0);
+
+        setNewUntouchedServiceTicketCount(count);
+      },
+      () => setNewUntouchedServiceTicketCount(0)
+    );
+
+    return () => unsub();
+  }, []);
 
   const dashboardAttentionCount = useMemo(() => {
     return new Set([...followUpTicketIds, ...readyToBillTicketIds]).size;
@@ -1285,6 +1313,7 @@ export default function AppShell({
       href: "/service-tickets",
       label: "Service Tickets",
       icon: <ReceiptLongRoundedIcon />,
+      badgeCount: newUntouchedServiceTicketCount,
     },
     ...(showTimeEntries
       ? [
@@ -1355,10 +1384,11 @@ export default function AppShell({
       href: "/service-tickets",
       label: "Tickets",
       icon: <ReceiptLongRoundedIcon />,
+      badgeCount: newUntouchedServiceTicketCount,
     });
 
     return items.slice(0, 3);
-  }, [showMyDay, showSchedule]);
+  }, [showMyDay, showSchedule, newUntouchedServiceTicketCount]);
 
   const mobileMoreItems = useMemo(() => {
     if (!showMobileBottomNav) {
@@ -2055,7 +2085,23 @@ export default function AppShell({
                 key={item.href}
                 label={item.label}
                 value={item.href}
-                icon={item.icon}
+                icon={
+                  item.badgeCount && item.badgeCount > 0 ? (
+                    <Badge
+                      color="error"
+                      badgeContent={item.badgeCount > 99 ? "99+" : item.badgeCount}
+                      sx={{
+                        "& .MuiBadge-badge": {
+                          fontWeight: 700,
+                        },
+                      }}
+                    >
+                      {item.icon}
+                    </Badge>
+                  ) : (
+                    item.icon
+                  )
+                }
               />
             ))}
 
