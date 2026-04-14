@@ -29,6 +29,14 @@ type QboItem = {
   SalesPrice?: number;
 };
 
+type QboInvoiceLite = {
+  Id?: string;
+  DocNumber?: string;
+  MetaData?: {
+    CreateTime?: string;
+  };
+};
+
 function safeNumber(n: unknown, fallback = 0) {
   const v = typeof n === "number" ? n : Number(n);
   return Number.isFinite(v) ? v : fallback;
@@ -61,6 +69,20 @@ function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
       }`;
     })
     .join(", ");
+}
+
+function incrementDocNumber(docNumber: string) {
+  const trimmed = String(docNumber || "").trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(/^(.*?)(\d+)$/);
+  if (!match) return null;
+
+  const prefix = match[1] || "";
+  const digits = match[2] || "";
+  const nextValue = String(Number(digits) + 1).padStart(digits.length, "0");
+
+  return `${prefix}${nextValue}`;
 }
 
 async function qboQuery(realmId: string, queryStr: string) {
@@ -247,6 +269,42 @@ async function getMaterialsItem(realmId: string) {
   };
 }
 
+async function getNextInvoiceDocNumber(realmId: string) {
+  const { res, body } = await qboQuery(
+    realmId,
+    `select * from Invoice order by MetaData.CreateTime desc maxresults 25`
+  );
+
+  if (!res.ok) {
+    throw new Error("Failed to query QBO invoices for next DocNumber.");
+  }
+
+  const invoices = asArray<QboInvoiceLite>(body?.QueryResponse?.Invoice);
+
+  if (invoices.length === 0) {
+    return "1";
+  }
+
+  for (const invoice of invoices) {
+    const next = incrementDocNumber(String(invoice?.DocNumber || ""));
+    if (next) return next;
+  }
+
+  const numericDocNumbers = invoices
+    .map((invoice) => String(invoice?.DocNumber || "").trim())
+    .filter(Boolean)
+    .map((docNumber) => Number(docNumber))
+    .filter((n) => Number.isFinite(n));
+
+  if (numericDocNumbers.length > 0) {
+    return String(Math.max(...numericDocNumbers) + 1);
+  }
+
+  throw new Error(
+    "Could not determine the next sequential QBO invoice number from recent invoices."
+  );
+}
+
 export async function POST(req: Request) {
   const db = adminDb();
   let ticketRef: FirebaseFirestore.DocumentReference | null = null;
@@ -370,6 +428,8 @@ export async function POST(req: Request) {
       { merge: true }
     );
 
+    const nextDocNumber = await getNextInvoiceDocNumber(realmId);
+
     const { laborItemId, laborItemName, laborUnitPrice } =
       await getLaborItemAndRate(realmId);
 
@@ -392,40 +452,40 @@ export async function POST(req: Request) {
       },
     };
 
-const lines: any[] = [laborLine];
+    const lines: any[] = [laborLine];
 
-if (materialsAmount > 0) {
-  if (!USE_MATERIALS_ITEM) {
-    throw new Error(
-      "Materials amount exists, but USE_MATERIALS_ITEM is false."
-    );
-  }
+    if (materialsAmount > 0) {
+      if (!USE_MATERIALS_ITEM) {
+        throw new Error(
+          "Materials amount exists, but USE_MATERIALS_ITEM is false."
+        );
+      }
 
-  const matItem = await getMaterialsItem(realmId);
-  if (!matItem) {
-    throw new Error(
-      `Could not find QBO materials item "${QBO_MATERIALS_ITEM_LABEL}".`
-    );
-  }
+      const matItem = await getMaterialsItem(realmId);
+      if (!matItem) {
+        throw new Error(
+          `Could not find QBO materials item "${QBO_MATERIALS_ITEM_LABEL}".`
+        );
+      }
 
-  lines.push({
-    DetailType: "SalesItemLineDetail",
-    Amount: Number(materialsAmount.toFixed(2)),
-    Description: materialsSummary
-      ? `Materials: ${materialsSummary}`
-      : "Materials",
-    SalesItemLineDetail: {
-      ItemRef: { value: matItem.id, name: matItem.name },
-      Qty: 1,
-      UnitPrice: Number(materialsAmount.toFixed(2)),
-    },
-  });
-} else if (materialsSummary) {
-  lines.push({
-    DetailType: "DescriptionOnly",
-    Description: `Materials: ${materialsSummary}`,
-  });
-}
+      lines.push({
+        DetailType: "SalesItemLineDetail",
+        Amount: Number(materialsAmount.toFixed(2)),
+        Description: materialsSummary
+          ? `Materials: ${materialsSummary}`
+          : "Materials",
+        SalesItemLineDetail: {
+          ItemRef: { value: matItem.id, name: matItem.name },
+          Qty: 1,
+          UnitPrice: Number(materialsAmount.toFixed(2)),
+        },
+      });
+    } else if (materialsSummary) {
+      lines.push({
+        DetailType: "DescriptionOnly",
+        Description: `Materials: ${materialsSummary}`,
+      });
+    }
 
     const privateNoteParts = [
       `DCFlow Ticket ${serviceTicketId}`,
@@ -437,6 +497,7 @@ if (materialsAmount > 0) {
 
     const invoicePayload = {
       CustomerRef: { value: qboCustomerId },
+      DocNumber: nextDocNumber,
       PrivateNote: privateNoteParts.join(" • "),
       Line: lines,
     };
@@ -484,6 +545,7 @@ if (materialsAmount > 0) {
           intuit_tid: intuitTid || "",
           attempt: attempt || "original",
           qboBody,
+          payloadSent: invoicePayload,
         },
         { status: 500 }
       );
@@ -491,7 +553,7 @@ if (materialsAmount > 0) {
 
     const qboInvoice = qboBody?.Invoice || qboBody;
     const qboInvoiceId = String(qboInvoice?.Id || "").trim();
-    const qboDocNumber = String(qboInvoice?.DocNumber || "").trim();
+    const qboDocNumber = String(qboInvoice?.DocNumber || nextDocNumber).trim();
 
     if (!qboInvoiceId) {
       throw new Error("QBO returned success but no Invoice.Id was found.");
