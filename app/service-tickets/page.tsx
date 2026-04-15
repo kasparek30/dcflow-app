@@ -1,3 +1,4 @@
+// app/service-tickets/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -17,7 +18,6 @@ import {
   InputAdornment,
   InputLabel,
   MenuItem,
-  Paper,
   Select,
   Stack,
   Switch,
@@ -29,7 +29,6 @@ import { alpha, useTheme } from "@mui/material/styles";
 import ConfirmationNumberRoundedIcon from "@mui/icons-material/ConfirmationNumberRounded";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
-import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import PlaceRoundedIcon from "@mui/icons-material/PlaceRounded";
 import BuildCircleRoundedIcon from "@mui/icons-material/BuildCircleRounded";
@@ -42,6 +41,7 @@ import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
+import { formatDateTimeRange12h } from "../../src/lib/time-format";
 import type { ServiceTicket } from "../../src/types/service-ticket";
 
 type StatusFilter =
@@ -90,6 +90,22 @@ function SectionHeader({
   );
 }
 
+function SectionSurface({ children }: { children: React.ReactNode }) {
+  return (
+    <Card
+      elevation={0}
+      sx={{
+        borderRadius: 4,
+        overflow: "hidden",
+        border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+        backgroundColor: "background.paper",
+      }}
+    >
+      {children}
+    </Card>
+  );
+}
+
 function getStatusLabel(status?: ServiceTicket["status"]) {
   switch (status) {
     case "new":
@@ -110,15 +126,11 @@ function getStatusLabel(status?: ServiceTicket["status"]) {
 }
 
 function getScheduleText(ticket: ServiceTicket) {
-  if (!ticket.scheduledDate && !ticket.scheduledStartTime && !ticket.scheduledEndTime) {
-    return "Unscheduled";
-  }
-
-  const datePart = ticket.scheduledDate || "No date";
-  const startPart = ticket.scheduledStartTime || "—";
-  const endPart = ticket.scheduledEndTime || "—";
-
-  return `${datePart} • ${startPart} - ${endPart}`;
+  return formatDateTimeRange12h(
+    ticket.scheduledDate,
+    ticket.scheduledStartTime,
+    ticket.scheduledEndTime
+  );
 }
 
 function normalize(s: unknown) {
@@ -311,7 +323,9 @@ export default function ServiceTicketsPage() {
       if (assignedFilter === "assigned" && !assigned) return false;
       if (assignedFilter === "unassigned" && assigned) return false;
 
-      const scheduled = Boolean(ticket.scheduledDate || ticket.scheduledStartTime || ticket.scheduledEndTime);
+      const scheduled = Boolean(
+        ticket.scheduledDate || ticket.scheduledStartTime || ticket.scheduledEndTime
+      );
       if (scheduleFilter === "scheduled" && !scheduled) return false;
       if (scheduleFilter === "unscheduled" && scheduled) return false;
 
@@ -447,14 +461,7 @@ export default function ServiceTicketsPage() {
               </Button>
             </Stack>
 
-            <Card
-              elevation={0}
-              sx={{
-                borderRadius: 3,
-                border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                backgroundColor: "background.paper",
-              }}
-            >
+            <SectionSurface>
               <Box sx={{ p: { xs: 2, md: 2.5 } }}>
                 <Stack spacing={2.25}>
                   <SectionHeader
@@ -553,15 +560,14 @@ export default function ServiceTicketsPage() {
                   >
                     <Stack
                       direction={{ xs: "column", sm: "row" }}
-                      spacing={1.5}
-                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      spacing={1}
+                      alignItems={{ xs: "stretch", sm: "center" }}
                     >
-                      <Paper
-                        elevation={0}
+                      <Box
                         sx={{
                           px: 1.25,
-                          py: 0.75,
-                          borderRadius: 2,
+                          py: 0.85,
+                          borderRadius: 4,
                           border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
                           backgroundColor: alpha("#FFFFFF", 0.02),
                         }}
@@ -577,14 +583,13 @@ export default function ServiceTicketsPage() {
                             onChange={(e) => setAvailableOnly(e.target.checked)}
                           />
                         </Stack>
-                      </Paper>
+                      </Box>
 
-                      <Paper
-                        elevation={0}
+                      <Box
                         sx={{
                           px: 1.25,
-                          py: 0.75,
-                          borderRadius: 2,
+                          py: 0.85,
+                          borderRadius: 4,
                           border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
                           backgroundColor: alpha("#FFFFFF", 0.02),
                         }}
@@ -602,7 +607,7 @@ export default function ServiceTicketsPage() {
                             onChange={(e) => setHideCompleted(e.target.checked)}
                           />
                         </Stack>
-                      </Paper>
+                      </Box>
                     </Stack>
 
                     <Stack
@@ -629,7 +634,7 @@ export default function ServiceTicketsPage() {
                   </Stack>
                 </Stack>
               </Box>
-            </Card>
+            </SectionSurface>
 
             {error ? (
               <Alert severity="error" variant="outlined" icon={<ErrorOutlineRoundedIcon />}>
@@ -638,38 +643,26 @@ export default function ServiceTicketsPage() {
             ) : null}
 
             {loading ? (
-              <Paper
-                elevation={0}
-                sx={{
-                  borderRadius: 3,
-                  p: 3,
-                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                  backgroundColor: "background.paper",
-                }}
-              >
-                <Stack direction="row" spacing={1.25} alignItems="center">
-                  <CircularProgress size={20} thickness={5} />
-                  <Typography variant="body2" color="text.secondary">
-                    Loading service tickets...
-                  </Typography>
-                </Stack>
-              </Paper>
+              <SectionSurface>
+                <Box sx={{ p: 3 }}>
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <CircularProgress size={20} thickness={5} />
+                    <Typography variant="body2" color="text.secondary">
+                      Loading service tickets...
+                    </Typography>
+                  </Stack>
+                </Box>
+              </SectionSurface>
             ) : null}
 
             {!loading && !error && filteredTickets.length === 0 ? (
-              <Paper
-                elevation={0}
-                sx={{
-                  borderRadius: 3,
-                  p: 3,
-                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                  backgroundColor: "background.paper",
-                }}
-              >
-                <Typography variant="body2" color="text.secondary">
-                  No matching service tickets found.
-                </Typography>
-              </Paper>
+              <SectionSurface>
+                <Box sx={{ p: 3 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    No matching service tickets found.
+                  </Typography>
+                </Box>
+              </SectionSurface>
             ) : null}
 
             {!loading && !error && filteredTickets.length > 0 ? (
@@ -694,7 +687,8 @@ export default function ServiceTicketsPage() {
                       elevation={0}
                       sx={{
                         height: "100%",
-                        borderRadius: 3,
+                        borderRadius: 4,
+                        overflow: "hidden",
                         border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
                         backgroundColor: "background.paper",
                       }}
@@ -702,7 +696,7 @@ export default function ServiceTicketsPage() {
                       <CardActionArea
                         component={Link}
                         href={`/service-tickets/${ticket.id}`}
-                        sx={{ height: "100%", borderRadius: 3, alignItems: "stretch" }}
+                        sx={{ height: "100%", display: "block" }}
                       >
                         <CardContent
                           sx={{
@@ -725,7 +719,7 @@ export default function ServiceTicketsPage() {
                                   sx={{
                                     width: 42,
                                     height: 42,
-                                    borderRadius: 2,
+                                    borderRadius: 3,
                                     display: "grid",
                                     placeItems: "center",
                                     flexShrink: 0,
@@ -792,7 +786,7 @@ export default function ServiceTicketsPage() {
 
                             <Divider />
 
-                            <Stack spacing={1}>
+                            <Stack spacing={1.1}>
                               <Stack direction="row" spacing={0.75} alignItems="center">
                                 <PlaceRoundedIcon
                                   sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
@@ -876,13 +870,13 @@ export default function ServiceTicketsPage() {
 
                             <Box sx={{ flex: 1 }} />
 
+                            <Divider />
+
                             <Stack
                               direction="row"
                               spacing={0.75}
                               alignItems="center"
-                              sx={{
-                                color: "primary.light",
-                              }}
+                              sx={{ color: "primary.light", pt: 0.25 }}
                             >
                               <Typography
                                 variant="caption"

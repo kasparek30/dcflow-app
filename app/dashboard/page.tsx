@@ -262,7 +262,7 @@ function SectionCard({
     <Card
       elevation={0}
       sx={{
-        borderRadius: 4,
+        borderRadius: 1.2,
         border: (theme) => `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
         backgroundColor: "background.paper",
       }}
@@ -460,7 +460,7 @@ function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
   return (
     <Box
       sx={{
-        borderRadius: 3,
+        borderRadius: 1.2,
         border: (theme) => `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
         backgroundColor: (theme) => alpha(theme.palette.common.white, 0.02),
         px: 1.5,
@@ -854,7 +854,7 @@ function AreaSnapshotDialog({
             sx={{
               position: "relative",
               minHeight: { xs: 320, md: 500 },
-              borderRadius: 3,
+              borderRadius: 1.2,
               overflow: "hidden",
               border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
               backgroundColor: alpha(theme.palette.common.white, 0.03),
@@ -907,7 +907,7 @@ function AreaSnapshotDialog({
                     key={item.id}
                     elevation={0}
                     sx={{
-                      borderRadius: 3,
+                      borderRadius: 1.2,
                       border: `1px solid ${
                         isSelected
                           ? alpha(theme.palette.primary.main, 0.45)
@@ -925,7 +925,7 @@ function AreaSnapshotDialog({
                     <CardActionArea
                       onClick={() => openMarkerForTicket(item.id, true, true)}
                       sx={{
-                        borderRadius: 3,
+                        borderRadius: 1.2,
                       }}
                     >
                       <Box sx={{ px: 1.5, py: 1.35 }}>
@@ -1018,7 +1018,7 @@ function AreaSnapshotDialog({
               })}
             </Box>
           ) : (
-            <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+            <Alert severity="info" variant="outlined" sx={{ borderRadius: 1.2 }}>
               No active field tickets are showing right now.
             </Alert>
           )}
@@ -1041,7 +1041,7 @@ function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketIte
     <>
       <Box
         sx={{
-          borderRadius: 3,
+          borderRadius: 1.2,
           border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
           overflow: "hidden",
           background: `linear-gradient(135deg, ${alpha(theme.palette.primary.light, 0.16)}, ${alpha(
@@ -1354,7 +1354,7 @@ export default function DashboardPage() {
             <Card
               elevation={0}
               sx={{
-                borderRadius: 4,
+                borderRadius: 1.2,
                 border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
                 backgroundColor: "background.paper",
               }}
@@ -1487,7 +1487,7 @@ export default function DashboardPage() {
                   <Card
                     elevation={0}
                     sx={{
-                      borderRadius: 4,
+                      borderRadius: 1.2,
                       border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
                       backgroundColor: "background.paper",
                     }}
@@ -1571,7 +1571,7 @@ export default function DashboardPage() {
                       <Box
                         key={item.label}
                         sx={{
-                          borderRadius: 3,
+                          borderRadius: 1.2,
                           border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
                           backgroundColor: alpha(theme.palette.common.white, 0.02),
                           px: 1.5,

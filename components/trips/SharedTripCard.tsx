@@ -1,3 +1,4 @@
+// components/trips/SharedTripCard.tsx
 "use client";
 
 import * as React from "react";
@@ -5,8 +6,8 @@ import {
   Box,
   Card,
   CardActionArea,
-  CardContent,
   Chip,
+  Divider,
   Stack,
   Typography,
 } from "@mui/material";
@@ -53,31 +54,35 @@ export default function SharedTripCard({
   const type = String(tripType || "").toLowerCase();
   const isProject = type === "project";
 
-  const content = (
-    <CardContent
+  const hasMetaRows = Boolean(subtitle || customerLine || progressText);
+  const hasInlineDetails = Boolean(detailBlock || followUpBlock);
+  const hasFooter = Boolean(footer);
+
+  const mainContent = (
+    <Box
       sx={{
-        p: { xs: 1.25, md: 1.5 },
-        "&:last-child": { pb: { xs: 1.25, md: 1.5 } },
+        px: { xs: 2, md: 2.25 },
+        py: { xs: 1.75, md: 2 },
       }}
     >
-      <Stack spacing={{ xs: 0.9, md: 1 }}>
+      <Stack spacing={0}>
         <Stack
           direction={{ xs: "column", sm: "row" }}
-          spacing={1}
+          spacing={1.25}
           alignItems={{ xs: "flex-start", sm: "flex-start" }}
           justifyContent="space-between"
         >
           <Stack
             direction="row"
-            spacing={1}
+            spacing={1.25}
             alignItems="flex-start"
             sx={{ minWidth: 0, flex: 1 }}
           >
             <Box
               sx={{
-                width: { xs: 34, md: 36 },
-                height: { xs: 34, md: 36 },
-                borderRadius: 2,
+                width: { xs: 40, md: 42 },
+                height: { xs: 40, md: 42 },
+                borderRadius: 2.5,
                 display: "grid",
                 placeItems: "center",
                 flexShrink: 0,
@@ -88,18 +93,19 @@ export default function SharedTripCard({
               }}
             >
               {isProject ? (
-                <ConstructionRoundedIcon sx={{ fontSize: { xs: 18, md: 19 } }} />
+                <ConstructionRoundedIcon sx={{ fontSize: { xs: 20, md: 21 } }} />
               ) : (
-                <PrecisionManufacturingRoundedIcon sx={{ fontSize: { xs: 18, md: 19 } }} />
+                <PrecisionManufacturingRoundedIcon sx={{ fontSize: { xs: 20, md: 21 } }} />
               )}
             </Box>
 
             <Box sx={{ minWidth: 0, flex: 1 }}>
               <Typography
-                variant="subtitle2"
+                variant="subtitle1"
                 sx={{
-                  fontWeight: 700,
-                  lineHeight: 1.25,
+                  fontWeight: 800,
+                  lineHeight: 1.2,
+                  letterSpacing: "-0.01em",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   display: "-webkit-box",
@@ -119,6 +125,7 @@ export default function SharedTripCard({
             alignItems="center"
             flexWrap="wrap"
             useFlexGap
+            sx={{ rowGap: 0.75 }}
           >
             <Chip
               size="small"
@@ -127,7 +134,7 @@ export default function SharedTripCard({
                 height: 24,
                 borderRadius: 1.5,
                 fontSize: 11,
-                fontWeight: 600,
+                fontWeight: 700,
                 color: tone.color,
                 backgroundColor: tone.bg,
                 border: `1px solid ${tone.border}`,
@@ -137,63 +144,97 @@ export default function SharedTripCard({
           </Stack>
         </Stack>
 
-        {subtitle ? (
-          <Stack direction="row" spacing={0.75} alignItems="center">
-            <ScheduleRoundedIcon sx={{ fontSize: 14, color: "text.secondary" }} />
-            <Typography variant="caption" color="text.secondary">
-              {subtitle}
-            </Typography>
+        {hasMetaRows ? (
+          <Stack spacing={0.85} sx={{ mt: 1.35 }}>
+            {subtitle ? (
+              <Stack direction="row" spacing={0.75} alignItems="center">
+                <ScheduleRoundedIcon sx={{ fontSize: 15, color: "text.secondary" }} />
+                <Typography variant="body2" color="text.secondary">
+                  {subtitle}
+                </Typography>
+              </Stack>
+            ) : null}
+
+            {customerLine ? (
+              <Stack direction="row" spacing={0.75} alignItems="center">
+                <PersonRoundedIcon sx={{ fontSize: 15, color: "text.secondary" }} />
+                <Typography variant="body2" color="text.secondary">
+                  {customerLine}
+                </Typography>
+              </Stack>
+            ) : null}
+
+            {progressText ? (
+              <Typography variant="caption" color="text.secondary">
+                {progressText}
+              </Typography>
+            ) : null}
           </Stack>
         ) : null}
 
-        {progressText ? (
-          <Typography variant="caption" color="text.secondary">
-            {progressText}
-          </Typography>
-        ) : null}
+        {crewChips ? <Box sx={{ mt: 1.35 }}>{crewChips}</Box> : null}
 
-        {customerLine ? (
-          <Stack direction="row" spacing={0.75} alignItems="center">
-            <PersonRoundedIcon sx={{ fontSize: 14, color: "text.secondary" }} />
-            <Typography variant="caption" color="text.secondary">
-              {customerLine}
-            </Typography>
-          </Stack>
-        ) : null}
-
-        {crewChips ? crewChips : null}
-        {detailBlock ? detailBlock : null}
-        {followUpBlock ? followUpBlock : null}
-
-        {footer ? (
-          <Box
+        {hasInlineDetails ? (
+          <Stack
+            spacing={1.2}
             sx={{
-              pt: { xs: 1, md: 1.25 },
+              mt: 1.35,
+              pt: 1.35,
               borderTop: `1px solid ${alpha("#FFFFFF", 0.08)}`,
             }}
           >
-            {footer}
-          </Box>
+            {detailBlock ? detailBlock : null}
+            {followUpBlock ? followUpBlock : null}
+          </Stack>
         ) : null}
       </Stack>
-    </CardContent>
+    </Box>
   );
 
   return (
     <Card
       variant="outlined"
       sx={{
-        borderRadius: 2,
+        borderRadius: 1.2,
+        overflow: "hidden",
         borderColor: alpha("#FFFFFF", 0.08),
+        backgroundColor: "background.paper",
+        transition: "border-color 160ms ease, transform 160ms ease",
+        ...(onClick
+          ? {
+              "&:hover": {
+                borderColor: alpha(theme.palette.primary.main, 0.22),
+              },
+            }
+          : {}),
       }}
     >
       {onClick ? (
-        <CardActionArea onClick={onClick} sx={{ borderRadius: 2 }}>
-          {content}
+        <CardActionArea
+          onClick={onClick}
+          sx={{
+            display: "block",
+          }}
+        >
+          {mainContent}
         </CardActionArea>
       ) : (
-        content
+        mainContent
       )}
+
+      {hasFooter ? (
+        <>
+          <Divider sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />
+          <Box
+            sx={{
+              px: { xs: 2, md: 2.25 },
+              py: { xs: 1.5, md: 1.75 },
+            }}
+          >
+            {footer}
+          </Box>
+        </>
+      ) : null}
     </Card>
   );
 }

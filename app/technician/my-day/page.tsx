@@ -53,6 +53,7 @@ import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import { formatTimeRange12h } from "../../../src/lib/time-format";
 
 type TripCrew = {
   primaryTechUid?: string | null;
@@ -230,10 +231,16 @@ function safeStr(x: unknown) {
 
 function formatWindow(window?: string) {
   const w = (window || "").toLowerCase();
-  if (w === "am") return "AM (8–12)";
-  if (w === "pm") return "PM (1–5)";
-  if (w === "all_day") return "All Day (8–5)";
+  if (w === "am") return "Morning (8 AM–12 PM)";
+  if (w === "pm") return "Afternoon (1 PM–5 PM)";
+  if (w === "all_day") return "All Day (8 AM–5 PM)";
   return window || "—";
+}
+
+function formatTripTimeLine(timeWindow?: string, startTime?: string, endTime?: string) {
+  const range = formatTimeRange12h(startTime, endTime);
+  if (range) return range;
+  return formatWindow(timeWindow);
 }
 
 function formatType(type?: string) {
@@ -368,12 +375,12 @@ function crewUidsForConfirm(crew?: TripCrew | null) {
 function formatEventTime(e: CompanyEvent) {
   const w = String(e.timeWindow || "").toLowerCase();
   if (w === "all_day") return "All Day";
-  if (w === "am") return "AM (8–12)";
-  if (w === "pm") return "PM (1–5)";
-  const st = String(e.startTime || "").trim();
-  const et = String(e.endTime || "").trim();
-  if (st && et) return `${st}–${et}`;
-  if (st) return `Starts ${st}`;
+  if (w === "am") return "Morning (8 AM–12 PM)";
+  if (w === "pm") return "Afternoon (1 PM–5 PM)";
+
+  const range = formatTimeRange12h(e.startTime, e.endTime);
+  if (range) return range;
+
   return "—";
 }
 
@@ -1032,11 +1039,7 @@ export default function TechnicianMyDayPage() {
         const crew = crewDisplay(t.crew);
         const href = buildHref(t.link);
 
-        const windowText = formatWindow(t.timeWindow);
-        const timeText =
-          t.startTime || t.endTime
-            ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${windowText}`
-            : windowText;
+        const timeText = formatTripTimeLine(t.timeWindow, t.startTime, t.endTime);
 
         const status = normalizeStatus(t.status) || "planned";
         const timerState = normalizeTimerState(t.timerState, t.status);
@@ -1444,10 +1447,7 @@ export default function TechnicianMyDayPage() {
                   <Stack divider={<Divider flexItem />}>
                     {unconfirmedPastTrips.map((t) => {
                       const crew = crewDisplay(t.crew);
-                      const timeText =
-                        t.startTime || t.endTime
-                          ? `${t.startTime || "—"} - ${t.endTime || "—"} • ${formatWindow(t.timeWindow)}`
-                          : formatWindow(t.timeWindow);
+                      const timeText = formatTripTimeLine(t.timeWindow, t.startTime, t.endTime);
 
                       return (
                         <Box key={t.id} sx={{ px: { xs: 2, md: 2.5 }, py: 1.75 }}>
@@ -1658,7 +1658,7 @@ export default function TechnicianMyDayPage() {
                           item.isActive
                             ? {
                                 position: "relative",
-                                borderRadius: 4,
+                                borderRadius: 3,
                                 "&::before": {
                                   content: '""',
                                   position: "absolute",
@@ -1862,7 +1862,13 @@ export default function TechnicianMyDayPage() {
           </Stack>
         </Box>
 
-        <Dialog open={confirmOpen} onClose={closeConfirmModal} fullWidth maxWidth="sm">
+        <Dialog
+          open={confirmOpen}
+          onClose={closeConfirmModal}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{ sx: { borderRadius: 5 } }}
+        >
           <DialogTitle>Confirm Project Trip</DialogTitle>
 
           <DialogContent dividers>

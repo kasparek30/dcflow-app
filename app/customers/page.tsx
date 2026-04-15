@@ -16,7 +16,6 @@ import {
   FormControlLabel,
   IconButton,
   InputAdornment,
-  Paper,
   Skeleton,
   Stack,
   Switch,
@@ -26,6 +25,7 @@ import {
 import { alpha, useTheme } from "@mui/material/styles";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import ApartmentRoundedIcon from "@mui/icons-material/ApartmentRounded";
+import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import BusinessRoundedIcon from "@mui/icons-material/BusinessRounded";
 import ClearRoundedIcon from "@mui/icons-material/ClearRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
@@ -105,13 +105,13 @@ function formatAddressLines(input: {
   const state = input.state?.trim() || "";
   const postalCode = input.postalCode?.trim() || "";
 
-  const cityStateZip = [city, state].filter(Boolean).join(", ");
-  const cityStateZipWithPostal = [cityStateZip, postalCode].filter(Boolean).join(" ");
+  const cityState = [city, state].filter(Boolean).join(", ");
+  const cityStateZip = [cityState, postalCode].filter(Boolean).join(" ");
 
   return {
     line1,
     line2,
-    line3: cityStateZipWithPostal,
+    line3: cityStateZip,
   };
 }
 
@@ -148,6 +148,61 @@ function getActiveServiceAddressCount(customer: Customer) {
   return (customer.serviceAddresses || []).filter((addr) => addr.active !== false).length;
 }
 
+function SectionSurface({ children }: { children: React.ReactNode }) {
+  const theme = useTheme();
+
+  return (
+    <Card
+      elevation={0}
+      sx={{
+        borderRadius: 4,
+        overflow: "hidden",
+        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+        backgroundColor: "background.paper",
+      }}
+    >
+      {children}
+    </Card>
+  );
+}
+
+function SectionHeader({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <Box>
+      <Typography
+        variant="h6"
+        sx={{
+          fontSize: { xs: "1rem", md: "1.05rem" },
+          fontWeight: 800,
+          letterSpacing: "-0.02em",
+        }}
+      >
+        {title}
+      </Typography>
+
+      {subtitle ? (
+        <Typography
+          sx={{
+            mt: 0.45,
+            color: "text.secondary",
+            fontSize: 13,
+            fontWeight: 500,
+            maxWidth: 920,
+          }}
+        >
+          {subtitle}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
 function MetricCard(props: {
   icon: React.ReactNode;
   label: string;
@@ -157,57 +212,63 @@ function MetricCard(props: {
   const theme = useTheme();
 
   return (
-    <Paper
+    <Card
       elevation={0}
       sx={{
         borderRadius: 4,
-        p: 2,
         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-        background:
+        backgroundColor:
           props.tone === "primary"
             ? alpha(theme.palette.primary.main, 0.08)
             : theme.palette.background.paper,
       }}
     >
-      <Stack direction="row" spacing={1.5} alignItems="center">
-        <Box
-          sx={{
-            width: 40,
-            height: 40,
-            borderRadius: 3,
-            display: "grid",
-            placeItems: "center",
-            backgroundColor:
-              props.tone === "primary"
-                ? alpha(theme.palette.primary.main, 0.14)
-                : alpha(theme.palette.text.primary, 0.06),
-            color: props.tone === "primary" ? theme.palette.primary.main : theme.palette.text.primary,
-            flexShrink: 0,
-          }}
-        >
-          {props.icon}
-        </Box>
+      <Box sx={{ p: 2 }}>
+        <Stack direction="row" spacing={1.5} alignItems="center">
+          <Box
+            sx={{
+              width: 40,
+              height: 40,
+              borderRadius: 3,
+              display: "grid",
+              placeItems: "center",
+              backgroundColor:
+                props.tone === "primary"
+                  ? alpha(theme.palette.primary.main, 0.14)
+                  : alpha(theme.palette.text.primary, 0.06),
+              color:
+                props.tone === "primary"
+                  ? theme.palette.primary.main
+                  : theme.palette.text.primary,
+              flexShrink: 0,
+            }}
+          >
+            {props.icon}
+          </Box>
 
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="body2" color="text.secondary">
-            {props.label}
-          </Typography>
-          <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-            {props.value}
-          </Typography>
-        </Box>
-      </Stack>
-    </Paper>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              {props.label}
+            </Typography>
+            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+              {props.value}
+            </Typography>
+          </Box>
+        </Stack>
+      </Box>
+    </Card>
   );
 }
 
 function LoadingCard() {
+  const theme = useTheme();
+
   return (
     <Card
       elevation={0}
       sx={{
         borderRadius: 4,
-        border: (theme) => `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+        border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
       }}
     >
       <CardContent sx={{ p: 2.25 }}>
@@ -224,6 +285,52 @@ function LoadingCard() {
         </Stack>
       </CardContent>
     </Card>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  description,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}) {
+  const theme = useTheme();
+
+  return (
+    <SectionSurface>
+      <Box sx={{ p: 4 }}>
+        <Stack spacing={1.25} alignItems="center" textAlign="center">
+          <Box
+            sx={{
+              width: 64,
+              height: 64,
+              borderRadius: 4,
+              display: "grid",
+              placeItems: "center",
+              backgroundColor: alpha(theme.palette.primary.main, 0.1),
+              color: theme.palette.primary.main,
+            }}
+          >
+            {icon}
+          </Box>
+
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+            {title}
+          </Typography>
+
+          <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 560 }}>
+            {description}
+          </Typography>
+
+          {action ? <Box sx={{ pt: 0.5 }}>{action}</Box> : null}
+        </Stack>
+      </Box>
+    </SectionSurface>
   );
 }
 
@@ -321,7 +428,7 @@ export default function CustomersPage() {
   const shouldShowResults = useMemo(() => {
     if (!hideAllUntilSearch) return true;
     return normalizedQuery.length >= MIN_CHARS_TO_SEARCH;
-  }, [hideAllUntilSearch, normalizedQuery]);
+  }, [hideAllUntilSearch, normalizedQuery, MIN_CHARS_TO_SEARCH]);
 
   const filteredCustomers = useMemo(() => {
     if (!hideAllUntilSearch) {
@@ -347,7 +454,7 @@ export default function CustomersPage() {
         return false;
       })
       .map((x) => x.customer);
-  }, [customers, customersWithSearch, hideAllUntilSearch, normalizedQuery, queryDigits]);
+  }, [customers, customersWithSearch, hideAllUntilSearch, normalizedQuery, queryDigits, MIN_CHARS_TO_SEARCH]);
 
   const linkedCount = useMemo(
     () => customers.filter((customer) => Boolean(customer.quickbooksCustomerId)).length,
@@ -369,19 +476,7 @@ export default function CustomersPage() {
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1320, mx: "auto", px: { xs: 1, sm: 2 }, pb: 4 }}>
           <Stack spacing={3}>
-            <Paper
-              elevation={0}
-              sx={{
-                borderRadius: 5,
-                px: { xs: 2, sm: 3 },
-                py: { xs: 2.25, sm: 3 },
-                border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-                background: `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.08)} 0%, ${alpha(
-                  theme.palette.primary.main,
-                  0.03
-                )} 100%)`,
-              }}
-            >
+            <Box sx={{ px: { xs: 0.25, md: 0.5 }, pt: { xs: 0.5, md: 0.75 } }}>
               <Stack
                 direction={{ xs: "column", md: "row" }}
                 spacing={2}
@@ -389,12 +484,42 @@ export default function CustomersPage() {
                 alignItems={{ xs: "flex-start", md: "center" }}
               >
                 <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: -0.4 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                    <Chip
+                      size="small"
+                      icon={<PersonRoundedIcon sx={{ fontSize: 16 }} />}
+                      label="Customers"
+                      sx={{
+                        borderRadius: 1.5,
+                        fontWeight: 600,
+                        backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                        border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                      }}
+                    />
+                  </Stack>
+
+                  <Typography
+                    variant="h4"
+                    sx={{
+                      fontSize: { xs: "1.8rem", md: "2.15rem" },
+                      lineHeight: 1.05,
+                      fontWeight: 800,
+                      letterSpacing: "-0.035em",
+                    }}
+                  >
                     Customers
                   </Typography>
-                  <Typography variant="body1" color="text.secondary" sx={{ mt: 0.75, maxWidth: 760 }}>
-                    Search customers by name, phone, email, billing address, or service location. This page is now
-                    structured as a cleaner Material 3 customer workspace instead of a plain list.
+
+                  <Typography
+                    sx={{
+                      mt: 0.85,
+                      color: "text.secondary",
+                      fontSize: { xs: 13, md: 14 },
+                      fontWeight: 500,
+                      maxWidth: 860,
+                    }}
+                  >
+                    Search customers by name, phone, email, billing address, or service location.
                   </Typography>
                 </Box>
 
@@ -403,20 +528,17 @@ export default function CustomersPage() {
                   href="/customers/new"
                   variant="contained"
                   startIcon={<AddRoundedIcon />}
-                  size="large"
                   sx={{
-                    borderRadius: 99,
-                    px: 2.25,
-                    minHeight: 48,
+                    minHeight: 40,
+                    borderRadius: 2,
                     fontWeight: 700,
                     whiteSpace: "nowrap",
-                    boxShadow: "none",
                   }}
                 >
                   New Customer
                 </Button>
               </Stack>
-            </Paper>
+            </Box>
 
             <Box
               sx={{
@@ -452,102 +574,99 @@ export default function CustomersPage() {
               />
             </Box>
 
-            <Paper
-              elevation={0}
-              sx={{
-                borderRadius: 5,
-                p: { xs: 2, sm: 2.5 },
-                border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-              }}
-            >
-              <Stack spacing={2}>
-                <Box>
-                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                    Find a customer
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    Search by customer name, phone number, email, billing address, or any saved service location.
-                  </Typography>
-                </Box>
-
-                <TextField
-                  fullWidth
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder='Try: "Tofel", "314 S Franklin", "La Grange", "9799667783", or "gmail"'
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchRoundedIcon color="action" />
-                      </InputAdornment>
-                    ),
-                    endAdornment: search ? (
-                      <InputAdornment position="end">
-                        <IconButton
-                          aria-label="Clear search"
-                          onClick={() => {
-                            setSearch("");
-                            setDebouncedSearch("");
-                          }}
-                          edge="end"
-                        >
-                          <ClearRoundedIcon />
-                        </IconButton>
-                      </InputAdornment>
-                    ) : undefined,
-                  }}
-                  sx={{
-                    "& .MuiOutlinedInput-root": {
-                      borderRadius: 4,
-                    },
-                  }}
-                />
-
-                <Stack
-                  direction={{ xs: "column", md: "row" }}
-                  spacing={1.5}
-                  justifyContent="space-between"
-                  alignItems={{ xs: "flex-start", md: "center" }}
-                >
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={hideAllUntilSearch}
-                        onChange={(e) => setHideAllUntilSearch(e.target.checked)}
-                      />
-                    }
-                    label="Hide all customers until I start searching"
-                    sx={{ m: 0 }}
+            <SectionSurface>
+              <Box sx={{ p: { xs: 2, sm: 2.5 } }}>
+                <Stack spacing={2}>
+                  <SectionHeader
+                    title="Find a customer"
+                    subtitle="Search by customer name, phone number, email, billing address, or any saved service location."
                   />
 
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "flex-start", sm: "center" }}>
-                    <Chip
-                      icon={<ManageSearchRoundedIcon />}
-                      label={
-                        hideAllUntilSearch
-                          ? normalizedQuery.length < MIN_CHARS_TO_SEARCH
-                            ? `Type ${MIN_CHARS_TO_SEARCH}+ characters`
-                            : `${filteredCustomers.length} result${filteredCustomers.length === 1 ? "" : "s"}`
-                          : `Showing ${filteredCustomers.length} of ${customers.length}`
+                  <TextField
+                    fullWidth
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder='Try: "Tofel", "314 S Franklin", "La Grange", "9799667783", or "gmail"'
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchRoundedIcon color="action" />
+                        </InputAdornment>
+                      ),
+                      endAdornment: search ? (
+                        <InputAdornment position="end">
+                          <IconButton
+                            aria-label="Clear search"
+                            onClick={() => {
+                              setSearch("");
+                              setDebouncedSearch("");
+                            }}
+                            edge="end"
+                          >
+                            <ClearRoundedIcon />
+                          </IconButton>
+                        </InputAdornment>
+                      ) : undefined,
+                    }}
+                    sx={{
+                      "& .MuiOutlinedInput-root": {
+                        borderRadius: 4,
+                      },
+                    }}
+                  />
+
+                  <Divider />
+
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={1.5}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", md: "center" }}
+                  >
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={hideAllUntilSearch}
+                          onChange={(e) => setHideAllUntilSearch(e.target.checked)}
+                        />
                       }
-                      variant="outlined"
-                      sx={{ borderRadius: 99 }}
+                      label="Hide all customers until I start searching"
+                      sx={{ m: 0 }}
                     />
 
-                    <Button
-                      variant="text"
-                      onClick={() => {
-                        setSearch("");
-                        setDebouncedSearch("");
-                      }}
-                      sx={{ borderRadius: 99, fontWeight: 700 }}
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ xs: "flex-start", sm: "center" }}
                     >
-                      Clear
-                    </Button>
+                      <Chip
+                        icon={<ManageSearchRoundedIcon />}
+                        label={
+                          hideAllUntilSearch
+                            ? normalizedQuery.length < MIN_CHARS_TO_SEARCH
+                              ? `Type ${MIN_CHARS_TO_SEARCH}+ characters`
+                              : `${filteredCustomers.length} result${filteredCustomers.length === 1 ? "" : "s"}`
+                            : `Showing ${filteredCustomers.length} of ${customers.length}`
+                        }
+                        variant="outlined"
+                        sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                      />
+
+                      <Button
+                        variant="outlined"
+                        onClick={() => {
+                          setSearch("");
+                          setDebouncedSearch("");
+                        }}
+                        sx={{ borderRadius: 2, minHeight: 36 }}
+                      >
+                        Clear
+                      </Button>
+                    </Stack>
                   </Stack>
                 </Stack>
-              </Stack>
-            </Paper>
+              </Box>
+            </SectionSurface>
 
             {error ? (
               <Alert severity="error" sx={{ borderRadius: 4 }}>
@@ -564,7 +683,7 @@ export default function CustomersPage() {
                     md: "repeat(2, minmax(0, 1fr))",
                     xl: "repeat(3, minmax(0, 1fr))",
                   },
-                  gap: 2,
+                  gap: 1.5,
                 }}
               >
                 {Array.from({ length: 6 }).map((_, index) => (
@@ -574,119 +693,38 @@ export default function CustomersPage() {
             ) : null}
 
             {!loading && !error && customers.length === 0 ? (
-              <Paper
-                elevation={0}
-                sx={{
-                  borderRadius: 5,
-                  p: 4,
-                  border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
-                  textAlign: "center",
-                }}
-              >
-                <Stack spacing={1.25} alignItems="center">
-                  <Box
-                    sx={{
-                      width: 64,
-                      height: 64,
-                      borderRadius: 4,
-                      display: "grid",
-                      placeItems: "center",
-                      backgroundColor: alpha(theme.palette.primary.main, 0.1),
-                      color: theme.palette.primary.main,
-                    }}
-                  >
-                    <PersonRoundedIcon sx={{ fontSize: 32 }} />
-                  </Box>
-
-                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                    No customers yet
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
-                    Create your first customer to start building your customer list, addresses, and future service
-                    history inside DCFlow.
-                  </Typography>
-
+              <EmptyState
+                icon={<PersonRoundedIcon sx={{ fontSize: 32 }} />}
+                title="No customers yet"
+                description="Create your first customer to start building your customer list, addresses, and future service history inside DCFlow."
+                action={
                   <Button
                     component={Link}
                     href="/customers/new"
                     variant="contained"
                     startIcon={<AddRoundedIcon />}
-                    sx={{ mt: 1, borderRadius: 99, fontWeight: 700 }}
+                    sx={{ borderRadius: 2, fontWeight: 700 }}
                   >
                     Create First Customer
                   </Button>
-                </Stack>
-              </Paper>
+                }
+              />
             ) : null}
 
             {!loading && !error && customers.length > 0 && !shouldShowResults ? (
-              <Paper
-                elevation={0}
-                sx={{
-                  borderRadius: 5,
-                  p: 4,
-                  border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
-                  textAlign: "center",
-                }}
-              >
-                <Stack spacing={1.25} alignItems="center">
-                  <Box
-                    sx={{
-                      width: 64,
-                      height: 64,
-                      borderRadius: 4,
-                      display: "grid",
-                      placeItems: "center",
-                      backgroundColor: alpha(theme.palette.primary.main, 0.1),
-                      color: theme.palette.primary.main,
-                    }}
-                  >
-                    <SearchRoundedIcon sx={{ fontSize: 32 }} />
-                  </Box>
-
-                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                    Start typing to search
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 560 }}>
-                    Search by customer name, phone number, email, billing address, or any service location.
-                  </Typography>
-                </Stack>
-              </Paper>
+              <EmptyState
+                icon={<SearchRoundedIcon sx={{ fontSize: 32 }} />}
+                title="Start typing to search"
+                description="Search by customer name, phone number, email, billing address, or any service location."
+              />
             ) : null}
 
             {!loading && !error && customers.length > 0 && shouldShowResults && filteredCustomers.length === 0 ? (
-              <Paper
-                elevation={0}
-                sx={{
-                  borderRadius: 5,
-                  p: 4,
-                  border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
-                  textAlign: "center",
-                }}
-              >
-                <Stack spacing={1.25} alignItems="center">
-                  <Box
-                    sx={{
-                      width: 64,
-                      height: 64,
-                      borderRadius: 4,
-                      display: "grid",
-                      placeItems: "center",
-                      backgroundColor: alpha(theme.palette.warning.main, 0.12),
-                      color: theme.palette.warning.dark,
-                    }}
-                  >
-                    <ManageSearchRoundedIcon sx={{ fontSize: 32 }} />
-                  </Box>
-
-                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                    No matching customers
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 560 }}>
-                    Try a different name, address, phone number, or email.
-                  </Typography>
-                </Stack>
-              </Paper>
+              <EmptyState
+                icon={<ManageSearchRoundedIcon sx={{ fontSize: 32 }} />}
+                title="No matching customers"
+                description="Try a different name, address, phone number, or email."
+              />
             ) : null}
 
             {!loading && !error && shouldShowResults && filteredCustomers.length > 0 ? (
@@ -698,7 +736,7 @@ export default function CustomersPage() {
                     md: "repeat(2, minmax(0, 1fr))",
                     xl: "repeat(3, minmax(0, 1fr))",
                   },
-                  gap: 2,
+                  gap: 1.5,
                 }}
               >
                 {filteredCustomers.map((customer) => {
@@ -711,82 +749,114 @@ export default function CustomersPage() {
                       key={customer.id}
                       elevation={0}
                       sx={{
-                        borderRadius: 5,
+                        borderRadius: 4,
+                        overflow: "hidden",
                         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-                        transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
+                        backgroundColor: "background.paper",
+                        transition: "border-color 160ms ease, transform 160ms ease",
                         "&:hover": {
-                          transform: "translateY(-2px)",
-                          boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.08)}`,
                           borderColor: alpha(theme.palette.primary.main, 0.28),
+                          transform: "translateY(-1px)",
                         },
                       }}
                     >
-                      <CardActionArea component={Link} href={`/customers/${customer.id}`} sx={{ borderRadius: 5 }}>
-                        <CardContent sx={{ p: 2.25 }}>
-                          <Stack spacing={1.5}>
+                      <CardActionArea
+                        component={Link}
+                        href={`/customers/${customer.id}`}
+                        sx={{ display: "block", height: "100%" }}
+                      >
+                        <CardContent
+                          sx={{
+                            p: { xs: 2, md: 2.25 },
+                            height: "100%",
+                            display: "flex",
+                            flexDirection: "column",
+                            "&:last-child": { pb: { xs: 2, md: 2.25 } },
+                          }}
+                        >
+                          <Stack spacing={1.5} sx={{ height: "100%" }}>
                             <Stack
                               direction="row"
                               spacing={1.25}
                               justifyContent="space-between"
                               alignItems="flex-start"
                             >
-                              <Box sx={{ minWidth: 0 }}>
-                                <Typography
-                                  variant="h6"
+                              <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, flex: 1 }}>
+                                <Box
                                   sx={{
-                                    fontWeight: 800,
-                                    lineHeight: 1.2,
-                                    letterSpacing: -0.2,
-                                    wordBreak: "break-word",
+                                    width: 42,
+                                    height: 42,
+                                    borderRadius: 3,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    flexShrink: 0,
+                                    backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                                    color: theme.palette.primary.light,
                                   }}
                                 >
-                                  {customer.displayName || "Unnamed Customer"}
-                                </Typography>
+                                  <PersonRoundedIcon sx={{ fontSize: 22 }} />
+                                </Box>
 
-                                <Stack
-                                  direction="row"
-                                  spacing={0.75}
-                                  useFlexGap
-                                  flexWrap="wrap"
-                                  sx={{ mt: 1 }}
-                                >
-                                  <Chip
-                                    size="small"
-                                    label={customer.active ? "Active" : "Inactive"}
-                                    color={customer.active ? "success" : "default"}
-                                    variant={customer.active ? "filled" : "outlined"}
-                                    sx={{ borderRadius: 99 }}
-                                  />
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography
+                                    variant="subtitle1"
+                                    sx={{
+                                      fontWeight: 800,
+                                      lineHeight: 1.2,
+                                      letterSpacing: "-0.01em",
+                                      wordBreak: "break-word",
+                                    }}
+                                  >
+                                    {customer.displayName || "Unnamed Customer"}
+                                  </Typography>
 
-                                  <Chip
-                                    size="small"
-                                    label={isQboLinked ? "QBO linked" : "DCFlow only"}
-                                    color={isQboLinked ? "primary" : "default"}
-                                    variant={isQboLinked ? "filled" : "outlined"}
-                                    icon={isQboLinked ? <SyncRoundedIcon /> : <BusinessRoundedIcon />}
-                                    sx={{ borderRadius: 99 }}
-                                  />
+                                  <Stack
+                                    direction="row"
+                                    spacing={0.75}
+                                    useFlexGap
+                                    flexWrap="wrap"
+                                    sx={{ mt: 1 }}
+                                  >
+                                    <Chip
+                                      size="small"
+                                      label={customer.active ? "Active" : "Inactive"}
+                                      color={customer.active ? "success" : "default"}
+                                      variant={customer.active ? "filled" : "outlined"}
+                                      sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                    />
 
-                                  <Chip
-                                    size="small"
-                                    label={
-                                      serviceAddressCount > 0
-                                        ? `${serviceAddressCount} service location${serviceAddressCount === 1 ? "" : "s"}`
-                                        : "Billing-only"
-                                    }
-                                    variant="outlined"
-                                    icon={<LocationOnRoundedIcon />}
-                                    sx={{ borderRadius: 99 }}
-                                  />
-                                </Stack>
-                              </Box>
+                                    <Chip
+                                      size="small"
+                                      label={isQboLinked ? "QBO linked" : "DCFlow only"}
+                                      color={isQboLinked ? "primary" : "default"}
+                                      variant={isQboLinked ? "filled" : "outlined"}
+                                      icon={isQboLinked ? <SyncRoundedIcon /> : <BusinessRoundedIcon />}
+                                      sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                    />
+
+                                    <Chip
+                                      size="small"
+                                      label={
+                                        serviceAddressCount > 0
+                                          ? `${serviceAddressCount} service location${serviceAddressCount === 1 ? "" : "s"}`
+                                          : "Billing-only"
+                                      }
+                                      variant="outlined"
+                                      icon={<LocationOnRoundedIcon />}
+                                      sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                                    />
+                                  </Stack>
+                                </Box>
+                              </Stack>
                             </Stack>
 
                             <Divider />
 
-                            <Stack spacing={1}>
-                              <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                                <PhoneRoundedIcon sx={{ mt: "2px", color: "text.secondary", fontSize: 20 }} />
+                            <Stack spacing={1.1}>
+                              <Stack direction="row" spacing={1} alignItems="flex-start">
+                                <PhoneRoundedIcon
+                                  sx={{ mt: "2px", color: "text.secondary", fontSize: 18, flexShrink: 0 }}
+                                />
                                 <Box sx={{ minWidth: 0 }}>
                                   <Typography variant="body2" color="text.secondary">
                                     Phone
@@ -797,8 +867,10 @@ export default function CustomersPage() {
                                 </Box>
                               </Stack>
 
-                              <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                                <MailOutlineRoundedIcon sx={{ mt: "2px", color: "text.secondary", fontSize: 20 }} />
+                              <Stack direction="row" spacing={1} alignItems="flex-start">
+                                <MailOutlineRoundedIcon
+                                  sx={{ mt: "2px", color: "text.secondary", fontSize: 18, flexShrink: 0 }}
+                                />
                                 <Box sx={{ minWidth: 0 }}>
                                   <Typography variant="body2" color="text.secondary">
                                     Email
@@ -809,8 +881,10 @@ export default function CustomersPage() {
                                 </Box>
                               </Stack>
 
-                              <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                                <LocationOnRoundedIcon sx={{ mt: "2px", color: "text.secondary", fontSize: 20 }} />
+                              <Stack direction="row" spacing={1} alignItems="flex-start">
+                                <LocationOnRoundedIcon
+                                  sx={{ mt: "2px", color: "text.secondary", fontSize: 18, flexShrink: 0 }}
+                                />
                                 <Box sx={{ minWidth: 0 }}>
                                   <Typography variant="body2" color="text.secondary">
                                     {displayAddress.sourceLabel}
@@ -839,6 +913,28 @@ export default function CustomersPage() {
                                   ) : null}
                                 </Box>
                               </Stack>
+                            </Stack>
+
+                            <Box sx={{ flex: 1 }} />
+
+                            <Divider />
+
+                            <Stack
+                              direction="row"
+                              spacing={0.75}
+                              alignItems="center"
+                              sx={{ color: "primary.light", pt: 0.25 }}
+                            >
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontWeight: 700,
+                                  letterSpacing: "0.02em",
+                                }}
+                              >
+                                Open customer
+                              </Typography>
+                              <ArrowForwardRoundedIcon sx={{ fontSize: 14 }} />
                             </Stack>
                           </Stack>
                         </CardContent>

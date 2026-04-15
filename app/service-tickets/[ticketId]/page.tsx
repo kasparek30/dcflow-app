@@ -61,6 +61,20 @@ import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import { getPayrollWeekBounds } from "../../../src/lib/payroll";
+import {
+  type CompanyHolidayLite,
+  type CrewMemberSelection,
+  type PtoRequestLite,
+  type TripDocLite,
+  formatAvailabilityOptionLabel,
+  getHolidayNamesForDate,
+  getMemberAvailability,
+  normalizeCompanyHoliday,
+  optionShouldBeDisabled,
+  summarizeBlockingReasons,
+  windowToTimes as availabilityWindowToTimes,
+} from "../../../src/lib/trip-availability";
 import {
   canCancelTrip,
   canEditTripSchedule,
@@ -75,7 +89,6 @@ import {
   isTicketTerminal,
   normalizeTripStatus,
 } from "../../../src/lib/service-ticket-lifecycle";
-import { getPayrollWeekBounds } from "../../../src/lib/payroll";
 import type { AppUser } from "../../../src/types/app-user";
 import type {
   ServiceTicket,
@@ -895,7 +908,7 @@ function Section(props: {
   children: React.ReactNode;
 }) {
   return (
-    <Card variant="outlined" sx={{ borderRadius: 4 }}>
+    <Card variant="outlined" sx={{ borderRadius: 1.2 }}>
       <CardHeader
         avatar={props.icon}
         action={props.action}
@@ -957,13 +970,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
 
-    const isInvoicedTicket = ticket?.status === "invoiced";
+  const isInvoicedTicket = ticket?.status === "invoiced";
 
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
 
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
+  const [ptoRequests, setPtoRequests] = useState<PtoRequestLite[]>([]);
+  const [companyHolidays, setCompanyHolidays] = useState<CompanyHolidayLite[]>([]);
+  const [availabilityTripsByDate, setAvailabilityTripsByDate] = useState<
+    Record<string, TripDocLite[]>
+  >({});
+  const [tripHolidayOverride, setTripHolidayOverride] = useState(false);
+  const [editTripHolidayOverride, setEditTripHolidayOverride] = useState(false);
 
   const [trips, setTrips] = useState<TripDoc[]>([]);
   const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>(
@@ -1005,7 +1025,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticketEditErr, setTicketEditErr] = useState("");
   const [ticketEditOk, setTicketEditOk] = useState("");
 
-  const [scheduleOpen, setScheduleOpen] = useState(false);
   const [tripDate, setTripDate] = useState(isoTodayLocal());
   const [tripTimeWindow, setTripTimeWindow] = useState<TripTimeWindow>("am");
   const [tripStartTime, setTripStartTime] = useState("08:00");
@@ -1081,6 +1100,16 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     );
   }, [editTripPrimaryTechUid, helperCandidates]);
 
+  const scheduleHolidayNames = useMemo(
+    () => getHolidayNamesForDate(companyHolidays, tripDate),
+    [companyHolidays, tripDate]
+  );
+
+  const editHolidayNames = useMemo(
+    () => getHolidayNamesForDate(companyHolidays, editTripDate),
+    [companyHolidays, editTripDate]
+  );
+
   useEffect(() => {
     if (!editTripUseDefaultHelper) return;
     if (!editTripPrimaryTechUid.trim()) {
@@ -1091,26 +1120,26 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }, [editTripUseDefaultHelper, editTripPrimaryTechUid, defaultHelperForEditPrimary]);
 
   useEffect(() => {
-  if (!ticket?.billing) {
-    setBillingMaterialsSummaryEdit("");
-    setBillingMaterialsAmountEdit("");
-    return;
-  }
+    if (!ticket?.billing) {
+      setBillingMaterialsSummaryEdit("");
+      setBillingMaterialsAmountEdit("");
+      return;
+    }
 
-  const summary =
-    String(ticket.billing.materialsSummary || "").trim() ||
-    buildMaterialsSummaryFromLines(ticket.billing.materials);
+    const summary =
+      String(ticket.billing.materialsSummary || "").trim() ||
+      buildMaterialsSummaryFromLines(ticket.billing.materials);
 
-  setBillingMaterialsSummaryEdit(summary);
+    setBillingMaterialsSummaryEdit(summary);
 
-  const amount =
-    typeof ticket.billing.materialsAmount === "number" &&
-    Number.isFinite(ticket.billing.materialsAmount)
-      ? String(ticket.billing.materialsAmount)
-      : "";
+    const amount =
+      typeof ticket.billing.materialsAmount === "number" &&
+      Number.isFinite(ticket.billing.materialsAmount)
+        ? String(ticket.billing.materialsAmount)
+        : "";
 
-  setBillingMaterialsAmountEdit(amount);
-}, [ticket?.billing]);
+    setBillingMaterialsAmountEdit(amount);
+  }, [ticket?.billing]);
 
   useEffect(() => {
     async function loadAll() {
@@ -1127,35 +1156,35 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         }
 
         const d = ticketSnap.data() as any;
-const nextTicket: TicketWithBilling = {
-  id: ticketSnap.id,
-  customerId: d.customerId ?? "",
-  customerDisplayName: d.customerDisplayName ?? "",
-  serviceAddressLabel: d.serviceAddressLabel ?? undefined,
-  serviceAddressLine1: d.serviceAddressLine1 ?? "",
-  serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
-  serviceCity: d.serviceCity ?? "",
-  serviceState: d.serviceState ?? "",
-  servicePostalCode: d.servicePostalCode ?? "",
-  issueSummary: d.issueSummary ?? "",
-  issueDetails: d.issueDetails ?? undefined,
-  status: (d.status ?? "new") as ServiceTicketStatus,
-  estimatedDurationMinutes: d.estimatedDurationMinutes ?? 60,
-  assignedTechnicianId: d.assignedTechnicianId ?? undefined,
-  assignedTechnicianName: d.assignedTechnicianName ?? undefined,
-  primaryTechnicianId: d.primaryTechnicianId ?? undefined,
-  assignedTechnicianIds: Array.isArray(d.assignedTechnicianIds)
-    ? d.assignedTechnicianIds
-    : undefined,
-  secondaryTechnicianId: d.secondaryTechnicianId ?? undefined,
-  secondaryTechnicianName: d.secondaryTechnicianName ?? undefined,
-  helperIds: Array.isArray(d.helperIds) ? d.helperIds : undefined,
-  helperNames: Array.isArray(d.helperNames) ? d.helperNames : undefined,
-  active: d.active ?? true,
-  createdAt: d.createdAt ?? undefined,
-  updatedAt: d.updatedAt ?? undefined,
-  billing: d.billing ?? null,
-};
+        const nextTicket: TicketWithBilling = {
+          id: ticketSnap.id,
+          customerId: d.customerId ?? "",
+          customerDisplayName: d.customerDisplayName ?? "",
+          serviceAddressLabel: d.serviceAddressLabel ?? undefined,
+          serviceAddressLine1: d.serviceAddressLine1 ?? "",
+          serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
+          serviceCity: d.serviceCity ?? "",
+          serviceState: d.serviceState ?? "",
+          servicePostalCode: d.servicePostalCode ?? "",
+          issueSummary: d.issueSummary ?? "",
+          issueDetails: d.issueDetails ?? undefined,
+          status: (d.status ?? "new") as ServiceTicketStatus,
+          estimatedDurationMinutes: d.estimatedDurationMinutes ?? 60,
+          assignedTechnicianId: d.assignedTechnicianId ?? undefined,
+          assignedTechnicianName: d.assignedTechnicianName ?? undefined,
+          primaryTechnicianId: d.primaryTechnicianId ?? undefined,
+          assignedTechnicianIds: Array.isArray(d.assignedTechnicianIds)
+            ? d.assignedTechnicianIds
+            : undefined,
+          secondaryTechnicianId: d.secondaryTechnicianId ?? undefined,
+          secondaryTechnicianName: d.secondaryTechnicianName ?? undefined,
+          helperIds: Array.isArray(d.helperIds) ? d.helperIds : undefined,
+          helperNames: Array.isArray(d.helperNames) ? d.helperNames : undefined,
+          active: d.active ?? true,
+          createdAt: d.createdAt ?? undefined,
+          updatedAt: d.updatedAt ?? undefined,
+          billing: d.billing ?? null,
+        };
 
         setTicket(nextTicket);
         setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
@@ -1165,7 +1194,7 @@ const nextTicket: TicketWithBilling = {
         setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
 
-        const [usersSnap, profilesSnap, tripSnap] = await Promise.all([
+        const [usersSnap, profilesSnap, tripSnap, ptoSnap, holidaySnap] = await Promise.all([
           getDocs(collection(db, "users")),
           getDocs(collection(db, "employeeProfiles")),
           getDocs(
@@ -1176,6 +1205,8 @@ const nextTicket: TicketWithBilling = {
               orderBy("startTime", "asc")
             )
           ),
+          getDocs(collection(db, "ptoRequests")),
+          getDocs(collection(db, "companyHolidays")),
         ]);
 
         setTechnicians(
@@ -1207,44 +1238,28 @@ const nextTicket: TicketWithBilling = {
           })
         );
 
-        const nextTrips = tripSnap.docs.map((ds) => {
-          const trip = ds.data() as any;
-          return {
-            id: ds.id,
-            active: trip.active ?? true,
-            type: trip.type ?? "service",
-            status: trip.status ?? "planned",
-            date: trip.date ?? "",
-            timeWindow: trip.timeWindow ?? "custom",
-            startTime: trip.startTime ?? "",
-            endTime: trip.endTime ?? "",
-            crew: trip.crew ?? null,
-            crewConfirmed: trip.crewConfirmed ?? null,
-            link: trip.link ?? undefined,
-            notes: trip.notes ?? null,
-            cancelReason: trip.cancelReason ?? null,
-            timerState: trip.timerState ?? "not_started",
-            actualStartAt: trip.actualStartAt ?? null,
-            actualEndAt: trip.actualEndAt ?? null,
-            startedByUid: trip.startedByUid ?? null,
-            endedByUid: trip.endedByUid ?? null,
-            pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
-            actualMinutes:
-              typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
-            billableHours:
-              typeof trip.billableHours === "number" ? trip.billableHours : null,
-            workNotes: trip.workNotes ?? null,
-            resolutionNotes: trip.resolutionNotes ?? null,
-            followUpNotes: trip.followUpNotes ?? null,
-            materials: Array.isArray(trip.materials) ? trip.materials : [],
-            noMaterialsUsed: Boolean(trip.noMaterialsUsed),
-            outcome: trip.outcome ?? null,
-            readyToBillAt: trip.readyToBillAt ?? null,
-            updatedAt: trip.updatedAt ?? undefined,
-            updatedByUid: trip.updatedByUid ?? null,
-          } as TripDoc;
-        });
+        setPtoRequests(
+          ptoSnap.docs.map((ds) => {
+            const p = ds.data() as any;
+            return {
+              id: ds.id,
+              employeeId: String(p.employeeId || "").trim(),
+              employeeName: String(p.employeeName || "").trim(),
+              startDate: String(p.startDate || "").trim(),
+              endDate: String(p.endDate || p.startDate || "").trim(),
+              status: String(p.status || "pending").trim().toLowerCase(),
+              notes: p.notes ?? null,
+            } as PtoRequestLite;
+          })
+        );
 
+setCompanyHolidays(
+  holidaySnap.docs
+    .map((ds) => normalizeCompanyHoliday(ds.data(), ds.id))
+    .filter((holiday): holiday is CompanyHolidayLite => Boolean(holiday))
+);
+
+        const nextTrips = tripSnap.docs.map((ds) => mapTripLikeFromDoc(ds));
         setTrips(nextTrips);
 
         const nextWork: Record<string, string> = {};
@@ -1282,6 +1297,17 @@ const nextTicket: TicketWithBilling = {
             setCustomerEmail(String(customer.email || "").trim());
           }
         }
+
+        if (nextTrips.length > 0) {
+          const uniqueDates = Array.from(
+            new Set(nextTrips.map((trip) => String(trip.date || "").trim()).filter(Boolean))
+          );
+          const byDate: Record<string, TripDocLite[]> = {};
+          for (const date of uniqueDates) {
+            byDate[date] = nextTrips.filter((trip) => trip.date === date);
+          }
+          setAvailabilityTripsByDate((prev) => ({ ...prev, ...byDate }));
+        }
       } catch (err: unknown) {
         setError(
           err instanceof Error ? err.message : "Failed to load service ticket."
@@ -1303,6 +1329,14 @@ const nextTicket: TicketWithBilling = {
   }, [tripTimeWindow]);
 
   useEffect(() => {
+    if (editTripTimeWindow !== "custom") {
+      const times = availabilityWindowToTimes(editTripTimeWindow);
+      setEditTripStartTime(times.start);
+      setEditTripEndTime(times.end);
+    }
+  }, [editTripTimeWindow]);
+
+  useEffect(() => {
     if (!tripUseDefaultHelper) return;
     if (!tripPrimaryTechUid.trim()) {
       setTripHelperUid("");
@@ -1310,6 +1344,29 @@ const nextTicket: TicketWithBilling = {
     }
     setTripHelperUid(defaultHelperForPrimary);
   }, [tripUseDefaultHelper, tripPrimaryTechUid, defaultHelperForPrimary]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      const dates = Array.from(new Set([tripDate, editTripDate].filter(Boolean)));
+      for (const date of dates) {
+        if (!date || availabilityTripsByDate[date]) continue;
+        try {
+          await loadAvailabilityTripsForDate(date);
+        } catch (err) {
+          if (!cancelled) {
+            console.error("Failed to load availability trips", err);
+          }
+        }
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [tripDate, editTripDate, availabilityTripsByDate]);
 
   function findTechName(uid: string) {
     return technicians.find((t) => t.uid === uid)?.displayName || "";
@@ -1319,83 +1376,356 @@ const nextTicket: TicketWithBilling = {
     return helperCandidates.find((h) => h.uid === uid)?.name || "";
   }
 
-function deriveNextTicketStatus(
-  nextTrips: TripDoc[],
-  lastCompletedOutcome?: string | null
-): TicketStatus {
-  const activeTrips = nextTrips.filter((trip) => trip.active !== false);
-
-  if (activeTrips.length === 0) {
-    return "new";
+  function mapTripLikeFromDoc(ds: any) {
+    const trip = ds.data ? ds.data() : ds;
+    return {
+      id: ds.id ?? trip.id,
+      active: trip.active ?? true,
+      type: trip.type ?? "service",
+      status: trip.status ?? "planned",
+      date: trip.date ?? "",
+      timeWindow: trip.timeWindow ?? "custom",
+      startTime: trip.startTime ?? "",
+      endTime: trip.endTime ?? "",
+      crew: trip.crew ?? null,
+      crewConfirmed: trip.crewConfirmed ?? null,
+      link: trip.link ?? undefined,
+      notes: trip.notes ?? null,
+      cancelReason: trip.cancelReason ?? null,
+      timerState: trip.timerState ?? "not_started",
+      actualStartAt: trip.actualStartAt ?? null,
+      actualEndAt: trip.actualEndAt ?? null,
+      startedByUid: trip.startedByUid ?? null,
+      endedByUid: trip.endedByUid ?? null,
+      pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
+      actualMinutes:
+        typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
+      billableHours:
+        typeof trip.billableHours === "number" ? trip.billableHours : null,
+      workNotes: trip.workNotes ?? null,
+      resolutionNotes: trip.resolutionNotes ?? null,
+      followUpNotes: trip.followUpNotes ?? null,
+      materials: Array.isArray(trip.materials) ? trip.materials : [],
+      noMaterialsUsed: Boolean(trip.noMaterialsUsed),
+      outcome: trip.outcome ?? null,
+      readyToBillAt: trip.readyToBillAt ?? null,
+      updatedAt: trip.updatedAt ?? undefined,
+      updatedByUid: trip.updatedByUid ?? null,
+    } as TripDoc;
   }
 
-  const sortedTrips = [...activeTrips].sort((a, b) => {
-    const dateCompare = String(a.date || "").localeCompare(String(b.date || ""));
-    if (dateCompare !== 0) return dateCompare;
+  function buildCrewSelections(args: {
+    primaryTechUid?: string;
+    secondaryTechUid?: string;
+    helperUid?: string;
+    secondaryHelperUid?: string;
+  }) {
+    const selections: CrewMemberSelection[] = [];
 
-    const startCompare = String(a.startTime || "").localeCompare(String(b.startTime || ""));
-    if (startCompare !== 0) return startCompare;
+    const addUnique = (member: CrewMemberSelection | null) => {
+      if (!member?.uid) return;
+      if (selections.some((item) => item.uid === member.uid)) return;
+      selections.push(member);
+    };
 
-    const updatedCompare = String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
-    if (updatedCompare !== 0) return updatedCompare;
+    if (args.primaryTechUid?.trim()) {
+      addUnique({
+        uid: args.primaryTechUid.trim(),
+        name: findTechName(args.primaryTechUid.trim()) || "Primary Technician",
+        role: "technician",
+      });
+    }
 
-    return String(a.id || "").localeCompare(String(b.id || ""));
-  });
+    if (args.secondaryTechUid?.trim()) {
+      addUnique({
+        uid: args.secondaryTechUid.trim(),
+        name: findTechName(args.secondaryTechUid.trim()) || "Secondary Technician",
+        role: "technician",
+      });
+    }
 
-  const hasInProgress = sortedTrips.some(
-    (trip) => normalizeTripStatus(trip.status) === "in_progress"
-  );
-  if (hasInProgress) {
-    return "in_progress";
+    if (args.helperUid?.trim()) {
+      addUnique({
+        uid: args.helperUid.trim(),
+        name: findHelperName(args.helperUid.trim()) || "Helper",
+        role: "helper",
+      });
+    }
+
+    if (args.secondaryHelperUid?.trim()) {
+      addUnique({
+        uid: args.secondaryHelperUid.trim(),
+        name: findHelperName(args.secondaryHelperUid.trim()) || "Secondary Helper",
+        role: "helper",
+      });
+    }
+
+    return selections;
   }
 
-  const openTrips = sortedTrips.filter((trip) => isOpenTripRecord(trip));
-  if (openTrips.length > 0) {
-    const hasCompletedFollowUpHistory = sortedTrips.some(
-      (trip) =>
-        normalizeTripStatus(trip.status) === "complete" &&
-        String(trip.outcome || "").trim().toLowerCase() === "follow_up"
+  function buildCrewAvailability(args: {
+    date: string;
+    timeWindow: TripTimeWindow;
+    startTime: string;
+    endTime: string;
+    members: CrewMemberSelection[];
+    excludeTripId?: string | null;
+  }) {
+    const dayTrips = availabilityTripsByDate[args.date] || [];
+
+    return args.members.map((member) =>
+      getMemberAvailability({
+        member,
+        date: args.date,
+        timeWindow: args.timeWindow,
+        startTime: args.startTime,
+        endTime: args.endTime,
+        ptoRequests,
+        dayTrips,
+        excludeTripId: args.excludeTripId,
+      })
+    );
+  }
+
+  async function loadAvailabilityTripsForDate(date: string) {
+    if (!date?.trim()) return;
+
+    const snap = await getDocs(
+      query(collection(db, "trips"), where("date", "==", date.trim()))
     );
 
-    return hasCompletedFollowUpHistory || ticket?.status === "follow_up"
-      ? "follow_up"
-      : "scheduled";
+    const items = snap.docs.map((ds) => mapTripLikeFromDoc(ds));
+    setAvailabilityTripsByDate((prev) => ({ ...prev, [date]: items }));
   }
 
-  const completedTrips = sortedTrips.filter(
-    (trip) => normalizeTripStatus(trip.status) === "complete"
+  function availabilityForOption(args: {
+    uid: string;
+    name: string;
+    role: "technician" | "helper";
+    date: string;
+    timeWindow: TripTimeWindow;
+    startTime: string;
+    endTime: string;
+    excludeTripId?: string | null;
+  }) {
+    return getMemberAvailability({
+      member: {
+        uid: args.uid,
+        name: args.name,
+        role: args.role,
+      },
+      date: args.date,
+      timeWindow: args.timeWindow,
+      startTime: args.startTime,
+      endTime: args.endTime,
+      ptoRequests,
+      dayTrips: availabilityTripsByDate[args.date] || [],
+      excludeTripId: args.excludeTripId,
+    });
+  }
+
+  function handleQuickPickPrimaryTech(uid: string, window: TripTimeWindow) {
+    const times = availabilityWindowToTimes(window);
+    setTripPrimaryTechUid(uid);
+    setTripTimeWindow(window);
+    setTripStartTime(times.start);
+    setTripEndTime(times.end);
+  }
+
+  const scheduleCrewSelections = useMemo(
+    () =>
+      buildCrewSelections({
+        primaryTechUid: tripPrimaryTechUid,
+        secondaryTechUid: tripSecondaryTechUid,
+        helperUid: tripHelperUid,
+        secondaryHelperUid: tripSecondaryHelperUid,
+      }),
+    [tripPrimaryTechUid, tripSecondaryTechUid, tripHelperUid, tripSecondaryHelperUid]
   );
 
-  if (completedTrips.length > 0) {
-    const latestCompletedTrip = completedTrips[completedTrips.length - 1];
-    const finalOutcome = String(
-      lastCompletedOutcome ??
-        latestCompletedTrip.outcome ??
-        (latestCompletedTrip.readyToBillAt ? "resolved" : "")
-    )
-      .trim()
-      .toLowerCase();
+  const editCrewSelections = useMemo(
+    () =>
+      buildCrewSelections({
+        primaryTechUid: editTripPrimaryTechUid,
+        secondaryTechUid: editTripSecondaryTechUid,
+        helperUid: editTripHelperUid,
+        secondaryHelperUid: editTripSecondaryHelperUid,
+      }),
+    [
+      editTripPrimaryTechUid,
+      editTripSecondaryTechUid,
+      editTripHelperUid,
+      editTripSecondaryHelperUid,
+    ]
+  );
 
-    if (finalOutcome === "resolved") {
+  const scheduleCrewAvailability = useMemo(
+    () =>
+      buildCrewAvailability({
+        date: tripDate,
+        timeWindow: tripTimeWindow,
+        startTime: tripStartTime,
+        endTime: tripEndTime,
+        members: scheduleCrewSelections,
+      }),
+    [
+      tripDate,
+      tripTimeWindow,
+      tripStartTime,
+      tripEndTime,
+      scheduleCrewSelections,
+      availabilityTripsByDate,
+      ptoRequests,
+    ]
+  );
+
+  const editCrewAvailability = useMemo(
+    () =>
+      buildCrewAvailability({
+        date: editTripDate,
+        timeWindow: editTripTimeWindow,
+        startTime: editTripStartTime,
+        endTime: editTripEndTime,
+        members: editCrewSelections,
+        excludeTripId: editTripId,
+      }),
+    [
+      editTripDate,
+      editTripTimeWindow,
+      editTripStartTime,
+      editTripEndTime,
+      editCrewSelections,
+      editTripId,
+      availabilityTripsByDate,
+      ptoRequests,
+    ]
+  );
+
+  const scheduleBlockingReasons = useMemo(
+    () =>
+      summarizeBlockingReasons({
+        members: scheduleCrewAvailability,
+        holidayNames: scheduleHolidayNames,
+        holidayOverrideEnabled: tripHolidayOverride,
+      }),
+    [scheduleCrewAvailability, scheduleHolidayNames, tripHolidayOverride]
+  );
+
+  const editBlockingReasons = useMemo(
+    () =>
+      summarizeBlockingReasons({
+        members: editCrewAvailability,
+        holidayNames: editHolidayNames,
+        holidayOverrideEnabled: editTripHolidayOverride,
+      }),
+    [editCrewAvailability, editHolidayNames, editTripHolidayOverride]
+  );
+
+  const scheduleCanSubmit = useMemo(() => {
+    if (!tripDate.trim()) return false;
+    if (!tripPrimaryTechUid.trim()) return false;
+    if (!tripStartTime.trim() || !tripEndTime.trim()) return false;
+    if (tripEndTime <= tripStartTime) return false;
+    return scheduleBlockingReasons.length === 0;
+  }, [
+    tripDate,
+    tripPrimaryTechUid,
+    tripStartTime,
+    tripEndTime,
+    scheduleBlockingReasons,
+  ]);
+
+  const editCanSubmit = useMemo(() => {
+    if (!editTripDate.trim()) return false;
+    if (!editTripPrimaryTechUid.trim()) return false;
+    if (!editTripStartTime.trim() || !editTripEndTime.trim()) return false;
+    if (editTripEndTime <= editTripStartTime) return false;
+    return editBlockingReasons.length === 0;
+  }, [
+    editTripDate,
+    editTripPrimaryTechUid,
+    editTripStartTime,
+    editTripEndTime,
+    editBlockingReasons,
+  ]);
+
+  function deriveNextTicketStatus(
+    nextTrips: TripDoc[],
+    lastCompletedOutcome?: string | null
+  ): TicketStatus {
+    const activeTrips = nextTrips.filter((trip) => trip.active !== false);
+
+    if (activeTrips.length === 0) {
+      return "new";
+    }
+
+    const sortedTrips = [...activeTrips].sort((a, b) => {
+      const dateCompare = String(a.date || "").localeCompare(String(b.date || ""));
+      if (dateCompare !== 0) return dateCompare;
+
+      const startCompare = String(a.startTime || "").localeCompare(String(b.startTime || ""));
+      if (startCompare !== 0) return startCompare;
+
+      const updatedCompare = String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
+      if (updatedCompare !== 0) return updatedCompare;
+
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    });
+
+    const hasInProgress = sortedTrips.some(
+      (trip) => normalizeTripStatus(trip.status) === "in_progress"
+    );
+    if (hasInProgress) {
+      return "in_progress";
+    }
+
+    const openTrips = sortedTrips.filter((trip) => isOpenTripRecord(trip));
+    if (openTrips.length > 0) {
+      const hasCompletedFollowUpHistory = sortedTrips.some(
+        (trip) =>
+          normalizeTripStatus(trip.status) === "complete" &&
+          String(trip.outcome || "").trim().toLowerCase() === "follow_up"
+      );
+
+      return hasCompletedFollowUpHistory || ticket?.status === "follow_up"
+        ? "follow_up"
+        : "scheduled";
+    }
+
+    const completedTrips = sortedTrips.filter(
+      (trip) => normalizeTripStatus(trip.status) === "complete"
+    );
+
+    if (completedTrips.length > 0) {
+      const latestCompletedTrip = completedTrips[completedTrips.length - 1];
+      const finalOutcome = String(
+        lastCompletedOutcome ??
+          latestCompletedTrip.outcome ??
+          (latestCompletedTrip.readyToBillAt ? "resolved" : "")
+      )
+        .trim()
+        .toLowerCase();
+
+      if (finalOutcome === "resolved") {
+        return ticket?.status === "invoiced" ? "invoiced" : "completed";
+      }
+
+      if (finalOutcome === "follow_up") {
+        return "follow_up";
+      }
+
       return ticket?.status === "invoiced" ? "invoiced" : "completed";
     }
 
-    if (finalOutcome === "follow_up") {
-      return "follow_up";
+    const hasCancelledTrips = sortedTrips.some(
+      (trip) => normalizeTripStatus(trip.status) === "cancelled"
+    );
+    if (hasCancelledTrips) {
+      return "cancelled";
     }
 
-    return ticket?.status === "invoiced" ? "invoiced" : "completed";
+    return ticket?.status === "follow_up" ? "follow_up" : "scheduled";
   }
-
-  const hasCancelledTrips = sortedTrips.some(
-    (trip) => normalizeTripStatus(trip.status) === "cancelled"
-  );
-  if (hasCancelledTrips) {
-    return "cancelled";
-  }
-
-  return ticket?.status === "follow_up" ? "follow_up" : "scheduled";
-}
 
   async function persistTicketStatus(
     nextStatus: TicketStatus,
@@ -1539,12 +1869,12 @@ function deriveNextTicketStatus(
     setMobileFinishMode("none");
   }
 
-    function renderTripMaterialsEditor(tripId: string) {
+  function renderTripMaterialsEditor(tripId: string) {
     const materials = Array.isArray(tripMaterials[tripId]) ? tripMaterials[tripId] : [];
     const noMaterialsUsed = Boolean(tripNoMaterialsUsed[tripId]);
 
     return (
-      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 3 }}>
+      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 1 }}>
         <Stack spacing={1}>
           <Typography variant="subtitle1" fontWeight={700}>
             Materials Used
@@ -1657,83 +1987,83 @@ function deriveNextTicketStatus(
     );
   }
 
-async function handleSaveTicketOverview() {
-  if (!canDispatch || !ticket?.id) return;
+  async function handleSaveTicketOverview() {
+    if (!canDispatch || !ticket?.id) return;
 
-  if (ticket.status === "invoiced") {
-    setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
-    return;
+    if (ticket.status === "invoiced") {
+      setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+      return;
+    }
+
+    setTicketEditErr("");
+    setTicketEditOk("");
+    setTicketEditSaving(true);
+
+    try {
+      const minutes = Number(ticketEstimatedMinutesEdit);
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        setTicketEditErr("Estimated duration must be a number > 0.");
+        return;
+      }
+
+      const summary = ticketIssueSummaryEdit.trim();
+      if (!summary) {
+        setTicketEditErr("Issue summary is required.");
+        return;
+      }
+
+      const nextStatus = ticketStatusEdit as TicketStatus;
+      const guard = getManualTicketStatusError({
+        nextStatus,
+        currentStatus: ticket.status,
+        trips,
+      });
+
+      if (guard) {
+        setTicketEditErr(guard);
+        return;
+      }
+
+      const now = nowIso();
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        status: nextStatus,
+        issueSummary: summary,
+        estimatedDurationMinutes: minutes,
+        issueDetails: ticketIssueDetailsEdit.trim() || null,
+        updatedAt: now,
+      });
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: nextStatus,
+              issueSummary: summary,
+              estimatedDurationMinutes: minutes,
+              issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+              updatedAt: now,
+            }
+          : prev
+      );
+
+      setTicketEditOk("Ticket updated.");
+    } catch (err: unknown) {
+      setTicketEditErr(
+        err instanceof Error ? err.message : "Failed to update ticket."
+      );
+    } finally {
+      setTicketEditSaving(false);
+    }
   }
-
-  setTicketEditErr("");
-  setTicketEditOk("");
-  setTicketEditSaving(true);
-
-  try {
-    const minutes = Number(ticketEstimatedMinutesEdit);
-    if (!Number.isFinite(minutes) || minutes <= 0) {
-      setTicketEditErr("Estimated duration must be a number > 0.");
-      return;
-    }
-
-    const summary = ticketIssueSummaryEdit.trim();
-    if (!summary) {
-      setTicketEditErr("Issue summary is required.");
-      return;
-    }
-
-    const nextStatus = ticketStatusEdit as TicketStatus;
-    const guard = getManualTicketStatusError({
-      nextStatus,
-      currentStatus: ticket.status,
-      trips,
-    });
-
-    if (guard) {
-      setTicketEditErr(guard);
-      return;
-    }
-
-    const now = nowIso();
-
-    await updateDoc(doc(db, "serviceTickets", ticket.id), {
-      status: nextStatus,
-      issueSummary: summary,
-      estimatedDurationMinutes: minutes,
-      issueDetails: ticketIssueDetailsEdit.trim() || null,
-      updatedAt: now,
-    });
-
-    setTicket((prev) =>
-      prev
-        ? {
-            ...prev,
-            status: nextStatus,
-            issueSummary: summary,
-            estimatedDurationMinutes: minutes,
-            issueDetails: ticketIssueDetailsEdit.trim() || undefined,
-            updatedAt: now,
-          }
-        : prev
-    );
-
-    setTicketEditOk("Ticket updated.");
-  } catch (err: unknown) {
-    setTicketEditErr(
-      err instanceof Error ? err.message : "Failed to update ticket."
-    );
-  } finally {
-    setTicketEditSaving(false);
-  }
-}
 
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!ticket || !canDispatch) return;
     if (ticket.status === "invoiced") {
-  setTripSaveError("Invoiced tickets are locked and cannot receive new trips.");
-  return;
-}
+      setTripSaveError("Invoiced tickets are locked and cannot receive new trips.");
+      return;
+    }
 
     setTripSaveError("");
     setTripSaveSuccess("");
@@ -1775,6 +2105,32 @@ async function handleSaveTicketOverview() {
       return;
     }
 
+    await loadAvailabilityTripsForDate(tripDate);
+
+    const latestCrewAvailability = buildCrewAvailability({
+      date: tripDate,
+      timeWindow: tripTimeWindow,
+      startTime: tripStartTime,
+      endTime: tripEndTime,
+      members: buildCrewSelections({
+        primaryTechUid: tripPrimaryTechUid,
+        secondaryTechUid: tripSecondaryTechUid,
+        helperUid: tripHelperUid,
+        secondaryHelperUid: tripSecondaryHelperUid,
+      }),
+    });
+
+    const latestBlockingReasons = summarizeBlockingReasons({
+      members: latestCrewAvailability,
+      holidayNames: getHolidayNamesForDate(companyHolidays, tripDate),
+      holidayOverrideEnabled: tripHolidayOverride,
+    });
+
+    if (latestBlockingReasons.length > 0) {
+      setTripSaveError(latestBlockingReasons[0]);
+      return;
+    }
+
     setTripSaving(true);
 
     try {
@@ -1803,7 +2159,7 @@ async function handleSaveTicketOverview() {
         startTime: tripStartTime,
         endTime: tripEndTime,
         billableHours: null,
-noMaterialsUsed: false,
+        noMaterialsUsed: false,
         crew: {
           primaryTechUid: tripPrimaryTechUid,
           primaryTechName: primaryName,
@@ -1899,18 +2255,25 @@ noMaterialsUsed: false,
 
       setTicketStatusEdit(nextStatus);
       setTrips(nextTrips);
+      setAvailabilityTripsByDate((prev) => ({
+        ...prev,
+        [tripDate]: [
+          ...(prev[tripDate] || []),
+          createdTrip,
+        ],
+      }));
       setTripWorkNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripResolutionNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripFollowUpNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
       setTripNoMaterialsUsed((prev) => ({ ...prev, [createdTrip.id]: false }));
-            setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
+      setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
       setTripSaveSuccess(
         `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`
       );
       setTripNotes("");
-      setScheduleOpen(false);
+      setTripHolidayOverride(false);
     } catch (err: unknown) {
       setTripSaveError(
         err instanceof Error ? err.message : "Failed to create trip."
@@ -1989,6 +2352,10 @@ noMaterialsUsed: false,
       );
 
       setTrips(nextTrips);
+      setAvailabilityTripsByDate((prev) => ({
+        ...prev,
+        [trip.date]: nextTrips.filter((t) => t.date === trip.date),
+      }));
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
 
       const nextStatus = deriveNextTicketStatus(nextTrips);
@@ -2328,6 +2695,10 @@ noMaterialsUsed: false,
       );
 
       setTrips(nextTrips);
+      setAvailabilityTripsByDate((prev) => ({
+        ...prev,
+        [trip.date]: nextTrips.filter((t) => t.date === trip.date),
+      }));
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
       closeMobileFinishSheet();
 
@@ -2362,41 +2733,42 @@ noMaterialsUsed: false,
     }
   }
 
-function openEditTrip(trip: TripDoc) {
-  if (ticket?.status === "invoiced") return;
-  if (!canEditTripSchedule(trip.status, trip.timerState)) return;
+  function openEditTrip(trip: TripDoc) {
+    if (ticket?.status === "invoiced") return;
+    if (!canEditTripSchedule(trip.status, trip.timerState)) return;
 
-  setEditTripPrimaryTechUid(String(trip.crew?.primaryTechUid || ""));
-  setEditTripSecondaryTechUid(String(trip.crew?.secondaryTechUid || ""));
-  setEditTripHelperUid(String(trip.crew?.helperUid || ""));
-  setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
+    setEditTripPrimaryTechUid(String(trip.crew?.primaryTechUid || ""));
+    setEditTripSecondaryTechUid(String(trip.crew?.secondaryTechUid || ""));
+    setEditTripHelperUid(String(trip.crew?.helperUid || ""));
+    setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
+    setEditTripHolidayOverride(false);
 
-  const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
-  const tripHelperUid = String(trip.crew?.helperUid || "").trim();
-  const defaultHelperUid =
-    helperCandidates.find(
-      (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid
-    )?.uid || "";
+    const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
+    const tripHelperUid = String(trip.crew?.helperUid || "").trim();
+    const defaultHelperUid =
+      helperCandidates.find(
+        (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid
+      )?.uid || "";
 
-  setEditTripUseDefaultHelper(
-    Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid)
-  );
+    setEditTripUseDefaultHelper(
+      Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid)
+    );
 
-  setEditTripId(trip.id);
-  setEditTripDate(trip.date || isoTodayLocal());
-  setEditTripTimeWindow((trip.timeWindow as TripTimeWindow) || "custom");
-  setEditTripStartTime(trip.startTime || "08:00");
-  setEditTripEndTime(trip.endTime || "12:00");
-  setEditTripNotes(String(trip.notes || ""));
-  setEditTripErr("");
-}
+    setEditTripId(trip.id);
+    setEditTripDate(trip.date || isoTodayLocal());
+    setEditTripTimeWindow((trip.timeWindow as TripTimeWindow) || "custom");
+    setEditTripStartTime(trip.startTime || "08:00");
+    setEditTripEndTime(trip.endTime || "12:00");
+    setEditTripNotes(String(trip.notes || ""));
+    setEditTripErr("");
+  }
 
   async function handleSaveTripEdit() {
     if (!canDispatch || !editTripId || !ticket?.id) return;
     if (ticket.status === "invoiced") {
-  setEditTripErr("Invoiced tickets are locked and trip schedule cannot be edited.");
-  return;
-}
+      setEditTripErr("Invoiced tickets are locked and trip schedule cannot be edited.");
+      return;
+    }
 
     const trip = trips.find((t) => t.id === editTripId);
     if (!trip) return;
@@ -2417,8 +2789,38 @@ function openEditTrip(trip: TripDoc) {
         throw new Error("Primary technician is required.");
       }
 
-      if (!editTripStartTime.trim() || !editTripEndTime.trim() || editTripEndTime <= editTripStartTime) {
+      if (
+        !editTripStartTime.trim() ||
+        !editTripEndTime.trim() ||
+        editTripEndTime <= editTripStartTime
+      ) {
         throw new Error("Enter a valid start and end time.");
+      }
+
+      await loadAvailabilityTripsForDate(editTripDate);
+
+      const latestCrewAvailability = buildCrewAvailability({
+        date: editTripDate,
+        timeWindow: editTripTimeWindow,
+        startTime: editTripStartTime,
+        endTime: editTripEndTime,
+        members: buildCrewSelections({
+          primaryTechUid: editTripPrimaryTechUid,
+          secondaryTechUid: editTripSecondaryTechUid,
+          helperUid: editTripHelperUid,
+          secondaryHelperUid: editTripSecondaryHelperUid,
+        }),
+        excludeTripId: trip.id,
+      });
+
+      const latestBlockingReasons = summarizeBlockingReasons({
+        members: latestCrewAvailability,
+        holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
+        holidayOverrideEnabled: editTripHolidayOverride,
+      });
+
+      if (latestBlockingReasons.length > 0) {
+        throw new Error(latestBlockingReasons[0]);
       }
 
       const now = nowIso();
@@ -2506,6 +2908,25 @@ function openEditTrip(trip: TripDoc) {
         )
       );
 
+      setAvailabilityTripsByDate((prev) => {
+        const nextByDate = { ...prev };
+        nextByDate[trip.date] = (nextByDate[trip.date] || []).filter(
+          (item) => item.id !== trip.id
+        );
+        nextByDate[editTripDate] = [
+          ...(nextByDate[editTripDate] || []).filter((item) => item.id !== trip.id),
+          {
+            ...trip,
+            date: editTripDate,
+            timeWindow: editTripTimeWindow,
+            startTime: editTripStartTime,
+            endTime: editTripEndTime,
+            crew: nextCrew,
+          },
+        ];
+        return nextByDate;
+      });
+
       setTicket((prev) =>
         prev
           ? {
@@ -2533,239 +2954,243 @@ function openEditTrip(trip: TripDoc) {
     }
   }
 
-async function handleSoftDeleteTrip(trip: TripDoc) {
-  if (!canDispatch) return;
+  async function handleSoftDeleteTrip(trip: TripDoc) {
+    if (!canDispatch) return;
 
-  if (ticket?.status === "invoiced") {
-    alert("Invoiced tickets are locked and trips cannot be removed.");
-    return;
-  }
-
-  if (!canCancelTrip(trip.status, trip.timerState)) {
-    alert("Only planned trips can be removed.");
-    return;
-  }
-
-  if (
-    window.prompt(
-      `Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`,
-      ""
-    ) !== "DELETE"
-  ) {
-    return;
-  }
-
-  setTripSavingFlag(trip.id, true);
-  setTripErr(trip.id, "");
-  setTripOk(trip.id, "");
-
-  try {
-    const now = nowIso();
-
-    await updateDoc(doc(db, "trips", trip.id), {
-      status: "cancelled",
-      timerState: "complete",
-      active: false,
-      cancelReason: "deleted",
-      updatedAt: now,
-      updatedByUid: myUid || null,
-    });
-
-    const nextTrips = trips.map((t) =>
-      t.id === trip.id
-        ? {
-            ...t,
-            status: "cancelled",
-            timerState: "complete",
-            active: false,
-            cancelReason: "deleted",
-            updatedAt: now,
-            updatedByUid: myUid || null,
-          }
-        : t
-    );
-
-    setTrips(nextTrips);
-
-    const nextStatus = deriveNextTicketStatus(nextTrips);
-    if (ticket?.id && nextStatus !== ticket.status) {
-      await persistTicketStatus(nextStatus, now);
+    if (ticket?.status === "invoiced") {
+      alert("Invoiced tickets are locked and trips cannot be removed.");
+      return;
     }
 
-    setTripOk(trip.id, "Trip removed.");
-  } catch (err: unknown) {
-    setTripErr(
-      trip.id,
-      err instanceof Error ? err.message : "Failed to delete trip."
-    );
-  } finally {
-    setTripSavingFlag(trip.id, false);
-  }
-}
+    if (!canCancelTrip(trip.status, trip.timerState)) {
+      alert("Only planned trips can be removed.");
+      return;
+    }
 
-async function handleClaimAndStartTrip() {
-  if (!ticket?.id || !myUid) return;
+    if (
+      window.prompt(
+        `Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`,
+        ""
+      ) !== "DELETE"
+    ) {
+      return;
+    }
 
-  if (ticket.status === "invoiced") {
-    alert("Invoiced tickets are locked and cannot be claimed or started.");
-    return;
-  }
+    setTripSavingFlag(trip.id, true);
+    setTripErr(trip.id, "");
+    setTripOk(trip.id, "");
 
-  const role = String(appUser?.role || "");
-  const canSelfDispatch = [
-    "technician",
-    "helper",
-    "apprentice",
-    "admin",
-    "dispatcher",
-    "manager",
-  ].includes(role);
+    try {
+      const now = nowIso();
 
-  if (!canSelfDispatch) {
-    alert("You do not have permission to claim tickets.");
-    return;
-  }
-
-  if (ticket.assignedTechnicianId) {
-    alert("This ticket is already assigned.");
-    return;
-  }
-
-  if (isTicketTerminal(ticket.status)) {
-    alert("This ticket is not claimable.");
-    return;
-  }
-
-  if (hasOpenTrips(trips)) {
-    alert("This ticket already has an open trip.");
-    return;
-  }
-
-  const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
-  if (remoteOpenTrips.length > 0) {
-    alert(
-      `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
-    );
-    return;
-  }
-
-  const now = new Date();
-  const nowString = now.toISOString();
-
-  const helperUid =
-    helperCandidates.find(
-      (h) => String(h.defaultPairedTechUid || "").trim() === myUid
-    )?.uid || "";
-  const helperName = helperUid
-    ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
-    : null;
-
-  const runningConflicts = await findRunningTripsForCrewUids({
-    crewUids: [myUid, ...(helperUid ? [helperUid] : [])],
-  });
-
-  if (runningConflicts.length > 0) {
-    alert(
-      `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
-    );
-    return;
-  }
-
-  try {
-    const ticketRef = doc(db, "serviceTickets", ticket.id);
-    const tripsRef = collection(db, "trips");
-    const newTripRef = doc(tripsRef);
-
-    await runTransaction(db, async (tx) => {
-      const liveTicket = await tx.get(ticketRef);
-      if (!liveTicket.exists()) throw new Error("Ticket not found.");
-
-      const live = liveTicket.data() as any;
-      if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
-      if (isTicketTerminal(live.status)) throw new Error("Ticket is not claimable.");
-
-      tx.set(newTripRef, {
-        active: true,
-        type: "service",
-        status: "in_progress",
-        date: isoTodayLocal(),
-        timeWindow: "custom",
-        startTime: hhmmLocal(now),
-        endTime: hhmmLocal(addMinutes(now, 60)),
-        billableHours: null,
-noMaterialsUsed: false,
-        crew: {
-          primaryTechUid: myUid,
-          primaryTechName: appUser?.displayName || "Technician",
-          helperUid: helperUid || null,
-          helperName,
-          secondaryTechUid: null,
-          secondaryTechName: null,
-          secondaryHelperUid: null,
-          secondaryHelperName: null,
-        },
-        crewConfirmed: {
-          primaryTechUid: myUid,
-          primaryTechName: appUser?.displayName || "Technician",
-          helperUid: helperUid || null,
-          helperName,
-          secondaryTechUid: null,
-          secondaryTechName: null,
-          secondaryHelperUid: null,
-          secondaryHelperName: null,
-        },
-        link: {
-          serviceTicketId: ticket.id,
-          projectId: null,
-          projectStageKey: null,
-        },
-        notes: null,
-        cancelReason: null,
-        timerState: "running",
-        actualStartAt: nowString,
-        actualEndAt: null,
-        startedByUid: myUid,
-        endedByUid: null,
-        pauseBlocks: [],
-        actualMinutes: null,
-        workNotes: null,
-        resolutionNotes: null,
-        followUpNotes: null,
-        materials: [],
-        outcome: null,
-        readyToBillAt: null,
-        createdAt: nowString,
-        createdByUid: myUid,
-        updatedAt: nowString,
-        updatedByUid: myUid,
+      await updateDoc(doc(db, "trips", trip.id), {
+        status: "cancelled",
+        timerState: "complete",
+        active: false,
+        cancelReason: "deleted",
+        updatedAt: now,
+        updatedByUid: myUid || null,
       });
 
-      tx.update(ticketRef, {
-        status: "in_progress",
-        assignedTechnicianId: myUid,
-        assignedTechnicianName: appUser?.displayName || "Technician",
-        primaryTechnicianId: myUid,
-        secondaryTechnicianId: null,
-        secondaryTechnicianName: null,
-        helperIds: helperUid ? [helperUid] : null,
-        helperNames: helperName ? [helperName] : null,
-        assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
-        updatedAt: nowString,
-      });
+      const nextTrips = trips.map((t) =>
+        t.id === trip.id
+          ? {
+              ...t,
+              status: "cancelled",
+              timerState: "complete",
+              active: false,
+              cancelReason: "deleted",
+              updatedAt: now,
+              updatedByUid: myUid || null,
+            }
+          : t
+      );
+
+      setTrips(nextTrips);
+      setAvailabilityTripsByDate((prev) => ({
+        ...prev,
+        [trip.date]: (prev[trip.date] || []).filter((item) => item.id !== trip.id),
+      }));
+
+      const nextStatus = deriveNextTicketStatus(nextTrips);
+      if (ticket?.id && nextStatus !== ticket.status) {
+        await persistTicketStatus(nextStatus, now);
+      }
+
+      setTripOk(trip.id, "Trip removed.");
+    } catch (err: unknown) {
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to delete trip."
+      );
+    } finally {
+      setTripSavingFlag(trip.id, false);
+    }
+  }
+
+  async function handleClaimAndStartTrip() {
+    if (!ticket?.id || !myUid) return;
+
+    if (ticket.status === "invoiced") {
+      alert("Invoiced tickets are locked and cannot be claimed or started.");
+      return;
+    }
+
+    const role = String(appUser?.role || "");
+    const canSelfDispatch = [
+      "technician",
+      "helper",
+      "apprentice",
+      "admin",
+      "dispatcher",
+      "manager",
+    ].includes(role);
+
+    if (!canSelfDispatch) {
+      alert("You do not have permission to claim tickets.");
+      return;
+    }
+
+    if (ticket.assignedTechnicianId) {
+      alert("This ticket is already assigned.");
+      return;
+    }
+
+    if (isTicketTerminal(ticket.status)) {
+      alert("This ticket is not claimable.");
+      return;
+    }
+
+    if (hasOpenTrips(trips)) {
+      alert("This ticket already has an open trip.");
+      return;
+    }
+
+    const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
+    if (remoteOpenTrips.length > 0) {
+      alert(
+        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
+      );
+      return;
+    }
+
+    const now = new Date();
+    const nowString = now.toISOString();
+
+    const helperUid =
+      helperCandidates.find(
+        (h) => String(h.defaultPairedTechUid || "").trim() === myUid
+      )?.uid || "";
+    const helperName = helperUid
+      ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
+      : null;
+
+    const runningConflicts = await findRunningTripsForCrewUids({
+      crewUids: [myUid, ...(helperUid ? [helperUid] : [])],
     });
 
-    window.location.reload();
-  } catch (err: any) {
-    alert(err?.message || "Failed to claim ticket.");
-  }
-}
+    if (runningConflicts.length > 0) {
+      alert(
+        `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+      );
+      return;
+    }
 
-    async function handleSaveBillingPacketDetails() {
+    try {
+      const ticketRef = doc(db, "serviceTickets", ticket.id);
+      const tripsRef = collection(db, "trips");
+      const newTripRef = doc(tripsRef);
+
+      await runTransaction(db, async (tx) => {
+        const liveTicket = await tx.get(ticketRef);
+        if (!liveTicket.exists()) throw new Error("Ticket not found.");
+
+        const live = liveTicket.data() as any;
+        if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
+        if (isTicketTerminal(live.status)) throw new Error("Ticket is not claimable.");
+
+        tx.set(newTripRef, {
+          active: true,
+          type: "service",
+          status: "in_progress",
+          date: isoTodayLocal(),
+          timeWindow: "custom",
+          startTime: hhmmLocal(now),
+          endTime: hhmmLocal(addMinutes(now, 60)),
+          billableHours: null,
+          noMaterialsUsed: false,
+          crew: {
+            primaryTechUid: myUid,
+            primaryTechName: appUser?.displayName || "Technician",
+            helperUid: helperUid || null,
+            helperName,
+            secondaryTechUid: null,
+            secondaryTechName: null,
+            secondaryHelperUid: null,
+            secondaryHelperName: null,
+          },
+          crewConfirmed: {
+            primaryTechUid: myUid,
+            primaryTechName: appUser?.displayName || "Technician",
+            helperUid: helperUid || null,
+            helperName,
+            secondaryTechUid: null,
+            secondaryTechName: null,
+            secondaryHelperUid: null,
+            secondaryHelperName: null,
+          },
+          link: {
+            serviceTicketId: ticket.id,
+            projectId: null,
+            projectStageKey: null,
+          },
+          notes: null,
+          cancelReason: null,
+          timerState: "running",
+          actualStartAt: nowString,
+          actualEndAt: null,
+          startedByUid: myUid,
+          endedByUid: null,
+          pauseBlocks: [],
+          actualMinutes: null,
+          workNotes: null,
+          resolutionNotes: null,
+          followUpNotes: null,
+          materials: [],
+          outcome: null,
+          readyToBillAt: null,
+          createdAt: nowString,
+          createdByUid: myUid,
+          updatedAt: nowString,
+          updatedByUid: myUid,
+        });
+
+        tx.update(ticketRef, {
+          status: "in_progress",
+          assignedTechnicianId: myUid,
+          assignedTechnicianName: appUser?.displayName || "Technician",
+          primaryTechnicianId: myUid,
+          secondaryTechnicianId: null,
+          secondaryTechnicianName: null,
+          helperIds: helperUid ? [helperUid] : null,
+          helperNames: helperName ? [helperName] : null,
+          assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
+          updatedAt: nowString,
+        });
+      });
+
+      window.location.reload();
+    } catch (err: any) {
+      alert(err?.message || "Failed to claim ticket.");
+    }
+  }
+
+  async function handleSaveBillingPacketDetails() {
     if (!ticket?.id || !canBill || !ticket.billing) return;
     if (ticket.status === "invoiced") {
-  setBillingErr("Invoiced tickets are locked and billing details cannot be changed.");
-  return;
-}
+      setBillingErr("Invoiced tickets are locked and billing details cannot be changed.");
+      return;
+    }
 
     setBillingErr("");
     setBillingOk("");
@@ -2886,8 +3311,8 @@ noMaterialsUsed: false,
         next.invoiceError = null;
       }
 
-const nextTicketStatus: TicketStatus =
-  nextStatus === "invoiced" ? "invoiced" : ticket.status;
+      const nextTicketStatus: TicketStatus =
+        nextStatus === "invoiced" ? "invoiced" : ticket.status;
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         billing: next,
@@ -2918,106 +3343,31 @@ const nextTicketStatus: TicketStatus =
     }
   }
 
-async function handleCreateQboInvoice() {
-  if (!ticket?.id || !canBill || !ticket.billing) return;
-  if (isInvoicedTicket) {
-    setBillingErr("This ticket is already invoiced.");
-    return;
-  }
-
-  if (
-    ticket.billing.status !== "ready_to_bill" &&
-    ticket.billing.status !== "invoice_failed"
-  ) {
-    setBillingErr("Billing packet must be Ready to Bill before creating a QBO invoice.");
-    return;
-  }
-
-  setBillingErr("");
-  setBillingOk("");
-  setBillingSaving(true);
-
-  const optimisticAt = nowIso();
-
-  const invoiceWindow =
-    typeof window !== "undefined"
-      ? window.open("", "_blank", "noopener,noreferrer")
-      : null;
-
-  setTicket((prev) =>
-    prev && prev.billing
-      ? {
-          ...prev,
-          billing: {
-            ...prev.billing,
-            status: "creating_invoice",
-            invoiceError: null,
-            updatedAt: optimisticAt,
-          },
-          updatedAt: optimisticAt,
-        }
-      : prev
-  );
-
-  try {
-    const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        serviceTicketId: ticket.id,
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      throw new Error(
-        String(
-          data?.error ||
-            data?.qboBody?.Fault?.Error?.[0]?.Message ||
-            "Failed to create QBO invoice."
-        )
-      );
+  async function handleCreateQboInvoice() {
+    if (!ticket?.id || !canBill || !ticket.billing) return;
+    if (isInvoicedTicket) {
+      setBillingErr("This ticket is already invoiced.");
+      return;
     }
 
-    const updatedAt = String(data?.updatedAt || nowIso());
-    const updatedBilling = (data?.updatedBilling || null) as BillingPacket | null;
-    const updatedTicketStatus = (data?.updatedTicketStatus || "invoiced") as TicketStatus;
-    const qboInvoiceUrl = String(data?.qboInvoiceUrl || "").trim();
-
-    setTicket((prev) =>
-      prev
-        ? {
-            ...prev,
-            status: updatedTicketStatus,
-            billing: updatedBilling || prev.billing || null,
-            updatedAt,
-          }
-        : prev
-    );
-
-    setTicketStatusEdit(updatedTicketStatus);
-    setBillingOk("QBO invoice created successfully.");
-
-    if (qboInvoiceUrl) {
-      if (invoiceWindow) {
-        invoiceWindow.location.href = qboInvoiceUrl;
-      } else if (typeof window !== "undefined") {
-        window.open(qboInvoiceUrl, "_blank", "noopener,noreferrer");
-      }
-    } else if (invoiceWindow) {
-      invoiceWindow.close();
+    if (
+      ticket.billing.status !== "ready_to_bill" &&
+      ticket.billing.status !== "invoice_failed"
+    ) {
+      setBillingErr("Billing packet must be Ready to Bill before creating a QBO invoice.");
+      return;
     }
-  } catch (err: unknown) {
-    const message =
-      err instanceof Error ? err.message : "Failed to create QBO invoice.";
-    const failedAt = nowIso();
 
-    if (invoiceWindow) {
-      invoiceWindow.close();
-    }
+    setBillingErr("");
+    setBillingOk("");
+    setBillingSaving(true);
+
+    const optimisticAt = nowIso();
+
+    const invoiceWindow =
+      typeof window !== "undefined"
+        ? window.open("", "_blank", "noopener,noreferrer")
+        : null;
 
     setTicket((prev) =>
       prev && prev.billing
@@ -3025,21 +3375,96 @@ async function handleCreateQboInvoice() {
             ...prev,
             billing: {
               ...prev.billing,
-              status: "invoice_failed",
-              invoiceSource: "qbo",
-              invoiceError: message,
-              updatedAt: failedAt,
+              status: "creating_invoice",
+              invoiceError: null,
+              updatedAt: optimisticAt,
             },
-            updatedAt: failedAt,
+            updatedAt: optimisticAt,
           }
         : prev
     );
 
-    setBillingErr(message);
-  } finally {
-    setBillingSaving(false);
+    try {
+      const res = await fetch("/api/qbo/invoices/create-from-service-ticket", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          serviceTicketId: ticket.id,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          String(
+            data?.error ||
+              data?.qboBody?.Fault?.Error?.[0]?.Message ||
+              "Failed to create QBO invoice."
+          )
+        );
+      }
+
+      const updatedAt = String(data?.updatedAt || nowIso());
+      const updatedBilling = (data?.updatedBilling || null) as BillingPacket | null;
+      const updatedTicketStatus = (data?.updatedTicketStatus || "invoiced") as TicketStatus;
+      const qboInvoiceUrl = String(data?.qboInvoiceUrl || "").trim();
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: updatedTicketStatus,
+              billing: updatedBilling || prev.billing || null,
+              updatedAt,
+            }
+          : prev
+      );
+
+      setTicketStatusEdit(updatedTicketStatus);
+      setBillingOk("QBO invoice created successfully.");
+
+      if (qboInvoiceUrl) {
+        if (invoiceWindow) {
+          invoiceWindow.location.href = qboInvoiceUrl;
+        } else if (typeof window !== "undefined") {
+          window.open(qboInvoiceUrl, "_blank", "noopener,noreferrer");
+        }
+      } else if (invoiceWindow) {
+        invoiceWindow.close();
+      }
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to create QBO invoice.";
+      const failedAt = nowIso();
+
+      if (invoiceWindow) {
+        invoiceWindow.close();
+      }
+
+      setTicket((prev) =>
+        prev && prev.billing
+          ? {
+              ...prev,
+              billing: {
+                ...prev.billing,
+                status: "invoice_failed",
+                invoiceSource: "qbo",
+                invoiceError: message,
+                updatedAt: failedAt,
+              },
+              updatedAt: failedAt,
+            }
+          : prev
+      );
+
+      setBillingErr(message);
+    } finally {
+      setBillingSaving(false);
+    }
   }
-}
 
   const mapsAddress = [
     ticket?.serviceAddressLine1 || "",
@@ -3060,10 +3485,11 @@ async function handleCreateQboInvoice() {
         {!loading && !error && ticket ? (
           <Stack spacing={3}>
             {isInvoicedTicket ? (
-  <Alert severity="success" variant="outlined">
-    This ticket has been invoiced and is now locked from dispatch, trip, and billing edits.
-  </Alert>
-) : null}
+              <Alert severity="success" variant="outlined">
+                This ticket has been invoiced and is now locked from dispatch, trip, and billing edits.
+              </Alert>
+            ) : null}
+
             <Dialog
               fullScreen={isMobile}
               open={Boolean(mobileFinishTrip)}
@@ -3276,7 +3702,7 @@ async function handleCreateQboInvoice() {
                     color="primary"
                     onClick={handleClaimAndStartTrip}
                     startIcon={<PlayArrowRoundedIcon />}
-                        disabled={isInvoicedTicket}
+                    disabled={isInvoicedTicket}
                   >
                     Claim & Start Trip
                   </Button>
@@ -3420,7 +3846,7 @@ async function handleCreateQboInvoice() {
                           onChange={(e) =>
                             setTicketEstimatedMinutesEdit(e.target.value)
                           }
-                            disabled={isInvoicedTicket}
+                          disabled={isInvoicedTicket}
                         />
                       </Box>
 
@@ -3429,7 +3855,7 @@ async function handleCreateQboInvoice() {
                         label="Issue Summary"
                         value={ticketIssueSummaryEdit}
                         onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
-                          disabled={isInvoicedTicket}
+                        disabled={isInvoicedTicket}
                       />
 
                       <TextField
@@ -3438,14 +3864,14 @@ async function handleCreateQboInvoice() {
                         label="Issue Details"
                         value={ticketIssueDetailsEdit}
                         onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
-                          disabled={isInvoicedTicket}
+                        disabled={isInvoicedTicket}
                       />
 
                       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
                         <Button
                           variant="contained"
                           onClick={handleSaveTicketOverview}
-  disabled={ticketEditSaving || isInvoicedTicket}
+                          disabled={ticketEditSaving || isInvoicedTicket}
                         >
                           {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
                         </Button>
@@ -3480,11 +3906,12 @@ async function handleCreateQboInvoice() {
 action={
   canDispatch ? (
     <Button
+      component={Link}
+      href={`/service-tickets/${ticketId}/schedule`}
       variant="contained"
-      onClick={() => setScheduleOpen((prev) => !prev)}
       disabled={isInvoicedTicket}
     >
-      {scheduleOpen ? "Close" : "Schedule Trip"}
+      Schedule Trip
     </Button>
   ) : null
 }
@@ -3533,7 +3960,7 @@ action={
                           variant="outlined"
                           sx={{
                             p: 1.5,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             borderColor: runningTrip
                               ? alpha(theme.palette.primary.main, 0.26)
                               : pausedTrip
@@ -3589,7 +4016,7 @@ action={
                                 <Stack direction="row" spacing={1}>
                                   <IconButton
                                     onClick={() => openEditTrip(trip)}
-  disabled={isInvoicedTicket || !canEditTripSchedule(trip.status, trip.timerState)}
+                                    disabled={isInvoicedTicket || !canEditTripSchedule(trip.status, trip.timerState)}
                                   >
                                     <EditRoundedIcon />
                                   </IconButton>
@@ -3597,7 +4024,7 @@ action={
                                   <IconButton
                                     color="error"
                                     onClick={() => handleSoftDeleteTrip(trip)}
-  disabled={isInvoicedTicket || !canCancelTrip(trip.status, trip.timerState)}
+                                    disabled={isInvoicedTicket || !canCancelTrip(trip.status, trip.timerState)}
                                   >
                                     <DeleteOutlineRoundedIcon />
                                   </IconButton>
@@ -3613,7 +4040,7 @@ action={
                                   size="large"
                                   startIcon={<PlayArrowRoundedIcon />}
                                   onClick={() => handleStartTrip(trip)}
-                                  disabled={!canQuickStart || savingThis || anotherTripInProgress|| isInvoicedTicket}
+                                  disabled={!canQuickStart || savingThis || anotherTripInProgress || isInvoicedTicket}
                                   fullWidth
                                   sx={{
                                     minHeight: 48,
@@ -3669,11 +4096,11 @@ action={
                                         }))
                                       }
                                       disabled={
-  !canAct ||
-  savingThis ||
-  !canFinishTrip(trip.status, trip.timerState) ||
-  isInvoicedTicket
-}
+                                        !canAct ||
+                                        savingThis ||
+                                        !canFinishTrip(trip.status, trip.timerState) ||
+                                        isInvoicedTicket
+                                      }
                                     >
                                       Follow-Up
                                     </Button>
@@ -3687,11 +4114,11 @@ action={
                                         }))
                                       }
                                       disabled={
-  !canAct ||
-  savingThis ||
-  !canFinishTrip(trip.status, trip.timerState) ||
-  isInvoicedTicket
-}
+                                        !canAct ||
+                                        savingThis ||
+                                        !canFinishTrip(trip.status, trip.timerState) ||
+                                        isInvoicedTicket
+                                      }
                                     >
                                       Resolved
                                     </Button>
@@ -3739,7 +4166,8 @@ action={
                               Timer minutes: <strong>{billableMinutes}</strong> (gross{" "}
                               {grossMinutes} - paused {pausedMinutes})
                             </Typography>
-                                                        {normalizeTripStatus(trip.status) === "complete" ? (
+
+                            {normalizeTripStatus(trip.status) === "complete" ? (
                               <Typography variant="body2" color="text.secondary">
                                 Billable Hours:{" "}
                                 <strong>
@@ -3748,24 +4176,24 @@ action={
                               </Typography>
                             ) : null}
 
-<TextField
-  id={`trip-work-notes-${trip.id}`}
-  label="Work Notes"
-  multiline
-  minRows={3}
-  value={tripWorkNotes[trip.id] ?? ""}
-  onChange={(e) =>
-    setTripWorkNotes((prev) => ({
-      ...prev,
-      [trip.id]: e.target.value,
-    }))
-  }
-  disabled={
-    !canAct ||
-    normalizeTripStatus(trip.status) === "cancelled" ||
-    isInvoicedTicket
-  }
-/>
+                            <TextField
+                              id={`trip-work-notes-${trip.id}`}
+                              label="Work Notes"
+                              multiline
+                              minRows={3}
+                              value={tripWorkNotes[trip.id] ?? ""}
+                              onChange={(e) =>
+                                setTripWorkNotes((prev) => ({
+                                  ...prev,
+                                  [trip.id]: e.target.value,
+                                }))
+                              }
+                              disabled={
+                                !canAct ||
+                                normalizeTripStatus(trip.status) === "cancelled" ||
+                                isInvoicedTicket
+                              }
+                            />
 
                             <Button
                               variant="outlined"
@@ -3786,7 +4214,7 @@ action={
                                 variant="outlined"
                                 sx={{
                                   p: 1.25,
-                                  borderRadius: 3,
+                                  borderRadius: 1,
                                   backgroundColor:
                                     finishMode === "resolved"
                                       ? alpha(theme.palette.success.main, 0.06)
@@ -3803,7 +4231,7 @@ action={
                                       typeof hoursOverrideByTrip[trip.id] === "number"
                                         ? hoursOverrideByTrip[trip.id]
                                         : getDefaultBillableHours(billableMinutes)
-                                                                          }
+                                    }
                                     onChange={(e) =>
                                       setHoursOverrideByTrip((prev) => ({
                                         ...prev,
@@ -3853,6 +4281,7 @@ action={
                                       </Button>
                                     </>
                                   ) : null}
+
                                   {finishMode === "resolved" ? (
                                     <>
                                       <TextField
@@ -3894,179 +4323,6 @@ action={
                         </Paper>
                       );
                     })}
-
-                    {canDispatch && scheduleOpen ? (
-                      <Paper
-                        variant="outlined"
-                        sx={{
-                          p: 2,
-                          borderRadius: 3,
-                          backgroundColor: alpha(theme.palette.primary.main, 0.03),
-                        }}
-                      >
-                        <Stack spacing={2} component="form" onSubmit={handleCreateTrip}>
-                          <Typography variant="h6" fontWeight={700}>
-                            Schedule Trip
-                          </Typography>
-
-                          <Box
-                            sx={{
-                              display: "grid",
-                              gap: 2,
-                              gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                            }}
-                          >
-                            <TextField
-                              type="date"
-                              size="small"
-                              label="Date"
-                              value={tripDate}
-                              onChange={(e) => setTripDate(e.target.value)}
-                              InputLabelProps={{ shrink: true }}
-                            />
-
-                            <TextField
-                              select
-                              size="small"
-                              label="Time Window"
-                              value={tripTimeWindow}
-                              onChange={(e) =>
-                                setTripTimeWindow(e.target.value as TripTimeWindow)
-                              }
-                            >
-                              <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
-                              <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
-                              <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
-                              <MenuItem value="custom">Custom</MenuItem>
-                            </TextField>
-                          </Box>
-
-                          {tripTimeWindow === "custom" ? (
-                            <Box
-                              sx={{
-                                display: "grid",
-                                gap: 2,
-                                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                              }}
-                            >
-                              <TextField
-                                type="time"
-                                size="small"
-                                label="Start Time"
-                                value={tripStartTime}
-                                onChange={(e) => setTripStartTime(e.target.value)}
-                                InputLabelProps={{ shrink: true }}
-                              />
-
-                              <TextField
-                                type="time"
-                                size="small"
-                                label="End Time"
-                                value={tripEndTime}
-                                onChange={(e) => setTripEndTime(e.target.value)}
-                                InputLabelProps={{ shrink: true }}
-                              />
-                            </Box>
-                          ) : null}
-
-                          <TextField
-                            select
-                            size="small"
-                            label="Primary Technician"
-                            value={tripPrimaryTechUid}
-                            onChange={(e) => setTripPrimaryTechUid(e.target.value)}
-                          >
-                            <MenuItem value="">Select a technician…</MenuItem>
-                            {technicians.map((tech) => (
-                              <MenuItem key={tech.uid} value={tech.uid}>
-                                {tech.displayName}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-
-                          <TextField
-                            select
-                            size="small"
-                            label="Secondary Technician (optional)"
-                            value={tripSecondaryTechUid}
-                            onChange={(e) => setTripSecondaryTechUid(e.target.value)}
-                          >
-                            <MenuItem value="">— None —</MenuItem>
-                            {technicians
-                              .filter((tech) => tech.uid !== tripPrimaryTechUid)
-                              .map((tech) => (
-                                <MenuItem key={tech.uid} value={tech.uid}>
-                                  {tech.displayName}
-                                </MenuItem>
-                              ))}
-                          </TextField>
-
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={tripUseDefaultHelper}
-                                onChange={(e) => setTripUseDefaultHelper(e.target.checked)}
-                              />
-                            }
-                            label="Use default helper pairing"
-                          />
-
-                          <TextField
-                            select
-                            size="small"
-                            label="Helper / Apprentice (optional)"
-                            value={tripHelperUid}
-                            onChange={(e) => {
-                              setTripUseDefaultHelper(false);
-                              setTripHelperUid(e.target.value);
-                            }}
-                          >
-                            <MenuItem value="">— None —</MenuItem>
-                            {helperCandidates.map((helper) => (
-                              <MenuItem key={helper.uid} value={helper.uid}>
-                                {helper.name} ({helper.laborRole})
-                              </MenuItem>
-                            ))}
-                          </TextField>
-
-                          <TextField
-                            select
-                            size="small"
-                            label="Secondary Helper (optional)"
-                            value={tripSecondaryHelperUid}
-                            onChange={(e) => setTripSecondaryHelperUid(e.target.value)}
-                          >
-                            <MenuItem value="">— None —</MenuItem>
-                            {helperCandidates.map((helper) => (
-                              <MenuItem key={helper.uid} value={helper.uid}>
-                                {helper.name} ({helper.laborRole})
-                              </MenuItem>
-                            ))}
-                          </TextField>
-
-                          <TextField
-                            multiline
-                            minRows={3}
-                            label="Trip Notes"
-                            value={tripNotes}
-                            onChange={(e) => setTripNotes(e.target.value)}
-                          />
-
-                          <Alert severity="info" variant="outlined">
-                            Ticket status moves automatically based on the trip lifecycle.
-                          </Alert>
-
-                          {tripSaveError ? <Alert severity="error">{tripSaveError}</Alert> : null}
-                          {tripSaveSuccess ? (
-                            <Alert severity="success">{tripSaveSuccess}</Alert>
-                          ) : null}
-
-                          <Button variant="contained" type="submit" disabled={tripSaving || isInvoicedTicket}>
-                            {tripSaving ? "Scheduling..." : "Schedule Trip"}
-                          </Button>
-                        </Stack>
-                      </Paper>
-                    ) : null}
                   </Stack>
                 </Section>
 
@@ -4078,11 +4334,12 @@ action={
                     </Alert>
                   ) : (
                     <Stack spacing={2}>
-                                            {ticket.billing.status === "creating_invoice" ? (
+                      {ticket.billing.status === "creating_invoice" ? (
                         <Alert severity="info" variant="outlined">
                           Creating invoice in QuickBooks…
                         </Alert>
                       ) : null}
+
                       <Stack
                         direction={{ xs: "column", sm: "row" }}
                         justifyContent="space-between"
@@ -4114,7 +4371,7 @@ action={
                         ) : null}
                       </Stack>
 
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle1" fontWeight={700}>
                             Labor Summary
@@ -4135,7 +4392,7 @@ action={
                         </Stack>
                       </Paper>
 
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                         <Stack spacing={1.5}>
                           <Typography variant="subtitle1" fontWeight={700}>
                             Materials Billing
@@ -4177,7 +4434,7 @@ action={
                         </Stack>
                       </Paper>
 
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle1" fontWeight={700}>
                             Invoice Details
@@ -4219,48 +4476,48 @@ action={
                         </Stack>
                       </Paper>
 
-{canBill ? (
-  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-    {(ticket.billing.status === "ready_to_bill" ||
-      ticket.billing.status === "invoice_failed") && !isInvoicedTicket ? (
-      <Button
-        variant="contained"
-        onClick={handleCreateQboInvoice}
-        disabled={billingSaving}
-      >
-        {billingSaving
-          ? "Creating QBO Invoice..."
-          : ticket.billing.status === "invoice_failed"
-            ? "Retry QBO Invoice"
-            : "Create QBO Invoice"}
-      </Button>
-    ) : null}
+                      {canBill ? (
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                          {(ticket.billing.status === "ready_to_bill" ||
+                            ticket.billing.status === "invoice_failed") && !isInvoicedTicket ? (
+                            <Button
+                              variant="contained"
+                              onClick={handleCreateQboInvoice}
+                              disabled={billingSaving}
+                            >
+                              {billingSaving
+                                ? "Creating QBO Invoice..."
+                                : ticket.billing.status === "invoice_failed"
+                                  ? "Retry QBO Invoice"
+                                  : "Create QBO Invoice"}
+                            </Button>
+                          ) : null}
 
-    <Button
-      variant="outlined"
-      onClick={() => markBillingStatus("invoiced")}
-      disabled={billingSaving || isInvoicedTicket}
-    >
-      {billingSaving ? "Working..." : "Mark Invoiced Manually"}
-    </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => markBillingStatus("invoiced")}
+                            disabled={billingSaving || isInvoicedTicket}
+                          >
+                            {billingSaving ? "Working..." : "Mark Invoiced Manually"}
+                          </Button>
 
-    <Button
-      variant="outlined"
-      onClick={() => markBillingStatus("ready_to_bill")}
-      disabled={billingSaving || isInvoicedTicket}
-    >
-      Set Ready to Bill
-    </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => markBillingStatus("ready_to_bill")}
+                            disabled={billingSaving || isInvoicedTicket}
+                          >
+                            Set Ready to Bill
+                          </Button>
 
-    <Button
-      variant="outlined"
-      onClick={() => markBillingStatus("not_ready")}
-      disabled={billingSaving || isInvoicedTicket}
-    >
-      Set Not Ready
-    </Button>
-  </Stack>
-) : null}
+                          <Button
+                            variant="outlined"
+                            onClick={() => markBillingStatus("not_ready")}
+                            disabled={billingSaving || isInvoicedTicket}
+                          >
+                            Set Not Ready
+                          </Button>
+                        </Stack>
+                      ) : null}
 
                       {billingErr ? <Alert severity="error">{billingErr}</Alert> : null}
                       {billingOk ? <Alert severity="success">{billingOk}</Alert> : null}
@@ -4339,11 +4596,32 @@ action={
                     onChange={(e) => setEditTripPrimaryTechUid(e.target.value)}
                   >
                     <MenuItem value="">Select a technician…</MenuItem>
-                    {technicians.map((tech) => (
-                      <MenuItem key={tech.uid} value={tech.uid}>
-                        {tech.displayName}
-                      </MenuItem>
-                    ))}
+                    {technicians.map((tech) => {
+                      const availability = availabilityForOption({
+                        uid: tech.uid,
+                        name: tech.displayName,
+                        role: "technician",
+                        date: editTripDate,
+                        timeWindow: editTripTimeWindow,
+                        startTime: editTripStartTime,
+                        endTime: editTripEndTime,
+                        excludeTripId: editTripId,
+                      });
+
+                      return (
+                        <MenuItem
+                          key={tech.uid}
+                          value={tech.uid}
+                          disabled={optionShouldBeDisabled({ availability })}
+                        >
+                          {formatAvailabilityOptionLabel({
+                            baseLabel: tech.displayName,
+                            availability,
+                            holidayNames: editHolidayNames,
+                          })}
+                        </MenuItem>
+                      );
+                    })}
                   </TextField>
 
                   <TextField
@@ -4355,11 +4633,32 @@ action={
                     <MenuItem value="">— None —</MenuItem>
                     {technicians
                       .filter((tech) => tech.uid !== editTripPrimaryTechUid)
-                      .map((tech) => (
-                        <MenuItem key={tech.uid} value={tech.uid}>
-                          {tech.displayName}
-                        </MenuItem>
-                      ))}
+                      .map((tech) => {
+                        const availability = availabilityForOption({
+                          uid: tech.uid,
+                          name: tech.displayName,
+                          role: "technician",
+                          date: editTripDate,
+                          timeWindow: editTripTimeWindow,
+                          startTime: editTripStartTime,
+                          endTime: editTripEndTime,
+                          excludeTripId: editTripId,
+                        });
+
+                        return (
+                          <MenuItem
+                            key={tech.uid}
+                            value={tech.uid}
+                            disabled={optionShouldBeDisabled({ availability })}
+                          >
+                            {formatAvailabilityOptionLabel({
+                              baseLabel: tech.displayName,
+                              availability,
+                              holidayNames: editHolidayNames,
+                            })}
+                          </MenuItem>
+                        );
+                      })}
                   </TextField>
 
                   <FormControlLabel
@@ -4382,11 +4681,32 @@ action={
                     }}
                   >
                     <MenuItem value="">— None —</MenuItem>
-                    {helperCandidates.map((helper) => (
-                      <MenuItem key={helper.uid} value={helper.uid}>
-                        {helper.name} ({helper.laborRole})
-                      </MenuItem>
-                    ))}
+                    {helperCandidates.map((helper) => {
+                      const availability = availabilityForOption({
+                        uid: helper.uid,
+                        name: helper.name,
+                        role: "helper",
+                        date: editTripDate,
+                        timeWindow: editTripTimeWindow,
+                        startTime: editTripStartTime,
+                        endTime: editTripEndTime,
+                        excludeTripId: editTripId,
+                      });
+
+                      return (
+                        <MenuItem
+                          key={helper.uid}
+                          value={helper.uid}
+                          disabled={optionShouldBeDisabled({ availability })}
+                        >
+                          {formatAvailabilityOptionLabel({
+                            baseLabel: `${helper.name} (${helper.laborRole})`,
+                            availability,
+                            holidayNames: editHolidayNames,
+                          })}
+                        </MenuItem>
+                      );
+                    })}
                   </TextField>
 
                   <TextField
@@ -4396,11 +4716,32 @@ action={
                     onChange={(e) => setEditTripSecondaryHelperUid(e.target.value)}
                   >
                     <MenuItem value="">— None —</MenuItem>
-                    {helperCandidates.map((helper) => (
-                      <MenuItem key={helper.uid} value={helper.uid}>
-                        {helper.name} ({helper.laborRole})
-                      </MenuItem>
-                    ))}
+                    {helperCandidates.map((helper) => {
+                      const availability = availabilityForOption({
+                        uid: helper.uid,
+                        name: helper.name,
+                        role: "helper",
+                        date: editTripDate,
+                        timeWindow: editTripTimeWindow,
+                        startTime: editTripStartTime,
+                        endTime: editTripEndTime,
+                        excludeTripId: editTripId,
+                      });
+
+                      return (
+                        <MenuItem
+                          key={helper.uid}
+                          value={helper.uid}
+                          disabled={optionShouldBeDisabled({ availability })}
+                        >
+                          {formatAvailabilityOptionLabel({
+                            baseLabel: `${helper.name} (${helper.laborRole})`,
+                            availability,
+                            holidayNames: editHolidayNames,
+                          })}
+                        </MenuItem>
+                      );
+                    })}
                   </TextField>
 
                   <TextField
@@ -4410,6 +4751,35 @@ action={
                     value={editTripNotes}
                     onChange={(e) => setEditTripNotes(e.target.value)}
                   />
+
+                  {editHolidayNames.length > 0 ? (
+                    <Alert
+                      severity={editTripHolidayOverride ? "success" : "warning"}
+                      variant="outlined"
+                    >
+                      {editTripHolidayOverride
+                        ? `Holiday override enabled for ${editHolidayNames.join(", ")}.`
+                        : `Selected day falls on ${editHolidayNames.join(", ")}. Save stays blocked until Holiday Override is enabled.`}
+                    </Alert>
+                  ) : null}
+
+                  {editHolidayNames.length > 0 && canDispatch ? (
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={editTripHolidayOverride}
+                          onChange={(e) => setEditTripHolidayOverride(e.target.checked)}
+                        />
+                      }
+                      label="Override holiday conflict for this trip"
+                    />
+                  ) : null}
+
+                  {editBlockingReasons.length > 0 ? (
+                    <Alert severity="error" variant="outlined">
+                      {editBlockingReasons[0]}
+                    </Alert>
+                  ) : null}
 
                   {editTripErr ? <Alert severity="error">{editTripErr}</Alert> : null}
 
@@ -4424,7 +4794,7 @@ action={
                 <Button
                   variant="contained"
                   onClick={handleSaveTripEdit}
-                  disabled={editTripSaving || isInvoicedTicket}
+                  disabled={editTripSaving || isInvoicedTicket || !editCanSubmit}
                 >
                   {editTripSaving ? "Saving..." : "Save Changes"}
                 </Button>
