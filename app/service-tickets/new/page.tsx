@@ -1,4 +1,4 @@
-// app/service-tickets/new/page.tsx
+// app/service-tcikets/new/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -14,9 +14,6 @@ import {
   Chip,
   CircularProgress,
   Divider,
-  FormControl,
-  FormHelperText,
-  Grid,
   InputAdornment,
   MenuItem,
   Stack,
@@ -269,17 +266,19 @@ export default function NewServiceTicketPage() {
     loadStaff();
   }, []);
 
+  const searchReady = customerSearch.trim().length >= 2;
+
   const filteredCustomers = useMemo(() => {
     const search = customerSearch.trim().toLowerCase();
 
-    if (!search) {
-      return customers.slice(0, 12);
+    if (!searchReady) {
+      return [];
     }
 
     return customers
       .filter((customer) => getCustomerSearchText(customer).includes(search))
-      .slice(0, 20);
-  }, [customers, customerSearch]);
+      .slice(0, 6);
+  }, [customers, customerSearch, searchReady]);
 
   const selectedCustomer = useMemo(() => {
     return customers.find((customer) => customer.id === selectedCustomerId) ?? null;
@@ -331,6 +330,7 @@ export default function NewServiceTicketPage() {
   function handleClearSelectedCustomer() {
     setSelectedCustomerId("");
     setSelectedServiceAddressId("");
+    setCustomerSearch("");
     setError("");
   }
 
@@ -486,17 +486,14 @@ export default function NewServiceTicketPage() {
   return (
     <ProtectedPage fallbackTitle="New Service Ticket">
       <AppShell appUser={appUser}>
-        <Box sx={{ maxWidth: 980, mx: "auto", px: { xs: 2, sm: 3 }, py: 3 }}>
+        <Box sx={{ maxWidth: 940, mx: "auto", px: { xs: 2, sm: 3 }, py: 3 }}>
           <Stack spacing={3}>
             <Box>
               <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: -0.4 }}>
                 New Service Ticket
               </Typography>
-              <Typography
-  variant="body1"
-  sx={{ fontSize: "1rem", lineHeight: 1.5 }}
->
-                Create a new ticket with a clear customer, job summary, assignment, and schedule.
+              <Typography variant="body1" sx={{ color: "text.secondary", mt: 1 }}>
+                Create the ticket first, then optionally assign and schedule it now.
               </Typography>
             </Box>
 
@@ -505,7 +502,9 @@ export default function NewServiceTicketPage() {
                 <CardContent sx={{ py: 5 }}>
                   <Stack direction="row" spacing={2} alignItems="center" justifyContent="center">
                     <CircularProgress size={24} />
-                    <Typography color="text.secondary">Loading customers…</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Loading customers…
+                    </Typography>
                   </Stack>
                 </CardContent>
               </Card>
@@ -515,105 +514,105 @@ export default function NewServiceTicketPage() {
 
             {!customersLoading && !customersError ? (
               <Box component="form" onSubmit={handleSubmit}>
-                <Stack spacing={3}>
-                  {error ? <Alert severity="error">{error}</Alert> : null}
+                <Card variant="outlined" sx={{ borderRadius: 4, overflow: "hidden" }}>
+                  <CardContent sx={{ p: 0 }}>
+                    <Stack divider={<Divider />} spacing={0}>
+                      <Box sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          {error ? <Alert severity="error">{error}</Alert> : null}
 
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                      <Stack spacing={2.5}>
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <PersonSearchRoundedIcon color="primary" />
-                          <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                              Customer
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Search by name, phone, email, or address.
-                            </Typography>
-                          </Box>
-                        </Stack>
+                          <Stack direction="row" spacing={1.25} alignItems="center">
+                            <PersonSearchRoundedIcon color="primary" />
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                Customer
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Search by customer name, phone, email, or address.
+                              </Typography>
+                            </Box>
+                          </Stack>
 
-                        <TextField
-                          label="Search customer"
-                          value={customerSearch}
-                          onChange={(e) => setCustomerSearch(e.target.value)}
-                          placeholder="Ex: Smith, 979…, Main Street…"
-                          fullWidth
-                          InputProps={{
-                            startAdornment: (
-                              <InputAdornment position="start">
-                                <SearchRoundedIcon />
-                              </InputAdornment>
-                            ),
-                          }}
-                        />
-
-                        {selectedCustomer ? (
-                          <Card
-                            variant="outlined"
-                            sx={{
-                              borderRadius: 4,
-                              bgcolor: "action.hover",
-                              borderColor: "primary.main",
+                          <TextField
+                            label="Search customer"
+                            value={customerSearch}
+                            onChange={(e) => setCustomerSearch(e.target.value)}
+                            placeholder="Start typing to find a customer"
+                            fullWidth
+                            InputProps={{
+                              startAdornment: (
+                                <InputAdornment position="start">
+                                  <SearchRoundedIcon />
+                                </InputAdornment>
+                              ),
                             }}
-                          >
-                            <CardContent>
-                              <Stack spacing={1.5}>
-                                <Stack
-                                  direction={{ xs: "column", sm: "row" }}
-                                  spacing={1.5}
-                                  justifyContent="space-between"
-                                  alignItems={{ xs: "flex-start", sm: "center" }}
-                                >
-                                  <Box>
-                                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                                      {selectedCustomer.displayName}
-                                    </Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                      {selectedCustomer.phonePrimary || "No primary phone"}
-                                    </Typography>
-                                    {selectedCustomer.email ? (
-                                      <Typography variant="body2" color="text.secondary">
-                                        {selectedCustomer.email}
-                                      </Typography>
-                                    ) : null}
-                                  </Box>
+                          />
 
-                                  <Button
-                                    type="button"
-                                    variant="text"
-                                    onClick={handleClearSelectedCustomer}
+                          {selectedCustomer ? (
+                            <Card
+                              variant="outlined"
+                              sx={{
+                                borderRadius: 4,
+                                bgcolor: "action.hover",
+                                borderColor: "primary.main",
+                              }}
+                            >
+                              <CardContent>
+                                <Stack spacing={1.5}>
+                                  <Stack
+                                    direction={{ xs: "column", sm: "row" }}
+                                    spacing={1.5}
+                                    justifyContent="space-between"
+                                    alignItems={{ xs: "flex-start", sm: "center" }}
                                   >
-                                    Change customer
-                                  </Button>
-                                </Stack>
+                                    <Box>
+                                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                        {selectedCustomer.displayName}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        {selectedCustomer.phonePrimary || "No primary phone"}
+                                      </Typography>
+                                      {selectedCustomer.email ? (
+                                        <Typography variant="body2" color="text.secondary">
+                                          {selectedCustomer.email}
+                                        </Typography>
+                                      ) : null}
+                                    </Box>
 
-                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                  <Chip label="Customer selected" color="primary" />
-                                  <Chip
-                                    label={`${availableServiceAddresses.length} service location${
-                                      availableServiceAddresses.length === 1 ? "" : "s"
-                                    }`}
-                                    variant="outlined"
-                                  />
-                                </Stack>
+                                    <Button
+                                      type="button"
+                                      variant="text"
+                                      onClick={handleClearSelectedCustomer}
+                                    >
+                                      Change customer
+                                    </Button>
+                                  </Stack>
 
-                                <Typography variant="body2" color="text.secondary">
-                                  Billing address:{" "}
-                                  {formatAddress({
-                                    addressLine1: selectedCustomer.billingAddressLine1,
-                                    addressLine2: selectedCustomer.billingAddressLine2,
-                                    city: selectedCustomer.billingCity,
-                                    state: selectedCustomer.billingState,
-                                    postalCode: selectedCustomer.billingPostalCode,
-                                  })}
-                                </Typography>
-                              </Stack>
-                            </CardContent>
-                          </Card>
-                        ) : (
-                          <Stack spacing={1.25}>
-                            {filteredCustomers.length === 0 ? (
+                                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                    <Chip label="Customer selected" color="primary" />
+                                    <Chip
+                                      label={`${availableServiceAddresses.length} service location${
+                                        availableServiceAddresses.length === 1 ? "" : "s"
+                                      }`}
+                                      variant="outlined"
+                                    />
+                                  </Stack>
+
+                                  <Typography variant="body2" color="text.secondary">
+                                    Billing address:{" "}
+                                    {formatAddress({
+                                      addressLine1: selectedCustomer.billingAddressLine1,
+                                      addressLine2: selectedCustomer.billingAddressLine2,
+                                      city: selectedCustomer.billingCity,
+                                      state: selectedCustomer.billingState,
+                                      postalCode: selectedCustomer.billingPostalCode,
+                                    })}
+                                  </Typography>
+                                </Stack>
+                              </CardContent>
+                            </Card>
+                          ) : searchReady ? (
+                            filteredCustomers.length === 0 ? (
                               <Card
                                 variant="outlined"
                                 sx={{
@@ -629,161 +628,167 @@ export default function NewServiceTicketPage() {
                                 </CardContent>
                               </Card>
                             ) : (
-                              filteredCustomers.map((customer) => (
-                                <Card
-                                  key={customer.id}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 4, overflow: "hidden" }}
-                                >
-                                  <CardActionArea onClick={() => handleSelectCustomer(customer.id)}>
-                                    <CardContent>
-                                      <Stack spacing={0.75}>
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                                          {customer.displayName}
-                                        </Typography>
-                                        <Typography variant="body2" color="text.secondary">
-                                          {customer.phonePrimary || "No phone"}
-                                        </Typography>
-                                        {customer.email ? (
-                                          <Typography variant="body2" color="text.secondary">
-                                            {customer.email}
+                              <Stack spacing={1.25}>
+                                {filteredCustomers.map((customer) => (
+                                  <Card
+                                    key={customer.id}
+                                    variant="outlined"
+                                    sx={{ borderRadius: 4, overflow: "hidden" }}
+                                  >
+                                    <CardActionArea onClick={() => handleSelectCustomer(customer.id)}>
+                                      <CardContent>
+                                        <Stack spacing={0.75}>
+                                          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                            {customer.displayName}
                                           </Typography>
-                                        ) : null}
-                                        <Typography variant="body2" color="text.secondary">
-                                          {formatAddress({
-                                            addressLine1: customer.billingAddressLine1,
-                                            addressLine2: customer.billingAddressLine2,
-                                            city: customer.billingCity,
-                                            state: customer.billingState,
-                                            postalCode: customer.billingPostalCode,
-                                          })}
-                                        </Typography>
-                                      </Stack>
-                                    </CardContent>
-                                  </CardActionArea>
-                                </Card>
-                              ))
-                            )}
-                          </Stack>
-                        )}
-                      </Stack>
-                    </CardContent>
-                  </Card>
-
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                      <Stack spacing={2.5}>
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <HomeWorkRoundedIcon color="primary" />
-                          <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                              Service Location
-                            </Typography>
+                                          <Typography variant="body2" color="text.secondary">
+                                            {customer.phonePrimary || "No phone"}
+                                          </Typography>
+                                          {customer.email ? (
+                                            <Typography variant="caption" color="text.secondary">
+                                              {customer.email}
+                                            </Typography>
+                                          ) : null}
+                                          <Typography variant="caption" color="text.secondary">
+                                            {formatAddress({
+                                              addressLine1: customer.billingAddressLine1,
+                                              addressLine2: customer.billingAddressLine2,
+                                              city: customer.billingCity,
+                                              state: customer.billingState,
+                                              postalCode: customer.billingPostalCode,
+                                            })}
+                                          </Typography>
+                                        </Stack>
+                                      </CardContent>
+                                    </CardActionArea>
+                                  </Card>
+                                ))}
+                              </Stack>
+                            )
+                          ) : (
                             <Typography variant="body2" color="text.secondary">
-                              Choose where the work will be performed.
+                              Type at least 2 characters to search.
                             </Typography>
-                          </Box>
-                        </Stack>
+                          )}
 
-                        <TextField
-                          select
-                          label="Service address"
-                          value={selectedServiceAddressId}
-                          onChange={(e) => setSelectedServiceAddressId(e.target.value)}
-                          fullWidth
-                          required
-                          disabled={!selectedCustomer}
-                          helperText={
-                            selectedCustomer
-                              ? "Primary service address is selected by default when available."
-                              : "Select a customer first."
-                          }
-                        >
-                          <MenuItem value="">
-                            {selectedCustomer ? "Select a service address" : "Select a customer first"}
-                          </MenuItem>
-                          {availableServiceAddresses.map((addr) => (
-                            <MenuItem key={addr.id} value={addr.id}>
-                              {addr.label ? `${addr.label} — ` : ""}
-                              {addr.addressLine1}, {addr.city}, {addr.state} {addr.postalCode}
-                              {addr.isPrimary ? " (Primary)" : ""}
-                            </MenuItem>
-                          ))}
-                        </TextField>
-
-                        {selectedServiceAddress ? (
-                          <Card
-                            variant="outlined"
-                            sx={{ borderRadius: 4, bgcolor: "background.default" }}
-                          >
-                            <CardContent sx={{ py: 2 }}>
-                              <Stack spacing={0.75}>
-                                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                                  Selected location
-                                </Typography>
-                                <Typography variant="body2">
-                                  {selectedServiceAddress.label || "Service Address"}
+                          <Stack spacing={1.5} sx={{ pt: 1 }}>
+                            <Stack direction="row" spacing={1.25} alignItems="center">
+                              <HomeWorkRoundedIcon color="primary" />
+                              <Box>
+                                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                  Service Location
                                 </Typography>
                                 <Typography variant="body2" color="text.secondary">
-                                  {formatAddress({
-                                    addressLine1: selectedServiceAddress.addressLine1,
-                                    addressLine2: selectedServiceAddress.addressLine2,
-                                    city: selectedServiceAddress.city,
-                                    state: selectedServiceAddress.state,
-                                    postalCode: selectedServiceAddress.postalCode,
-                                  })}
+                                  Choose where the work will be performed.
                                 </Typography>
-                              </Stack>
-                            </CardContent>
-                          </Card>
-                        ) : null}
-                      </Stack>
-                    </CardContent>
-                  </Card>
+                              </Box>
+                            </Stack>
 
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                      <Stack spacing={2.5}>
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <BuildCircleRoundedIcon color="primary" />
-                          <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                              Job Details
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Keep the summary short and easy for dispatch and field review.
-                            </Typography>
-                          </Box>
+                            <TextField
+                              select
+                              label="Service address"
+                              value={selectedServiceAddressId}
+                              onChange={(e) => setSelectedServiceAddressId(e.target.value)}
+                              fullWidth
+                              required
+                              disabled={!selectedCustomer}
+                              helperText={
+                                selectedCustomer
+                                  ? "Primary service address is selected by default when available."
+                                  : "Select a customer first."
+                              }
+                            >
+                              <MenuItem value="">
+                                {selectedCustomer
+                                  ? "Select a service address"
+                                  : "Select a customer first"}
+                              </MenuItem>
+                              {availableServiceAddresses.map((addr) => (
+                                <MenuItem key={addr.id} value={addr.id}>
+                                  {addr.label ? `${addr.label} — ` : ""}
+                                  {addr.addressLine1}, {addr.city}, {addr.state} {addr.postalCode}
+                                  {addr.isPrimary ? " (Primary)" : ""}
+                                </MenuItem>
+                              ))}
+                            </TextField>
+
+                            {selectedServiceAddress ? (
+                              <Card
+                                variant="outlined"
+                                sx={{ borderRadius: 4, bgcolor: "background.default" }}
+                              >
+                                <CardContent sx={{ py: 2 }}>
+                                  <Stack spacing={0.75}>
+                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                      Selected location
+                                    </Typography>
+                                    <Typography variant="body2">
+                                      {selectedServiceAddress.label || "Service Address"}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {formatAddress({
+                                        addressLine1: selectedServiceAddress.addressLine1,
+                                        addressLine2: selectedServiceAddress.addressLine2,
+                                        city: selectedServiceAddress.city,
+                                        state: selectedServiceAddress.state,
+                                        postalCode: selectedServiceAddress.postalCode,
+                                      })}
+                                    </Typography>
+                                  </Stack>
+                                </CardContent>
+                              </Card>
+                            ) : null}
+                          </Stack>
                         </Stack>
+                      </Box>
 
-                        <TextField
-                          label="Issue summary"
-                          value={issueSummary}
-                          onChange={(e) => setIssueSummary(e.target.value)}
-                          fullWidth
-                          required
-                          placeholder="Ex: Kitchen sink backed up / water heater not heating / leak under slab"
-                        />
+                      <Box sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          <Stack direction="row" spacing={1.25} alignItems="center">
+                            <BuildCircleRoundedIcon color="primary" />
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                Work Order Details
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Add the core issue and current ticket status.
+                              </Typography>
+                            </Box>
+                          </Stack>
 
-                        <TextField
-                          label="Issue details"
-                          value={issueDetails}
-                          onChange={(e) => setIssueDetails(e.target.value)}
-                          fullWidth
-                          multiline
-                          minRows={4}
-                          placeholder="Add additional context, symptoms, access details, prior history, or customer notes."
-                        />
+                          <TextField
+                            label="Issue summary"
+                            value={issueSummary}
+                            onChange={(e) => setIssueSummary(e.target.value)}
+                            fullWidth
+                            required
+                            placeholder="Ex: Water heater not heating"
+                          />
 
-                        <Grid container spacing={2}>
-                          <Grid size={{ xs: 12, sm: 6 }}>
+                          <TextField
+                            label="Issue details"
+                            value={issueDetails}
+                            onChange={(e) => setIssueDetails(e.target.value)}
+                            fullWidth
+                            multiline
+                            minRows={4}
+                            placeholder="Add symptoms, prior history, access info, or anything the field crew should know."
+                          />
+
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gap: 2,
+                              gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                            }}
+                          >
                             <TextField
                               select
                               label="Ticket status"
                               value={status}
                               onChange={(e) => setStatus(e.target.value as TicketStatus)}
                               fullWidth
-                              helperText="Usually New unless this ticket is already being scheduled."
+                              helperText="Usually New when first creating a ticket."
                             >
                               <MenuItem value="new">New</MenuItem>
                               <MenuItem value="scheduled">Scheduled</MenuItem>
@@ -792,9 +797,7 @@ export default function NewServiceTicketPage() {
                               <MenuItem value="completed">Completed</MenuItem>
                               <MenuItem value="cancelled">Cancelled</MenuItem>
                             </TextField>
-                          </Grid>
 
-                          <Grid size={{ xs: 12, sm: 6 }}>
                             <TextField
                               label="Estimated duration (minutes)"
                               type="number"
@@ -805,238 +808,227 @@ export default function NewServiceTicketPage() {
                               required
                               helperText="Example: 60, 120, 240"
                             />
-                          </Grid>
-                        </Grid>
-
-                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          <Chip label={`Status: ${getStatusLabel(status)}`} variant="outlined" />
-                          {requiresAssignment ? (
-                            <Chip color="warning" label="Primary technician required" />
-                          ) : (
-                            <Chip variant="outlined" label="Assignment optional for now" />
-                          )}
-                        </Stack>
-                      </Stack>
-                    </CardContent>
-                  </Card>
-
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                      <Stack spacing={2.5}>
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <AssignmentIndRoundedIcon color="primary" />
-                          <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                              Assignment
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Select a primary technician. Default helper pairing is added automatically.
-                            </Typography>
                           </Box>
-                        </Stack>
 
-                        {staffLoading ? (
-                          <Stack direction="row" spacing={2} alignItems="center">
-                            <CircularProgress size={20} />
-                            <Typography color="text.secondary">Loading employee roster…</Typography>
+                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                            <Chip label={`Status: ${getStatusLabel(status)}`} variant="outlined" />
+                            {requiresAssignment ? (
+                              <Chip color="warning" label="Tech required for this status" />
+                            ) : (
+                              <Chip variant="outlined" label="Can be created without assignment" />
+                            )}
                           </Stack>
-                        ) : null}
+                        </Stack>
+                      </Box>
 
-                        {assignmentError ? <Alert severity="error">{assignmentError}</Alert> : null}
-
-                        <TextField
-                          select
-                          label="Primary technician"
-                          value={primaryTechnicianId}
-                          onChange={(e) => {
-                            setPrimaryTechnicianId(e.target.value);
-                            setError("");
-                          }}
-                          fullWidth
-                          disabled={staffLoading}
-                          helperText={
-                            requiresAssignment
-                              ? "Required for scheduled and in-progress tickets."
-                              : "Optional while the ticket is still new."
-                          }
-                        >
-                          <MenuItem value="">Not assigned yet</MenuItem>
-                          {currentTechnicians.map((t) => (
-                            <MenuItem key={t.uid} value={t.uid}>
-                              {t.displayName}
-                              {t.email ? ` — ${t.email}` : ""}
-                            </MenuItem>
-                          ))}
-                        </TextField>
-
-                        <Card
-                          variant="outlined"
-                          sx={{ borderRadius: 4, bgcolor: "background.default" }}
-                        >
-                          <CardContent sx={{ py: 2 }}>
-                            <Stack spacing={1.25}>
-                              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                                Assigned team
+                      <Box sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          <Stack direction="row" spacing={1.25} alignItems="center">
+                            <AssignmentIndRoundedIcon color="primary" />
+                            <CalendarMonthRoundedIcon color="primary" />
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                Dispatch Setup (Optional)
                               </Typography>
-
-                              {assignedTeamNames.length ? (
-                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                  {assignedTeamNames.map((name) => (
-                                    <Chip key={name} label={name} />
-                                  ))}
-                                </Stack>
-                              ) : (
-                                <Typography variant="body2" color="text.secondary">
-                                  No team assigned yet.
-                                </Typography>
-                              )}
-
                               <Typography variant="body2" color="text.secondary">
-                                Helpers and apprentices are auto-added from Employee Profile default
-                                pairings.
+                                Assign a tech and schedule now, or leave blank and create the ticket
+                                first.
+                              </Typography>
+                            </Box>
+                          </Stack>
+
+                          {assignmentError ? <Alert severity="error">{assignmentError}</Alert> : null}
+
+                          {staffLoading ? (
+                            <Stack direction="row" spacing={2} alignItems="center">
+                              <CircularProgress size={20} />
+                              <Typography variant="body2" color="text.secondary">
+                                Loading employee roster…
                               </Typography>
                             </Stack>
-                          </CardContent>
-                        </Card>
-                      </Stack>
-                    </CardContent>
-                  </Card>
+                          ) : (
+                            <Stack spacing={2}>
+                              <TextField
+                                select
+                                label="Primary technician"
+                                value={primaryTechnicianId}
+                                onChange={(e) => {
+                                  setPrimaryTechnicianId(e.target.value);
+                                  setError("");
+                                }}
+                                fullWidth
+                                helperText={
+                                  requiresAssignment
+                                    ? "Required because the ticket status is Scheduled or In Progress."
+                                    : "Optional for new tickets."
+                                }
+                              >
+                                <MenuItem value="">Not assigned yet</MenuItem>
+                                {currentTechnicians.map((t) => (
+                                  <MenuItem key={t.uid} value={t.uid}>
+                                    {t.displayName}
+                                    {t.email ? ` — ${t.email}` : ""}
+                                  </MenuItem>
+                                ))}
+                              </TextField>
 
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                      <Stack spacing={2.5}>
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <CalendarMonthRoundedIcon color="primary" />
-                          <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                              Scheduling
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Add a date and time if this ticket is ready to schedule.
-                            </Typography>
-                          </Box>
+                              <Card
+                                variant="outlined"
+                                sx={{ borderRadius: 4, bgcolor: "background.default" }}
+                              >
+                                <CardContent sx={{ py: 2 }}>
+                                  <Stack spacing={1.25}>
+                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                      Assigned team preview
+                                    </Typography>
+
+                                    {assignedTeamNames.length ? (
+                                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                        {assignedTeamNames.map((name) => (
+                                          <Chip key={name} label={name} />
+                                        ))}
+                                      </Stack>
+                                    ) : (
+                                      <Typography variant="body2" color="text.secondary">
+                                        No team assigned yet.
+                                      </Typography>
+                                    )}
+
+                                    <Typography variant="caption" color="text.secondary">
+                                      Helpers and apprentices are auto-added from Employee Profile
+                                      default pairings.
+                                    </Typography>
+                                  </Stack>
+                                </CardContent>
+                              </Card>
+
+                              <Box
+                                sx={{
+                                  display: "grid",
+                                  gap: 2,
+                                  gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr 1fr" },
+                                }}
+                              >
+                                <TextField
+                                  label="Scheduled date"
+                                  type="date"
+                                  value={scheduledDate}
+                                  onChange={(e) => setScheduledDate(e.target.value)}
+                                  fullWidth
+                                  InputLabelProps={{ shrink: true }}
+                                />
+
+                                <TextField
+                                  label="Start time"
+                                  type="time"
+                                  value={scheduledStartTime}
+                                  onChange={(e) => setScheduledStartTime(e.target.value)}
+                                  fullWidth
+                                  InputLabelProps={{ shrink: true }}
+                                />
+
+                                <TextField
+                                  label="End time"
+                                  type="time"
+                                  value={scheduledEndTime}
+                                  onChange={(e) => setScheduledEndTime(e.target.value)}
+                                  fullWidth
+                                  InputLabelProps={{ shrink: true }}
+                                />
+                              </Box>
+
+                              <Typography variant="body2" color="text.secondary">
+                                Leave these blank if the office wants to create the ticket first and
+                                handle dispatch later.
+                              </Typography>
+                            </Stack>
+                          )}
                         </Stack>
+                      </Box>
 
-                        <Grid container spacing={2}>
-                          <Grid size={{ xs: 12, sm: 4 }}>
-                            <TextField
-                              label="Scheduled date"
-                              type="date"
-                              value={scheduledDate}
-                              onChange={(e) => setScheduledDate(e.target.value)}
-                              fullWidth
-                              InputLabelProps={{ shrink: true }}
-                            />
-                          </Grid>
+                      <Box sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          <Stack direction="row" spacing={1.25} alignItems="center">
+                            <NotesRoundedIcon color="primary" />
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                Internal Notes
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Office-only notes, reminders, or special handling details.
+                              </Typography>
+                            </Box>
+                          </Stack>
 
-                          <Grid size={{ xs: 12, sm: 4 }}>
-                            <TextField
-                              label="Start time"
-                              type="time"
-                              value={scheduledStartTime}
-                              onChange={(e) => setScheduledStartTime(e.target.value)}
-                              fullWidth
-                              InputLabelProps={{ shrink: true }}
-                            />
-                          </Grid>
+                          <TextField
+                            label="Internal notes"
+                            value={internalNotes}
+                            onChange={(e) => setInternalNotes(e.target.value)}
+                            fullWidth
+                            multiline
+                            minRows={3}
+                            placeholder="Ex: Customer prefers afternoon arrival, gate code, special follow-up needed, waiting on parts, etc."
+                          />
+                        </Stack>
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
 
-                          <Grid size={{ xs: 12, sm: 4 }}>
-                            <TextField
-                              label="End time"
-                              type="time"
-                              value={scheduledEndTime}
-                              onChange={(e) => setScheduledEndTime(e.target.value)}
-                              fullWidth
-                              InputLabelProps={{ shrink: true }}
-                            />
-                          </Grid>
-                        </Grid>
-
-                        <Typography variant="body2" color="text.secondary">
-                          Tip: leave scheduling blank if the ticket is being created for triage first.
+                <Card
+                  variant="outlined"
+                  sx={{
+                    borderRadius: 4,
+                    position: "sticky",
+                    bottom: 16,
+                    zIndex: 2,
+                    bgcolor: "background.paper",
+                    mt: 2,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={2}
+                      alignItems={{ xs: "stretch", sm: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Box>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                          Ready to create this ticket?
                         </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Review customer, service location, and issue summary before saving.
+                        </Typography>
+                      </Box>
+
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                        <Button
+                          type="button"
+                          variant="outlined"
+                          onClick={() => router.push("/service-tickets")}
+                          disabled={saving}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="submit"
+                          variant="contained"
+                          disabled={saving}
+                          startIcon={
+                            saving ? (
+                              <CircularProgress size={18} color="inherit" />
+                            ) : (
+                              <AddTaskRoundedIcon />
+                            )
+                          }
+                        >
+                          {saving ? "Creating…" : "Create Service Ticket"}
+                        </Button>
                       </Stack>
-                    </CardContent>
-                  </Card>
-
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                      <Stack spacing={2.5}>
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <NotesRoundedIcon color="primary" />
-                          <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                              Internal Notes
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Office-only context, dispatch notes, special handling, or follow-up reminders.
-                            </Typography>
-                          </Box>
-                        </Stack>
-
-                        <TextField
-                          label="Internal notes"
-                          value={internalNotes}
-                          onChange={(e) => setInternalNotes(e.target.value)}
-                          fullWidth
-                          multiline
-                          minRows={3}
-                          placeholder="Ex: Customer prefers afternoon arrival, gate code, office follow-up needed, waiting on parts, etc."
-                        />
-                      </Stack>
-                    </CardContent>
-                  </Card>
-
-                  <Card
-                    variant="outlined"
-                    sx={{
-                      borderRadius: 4,
-                      position: "sticky",
-                      bottom: 16,
-                      zIndex: 2,
-                      bgcolor: "background.paper",
-                    }}
-                  >
-                    <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
-                      <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={2}
-                        alignItems={{ xs: "stretch", sm: "center" }}
-                        justifyContent="space-between"
-                      >
-                        <Box>
-                          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                            Ready to create this ticket?
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            Review customer, service address, and issue summary before saving.
-                          </Typography>
-                        </Box>
-
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-                          <Button
-                            type="button"
-                            variant="outlined"
-                            onClick={() => router.push("/service-tickets")}
-                            disabled={saving}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            type="submit"
-                            variant="contained"
-                            disabled={saving}
-                            startIcon={
-                              saving ? <CircularProgress size={18} color="inherit" /> : <AddTaskRoundedIcon />
-                            }
-                          >
-                            {saving ? "Creating…" : "Create Service Ticket"}
-                          </Button>
-                        </Stack>
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                </Stack>
+                    </Stack>
+                  </CardContent>
+                </Card>
               </Box>
             ) : null}
           </Stack>
