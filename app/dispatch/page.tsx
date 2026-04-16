@@ -25,6 +25,7 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
+import type { Theme } from "@mui/material/styles";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import EventRoundedIcon from "@mui/icons-material/EventRounded";
@@ -142,7 +143,7 @@ function normalize(value: string) {
 }
 
 function getStatusTone(
-  theme: ReturnType<typeof useTheme>,
+  theme: Theme,
   status: ServiceTicketStatus
 ) {
   switch (status) {
@@ -544,10 +545,10 @@ export default function DispatchBoardPage() {
             {icon}
           </Box>
           <Box>
-            <Typography variant="labelMedium" color="text.secondary">
+            <Typography variant="caption" color="text.secondary">
               {STATUS_LABELS[status]}
             </Typography>
-            <Typography variant="titleLarge" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
+            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
               {statusCounts[status]}
             </Typography>
           </Box>
@@ -576,11 +577,11 @@ export default function DispatchBoardPage() {
               spacing={2}
             >
               <Box>
-                <Typography variant="headlineMedium" sx={{ fontWeight: 700 }}>
+                <Typography variant="h4" sx={{ fontWeight: 700 }}>
                   Dispatch
                 </Typography>
                 <Typography
-                  variant="bodyMedium"
+                  variant="body1"
                   color="text.secondary"
                   sx={{ mt: 0.75, maxWidth: 760 }}
                 >
@@ -700,12 +701,12 @@ export default function DispatchBoardPage() {
                     checked={showRecentHistory}
                     onChange={(e) => setShowRecentHistory(e.target.checked)}
                   />
-                  <Typography variant="bodyMedium" color="text.secondary">
+                  <Typography variant="body1" color="text.secondary">
                     Show recent history
                   </Typography>
                 </Stack>
 
-                <Typography variant="bodySmall" color="text.secondary">
+                <Typography variant="body2" color="text.secondary">
                   Showing {filteredTickets.length} ticket
                   {filteredTickets.length === 1 ? "" : "s"}
                 </Typography>
@@ -746,10 +747,10 @@ export default function DispatchBoardPage() {
                         spacing={1}
                       >
                         <Box>
-                          <Typography variant="titleLarge" sx={{ fontWeight: 700 }}>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
                             {section.title}
                           </Typography>
-                          <Typography variant="bodySmall" color="text.secondary" sx={{ mt: 0.5 }}>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                             {section.description}
                           </Typography>
                         </Box>
@@ -771,7 +772,7 @@ export default function DispatchBoardPage() {
                             bgcolor: alpha(theme.palette.primary.main, 0.02),
                           }}
                         >
-                          <Typography variant="bodyMedium" color="text.secondary">
+                          <Typography variant="body1" color="text.secondary">
                             No tickets match this section right now.
                           </Typography>
                         </Paper>
@@ -821,13 +822,13 @@ export default function DispatchBoardPage() {
                                     >
                                       <Box sx={{ minWidth: 0 }}>
                                         <Typography
-                                          variant="titleMedium"
+                                          variant="subtitle1"
                                           sx={{ fontWeight: 700 }}
                                         >
                                           {ticket.issueSummary || "Untitled Ticket"}
                                         </Typography>
                                         <Typography
-                                          variant="bodyMedium"
+                                          variant="body1"
                                           color="text.secondary"
                                           sx={{ mt: 0.5 }}
                                         >
@@ -880,19 +881,19 @@ export default function DispatchBoardPage() {
                                     </Stack>
 
                                     <Box>
-                                      <Typography variant="bodySmall" color="text.secondary">
+                                      <Typography variant="body2" color="text.secondary">
                                         Service Address
                                       </Typography>
-                                      <Typography variant="bodyMedium" sx={{ mt: 0.25 }}>
+                                      <Typography variant="body1" sx={{ mt: 0.25 }}>
                                         {formatAddress(ticket) || "No address"}
                                       </Typography>
                                     </Box>
 
                                     <Box>
-                                      <Typography variant="bodySmall" color="text.secondary">
+                                      <Typography variant="body2" color="text.secondary">
                                         ETA
                                       </Typography>
-                                      <Typography variant="bodyMedium" sx={{ mt: 0.25 }}>
+                                      <Typography variant="body1" sx={{ mt: 0.25 }}>
                                         {ticket.estimatedDurationMinutes
                                           ? `${ticket.estimatedDurationMinutes} min`
                                           : "Not set"}
@@ -915,7 +916,7 @@ export default function DispatchBoardPage() {
                                     >
                                       <Stack spacing={2}>
                                         <Typography
-                                          variant="labelLarge"
+                                          variant="subtitle2"
                                           sx={{ fontWeight: 700 }}
                                         >
                                           Quick Update
@@ -986,7 +987,7 @@ export default function DispatchBoardPage() {
                                           spacing={1}
                                         >
                                           <Typography
-                                            variant="bodySmall"
+                                            variant="body2"
                                             color={
                                               hasChanges
                                                 ? "primary.main"
