@@ -1,4 +1,3 @@
-// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -11,11 +10,14 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
+  orderBy,
   query,
   updateDoc,
   where,
   limit,
+  writeBatch,
   type Unsubscribe,
 } from "firebase/firestore";
 import {
@@ -27,16 +29,24 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   Drawer,
+  FormControlLabel,
   IconButton,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
   Paper,
+  Radio,
+  RadioGroup,
   Stack,
   SwipeableDrawer,
+  TextField,
   Toolbar,
   Typography,
   useMediaQuery,
@@ -57,6 +67,7 @@ import AdminPanelSettingsRoundedIcon from "@mui/icons-material/AdminPanelSetting
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
+import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
 import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import MapRoundedIcon from "@mui/icons-material/MapRounded";
@@ -133,9 +144,30 @@ type RejectedTimesheetNotice = {
   rejectionReason?: string | null;
 };
 
+type ProjectCloseoutTodayResult =
+  | "done_today"
+  | "stage_complete"
+  | "project_complete";
+
+type ProjectCloseoutMeta = {
+  projectId: string;
+  projectName?: string;
+  projectType?: string | null;
+  stageKey?: string | null;
+};
+
+type FutureProjectTripInfo = {
+  id: string;
+  date: string;
+  timeWindow?: string;
+  startTime?: string;
+  endTime?: string;
+  stageKey?: string | null;
+};
+
 const DESKTOP_DRAWER_WIDTH = 296;
 const MOBILE_BOTTOM_NAV_HEIGHT = 68;
-const MOBILE_ACTIVE_TRIP_HEIGHT = 118;
+const MOBILE_ACTIVE_TRIP_HEIGHT = 138;
 const MOBILE_TOP_REJECTED_OVERLAY_HEIGHT = 128;
 const REJECTED_BANNER_DISMISS_KEY = "dcflow_dismissedRejectedBannerKey";
 
@@ -147,6 +179,75 @@ function truncate(s: string, max = 44) {
   const x = (s || "").trim();
   if (x.length <= max) return x;
   return x.slice(0, max - 1) + "…";
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function todayKeyLocal() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function roundQuarter(value: number) {
+  return Math.round(value * 4) / 4;
+}
+
+function parseTimeToMinutes(hhmm?: string | null) {
+  const raw = safeTrim(hhmm);
+  if (!/^\d{2}:\d{2}$/.test(raw)) return null;
+  const [hh, mm] = raw.split(":").map(Number);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  return hh * 60 + mm;
+}
+
+function suggestedProjectHoursForCloseout(args: {
+  liveMinutes: number;
+  timeWindow?: string;
+  startTime?: string;
+  endTime?: string;
+}) {
+  const { liveMinutes, timeWindow, startTime, endTime } = args;
+
+  if (liveMinutes > 0) {
+    return Math.max(0.25, roundQuarter(liveMinutes / 60));
+  }
+
+  const w = safeTrim(timeWindow).toLowerCase();
+  if (w === "all_day") return 8;
+  if (w === "am") return 4;
+  if (w === "pm") return 4;
+
+  const s = parseTimeToMinutes(startTime);
+  const e = parseTimeToMinutes(endTime);
+  if (s != null && e != null && e > s) {
+    return Math.max(0.25, roundQuarter((e - s) / 60));
+  }
+
+  return 8;
+}
+
+function getPayrollWeekBounds(entryDateIso: string) {
+  const [y, m, d] = entryDateIso.split("-").map((x) => Number(x));
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setHours(0, 0, 0, 0);
+
+  const wd = dt.getDay();
+  const diffToMon = (wd + 6) % 7;
+  const weekStart = new Date(dt);
+  weekStart.setDate(weekStart.getDate() - diffToMon);
+
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+
+  return {
+    weekStartDate: toIsoDate(weekStart),
+    weekEndDate: toIsoDate(weekEnd),
+  };
 }
 
 function parseIsoMs(iso?: string | null) {
@@ -212,6 +313,63 @@ function userIsOnCrew(uid: string, crew?: TripCrew | null) {
     safeTrim(c.secondaryTechUid) === u ||
     safeTrim(c.secondaryHelperUid) === u
   );
+}
+
+function normalizeTripStatus(status?: string | null) {
+  const s = safeTrim(status).toLowerCase();
+  if (s === "completed") return "complete";
+  return s;
+}
+
+function stageLabel(stageKey?: string | null) {
+  const key = safeTrim(stageKey);
+  if (key === "roughIn") return "Rough-In";
+  if (key === "topOutVent") return "Top-Out / Vent";
+  if (key === "trimFinish") return "Trim / Finish";
+  if (key === "tm_work") return "T&M Work";
+  return key || "Project Work";
+}
+
+function isTimeMaterialsProject(projectType?: string | null) {
+  const value = safeTrim(projectType).toLowerCase();
+  return (
+    value === "time_materials" ||
+    value === "time+materials" ||
+    value === "time_and_materials"
+  );
+}
+
+function compareTripSequence(
+  a: Pick<TripDoc, "id" | "date" | "startTime">,
+  b: Pick<TripDoc, "id" | "date" | "startTime">
+) {
+  const aKey = `${safeTrim(a.date)}_${safeTrim(a.startTime) || "00:00"}_${a.id}`;
+  const bKey = `${safeTrim(b.date)}_${safeTrim(b.startTime) || "00:00"}_${b.id}`;
+  return aKey.localeCompare(bKey);
+}
+
+function formatTripWindowLabel(
+  timeWindow?: string,
+  startTime?: string,
+  endTime?: string
+) {
+  const w = safeTrim(timeWindow).toLowerCase();
+
+  if (w === "all_day") return "All Day";
+  if (w === "am") return "AM";
+  if (w === "pm") return "PM";
+  if (w === "custom") {
+    const s = safeTrim(startTime);
+    const e = safeTrim(endTime);
+    if (s && e) return `${s}-${e}`;
+    return "Custom";
+  }
+
+  if (safeTrim(startTime) && safeTrim(endTime)) {
+    return `${safeTrim(startTime)}-${safeTrim(endTime)}`;
+  }
+
+  return "—";
 }
 
 function pickLatestTrip(trips: TripDoc[]) {
@@ -485,14 +643,6 @@ function isMondayLocalNow() {
   return d.getDay() === 1;
 }
 
-function todayKeyLocal() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 function isActivePath(pathname: string, target: string) {
   if (!target) return false;
   if (target === "/") return pathname === "/";
@@ -730,6 +880,9 @@ export default function AppShell({
 
   const role = appUser?.role;
   const myUid = safeTrim(appUser?.uid);
+  const myDisplayName = safeTrim(
+    (appUser as any)?.displayName || (appUser as any)?.name || "Employee"
+  );
 
   const showDashboard =
     role === "admin" ||
@@ -811,6 +964,9 @@ export default function AppShell({
 
   const activeTrip = useRealtimeActiveTrip(myUid);
   const [activeTripCard, setActiveTripCard] = useState<ActiveTripCard | null>(null);
+  const [projectMeta, setProjectMeta] = useState<ProjectCloseoutMeta | null>(null);
+  const [projectFutureTrips, setProjectFutureTrips] = useState<FutureProjectTripInfo[]>([]);
+  const [projectFutureTripsLoading, setProjectFutureTripsLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -830,6 +986,140 @@ export default function AppShell({
       cancelled = true;
     };
   }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProjectMeta() {
+      const isProject = safeTrim(activeTrip?.type).toLowerCase() === "project";
+      const projectId = safeTrim(activeTrip?.link?.projectId);
+      const stageKey = safeTrim(activeTrip?.link?.projectStageKey) || null;
+
+      if (!isProject || !projectId) {
+        setProjectMeta(null);
+        return;
+      }
+
+      try {
+        const snap = await getDoc(doc(db, "projects", projectId));
+        if (cancelled) return;
+
+        if (snap.exists()) {
+          const data = snap.data() as any;
+          setProjectMeta({
+            projectId,
+            projectName: safeTrim(data.projectName) || undefined,
+            projectType: safeTrim(data.projectType) || null,
+            stageKey,
+          });
+        } else {
+          setProjectMeta({
+            projectId,
+            stageKey,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setProjectMeta({
+            projectId,
+            stageKey,
+          });
+        }
+      }
+    }
+
+    loadProjectMeta();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrip?.id, activeTrip?.type, activeTrip?.link?.projectId, activeTrip?.link?.projectStageKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFutureProjectTrips() {
+      const isProject = safeTrim(activeTrip?.type).toLowerCase() === "project";
+      const projectId = safeTrim(activeTrip?.link?.projectId);
+
+      if (!isProject || !projectId || !activeTrip) {
+        setProjectFutureTrips([]);
+        return;
+      }
+
+      setProjectFutureTripsLoading(true);
+
+      try {
+        const snap = await getDocs(
+          query(
+            collection(db, "trips"),
+            where("link.projectId", "==", projectId),
+            orderBy("date", "asc"),
+            orderBy("startTime", "asc")
+          )
+        );
+
+        if (cancelled) return;
+
+        const trips: FutureProjectTripInfo[] = snap.docs
+          .map((ds) => {
+            const d = ds.data() as any;
+            return {
+              id: ds.id,
+              date: safeTrim(d.date),
+              timeWindow: d.timeWindow ?? "",
+              startTime: d.startTime ?? "",
+              endTime: d.endTime ?? "",
+              stageKey: safeTrim(d.link?.projectStageKey) || null,
+            };
+          })
+          .filter((trip) => trip.id !== activeTrip.id)
+          .filter((trip) => {
+            const currentComparable = {
+              id: activeTrip.id,
+              date: activeTrip.date ?? "",
+              startTime: activeTrip.startTime ?? "",
+            };
+            const candidateComparable = {
+              id: trip.id,
+              date: trip.date,
+              startTime: trip.startTime ?? "",
+            };
+            return compareTripSequence(candidateComparable, currentComparable) > 0;
+          });
+
+        const statusMap = new Map<string, string>();
+        snap.docs.forEach((ds) => {
+          const d = ds.data() as any;
+          statusMap.set(ds.id, normalizeTripStatus(d.status));
+        });
+
+        const activeMap = new Map<string, boolean>();
+        snap.docs.forEach((ds) => {
+          const d = ds.data() as any;
+          activeMap.set(ds.id, d.active !== false);
+        });
+
+        setProjectFutureTrips(
+          trips.filter((trip) => {
+            const status = statusMap.get(trip.id) || "planned";
+            const active = activeMap.get(trip.id) !== false;
+            return active && status !== "cancelled";
+          })
+        );
+      } catch {
+        if (!cancelled) setProjectFutureTrips([]);
+      } finally {
+        if (!cancelled) setProjectFutureTripsLoading(false);
+      }
+    }
+
+    loadFutureProjectTrips();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrip?.id, activeTrip?.type, activeTrip?.date, activeTrip?.startTime, activeTrip?.link?.projectId]);
 
   useEffect(() => {
     if (!activeTripCard) setActiveTripSheetOpen(false);
@@ -859,6 +1149,33 @@ export default function AppShell({
 
   const isPaused = timerState === "paused";
   const hasServiceTicketTarget = Boolean(safeTrim(activeTrip?.link?.serviceTicketId));
+  const isProjectActiveTrip = safeTrim(activeTrip?.type).toLowerCase() === "project";
+  const isTmProject = isTimeMaterialsProject(projectMeta?.projectType);
+  const supportsStageCloseout =
+    isProjectActiveTrip &&
+    !isTmProject &&
+    Boolean(safeTrim(projectMeta?.stageKey || activeTrip?.link?.projectStageKey));
+
+  const nextFutureProjectTrip = useMemo(
+    () => projectFutureTrips[0] || null,
+    [projectFutureTrips]
+  );
+
+  const nextFutureProjectTripSummary = useMemo(() => {
+    if (!nextFutureProjectTrip) return "";
+    const bits = [
+      formatDisplayDate(nextFutureProjectTrip.date),
+      formatTripWindowLabel(
+        nextFutureProjectTrip.timeWindow,
+        nextFutureProjectTrip.startTime,
+        nextFutureProjectTrip.endTime
+      ),
+    ];
+    if (safeTrim(nextFutureProjectTrip.stageKey)) {
+      bits.push(stageLabel(nextFutureProjectTrip.stageKey));
+    }
+    return bits.filter(Boolean).join(" • ");
+  }, [nextFutureProjectTrip]);
 
   const canQuickAct = useMemo(() => {
     if (!activeTrip) return false;
@@ -869,25 +1186,43 @@ export default function AppShell({
     return Boolean(myUid) && (onCrew || elevated);
   }, [activeTrip, myUid, role]);
 
+  const canProjectCloseout = useMemo(() => {
+    if (!activeTrip || !isProjectActiveTrip || !myUid) return false;
+    const c = activeTrip.crewConfirmed || activeTrip.crew || null;
+    return userIsOnCrew(myUid, c);
+  }, [activeTrip, isProjectActiveTrip, myUid]);
+
   const [pillActionBusy, setPillActionBusy] = useState(false);
+  const [projectCloseoutOpen, setProjectCloseoutOpen] = useState(false);
+  const [projectTodayResult, setProjectTodayResult] =
+    useState<ProjectCloseoutTodayResult>("done_today");
+  const [projectMoreWorkNeeded, setProjectMoreWorkNeeded] =
+    useState<"no" | "yes">("no");
+  const [projectHoursWorked, setProjectHoursWorked] = useState("8");
+  const [projectCloseoutNotes, setProjectCloseoutNotes] = useState("");
+  const [projectMaterialsSummary, setProjectMaterialsSummary] = useState("");
+  const [projectRequestedReturnDate, setProjectRequestedReturnDate] = useState("");
+  const [projectCloseoutSaving, setProjectCloseoutSaving] = useState(false);
+  const [projectCloseoutError, setProjectCloseoutError] = useState("");
+  const [projectDockNotice, setProjectDockNotice] = useState("");
 
   async function handleQuickPause() {
     if (!activeTrip || !canQuickAct || pillActionBusy) return;
     setPillActionBusy(true);
     try {
       const tripRef = doc(db, "trips", activeTrip.id);
-      const now = new Date().toISOString();
+      const stamp = nowIso();
       const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
         ? [...activeTrip.pauseBlocks]
         : [];
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx !== -1) return;
-      curBlocks.push({ startAt: now, endAt: null });
+      curBlocks.push({ startAt: stamp, endAt: null });
 
       await updateDoc(tripRef, {
         timerState: "paused",
         pauseBlocks: curBlocks,
-        updatedAt: now,
+        updatedAt: stamp,
         updatedByUid: myUid || null,
       } as any);
     } finally {
@@ -900,22 +1235,377 @@ export default function AppShell({
     setPillActionBusy(true);
     try {
       const tripRef = doc(db, "trips", activeTrip.id);
-      const now = new Date().toISOString();
+      const stamp = nowIso();
       const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
         ? [...activeTrip.pauseBlocks]
         : [];
       const openIdx = findOpenPauseIndex(curBlocks);
       if (openIdx === -1) return;
-      curBlocks[openIdx] = { ...curBlocks[openIdx], endAt: now };
+      curBlocks[openIdx] = { ...curBlocks[openIdx], endAt: stamp };
 
       await updateDoc(tripRef, {
         timerState: "running",
         pauseBlocks: curBlocks,
-        updatedAt: now,
+        updatedAt: stamp,
         updatedByUid: myUid || null,
       } as any);
     } finally {
       setPillActionBusy(false);
+    }
+  }
+
+  function openProjectCloseoutDialog() {
+    if (!activeTrip || !isProjectActiveTrip || !canProjectCloseout) return;
+
+    const suggestedHours = suggestedProjectHoursForCloseout({
+      liveMinutes,
+      timeWindow: activeTrip.timeWindow,
+      startTime: activeTrip.startTime,
+      endTime: activeTrip.endTime,
+    });
+
+    setProjectTodayResult("done_today");
+    setProjectMoreWorkNeeded("no");
+    setProjectHoursWorked(String(suggestedHours));
+    setProjectCloseoutNotes("");
+    setProjectMaterialsSummary("");
+    setProjectRequestedReturnDate("");
+    setProjectCloseoutError("");
+    setProjectDockNotice("");
+    setActiveTripSheetOpen(false);
+    setProjectCloseoutOpen(true);
+  }
+
+  async function handleSubmitProjectCloseoutFromDock() {
+    if (!activeTrip || !isProjectActiveTrip || !canProjectCloseout) return;
+
+    const projectId = safeTrim(activeTrip.link?.projectId);
+    if (!projectId) {
+      setProjectCloseoutError("This project trip is missing a linked project.");
+      return;
+    }
+
+    const hoursNumber = Number(projectHoursWorked);
+    if (!Number.isFinite(hoursNumber) || hoursNumber <= 0) {
+      setProjectCloseoutError("Hours worked today must be a number greater than 0.");
+      return;
+    }
+
+    const projectIdStageKey = safeTrim(
+      projectMeta?.stageKey || activeTrip.link?.projectStageKey
+    );
+    const closeoutNotes = safeTrim(projectCloseoutNotes);
+    const materialsSummary = safeTrim(projectMaterialsSummary);
+    const requestedReturnDate = safeTrim(projectRequestedReturnDate);
+
+    if (
+      projectTodayResult === "done_today" &&
+      projectMoreWorkNeeded === "yes" &&
+      !nextFutureProjectTrip &&
+      !requestedReturnDate
+    ) {
+      setProjectCloseoutError("Please enter a requested return date.");
+      return;
+    }
+
+    setProjectCloseoutSaving(true);
+    setProjectCloseoutError("");
+
+    try {
+      const stamp = nowIso();
+      const tripRef = doc(db, "trips", activeTrip.id);
+      const projectRef = doc(db, "projects", projectId);
+
+      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(
+        safeTrim(activeTrip.date) || todayKeyLocal()
+      );
+      const timesheetId = buildWeeklyTimesheetId(myUid, weekStartDate);
+      const timeEntryId = `trip_${activeTrip.id}_${myUid}`;
+      const timesheetRef = doc(db, "weeklyTimesheets", timesheetId);
+      const timeEntryRef = doc(db, "timeEntries", timeEntryId);
+
+      const pauseBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
+        ? [...activeTrip.pauseBlocks]
+        : [];
+
+      const openPauseIdx = findOpenPauseIndex(pauseBlocks);
+      if (openPauseIdx !== -1) {
+        pauseBlocks[openPauseIdx] = {
+          ...pauseBlocks[openPauseIdx],
+          endAt: stamp,
+        };
+      }
+
+      const relatedTripsSnap = await getDocs(
+        query(
+          collection(db, "trips"),
+          where("link.projectId", "==", projectId),
+          orderBy("date", "asc"),
+          orderBy("startTime", "asc")
+        )
+      );
+
+      const relatedTrips: TripDoc[] = relatedTripsSnap.docs.map((ds) => {
+        const d = ds.data() as any;
+        return {
+          id: ds.id,
+          active: d.active ?? true,
+          status: d.status ?? "planned",
+          type: d.type ?? "project",
+          date: d.date ?? "",
+          startTime: d.startTime ?? "",
+          endTime: d.endTime ?? "",
+          timeWindow: d.timeWindow ?? "all_day",
+          crew: d.crew ?? null,
+          link: d.link ?? null,
+          timerState: d.timerState ?? null,
+          actualStartAt: d.actualStartAt ?? null,
+          actualEndAt: d.actualEndAt ?? null,
+          pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
+        };
+      });
+
+      const currentTrip =
+        relatedTrips.find((candidate) => candidate.id === activeTrip.id) || activeTrip;
+
+      const futureTrips = relatedTrips.filter((candidate) => {
+        if (candidate.id === currentTrip.id) return false;
+        if (candidate.active === false) return false;
+
+        const status = normalizeTripStatus(candidate.status);
+        if (status === "cancelled") return false;
+
+        const isFuture = compareTripSequence(candidate, currentTrip) > 0;
+        if (!isFuture) return false;
+
+        if (projectTodayResult === "stage_complete") {
+          return safeTrim(candidate.link?.projectStageKey) === projectIdStageKey;
+        }
+
+        if (projectTodayResult === "project_complete") {
+          return true;
+        }
+
+        return false;
+      });
+
+      let cancelledFutureTripCount = 0;
+
+      const batch = writeBatch(db);
+
+      const tripUpdates: Record<string, unknown> = {
+        status: "complete",
+        timerState: "complete",
+        actualStartAt: activeTrip.actualStartAt || stamp,
+        actualEndAt: stamp,
+        pauseBlocks,
+        completedAt: stamp,
+        completedByUid: myUid || null,
+        closeoutDecision: projectTodayResult,
+        closeoutNotes: closeoutNotes || null,
+        closeoutAt: stamp,
+        closeoutByUid: myUid || null,
+        closeoutHours: hoursNumber,
+        materialsSummary: materialsSummary || null,
+        materialsLoggedAt: materialsSummary ? stamp : null,
+        materialsLoggedByUid: materialsSummary ? myUid || null : null,
+        needsMoreTime:
+          projectTodayResult === "done_today" && projectMoreWorkNeeded === "yes",
+        requestedReturnDate:
+          projectTodayResult === "done_today" &&
+          projectMoreWorkNeeded === "yes" &&
+          !nextFutureProjectTrip
+            ? requestedReturnDate || null
+            : null,
+        nextScheduledTripId:
+          projectTodayResult === "done_today" &&
+          projectMoreWorkNeeded === "yes" &&
+          nextFutureProjectTrip
+            ? nextFutureProjectTrip.id
+            : null,
+        nextScheduledTripDate:
+          projectTodayResult === "done_today" &&
+          projectMoreWorkNeeded === "yes" &&
+          nextFutureProjectTrip
+            ? nextFutureProjectTrip.date
+            : null,
+        completedEarly: false,
+        cancelledFutureTripCount: 0,
+        updatedAt: stamp,
+        updatedByUid: myUid || null,
+        [`confirmedBy.${myUid}`]: {
+          hours: hoursNumber,
+          note: closeoutNotes || null,
+          confirmedAt: stamp,
+        },
+      };
+
+      const projectUpdates: Record<string, unknown> = {
+        updatedAt: stamp,
+      };
+
+      if (projectTodayResult === "done_today") {
+        if (projectIdStageKey && !isTmProject) {
+          projectUpdates[`${projectIdStageKey}.status`] = "in_progress";
+        }
+
+        const needsMoreWork = projectMoreWorkNeeded === "yes";
+        const hasFutureTrip = Boolean(nextFutureProjectTrip);
+
+        projectUpdates.additionalTripRequested = needsMoreWork && !hasFutureTrip;
+        projectUpdates.additionalTripRequestedAt =
+          needsMoreWork && !hasFutureTrip ? stamp : null;
+        projectUpdates.additionalTripRequestedByUid =
+          needsMoreWork && !hasFutureTrip ? myUid || null : null;
+        projectUpdates.additionalTripRequestedForStage =
+          needsMoreWork && !hasFutureTrip ? projectIdStageKey || null : null;
+        projectUpdates.additionalTripRequestedNote =
+          needsMoreWork && !hasFutureTrip ? closeoutNotes || null : null;
+        projectUpdates.additionalTripRequestedReturnDate =
+          needsMoreWork && !hasFutureTrip ? requestedReturnDate || null : null;
+      }
+
+      if (projectTodayResult === "stage_complete") {
+        projectUpdates[`${projectIdStageKey}.status`] = "complete";
+        projectUpdates[`${projectIdStageKey}.completedDate`] =
+          activeTrip.date || todayKeyLocal();
+
+        projectUpdates.additionalTripRequested = false;
+        projectUpdates.additionalTripRequestedAt = null;
+        projectUpdates.additionalTripRequestedByUid = null;
+        projectUpdates.additionalTripRequestedForStage = null;
+        projectUpdates.additionalTripRequestedNote = null;
+        projectUpdates.additionalTripRequestedReturnDate = null;
+
+        for (const futureTrip of futureTrips) {
+          batch.update(doc(db, "trips", futureTrip.id), {
+            status: "cancelled",
+            active: false,
+            cancelReason: `Stage completed early from trip ${activeTrip.id}`,
+            updatedAt: stamp,
+            updatedByUid: myUid || null,
+          });
+          cancelledFutureTripCount += 1;
+        }
+      }
+
+      if (projectTodayResult === "project_complete") {
+        if (projectIdStageKey && !isTmProject) {
+          projectUpdates[`${projectIdStageKey}.status`] = "complete";
+          projectUpdates[`${projectIdStageKey}.completedDate`] =
+            activeTrip.date || todayKeyLocal();
+        }
+
+        projectUpdates.active = false;
+        projectUpdates.completedAt = stamp;
+        projectUpdates.completedByUid = myUid || null;
+        projectUpdates.completionNotes = closeoutNotes || null;
+
+        projectUpdates.additionalTripRequested = false;
+        projectUpdates.additionalTripRequestedAt = null;
+        projectUpdates.additionalTripRequestedByUid = null;
+        projectUpdates.additionalTripRequestedForStage = null;
+        projectUpdates.additionalTripRequestedNote = null;
+        projectUpdates.additionalTripRequestedReturnDate = null;
+
+        for (const futureTrip of futureTrips) {
+          batch.update(doc(db, "trips", futureTrip.id), {
+            status: "cancelled",
+            active: false,
+            cancelReason: `Project completed early from trip ${activeTrip.id}`,
+            updatedAt: stamp,
+            updatedByUid: myUid || null,
+          });
+          cancelledFutureTripCount += 1;
+        }
+      }
+
+      tripUpdates.completedEarly = cancelledFutureTripCount > 0;
+      tripUpdates.cancelledFutureTripCount = cancelledFutureTripCount;
+
+      batch.set(
+        timesheetRef,
+        {
+          employeeId: myUid,
+          employeeName: myDisplayName || "Employee",
+          employeeRole: role || "technician",
+          weekStartDate,
+          weekEndDate,
+          status: "draft",
+          submittedAt: null,
+          submittedByUid: null,
+          createdAt: stamp,
+          createdByUid: myUid,
+          updatedAt: stamp,
+          updatedByUid: myUid,
+        },
+        { merge: true }
+      );
+
+      batch.set(
+        timeEntryRef,
+        {
+          employeeId: myUid,
+          employeeName: myDisplayName || "Employee",
+          employeeRole: role || "technician",
+          entryDate: safeTrim(activeTrip.date) || todayKeyLocal(),
+          weekStartDate,
+          weekEndDate,
+          timesheetId,
+          category: "project",
+          payType: "regular",
+          billable: true,
+          source: "project_trip_closeout",
+          hours: hoursNumber,
+          hoursSource: hoursNumber,
+          hoursLocked: true,
+          tripId: activeTrip.id,
+          projectId,
+          projectStageKey: projectIdStageKey || null,
+          entryStatus: "draft",
+          notes: closeoutNotes || null,
+          createdAt: stamp,
+          createdByUid: myUid,
+          updatedAt: stamp,
+          updatedByUid: myUid,
+        },
+        { merge: true }
+      );
+
+      batch.update(tripRef, tripUpdates);
+      batch.update(projectRef, projectUpdates);
+
+      await batch.commit();
+
+      setProjectCloseoutOpen(false);
+
+      if (projectTodayResult === "done_today") {
+        if (projectMoreWorkNeeded === "yes" && nextFutureProjectTrip) {
+          setProjectDockNotice(
+            `Saved. ${hoursNumber.toFixed(2)}h logged. Next scheduled trip: ${nextFutureProjectTripSummary}.`
+          );
+        } else if (projectMoreWorkNeeded === "yes" && !nextFutureProjectTrip) {
+          setProjectDockNotice(
+            `Saved. ${hoursNumber.toFixed(2)}h logged. Return requested for ${formatDisplayDate(requestedReturnDate)}.`
+          );
+        } else {
+          setProjectDockNotice(`Saved. ${hoursNumber.toFixed(2)}h logged.`);
+        }
+      } else if (projectTodayResult === "stage_complete") {
+        setProjectDockNotice(
+          `Saved. ${hoursNumber.toFixed(2)}h logged. Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+        );
+      } else {
+        setProjectDockNotice(
+          `Saved. ${hoursNumber.toFixed(2)}h logged. ${isTmProject ? "Work" : "Project"} marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+        );
+      }
+    } catch (err: unknown) {
+      setProjectCloseoutError(
+        err instanceof Error ? err.message : "Failed to save project closeout."
+      );
+    } finally {
+      setProjectCloseoutSaving(false);
     }
   }
 
@@ -1570,9 +2260,154 @@ export default function AppShell({
   const tripAccentSoft = alpha(tripAccentMain, 0.12);
   const tripAccentBorder = alpha(tripAccentMain, 0.24);
 
-  const collapsedTripDock =
+  const projectCollapsedTripDock =
     isMobile &&
     activeTripCard &&
+    isProjectActiveTrip &&
+    !activeTripSheetOpen &&
+    !suppressGlobalActiveTripSurface ? (
+      <Paper
+        elevation={6}
+        onClick={() => setActiveTripSheetOpen(true)}
+        sx={{
+          position: "fixed",
+          left: 16,
+          right: 16,
+          bottom: showMobileBottomNav ? MOBILE_BOTTOM_NAV_HEIGHT + 16 : 16,
+          zIndex: 1201,
+          borderRadius: 3,
+          border: `1px solid ${tripAccentBorder}`,
+          backgroundColor: theme.palette.background.paper,
+          backgroundImage: "none",
+          boxShadow: theme.shadows[8],
+          overflow: "hidden",
+          cursor: "pointer",
+        }}
+      >
+        <Box sx={{ px: 2, pt: 1 }}>
+          <Box
+            sx={{
+              width: 36,
+              height: 4,
+              borderRadius: 999,
+              mx: "auto",
+              mb: 1,
+              backgroundColor: tripAccentSoft,
+            }}
+          />
+        </Box>
+
+        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 2 }}>
+          <Box
+            sx={{
+              width: 52,
+              height: 52,
+              borderRadius: 999,
+              flexShrink: 0,
+              display: "grid",
+              placeItems: "center",
+              backgroundColor: tripAccentSoft,
+              color: tripAccentMain,
+            }}
+          >
+            {isPaused ? <PauseRoundedIcon /> : <PlayArrowRoundedIcon />}
+          </Box>
+
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+              <Typography variant="subtitle2" fontWeight={700} sx={{ color: tripAccentMain }}>
+                {isPaused ? "Paused" : "Running"}
+              </Typography>
+
+              <Chip
+                size="small"
+                label={`${liveMinutes} min`}
+                variant="outlined"
+                sx={{
+                  color: tripAccentMain,
+                  backgroundColor: tripAccentSoft,
+                  borderColor: tripAccentBorder,
+                  fontWeight: 700,
+                }}
+              />
+            </Stack>
+
+            <Typography variant="body2" sx={{ mt: 0.25 }} noWrap>
+              {projectMeta?.projectName || activeTripCard.primaryLine}
+            </Typography>
+
+            <Typography variant="caption" color="text.secondary" noWrap>
+              {supportsStageCloseout
+                ? `${stageLabel(projectMeta?.stageKey || activeTrip?.link?.projectStageKey)} • ${activeTripCard.secondaryLine}`
+                : activeTripCard.secondaryLine}
+            </Typography>
+          </Box>
+
+          <KeyboardArrowUpRoundedIcon sx={{ color: tripAccentMain }} />
+        </Stack>
+
+        <Box sx={{ px: 2, pt: 1.25, pb: 1.5 }}>
+          <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
+            {canQuickAct ? (
+              isPaused ? (
+                <Button
+                  variant="contained"
+                  startIcon={<PlayArrowRoundedIcon />}
+                  disabled={pillActionBusy}
+                  onClick={async (event) => {
+                    event.stopPropagation();
+                    await handleQuickResume();
+                  }}
+                >
+                  Resume
+                </Button>
+              ) : (
+                <Button
+                  variant="outlined"
+                  startIcon={<PauseRoundedIcon />}
+                  disabled={pillActionBusy}
+                  onClick={async (event) => {
+                    event.stopPropagation();
+                    await handleQuickPause();
+                  }}
+                >
+                  Pause
+                </Button>
+              )
+            ) : (
+              <Button
+                variant="outlined"
+                startIcon={<ArrowOutwardRoundedIcon />}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  router.push(activeTripCard.href);
+                }}
+              >
+                Open Trip
+              </Button>
+            )}
+
+            <Button
+              variant="contained"
+              color="warning"
+              startIcon={<StopRoundedIcon />}
+              disabled={!canProjectCloseout || pillActionBusy}
+              onClick={(event) => {
+                event.stopPropagation();
+                openProjectCloseoutDialog();
+              }}
+            >
+              Finish Day
+            </Button>
+          </Box>
+        </Box>
+      </Paper>
+    ) : null;
+
+  const standardCollapsedTripDock =
+    isMobile &&
+    activeTripCard &&
+    !isProjectActiveTrip &&
     !activeTripSheetOpen &&
     !suppressGlobalActiveTripSurface ? (
       <Paper
@@ -1682,8 +2517,155 @@ export default function AppShell({
       </Paper>
     ) : null;
 
-  const activeTripBottomSheet =
-    isMobile && activeTripCard && !suppressGlobalActiveTripSurface ? (
+  const collapsedTripDock = projectCollapsedTripDock || standardCollapsedTripDock;
+
+  const projectActiveTripBottomSheet =
+    isMobile && activeTripCard && isProjectActiveTrip && !suppressGlobalActiveTripSurface ? (
+      <SwipeableDrawer
+        anchor="bottom"
+        open={activeTripSheetOpen}
+        onOpen={() => setActiveTripSheetOpen(true)}
+        onClose={() => setActiveTripSheetOpen(false)}
+        disableSwipeToOpen={false}
+        PaperProps={{
+          sx: {
+            borderTopLeftRadius: 20,
+            borderTopRightRadius: 20,
+            backgroundColor: theme.palette.background.paper,
+            backgroundImage: "none",
+            pb: "calc(16px + env(safe-area-inset-bottom))",
+          },
+        }}
+      >
+        <Box sx={{ p: 2 }}>
+          <Box
+            sx={{
+              width: 40,
+              height: 4,
+              borderRadius: 999,
+              mx: "auto",
+              mb: 2,
+              backgroundColor: tripAccentSoft,
+            }}
+          />
+
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={1.25} alignItems="center">
+              <Box
+                sx={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 2,
+                  display: "grid",
+                  placeItems: "center",
+                  flexShrink: 0,
+                  backgroundColor: tripAccentSoft,
+                  color: tripAccentMain,
+                }}
+              >
+                {isPaused ? <PauseRoundedIcon /> : <PlayArrowRoundedIcon />}
+              </Box>
+
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="subtitle1" fontWeight={700} sx={{ color: tripAccentMain }}>
+                  {isPaused ? "Paused" : "Running"}
+                </Typography>
+                <Typography variant="body2" noWrap>
+                  {projectMeta?.projectName || activeTripCard.primaryLine}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {supportsStageCloseout
+                    ? stageLabel(projectMeta?.stageKey || activeTrip?.link?.projectStageKey)
+                    : activeTripCard.secondaryLine}
+                </Typography>
+              </Box>
+
+              <IconButton onClick={() => setActiveTripSheetOpen(false)}>
+                <CloseRoundedIcon />
+              </IconButton>
+            </Stack>
+
+            <Divider />
+
+            <Typography variant="subtitle2" fontWeight={700}>
+              Project Trip Actions
+            </Typography>
+
+            <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
+              {canQuickAct ? (
+                isPaused ? (
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    startIcon={<PlayArrowRoundedIcon />}
+                    disabled={pillActionBusy}
+                    onClick={async () => {
+                      await handleQuickResume();
+                      setActiveTripSheetOpen(false);
+                    }}
+                  >
+                    Resume
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    startIcon={<PauseRoundedIcon />}
+                    disabled={pillActionBusy}
+                    onClick={async () => {
+                      await handleQuickPause();
+                      setActiveTripSheetOpen(false);
+                    }}
+                  >
+                    Pause
+                  </Button>
+                )
+              ) : (
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  startIcon={<ArrowOutwardRoundedIcon />}
+                  onClick={() => {
+                    router.push(activeTripCard.href);
+                    setActiveTripSheetOpen(false);
+                  }}
+                >
+                  Open Trip
+                </Button>
+              )}
+
+              <Button
+                variant="contained"
+                color="warning"
+                startIcon={<StopRoundedIcon />}
+                disabled={!canProjectCloseout || pillActionBusy}
+                onClick={() => {
+                  openProjectCloseoutDialog();
+                }}
+              >
+                Finish Day
+              </Button>
+
+              <Button
+                variant="outlined"
+                color="primary"
+                startIcon={<ArrowOutwardRoundedIcon />}
+                sx={{ gridColumn: "1 / -1" }}
+                onClick={() => {
+                  router.push(activeTripCard.href);
+                  setActiveTripSheetOpen(false);
+                }}
+              >
+                Open Trip
+              </Button>
+            </Box>
+          </Stack>
+        </Box>
+      </SwipeableDrawer>
+    ) : null;
+
+  const standardActiveTripBottomSheet =
+    isMobile && activeTripCard && !isProjectActiveTrip && !suppressGlobalActiveTripSurface ? (
       <SwipeableDrawer
         anchor="bottom"
         open={activeTripSheetOpen}
@@ -1844,6 +2826,8 @@ export default function AppShell({
       </SwipeableDrawer>
     ) : null;
 
+  const activeTripBottomSheet = projectActiveTripBottomSheet || standardActiveTripBottomSheet;
+
   const currentPageLabel = useMemo(() => getMobilePageLabel(pathname), [pathname]);
 
   const mobileRejectedOverlay =
@@ -1916,6 +2900,198 @@ export default function AppShell({
       </Box>
     ) : null;
 
+  const projectCloseoutDialog =
+    isProjectActiveTrip && activeTrip ? (
+      <Dialog
+        open={projectCloseoutOpen}
+        onClose={projectCloseoutSaving ? undefined : () => setProjectCloseoutOpen(false)}
+        fullWidth
+        maxWidth="sm"
+        PaperProps={{ sx: { borderRadius: 4 } }}
+      >
+        <DialogTitle>Finish Project Day</DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Alert severity="info" variant="outlined">
+              This saves the project closeout and today’s hours together, so the tech does not need to go back to My Day to confirm hours.
+            </Alert>
+
+            <RadioGroup
+              value={projectTodayResult}
+              onChange={(e) =>
+                setProjectTodayResult(e.target.value as ProjectCloseoutTodayResult)
+              }
+            >
+              <FormControlLabel
+                value="done_today"
+                control={<Radio />}
+                label="Done for today"
+              />
+
+              {supportsStageCloseout ? (
+                <FormControlLabel
+                  value="stage_complete"
+                  control={<Radio />}
+                  label={`Complete ${stageLabel(projectMeta?.stageKey || activeTrip.link?.projectStageKey)}`}
+                />
+              ) : null}
+
+              <FormControlLabel
+                value="project_complete"
+                control={<Radio />}
+                label={isTmProject ? "Work complete" : "Complete entire project"}
+              />
+            </RadioGroup>
+
+            {projectTodayResult === "done_today" ? (
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 2,
+                  borderRadius: 3,
+                  bgcolor: alpha(theme.palette.primary.main, 0.03),
+                }}
+              >
+                <Stack spacing={1.5}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                    Is more work still needed after today?
+                  </Typography>
+
+                  <RadioGroup
+                    value={projectMoreWorkNeeded}
+                    onChange={(e) =>
+                      setProjectMoreWorkNeeded(e.target.value as "no" | "yes")
+                    }
+                  >
+                    <FormControlLabel value="no" control={<Radio />} label="No" />
+                    <FormControlLabel value="yes" control={<Radio />} label="Yes" />
+                  </RadioGroup>
+
+                  {projectMoreWorkNeeded === "yes" ? (
+                    projectFutureTripsLoading ? (
+                      <Typography variant="body2" color="text.secondary">
+                        Checking future project trips...
+                      </Typography>
+                    ) : nextFutureProjectTrip ? (
+                      <Alert severity="success" variant="outlined">
+                        <Typography sx={{ fontWeight: 700 }}>
+                          Next scheduled trip found
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.5 }}>
+                          {nextFutureProjectTripSummary}
+                        </Typography>
+                      </Alert>
+                    ) : (
+                      <Stack spacing={1.25}>
+                        <Alert severity="warning" variant="outlined">
+                          No future trip is currently scheduled. Request the return date the customer or contractor wants.
+                        </Alert>
+
+                        <TextField
+                          label="Requested Return Date"
+                          type="date"
+                          value={projectRequestedReturnDate}
+                          onChange={(e) => setProjectRequestedReturnDate(e.target.value)}
+                          InputLabelProps={{ shrink: true }}
+                          disabled={projectCloseoutSaving}
+                          fullWidth
+                        />
+                      </Stack>
+                    )
+                  ) : null}
+                </Stack>
+              </Paper>
+            ) : null}
+
+            <TextField
+              label="Hours Worked Today"
+              type="number"
+              inputProps={{ min: 0.25, step: 0.25 }}
+              value={projectHoursWorked}
+              onChange={(e) => setProjectHoursWorked(e.target.value)}
+              disabled={projectCloseoutSaving}
+              fullWidth
+            />
+
+            <Typography variant="caption" color="text.secondary">
+              These hours are saved now as the project time entry, so no extra confirmation step is required.
+            </Typography>
+
+            <TextField
+              label="Work Notes"
+              value={projectCloseoutNotes}
+              onChange={(e) => setProjectCloseoutNotes(e.target.value)}
+              multiline
+              minRows={4}
+              disabled={projectCloseoutSaving}
+              placeholder="Type or dictate what was finished today, what remains, or what office should know..."
+              fullWidth
+            />
+
+            <TextField
+              label="Materials Used Today"
+              value={projectMaterialsSummary}
+              onChange={(e) => setProjectMaterialsSummary(e.target.value)}
+              multiline
+              minRows={5}
+              disabled={projectCloseoutSaving}
+              placeholder="Type or dictate materials used, parts picked up, supply house run details, or anything billing should know..."
+              fullWidth
+            />
+
+            <Typography variant="caption" color="text.secondary">
+              Keep materials simple and natural-language. No line items required.
+            </Typography>
+
+            {(projectTodayResult === "stage_complete" ||
+              projectTodayResult === "project_complete") ? (
+              <Alert severity="warning" variant="outlined">
+                Any future scheduled project trips that are no longer needed will be cancelled and kept for history.
+              </Alert>
+            ) : null}
+
+            {projectCloseoutError ? (
+              <Alert severity="error">{projectCloseoutError}</Alert>
+            ) : null}
+          </Stack>
+        </DialogContent>
+
+        <DialogActions>
+          <Button
+            onClick={() => setProjectCloseoutOpen(false)}
+            disabled={projectCloseoutSaving}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            startIcon={<StopRoundedIcon />}
+            onClick={handleSubmitProjectCloseoutFromDock}
+            disabled={projectCloseoutSaving}
+          >
+            {projectCloseoutSaving ? "Saving..." : "Save Closeout"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    ) : null;
+
+  const globalDockNotice = projectDockNotice ? (
+    <Alert
+      severity="success"
+      variant="outlined"
+      sx={{ mb: 1.5, borderRadius: 1.5 }}
+      action={
+        <Button size="small" color="inherit" onClick={() => setProjectDockNotice("")}>
+          Dismiss
+        </Button>
+      }
+    >
+      {projectDockNotice}
+    </Alert>
+  ) : null;
+
   if (!isMobile) {
     return (
       <Box
@@ -1926,6 +3102,8 @@ export default function AppShell({
           overflow: "hidden",
         }}
       >
+        {projectCloseoutDialog}
+
         <Drawer
           variant="permanent"
           PaperProps={{
@@ -1963,6 +3141,7 @@ export default function AppShell({
               py: 3,
             }}
           >
+            {globalDockNotice}
             {rejectedBanner}
             {mondayReminderBanner}
             {children}
@@ -1979,6 +3158,8 @@ export default function AppShell({
         backgroundColor: "background.default",
       }}
     >
+      {projectCloseoutDialog}
+
       <AppBar position="sticky" color="transparent" elevation={0}>
         <Toolbar sx={{ minHeight: 64, px: 1.5 }}>
           <IconButton
@@ -2042,6 +3223,7 @@ export default function AppShell({
           pb: `${mobileBottomPadding}px`,
         }}
       >
+        {globalDockNotice}
         {!showRejectedBanner ? rejectedBanner : null}
         {mondayReminderBanner}
         {children}

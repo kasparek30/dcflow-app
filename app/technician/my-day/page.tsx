@@ -12,6 +12,7 @@ import {
   orderBy,
   query,
   runTransaction,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import {
@@ -49,6 +50,7 @@ import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
+import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -258,8 +260,14 @@ function stageLabel(stageKey?: string | null) {
   return s;
 }
 
-function buildHref(link?: TripLink) {
+function buildHref(trip: Trip) {
+  const link = trip.link;
   if (!link) return "/trips";
+
+  if (String(trip.type || "").toLowerCase() === "project") {
+    return `/trips/${trip.id}`;
+  }
+
   if (link.serviceTicketId) return `/service-tickets/${link.serviceTicketId}`;
   if (link.projectId) return `/projects/${link.projectId}`;
   return "/trips";
@@ -506,6 +514,79 @@ async function confirmProjectTripForEmployee(args: {
   return result;
 }
 
+async function startProjectTripFromMyDay(args: {
+  tripId: string;
+  startedByUid: string;
+}) {
+  const { tripId, startedByUid } = args;
+
+  if (!tripId) throw new Error("Missing tripId.");
+
+  const stamp = nowIso();
+  const tripRef = doc(db, "trips", tripId);
+
+  const result = await runTransaction(db, async (tx) => {
+    const tripSnap = await tx.get(tripRef);
+    if (!tripSnap.exists()) throw new Error("Trip not found.");
+
+    const tripData = tripSnap.data() as any;
+    const tripType = String(tripData.type || "").toLowerCase();
+    if (tripType !== "project") throw new Error("Only project trips can be started from My Day.");
+
+    const status = normalizeStatus(tripData.status);
+    const timerState = normalizeTimerState(tripData.timerState, tripData.status);
+
+    if (status === "cancelled") throw new Error("This trip has been cancelled.");
+    if (status === "complete" || status === "completed") {
+      throw new Error("This trip is already complete.");
+    }
+    if (timerState === "running" || timerState === "paused") {
+      return {
+        alreadyStarted: true,
+        projectId: String(tripData.link?.projectId || "").trim() || null,
+        projectStageKey: String(tripData.link?.projectStageKey || "").trim() || null,
+        actualStartAt: tripData.actualStartAt ?? stamp,
+      };
+    }
+
+    tx.update(tripRef, {
+      status: "in_progress",
+      timerState: "running",
+      actualStartAt: tripData.actualStartAt ?? stamp,
+      actualEndAt: null,
+      completedAt: null,
+      completedByUid: null,
+      active: true,
+      updatedAt: stamp,
+      updatedByUid: startedByUid || null,
+    });
+
+    return {
+      alreadyStarted: false,
+      projectId: String(tripData.link?.projectId || "").trim() || null,
+      projectStageKey: String(tripData.link?.projectStageKey || "").trim() || null,
+      actualStartAt: tripData.actualStartAt ?? stamp,
+    };
+  });
+
+  const safeStage = String(result.projectStageKey || "").trim();
+  if (
+    result.projectId &&
+    (safeStage === "roughIn" || safeStage === "topOutVent" || safeStage === "trimFinish")
+  ) {
+    try {
+      await updateDoc(doc(db, "projects", result.projectId), {
+        [`${safeStage}.status`]: "in_progress",
+        updatedAt: stamp,
+      });
+    } catch {
+      // non-blocking stage status update
+    }
+  }
+
+  return result;
+}
+
 function SectionHeader({
   title,
   subtitle,
@@ -587,6 +668,8 @@ export default function TechnicianMyDayPage() {
   const [confirmNote, setConfirmNote] = useState<string>("");
   const [confirmSaving, setConfirmSaving] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string>("");
+
+  const [startBusyTripId, setStartBusyTripId] = useState<string>("");
 
   const [showCompleted, setShowCompleted] = useState(false);
 
@@ -1037,7 +1120,7 @@ export default function TechnicianMyDayPage() {
       })
       .map((t) => {
         const crew = crewDisplay(t.crew);
-        const href = buildHref(t.link);
+        const href = buildHref(t);
 
         const timeText = formatTripTimeLine(t.timeWindow, t.startTime, t.endTime);
 
@@ -1162,6 +1245,61 @@ export default function TechnicianMyDayPage() {
     setConfirmNote("");
   }
 
+  async function handleStartProjectFromCard(item: MyDayItem) {
+    if (String(item.tripType || "").toLowerCase() !== "project") return;
+
+    const allowed = whoUid === myUid || canViewOtherEmployees;
+    if (!allowed) return;
+
+    setStartBusyTripId(item.id);
+    setError("");
+
+    try {
+      const res = await startProjectTripFromMyDay({
+        tripId: item.id,
+        startedByUid: myUid || whoUid,
+      });
+
+      setTrips((prev) =>
+        prev.map((t) =>
+          t.id === item.id
+            ? {
+                ...t,
+                status: "in_progress",
+                timerState: "running",
+                completedAt: null,
+                completedByUid: null,
+                active: true,
+              }
+            : t
+        )
+      );
+
+      setRecentTrips((prev) =>
+        prev.map((t) =>
+          t.id === item.id
+            ? {
+                ...t,
+                status: "in_progress",
+                timerState: "running",
+                completedAt: null,
+                completedByUid: null,
+                active: true,
+              }
+            : t
+        )
+      );
+
+      if (res.alreadyStarted) {
+        window.location.href = `/trips/${item.id}`;
+      }
+    } catch (e: any) {
+      setError(e?.message || "Failed to start project work.");
+    } finally {
+      setStartBusyTripId("");
+    }
+  }
+
   async function submitConfirm() {
     if (!whoUid) {
       setConfirmErr("Missing employee uid.");
@@ -1267,7 +1405,7 @@ export default function TechnicianMyDayPage() {
 
       closeConfirmModal();
     } catch (e: any) {
-      setConfirmErr(e?.message || "Failed to confirm trip.");
+      setConfirmErr(e?.message || "Failed to confirm hours.");
     } finally {
       setConfirmSaving(false);
     }
@@ -1614,7 +1752,15 @@ export default function TechnicianMyDayPage() {
                   {items.map((item) => {
                     const isProject = String(item.tripType || "").toLowerCase() === "project";
                     const isService = String(item.tripType || "").toLowerCase() === "service";
-                    const canConfirm = isProject && (canViewOtherEmployees || whoUid === myUid);
+                    const isCompletedProject =
+                      item.status === "complete" || item.status === "completed";
+                    const canConfirm = isProject && isCompletedProject && (canViewOtherEmployees || whoUid === myUid);
+                    const canStartProject =
+                      isProject &&
+                      !item.isActive &&
+                      !isCompletedProject &&
+                      item.status !== "cancelled" &&
+                      (canViewOtherEmployees || whoUid === myUid);
 
                     const activeBadge = item.isActive ? (
                       <Chip
@@ -1798,7 +1944,51 @@ export default function TechnicianMyDayPage() {
                             }
                             footer={
                               isProject ? (
-                                !item.confirmed ? (
+                                item.isActive ? (
+                                  <Typography variant="caption" color="text.secondary">
+                                    Project trip active — use the bottom trip dock or open this trip for pause, resume, and closeout.
+                                  </Typography>
+                                ) : isCompletedProject ? (
+                                  !item.confirmed ? (
+                                    <Stack
+                                      direction={{ xs: "column", sm: "row" }}
+                                      spacing={1.25}
+                                      alignItems={{ xs: "stretch", sm: "center" }}
+                                      justifyContent="space-between"
+                                    >
+                                      <Box>
+                                        <Typography variant="body2" color="text.secondary">
+                                          Today’s work session is complete. Confirm project hours for payroll.
+                                        </Typography>
+                                        {!canConfirm ? (
+                                          <Typography variant="caption" color="text.secondary">
+                                            Only the employee or Admin/Dispatcher/Manager can confirm
+                                            project hours.
+                                          </Typography>
+                                        ) : null}
+                                      </Box>
+
+                                      <Button
+                                        variant="contained"
+                                        color="success"
+                                        startIcon={<TaskAltRoundedIcon />}
+                                        disabled={!canConfirm}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          if (!canConfirm) return;
+                                          openConfirmModal(item);
+                                        }}
+                                      >
+                                        Confirm Hours
+                                      </Button>
+                                    </Stack>
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      Confirmed time will appear in <strong>Time Entries</strong> for payroll.
+                                    </Typography>
+                                  )
+                                ) : canStartProject ? (
                                   <Stack
                                     direction={{ xs: "column", sm: "row" }}
                                     spacing={1.25}
@@ -1807,35 +1997,29 @@ export default function TechnicianMyDayPage() {
                                   >
                                     <Box>
                                       <Typography variant="body2" color="text.secondary">
-                                        Confirm your project hours for payroll.
+                                        Start project work directly from My Day.
                                       </Typography>
-                                      {!canConfirm ? (
-                                        <Typography variant="caption" color="text.secondary">
-                                          Only the employee or Admin/Dispatcher/Manager can confirm
-                                          project hours.
-                                        </Typography>
-                                      ) : null}
+                                      <Typography variant="caption" color="text.secondary">
+                                        Once started, the active trip dock will appear at the bottom for quick access.
+                                      </Typography>
                                     </Box>
 
                                     <Button
                                       variant="contained"
-                                      color="success"
-                                      startIcon={<TaskAltRoundedIcon />}
-                                      disabled={!canConfirm}
+                                      startIcon={<PlayArrowRoundedIcon />}
+                                      disabled={startBusyTripId === item.id}
                                       onClick={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        if (!canConfirm) return;
-                                        openConfirmModal(item);
+                                        handleStartProjectFromCard(item);
                                       }}
                                     >
-                                      Confirm Trip
+                                      {startBusyTripId === item.id ? "Starting..." : "Start Work"}
                                     </Button>
                                   </Stack>
                                 ) : (
-                                  <Typography variant="body2" color="text.secondary">
-                                    Confirmed time will appear in <strong>Time Entries</strong> for
-                                    payroll.
+                                  <Typography variant="caption" color="text.secondary">
+                                    Open the project trip for full details and workflow actions.
                                   </Typography>
                                 )
                               ) : isService ? (
@@ -1869,7 +2053,7 @@ export default function TechnicianMyDayPage() {
           maxWidth="sm"
           PaperProps={{ sx: { borderRadius: 5 } }}
         >
-          <DialogTitle>Confirm Project Trip</DialogTitle>
+          <DialogTitle>Confirm Project Hours</DialogTitle>
 
           <DialogContent dividers>
             <Stack spacing={2}>
@@ -1912,7 +2096,7 @@ export default function TechnicianMyDayPage() {
               Cancel
             </Button>
             <Button onClick={submitConfirm} disabled={confirmSaving} variant="contained" color="success">
-              {confirmSaving ? "Confirming…" : "Confirm Hours"}
+              {confirmSaving ? "Confirming..." : "Confirm Hours"}
             </Button>
           </DialogActions>
         </Dialog>
