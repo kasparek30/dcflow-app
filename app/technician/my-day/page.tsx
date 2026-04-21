@@ -49,7 +49,6 @@ import CampaignRoundedIcon from "@mui/icons-material/CampaignRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
-import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
@@ -153,6 +152,11 @@ type ServiceTicketLite = {
   serviceCity?: string;
   serviceState?: string;
   servicePostalCode?: string;
+};
+
+type ProjectLite = {
+  id: string;
+  projectName?: string;
 };
 
 type CompanyHoliday = {
@@ -660,6 +664,7 @@ export default function TechnicianMyDayPage() {
   const [selectedEmployeeUid, setSelectedEmployeeUid] = useState<string>("");
 
   const [ticketById, setTicketById] = useState<Record<string, ServiceTicketLite>>({});
+  const [projectById, setProjectById] = useState<Record<string, ProjectLite>>({});
   const [followUpByTicketId, setFollowUpByTicketId] = useState<Record<string, string>>({});
 
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -990,6 +995,16 @@ export default function TechnicianMyDayPage() {
     [visibleTrips]
   );
 
+  const visibleProjectIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          visibleTrips.map((t) => String(t.link?.projectId || "").trim()).filter(Boolean)
+        )
+      ),
+    [visibleTrips]
+  );
+
   useEffect(() => {
     if (visibleServiceTicketIds.length === 0) {
       setTicketById({});
@@ -1037,6 +1052,45 @@ export default function TechnicianMyDayPage() {
       unsubs.forEach((u) => u());
     };
   }, [visibleServiceTicketIds]);
+
+  useEffect(() => {
+    if (visibleProjectIds.length === 0) {
+      setProjectById({});
+      return;
+    }
+
+    setProjectById({});
+    const unsubs: Array<() => void> = [];
+
+    for (const pid of visibleProjectIds) {
+      const ref = doc(db, "projects", pid);
+
+      unsubs.push(
+        onSnapshot(
+          ref,
+          (snap) => {
+            if (!snap.exists()) return;
+            const d = snap.data() as any;
+
+            setProjectById((prev) => ({
+              ...prev,
+              [pid]: {
+                id: pid,
+                projectName: d.projectName ?? "",
+              },
+            }));
+          },
+          () => {
+            // ignore live project errors for now
+          }
+        )
+      );
+    }
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [visibleProjectIds]);
 
   useEffect(() => {
     async function loadFollowUpNotes() {
@@ -1132,19 +1186,25 @@ export default function TechnicianMyDayPage() {
         const serviceTicketId = t.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
 
+        const projectId = t.link?.projectId || "";
+        const projectInfo = projectId ? projectById[projectId] : undefined;
+
         let headerText = "";
         if ((t.type || "").toLowerCase() === "service") {
           const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
           headerText = `Service Ticket: ${summary}`;
         } else if ((t.type || "").toLowerCase() === "project") {
-          const stage = stageLabel(t.link?.projectStageKey || null);
-          headerText = stage ? `${formatType(t.type)} • ${stage}` : `${formatType(t.type)}`;
+          const projectName = safeStr(projectInfo?.projectName).trim() || "Untitled Job";
+          headerText = projectName;
         } else {
           headerText = `${formatType(t.type)} • ${((t.type || "") as string) || "Trip"}`;
         }
 
         let subLine = timeText;
-        if (st) {
+        if ((t.type || "").toLowerCase() === "project") {
+          const stage = stageLabel(t.link?.projectStageKey || null);
+          subLine = [stage, timeText].filter(Boolean).join(" • ");
+        } else if (st) {
           const cust = safeStr(st.customerDisplayName).trim();
           const addr = buildAddressLine(st);
           const right = [cust, addr].filter(Boolean).join(" — ");
@@ -1194,7 +1254,7 @@ export default function TechnicianMyDayPage() {
 
     mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     return mapped;
-  }, [visibleTrips, ticketById, followUpByTicketId, whoUid, showCompleted]);
+  }, [visibleTrips, ticketById, projectById, followUpByTicketId, whoUid, showCompleted]);
 
   const banner = useMemo(() => {
     if (!whoUid) return null;
@@ -1429,120 +1489,84 @@ export default function TechnicianMyDayPage() {
         <Box sx={{ width: "100%", maxWidth: 1240, mx: "auto" }}>
           <Stack spacing={3}>
             <Box sx={{ px: { xs: 0.25, md: 0.5 }, pt: { xs: 0.5, md: 0.75 } }}>
-              <Stack
-                direction={{ xs: "column", lg: "row" }}
-                spacing={2}
-                alignItems={{ xs: "flex-start", lg: "flex-start" }}
-                justifyContent="space-between"
-              >
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography
-                    variant="h4"
-                    sx={{
-                      fontSize: { xs: "1.85rem", md: "2.15rem" },
-                      lineHeight: 1.04,
-                      fontWeight: 800,
-                      letterSpacing: "-0.035em",
-                    }}
-                  >
-                    My Day
-                  </Typography>
+              <Stack spacing={1.5}>
+                <Typography
+                  variant="h4"
+                  sx={{
+                    fontSize: { xs: "1.85rem", md: "2.15rem" },
+                    lineHeight: 1.04,
+                    fontWeight: 800,
+                    letterSpacing: "-0.035em",
+                  }}
+                >
+                  My Day
+                </Typography>
 
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
-                    <Box sx={{ display: "grid", placeItems: "center", color: "primary.light" }}>
-                      <GroupsRoundedIcon />
-                    </Box>
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography
-                        variant="h6"
-                        sx={{
-                          fontSize: { xs: "1rem", md: "1.05rem" },
-                          fontWeight: 800,
-                          letterSpacing: "-0.02em",
-                        }}
-                      >
-                        Assigned work
-                      </Typography>
-                      <Typography
-                        sx={{
-                          mt: 0.35,
-                          color: "text.secondary",
-                          fontSize: 13,
-                          fontWeight: 500,
-                        }}
-                      >
-                        Today’s scheduled trips for the selected employee.
-                      </Typography>
-                    </Box>
-                  </Stack>
-
-                  <Stack
-                    direction="row"
-                    spacing={0.75}
-                    flexWrap="wrap"
-                    useFlexGap
-                    sx={{ mt: 1.5 }}
-                  >
-                    <Chip
-                      size="small"
-                      icon={<TodayRoundedIcon sx={{ fontSize: 16 }} />}
-                      label={todayIso}
-                      variant="outlined"
-                      sx={{ borderRadius: 1.5, fontWeight: 500 }}
-                    />
-
-                    {showCompleted ? (
-                      <Chip
-                        size="small"
-                        label="Completed trips visible"
-                        variant="outlined"
-                        sx={{ borderRadius: 1.5, fontWeight: 500 }}
-                      />
-                    ) : null}
-                  </Stack>
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  flexWrap="wrap"
+                  useFlexGap
+                  alignItems="center"
+                >
+                  <Chip
+                    size="small"
+                    icon={<TodayRoundedIcon sx={{ fontSize: 16 }} />}
+                    label={todayIso}
+                    variant="outlined"
+                    sx={{ borderRadius: 1.5, fontWeight: 500 }}
+                  />
 
                   <FormControlLabel
-                    sx={{ mt: 1.5, ml: 0 }}
+                    sx={{ m: 0, ml: 0.25 }}
                     control={
                       <Checkbox
+                        size="small"
                         checked={showCompleted}
                         onChange={(e) => setShowCompleted(e.target.checked)}
                       />
                     }
-                    label="Show completed trips"
+                    label={
+                      <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                        Show completed trips
+                      </Typography>
+                    }
                   />
-                </Box>
+                </Stack>
 
-                <Stack
-                  direction={{ xs: "column", sm: "row" }}
-                  spacing={1}
-                  alignItems={{ xs: "stretch", sm: "center" }}
-                  sx={{ width: { xs: "100%", lg: "auto" } }}
+                {canViewOtherEmployees ? (
+                  <FormControl size="small" sx={{ width: "100%", maxWidth: 320 }}>
+                    <InputLabel>Employee</InputLabel>
+                    <Select
+                      label="Employee"
+                      value={selectedEmployeeUid || myUid}
+                      onChange={(e: SelectChangeEvent) => setSelectedEmployeeUid(e.target.value)}
+                      disabled={employeesLoading}
+                    >
+                      <MenuItem value={myUid}>Me</MenuItem>
+                      {employees.map((u) => (
+                        <MenuItem key={u.uid} value={u.uid}>
+                          {u.displayName} ({u.role})
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 1,
+                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                    width: "100%",
+                  }}
                 >
-                  {canViewOtherEmployees ? (
-                    <FormControl size="small" sx={{ minWidth: 250 }}>
-                      <InputLabel>Employee</InputLabel>
-                      <Select
-                        label="Employee"
-                        value={selectedEmployeeUid || myUid}
-                        onChange={(e: SelectChangeEvent) => setSelectedEmployeeUid(e.target.value)}
-                        disabled={employeesLoading}
-                      >
-                        <MenuItem value={myUid}>Me</MenuItem>
-                        {employees.map((u) => (
-                          <MenuItem key={u.uid} value={u.uid}>
-                            {u.displayName} ({u.role})
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                  ) : null}
-
                   <Button
                     component={Link}
                     href="/schedule"
                     variant="outlined"
                     startIcon={<CalendarMonthRoundedIcon />}
+                    fullWidth
                   >
                     Weekly Schedule
                   </Button>
@@ -1552,10 +1576,11 @@ export default function TechnicianMyDayPage() {
                     href="/time-entries"
                     variant="outlined"
                     startIcon={<AccessTimeFilledRoundedIcon />}
+                    fullWidth
                   >
                     Time Entries
                   </Button>
-                </Stack>
+                </Box>
               </Stack>
             </Box>
 
@@ -1989,34 +2014,19 @@ export default function TechnicianMyDayPage() {
                                     </Typography>
                                   )
                                 ) : canStartProject ? (
-                                  <Stack
-                                    direction={{ xs: "column", sm: "row" }}
-                                    spacing={1.25}
-                                    alignItems={{ xs: "stretch", sm: "center" }}
-                                    justifyContent="space-between"
+                                  <Button
+                                    variant="contained"
+                                    fullWidth
+                                    startIcon={<PlayArrowRoundedIcon />}
+                                    disabled={startBusyTripId === item.id}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handleStartProjectFromCard(item);
+                                    }}
                                   >
-                                    <Box>
-                                      <Typography variant="body2" color="text.secondary">
-                                        Start project work directly from My Day.
-                                      </Typography>
-                                      <Typography variant="caption" color="text.secondary">
-                                        Once started, the active trip dock will appear at the bottom for quick access.
-                                      </Typography>
-                                    </Box>
-
-                                    <Button
-                                      variant="contained"
-                                      startIcon={<PlayArrowRoundedIcon />}
-                                      disabled={startBusyTripId === item.id}
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        handleStartProjectFromCard(item);
-                                      }}
-                                    >
-                                      {startBusyTripId === item.id ? "Starting..." : "Start Work"}
-                                    </Button>
-                                  </Stack>
+                                    {startBusyTripId === item.id ? "Starting..." : "Start Work"}
+                                  </Button>
                                 ) : (
                                   <Typography variant="caption" color="text.secondary">
                                     Open the project trip for full details and workflow actions.
