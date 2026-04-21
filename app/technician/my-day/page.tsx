@@ -356,14 +356,12 @@ function crewDisplay(crew?: TripCrew) {
 
 function buildAddressLine(t: ServiceTicketLite) {
   const parts: string[] = [];
-  const label = safeStr(t.serviceAddressLabel).trim();
   const line1 = safeStr(t.serviceAddressLine1).trim();
   const line2 = safeStr(t.serviceAddressLine2).trim();
   const city = safeStr(t.serviceCity).trim();
   const state = safeStr(t.serviceState).trim();
   const zip = safeStr(t.servicePostalCode).trim();
 
-  if (label) parts.push(label);
   if (line1) parts.push(line1);
   if (line2) parts.push(line2);
 
@@ -371,6 +369,16 @@ function buildAddressLine(t: ServiceTicketLite) {
   if (cityStateZip) parts.push(cityStateZip);
 
   return parts.filter(Boolean).join(" • ");
+}
+
+function buildServiceTicketHeader(t?: ServiceTicketLite) {
+  const customerName = safeStr(t?.customerDisplayName).trim();
+  const summary = safeStr(t?.issueSummary).trim();
+
+  if (customerName && summary) return `${customerName}: ${summary}`;
+  if (customerName) return customerName;
+  if (summary) return summary;
+  return "Service Ticket";
 }
 
 function buildProjectAddressLine(p: ProjectLite) {
@@ -818,7 +826,10 @@ export default function TechnicianMyDayPage() {
     return { uid, displayName: uid, role: "technician" };
   }
 
-  const selectedEmployeeInfo = useMemo(() => getSelectedEmployeeInfo(whoUid), [whoUid, employees, myUid, myName, myRole]);
+  const selectedEmployeeInfo = useMemo(
+    () => getSelectedEmployeeInfo(whoUid),
+    [whoUid, employees, myUid, myName, myRole]
+  );
 
   useEffect(() => {
     setLoading(true);
@@ -1274,8 +1285,8 @@ export default function TechnicianMyDayPage() {
         let titleMeta = "";
 
         if ((trip.type || "").toLowerCase() === "service") {
-          const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
-          headerText = `Service Ticket: ${summary}`;
+          headerText = buildServiceTicketHeader(st);
+          titleMeta = st ? buildAddressLine(st) : "";
         } else if ((trip.type || "").toLowerCase() === "project") {
           const projectName = safeStr(projectInfo?.projectName).trim() || "Untitled Job";
           const projectAddress = projectInfo ? buildProjectAddressLine(projectInfo) : "";
@@ -1285,16 +1296,12 @@ export default function TechnicianMyDayPage() {
           headerText = `${formatType(trip.type)} • ${((trip.type || "") as string) || "Trip"}`;
         }
 
-        let subLine = timeText;
-        if ((trip.type || "").toLowerCase() === "service" && st) {
-          const cust = safeStr(st.customerDisplayName).trim();
-          const addr = buildAddressLine(st);
-          const right = [cust, addr].filter(Boolean).join(" — ");
-          if (right) subLine = `${timeText} • ${right}`;
-        }
+        const subLine = timeText;
 
         const issueDetailsText =
-          (trip.type || "").toLowerCase() === "service" ? safeStr(st?.issueDetails).trim() || "" : "";
+          (trip.type || "").toLowerCase() === "service"
+            ? safeStr(st?.issueDetails).trim() || safeStr(st?.issueSummary).trim() || ""
+            : "";
 
         const followUpText =
           (trip.type || "").toLowerCase() === "service" && serviceTicketId
