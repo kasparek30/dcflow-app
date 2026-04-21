@@ -337,14 +337,12 @@ function buildAddressLine(t: ServiceTicketLite) {
 
 function buildProjectAddressLine(p: ProjectLite) {
   const parts: string[] = [];
-  const label = safeStr(p.serviceAddressLabel).trim();
   const line1 = safeStr(p.serviceAddressLine1).trim();
   const line2 = safeStr(p.serviceAddressLine2).trim();
   const city = safeStr(p.serviceCity).trim();
   const state = safeStr(p.serviceState).trim();
   const zip = safeStr(p.servicePostalCode).trim();
 
-  if (label) parts.push(label);
   if (line1) parts.push(line1);
   if (line2) parts.push(line2);
 

@@ -3,7 +3,15 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, limit, onSnapshot, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  limit,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
 import {
   Alert,
   Box,
@@ -38,6 +46,8 @@ import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import PlumbingRoundedIcon from "@mui/icons-material/PlumbingRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -57,9 +67,60 @@ type DashboardTicketItem = {
   status?: string;
 };
 
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+  helperUid?: string | null;
+  helperName?: string | null;
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
+
+type TripLink = {
+  serviceTicketId?: string | null;
+  projectId?: string | null;
+  projectStageKey?: string | null;
+};
+
+type TripDocLite = {
+  id: string;
+  active?: boolean | null;
+  type?: "service" | "project" | string;
+  status?: string | null;
+  timerState?: string | null;
+  date?: string;
+  timeWindow?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  updatedAt?: string | null;
+  crew?: TripCrew | null;
+  link?: TripLink | null;
+};
+
+type ActiveWorkItem = {
+  id: string;
+  tripId: string;
+  itemType: "service" | "project";
+  href: string;
+  title: string;
+  subtitle: string;
+  addressLine1?: string;
+  city?: string;
+  state?: string;
+  updatedAt?: string | null;
+  status?: string | null;
+  timerState?: string | null;
+  assignedTechnicianName?: string;
+  assignedHelperName?: string;
+  secondaryTechnicianName?: string;
+  secondaryHelperName?: string;
+};
+
 type MarkerEntry = {
   marker: any;
-  item: DashboardTicketItem;
+  item: ActiveWorkItem;
   address: string;
   infoHtml: string;
 };
@@ -75,32 +136,44 @@ function safeTrim(x: unknown) {
   return String(x ?? "").trim();
 }
 
-function normalizeStatus(status?: string) {
+function normalizeStatus(status?: string | null) {
   return safeTrim(status).toLowerCase();
 }
 
-function hasAssignedCrew(item: DashboardTicketItem) {
-  return Boolean(safeTrim(item.assignedTechnicianName) || safeTrim(item.assignedHelperName));
+function todayIsoLocal() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-function hasMappableAddress(item: DashboardTicketItem) {
+function hasMappableAddress(item: ActiveWorkItem) {
   return Boolean(buildAddress(item));
 }
 
-function isFieldVisibleStatus(status?: string) {
-  const normalized = normalizeStatus(status);
-
-  return [
-    "in_progress",
-    "paused",
-    "dispatched",
-    "assigned",
-    "on_site",
-  ].includes(normalized);
+function hasAssignedCrew(item: ActiveWorkItem) {
+  return Boolean(buildAssignedPeople(item));
 }
 
-function isFieldVisibleTicket(item: DashboardTicketItem) {
-  return isFieldVisibleStatus(item.status) && hasAssignedCrew(item) && hasMappableAddress(item);
+function isFieldVisibleStatus(status?: string | null, timerState?: string | null) {
+  const normalized = normalizeStatus(status);
+  const normalizedTimer = normalizeStatus(timerState);
+
+  return (
+    [
+      "in_progress",
+      "paused",
+      "dispatched",
+      "assigned",
+      "on_site",
+    ].includes(normalized) ||
+    ["running", "paused"].includes(normalizedTimer)
+  );
+}
+
+function isFieldVisibleItem(item: ActiveWorkItem) {
+  return isFieldVisibleStatus(item.status, item.timerState) && hasAssignedCrew(item) && hasMappableAddress(item);
 }
 
 function formatWhen(value?: string | null) {
@@ -124,30 +197,44 @@ function ticketSort(a: DashboardTicketItem, b: DashboardTicketItem) {
   return bTs.localeCompare(aTs);
 }
 
-function statusSort(a: DashboardTicketItem, b: DashboardTicketItem) {
+function statusSort(a: ActiveWorkItem, b: ActiveWorkItem) {
   const aTs = safeTrim(a.updatedAt);
   const bTs = safeTrim(b.updatedAt);
   return bTs.localeCompare(aTs);
 }
 
-function buildAddress(item: DashboardTicketItem) {
-  return [safeTrim(item.serviceAddressLine1), safeTrim(item.serviceCity), safeTrim(item.serviceState)]
+function buildAddress(item: {
+  addressLine1?: string;
+  city?: string;
+  state?: string;
+}) {
+  return [safeTrim(item.addressLine1), safeTrim(item.city), safeTrim(item.state)]
     .filter(Boolean)
     .join(", ");
 }
 
-function buildAssignedPeople(item: DashboardTicketItem) {
-  return [safeTrim(item.assignedTechnicianName), safeTrim(item.assignedHelperName)]
+function buildAssignedPeople(item: {
+  assignedTechnicianName?: string;
+  assignedHelperName?: string;
+  secondaryTechnicianName?: string;
+  secondaryHelperName?: string;
+}) {
+  return [
+    safeTrim(item.assignedTechnicianName),
+    safeTrim(item.assignedHelperName),
+    safeTrim(item.secondaryTechnicianName),
+    safeTrim(item.secondaryHelperName),
+  ]
     .filter(Boolean)
     .join(" + ");
 }
 
-function buildStaticMapUrl(items: DashboardTicketItem[]) {
+function buildStaticMapUrl(items: ActiveWorkItem[]) {
   const apiKey = safeTrim(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY);
   if (!apiKey) return "";
 
   const addresses = items
-    .filter(isFieldVisibleTicket)
+    .filter(isFieldVisibleItem)
     .map((item) => buildAddress(item))
     .filter(Boolean)
     .slice(0, 6);
@@ -157,7 +244,6 @@ function buildStaticMapUrl(items: DashboardTicketItem[]) {
   const base = "https://maps.googleapis.com/maps/api/staticmap";
   const params = new URLSearchParams();
 
-  // Match the wide/short dashboard card better so the preview does not crop away pins.
   params.set("size", "1400x320");
   params.set("scale", "2");
   params.set("maptype", "roadmap");
@@ -166,12 +252,10 @@ function buildStaticMapUrl(items: DashboardTicketItem[]) {
     params.set("center", addresses[0]);
     params.set("zoom", "11");
   } else {
-    // Ask Google to keep all markers visible in-frame.
     addresses.forEach((address) => {
       params.append("visible", address);
     });
 
-    // Slightly smaller markers help when jobs are spread apart.
     addresses.forEach((address, index) => {
       const label = String(index + 1);
       params.append("markers", `size:small|color:0x1a73e8|label:${label}|${address}`);
@@ -335,8 +419,12 @@ function TicketRow({
   item: DashboardTicketItem;
   mode: "follow_up" | "review";
 }) {
-  const address = buildAddress(item);
-  const assignedPeople = buildAssignedPeople(item);
+  const address = [safeTrim(item.serviceAddressLine1), safeTrim(item.serviceCity), safeTrim(item.serviceState)]
+    .filter(Boolean)
+    .join(", ");
+  const assignedPeople = [safeTrim(item.assignedTechnicianName), safeTrim(item.assignedHelperName)]
+    .filter(Boolean)
+    .join(" + ");
 
   return (
     <Box
@@ -426,10 +514,11 @@ function TicketRow({
   );
 }
 
-function getFieldStatusMeta(status?: string) {
+function getFieldStatusMeta(status?: string | null, timerState?: string | null) {
   const normalized = normalizeStatus(status);
+  const normalizedTimer = normalizeStatus(timerState);
 
-  if (normalized === "paused") {
+  if (normalized === "paused" || normalizedTimer === "paused") {
     return {
       label: "Paused",
       color: "warning" as const,
@@ -452,8 +541,8 @@ function getFieldStatusMeta(status?: string) {
   };
 }
 
-function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
-  const statusMeta = getFieldStatusMeta(item.status);
+function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
+  const statusMeta = getFieldStatusMeta(item.status, item.timerState);
   const address = buildAddress(item);
   const assignedPeople = buildAssignedPeople(item);
 
@@ -470,11 +559,22 @@ function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
       <Stack spacing={1.2}>
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1.5}>
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="subtitle2" fontWeight={800}>
-              {item.issueSummary || "Active Service Ticket"}
-            </Typography>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="subtitle2" fontWeight={800}>
+                {item.title || (item.itemType === "project" ? "Active Project Trip" : "Active Service Ticket")}
+              </Typography>
+
+              <Chip
+                size="small"
+                icon={item.itemType === "project" ? <ConstructionRoundedIcon sx={{ fontSize: 14 }} /> : <PlumbingRoundedIcon sx={{ fontSize: 14 }} />}
+                label={item.itemType === "project" ? "Project" : "Service"}
+                variant="outlined"
+                sx={{ fontWeight: 700 }}
+              />
+            </Stack>
+
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-              {item.customerDisplayName || "Customer"}
+              {item.subtitle || (item.itemType === "project" ? "Project" : "Customer")}
             </Typography>
           </Box>
 
@@ -526,7 +626,7 @@ function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
 
         <Button
           component={Link}
-          href={`/service-tickets/${item.id}`}
+          href={item.href}
           variant="text"
           endIcon={<ArrowForwardRoundedIcon />}
           sx={{
@@ -537,7 +637,7 @@ function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
             fontWeight: 700,
           }}
         >
-          Open Ticket
+          {item.itemType === "project" ? "Open Project" : "Open Ticket"}
         </Button>
       </Stack>
     </Box>
@@ -547,26 +647,26 @@ function ActiveWorkRow({ item }: { item: DashboardTicketItem }) {
 function AreaSnapshotDialog({
   open,
   onClose,
-  activeTickets,
+  activeItems,
 }: {
   open: boolean;
   onClose: () => void;
-  activeTickets: DashboardTicketItem[];
+  activeItems: ActiveWorkItem[];
 }) {
   const theme = useTheme();
   const apiKey = safeTrim(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY);
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
-  const markersByTicketIdRef = useRef<Record<string, MarkerEntry>>({});
+  const markersByItemIdRef = useRef<Record<string, MarkerEntry>>({});
   const infoWindowRef = useRef<any>(null);
 
   const [isLoadingMap, setIsLoadingMap] = useState(false);
   const [mapError, setMapError] = useState("");
-  const [selectedTicketId, setSelectedTicketId] = useState<string>("");
+  const [selectedItemId, setSelectedItemId] = useState<string>("");
 
-  function openMarkerForTicket(ticketId: string, shouldBounce = false, shouldZoomTight = true) {
+  function openMarkerForItem(itemId: string, shouldBounce = false, shouldZoomTight = true) {
     const google = window.google;
-    const entry = markersByTicketIdRef.current[ticketId];
+    const entry = markersByItemIdRef.current[itemId];
     const map = mapInstanceRef.current;
     const infoWindow = infoWindowRef.current;
 
@@ -594,12 +694,12 @@ function AreaSnapshotDialog({
       }, 1200);
     }
 
-    setSelectedTicketId(ticketId);
+    setSelectedItemId(itemId);
   }
 
   useEffect(() => {
     if (!open) {
-      setSelectedTicketId("");
+      setSelectedItemId("");
       return;
     }
 
@@ -608,8 +708,8 @@ function AreaSnapshotDialog({
       return;
     }
 
-    const addresses = activeTickets
-      .filter(isFieldVisibleTicket)
+    const addresses = activeItems
+      .filter(isFieldVisibleItem)
       .map((item) => ({
         item,
         address: buildAddress(item),
@@ -617,7 +717,7 @@ function AreaSnapshotDialog({
       .filter((entry) => entry.address);
 
     if (addresses.length === 0) {
-      setMapError("No mappable active ticket addresses are available right now.");
+      setMapError("No mappable active field addresses are available right now.");
       return;
     }
 
@@ -627,7 +727,7 @@ function AreaSnapshotDialog({
       try {
         setIsLoadingMap(true);
         setMapError("");
-        setSelectedTicketId("");
+        setSelectedItemId("");
 
         const google = await loadGoogleMapsApi(apiKey);
         if (isCancelled || !mapRef.current) return;
@@ -650,7 +750,7 @@ function AreaSnapshotDialog({
 
         mapInstanceRef.current = map;
         infoWindowRef.current = new google.maps.InfoWindow();
-        markersByTicketIdRef.current = {};
+        markersByItemIdRef.current = {};
 
         const geocoder = new google.maps.Geocoder();
         const bounds = new google.maps.LatLngBounds();
@@ -681,20 +781,23 @@ function AreaSnapshotDialog({
               color: "#ffffff",
               fontWeight: "700",
             },
-            title: item.issueSummary || item.customerDisplayName || `Ticket ${i + 1}`,
+            title: item.title || item.subtitle || `Field item ${i + 1}`,
             animation: google.maps.Animation.DROP,
           });
 
-          const statusMeta = getFieldStatusMeta(item.status);
+          const statusMeta = getFieldStatusMeta(item.status, item.timerState);
           const infoHtml = `
             <div style="min-width:220px;max-width:280px;padding:4px 2px 2px 2px;font-family:Arial,sans-serif;">
               <div style="font-size:14px;font-weight:700;color:#111827;line-height:1.35;">
-                ${escapeHtml(item.issueSummary || "Active Service Ticket")}
+                ${escapeHtml(item.title || (item.itemType === "project" ? "Project Trip" : "Service Ticket"))}
               </div>
               <div style="font-size:13px;color:#4b5563;margin-top:4px;">
-                ${escapeHtml(item.customerDisplayName || "Customer")}
+                ${escapeHtml(item.subtitle || (item.itemType === "project" ? "Project" : "Customer"))}
               </div>
               <div style="margin-top:10px;font-size:12px;color:#111827;">
+                <strong>Type:</strong> ${escapeHtml(item.itemType === "project" ? "Project" : "Service")}
+              </div>
+              <div style="margin-top:6px;font-size:12px;color:#111827;">
                 <strong>Status:</strong> ${escapeHtml(statusMeta.label)}
               </div>
               <div style="margin-top:6px;font-size:12px;color:#111827;">
@@ -708,17 +811,17 @@ function AreaSnapshotDialog({
               </div>
               <div style="margin-top:10px;">
                 <a
-                  href="/service-tickets/${encodeURIComponent(item.id)}"
+                  href="${escapeHtml(item.href)}"
                   style="font-size:12px;font-weight:700;color:#1a73e8;text-decoration:none;"
                 >
-                  Open ticket →
+                  ${escapeHtml(item.itemType === "project" ? "Open project →" : "Open ticket →")}
                 </a>
               </div>
             </div>
           `;
 
           marker.addListener("click", () => {
-            setSelectedTicketId(item.id);
+            setSelectedItemId(item.id);
             if (!infoWindowRef.current) return;
             infoWindowRef.current.setContent(infoHtml);
             infoWindowRef.current.open({
@@ -727,7 +830,7 @@ function AreaSnapshotDialog({
             });
           });
 
-          markersByTicketIdRef.current[item.id] = {
+          markersByItemIdRef.current[item.id] = {
             marker,
             item,
             address,
@@ -736,7 +839,7 @@ function AreaSnapshotDialog({
         }
 
         if (!isCancelled) {
-          const markerEntries = Object.values(markersByTicketIdRef.current);
+          const markerEntries = Object.values(markersByItemIdRef.current);
 
           if (markerEntries.length === 1) {
             map.setCenter(bounds.getCenter());
@@ -751,14 +854,13 @@ function AreaSnapshotDialog({
           }
 
           if (markerEntries.length > 0) {
-            const firstTicketId = markerEntries[0].item.id;
+            const firstItemId = markerEntries[0].item.id;
             window.setTimeout(() => {
-              // Open the info window without snapping the map away from the fitted multi-pin view.
-              openMarkerForTicket(firstTicketId, false, markerEntries.length === 1);
+              openMarkerForItem(firstItemId, false, markerEntries.length === 1);
             }, 250);
           }
         }
-      } catch (error) {
+      } catch {
         if (!isCancelled) {
           setMapError("Unable to load the expanded live field work map right now.");
         }
@@ -774,11 +876,11 @@ function AreaSnapshotDialog({
     return () => {
       isCancelled = true;
     };
-  }, [open, apiKey, activeTickets]);
+  }, [open, apiKey, activeItems]);
 
-  const visibleFieldTickets = useMemo(
-    () => activeTickets.filter(isFieldVisibleTicket),
-    [activeTickets]
+  const visibleFieldItems = useMemo(
+    () => activeItems.filter(isFieldVisibleItem),
+    [activeItems]
   );
 
   return (
@@ -809,7 +911,7 @@ function AreaSnapshotDialog({
               Live Field Work Map
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>
-              Larger map view of active dispatched work with clickable field pins.
+              Larger map view of active service and project work with clickable field pins.
             </Typography>
           </Box>
 
@@ -832,13 +934,13 @@ function AreaSnapshotDialog({
             <Chip
               size="small"
               icon={<MyLocationRoundedIcon sx={{ fontSize: 16 }} />}
-              label={`${visibleFieldTickets.length} active in field`}
+              label={`${visibleFieldItems.length} active in field`}
               variant="outlined"
               sx={{ fontWeight: 700 }}
             />
             <Chip
               size="small"
-              label="Click any pin or ticket card for details"
+              label="Click any pin or card for details"
               variant="outlined"
               sx={{ fontWeight: 700 }}
             />
@@ -888,7 +990,7 @@ function AreaSnapshotDialog({
             ) : null}
           </Box>
 
-          {visibleFieldTickets.length > 0 ? (
+          {visibleFieldItems.length > 0 ? (
             <Box
               sx={{
                 display: "grid",
@@ -896,11 +998,11 @@ function AreaSnapshotDialog({
                 gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
               }}
             >
-              {visibleFieldTickets.map((item, index) => {
+              {visibleFieldItems.map((item, index) => {
                 const address = buildAddress(item);
                 const assignedPeople = buildAssignedPeople(item);
-                const statusMeta = getFieldStatusMeta(item.status);
-                const isSelected = selectedTicketId === item.id;
+                const statusMeta = getFieldStatusMeta(item.status, item.timerState);
+                const isSelected = selectedItemId === item.id;
 
                 return (
                   <Card
@@ -923,7 +1025,7 @@ function AreaSnapshotDialog({
                     }}
                   >
                     <CardActionArea
-                      onClick={() => openMarkerForTicket(item.id, true, true)}
+                      onClick={() => openMarkerForItem(item.id, true, true)}
                       sx={{
                         borderRadius: 1.2,
                       }}
@@ -939,11 +1041,21 @@ function AreaSnapshotDialog({
                                 sx={{ minWidth: 30, fontWeight: 800 }}
                               />
                               <Box sx={{ minWidth: 0 }}>
-                                <Typography variant="subtitle2" fontWeight={800} noWrap>
-                                  {item.issueSummary || "Active Service Ticket"}
-                                </Typography>
+                                <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                                  <Typography variant="subtitle2" fontWeight={800} noWrap>
+                                    {item.title || (item.itemType === "project" ? "Project Trip" : "Service Ticket")}
+                                  </Typography>
+                                  <Chip
+                                    size="small"
+                                    icon={item.itemType === "project" ? <ConstructionRoundedIcon sx={{ fontSize: 14 }} /> : <PlumbingRoundedIcon sx={{ fontSize: 14 }} />}
+                                    label={item.itemType === "project" ? "Project" : "Service"}
+                                    variant="outlined"
+                                    sx={{ fontWeight: 700 }}
+                                  />
+                                </Stack>
+
                                 <Typography variant="body2" color="text.secondary" noWrap>
-                                  {item.customerDisplayName || "Customer"}
+                                  {item.subtitle || (item.itemType === "project" ? "Project" : "Customer")}
                                 </Typography>
                               </Box>
                             </Stack>
@@ -996,7 +1108,7 @@ function AreaSnapshotDialog({
 
                             <Button
                               component={Link}
-                              href={`/service-tickets/${item.id}`}
+                              href={item.href}
                               variant="text"
                               endIcon={<ArrowForwardRoundedIcon />}
                               onClick={(event) => event.stopPropagation()}
@@ -1007,7 +1119,7 @@ function AreaSnapshotDialog({
                                 fontWeight: 700,
                               }}
                             >
-                              Open Ticket
+                              {item.itemType === "project" ? "Open Project" : "Open Ticket"}
                             </Button>
                           </Stack>
                         </Stack>
@@ -1019,7 +1131,7 @@ function AreaSnapshotDialog({
             </Box>
           ) : (
             <Alert severity="info" variant="outlined" sx={{ borderRadius: 1.2 }}>
-              No active field tickets are showing right now.
+              No active field work is showing right now.
             </Alert>
           )}
         </Stack>
@@ -1028,13 +1140,13 @@ function AreaSnapshotDialog({
   );
 }
 
-function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketItem[] }) {
+function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
   const theme = useTheme();
-  const visibleFieldTickets = useMemo(
-    () => activeTickets.filter(isFieldVisibleTicket),
-    [activeTickets]
+  const visibleFieldItems = useMemo(
+    () => activeItems.filter(isFieldVisibleItem),
+    [activeItems]
   );
-  const mapUrl = useMemo(() => buildStaticMapUrl(visibleFieldTickets), [visibleFieldTickets]);
+  const mapUrl = useMemo(() => buildStaticMapUrl(visibleFieldItems), [visibleFieldItems]);
   const [isExpandedOpen, setIsExpandedOpen] = useState(false);
 
   return (
@@ -1206,7 +1318,7 @@ function AreaSnapshotCard({ activeTickets }: { activeTickets: DashboardTicketIte
       <AreaSnapshotDialog
         open={isExpandedOpen}
         onClose={() => setIsExpandedOpen(false)}
-        activeTickets={visibleFieldTickets}
+        activeItems={visibleFieldItems}
       />
     </>
   );
@@ -1218,9 +1330,11 @@ export default function DashboardPage() {
 
   const [followUpTickets, setFollowUpTickets] = useState<DashboardTicketItem[]>([]);
   const [reviewTickets, setReviewTickets] = useState<DashboardTicketItem[]>([]);
-  const [activeTickets, setActiveTickets] = useState<DashboardTicketItem[]>([]);
+  const [activeItems, setActiveItems] = useState<ActiveWorkItem[]>([]);
 
   useEffect(() => {
+    const todayIso = todayIsoLocal();
+
     const followUpQuery = query(
       collection(db, "serviceTickets"),
       where("status", "==", "follow_up"),
@@ -1233,10 +1347,10 @@ export default function DashboardPage() {
       limit(25)
     );
 
-    const activeWorkQuery = query(
-      collection(db, "serviceTickets"),
-      where("status", "in", ["in_progress", "paused", "dispatched", "assigned", "on_site"]),
-      limit(20)
+    const activeTripsQuery = query(
+      collection(db, "trips"),
+      where("date", "==", todayIso),
+      limit(80)
     );
 
     const unsubFollowUp = onSnapshot(
@@ -1292,37 +1406,186 @@ export default function DashboardPage() {
       () => setReviewTickets([])
     );
 
-    const unsubActive = onSnapshot(
-      activeWorkQuery,
-      (snap) => {
-        const items = snap.docs
-          .map((docSnap) => {
-            const d = docSnap.data() as any;
-            return {
-              id: docSnap.id,
-              customerDisplayName: d.customerDisplayName ?? "",
-              issueSummary: d.issueSummary ?? "",
-              serviceAddressLine1: d.serviceAddressLine1 ?? "",
-              serviceCity: d.serviceCity ?? "",
-              serviceState: d.serviceState ?? "",
-              updatedAt: d.updatedAt ?? null,
-              assignedTechnicianName: d.assignedTechnicianName ?? "",
-              assignedHelperName: d.assignedHelperName ?? "",
-              status: d.status ?? "",
-            } as DashboardTicketItem;
-          })
-          .filter(isFieldVisibleTicket)
-          .sort(statusSort);
+    const unsubActiveTrips = onSnapshot(
+      activeTripsQuery,
+      async (snap) => {
+        try {
+          const tripItems: TripDocLite[] = snap.docs
+            .map((docSnap) => {
+              const d = docSnap.data() as any;
+              return {
+                id: docSnap.id,
+                active: typeof d.active === "boolean" ? d.active : true,
+                type: d.type ?? "",
+                status: d.status ?? "",
+                timerState: d.timerState ?? "",
+                date: d.date ?? "",
+                timeWindow: d.timeWindow ?? "",
+                startTime: d.startTime ?? "",
+                endTime: d.endTime ?? "",
+                updatedAt: d.updatedAt ?? null,
+                crew: d.crew ?? null,
+                link: d.link ?? null,
+              } as TripDocLite;
+            })
+            .filter((trip) => trip.active !== false)
+            .filter((trip) => {
+              const s = normalizeStatus(trip.status);
+              const ts = normalizeStatus(trip.timerState);
+              return (
+                ["in_progress", "paused", "dispatched", "assigned", "on_site"].includes(s) ||
+                ["running", "paused"].includes(ts)
+              );
+            });
 
-        setActiveTickets(items);
+          const serviceIds = Array.from(
+            new Set(
+              tripItems
+                .map((trip) => safeTrim(trip.link?.serviceTicketId))
+                .filter(Boolean)
+            )
+          );
+
+          const projectIds = Array.from(
+            new Set(
+              tripItems
+                .map((trip) => safeTrim(trip.link?.projectId))
+                .filter(Boolean)
+            )
+          );
+
+          const [serviceDocs, projectDocs] = await Promise.all([
+            Promise.all(
+              serviceIds.map(async (id) => {
+                try {
+                  const snap = await getDoc(doc(db, "serviceTickets", id));
+                  if (!snap.exists()) return null;
+                  const d = snap.data() as any;
+                  return {
+                    id,
+                    customerDisplayName: d.customerDisplayName ?? "",
+                    issueSummary: d.issueSummary ?? "",
+                    serviceAddressLine1: d.serviceAddressLine1 ?? "",
+                    serviceCity: d.serviceCity ?? "",
+                    serviceState: d.serviceState ?? "",
+                  };
+                } catch {
+                  return null;
+                }
+              })
+            ),
+            Promise.all(
+              projectIds.map(async (id) => {
+                try {
+                  const snap = await getDoc(doc(db, "projects", id));
+                  if (!snap.exists()) return null;
+                  const d = snap.data() as any;
+                  return {
+                    id,
+                    name: d.name ?? d.projectName ?? "Project",
+                    serviceAddressLine1: d.serviceAddressLine1 ?? d.addressLine1 ?? "",
+                    serviceCity: d.serviceCity ?? d.city ?? "",
+                    serviceState: d.serviceState ?? d.state ?? "",
+                  };
+                } catch {
+                  return null;
+                }
+              })
+            ),
+          ]);
+
+          const serviceMap = Object.fromEntries(
+            serviceDocs.filter(Boolean).map((x: any) => [x.id, x])
+          ) as Record<
+            string,
+            {
+              id: string;
+              customerDisplayName: string;
+              issueSummary: string;
+              serviceAddressLine1?: string;
+              serviceCity?: string;
+              serviceState?: string;
+            }
+          >;
+
+          const projectMap = Object.fromEntries(
+            projectDocs.filter(Boolean).map((x: any) => [x.id, x])
+          ) as Record<
+            string,
+            {
+              id: string;
+              name: string;
+              serviceAddressLine1?: string;
+              serviceCity?: string;
+              serviceState?: string;
+            }
+          >;
+
+          const activeRows: ActiveWorkItem[] = tripItems
+            .map((trip) => {
+              const type = normalizeStatus(trip.type) === "project" ? "project" : "service";
+              const serviceTicketId = safeTrim(trip.link?.serviceTicketId);
+              const projectId = safeTrim(trip.link?.projectId);
+
+              if (type === "project" && projectId) {
+                const project = projectMap[projectId];
+
+                return {
+                  id: trip.id,
+                  tripId: trip.id,
+                  itemType: "project",
+                  href: `/projects/${projectId}`,
+                  title: safeTrim(project?.name) || "Project Trip",
+                  subtitle: safeTrim(project?.name) || "Project",
+                  addressLine1: project?.serviceAddressLine1 ?? "",
+                  city: project?.serviceCity ?? "",
+                  state: project?.serviceState ?? "",
+                  updatedAt: trip.updatedAt ?? null,
+                  status: trip.status ?? "",
+                  timerState: trip.timerState ?? "",
+                  assignedTechnicianName: trip.crew?.primaryTechName ?? "",
+                  assignedHelperName: trip.crew?.helperName ?? "",
+                  secondaryTechnicianName: trip.crew?.secondaryTechName ?? "",
+                  secondaryHelperName: trip.crew?.secondaryHelperName ?? "",
+                } as ActiveWorkItem;
+              }
+
+              const ticket = serviceMap[serviceTicketId];
+
+              return {
+                id: trip.id,
+                tripId: trip.id,
+                itemType: "service",
+                href: serviceTicketId ? `/service-tickets/${serviceTicketId}` : "/service-tickets",
+                title: safeTrim(ticket?.issueSummary) || "Service Ticket",
+                subtitle: safeTrim(ticket?.customerDisplayName) || "Customer",
+                addressLine1: ticket?.serviceAddressLine1 ?? "",
+                city: ticket?.serviceCity ?? "",
+                state: ticket?.serviceState ?? "",
+                updatedAt: trip.updatedAt ?? null,
+                status: trip.status ?? "",
+                timerState: trip.timerState ?? "",
+                assignedTechnicianName: trip.crew?.primaryTechName ?? "",
+                assignedHelperName: trip.crew?.helperName ?? "",
+                secondaryTechnicianName: trip.crew?.secondaryTechName ?? "",
+                secondaryHelperName: trip.crew?.secondaryHelperName ?? "",
+              } as ActiveWorkItem;
+            })
+            .filter(isFieldVisibleItem)
+            .sort(statusSort);
+
+          setActiveItems(activeRows);
+        } catch {
+          setActiveItems([]);
+        }
       },
-      () => setActiveTickets([])
+      () => setActiveItems([])
     );
 
     return () => {
       unsubFollowUp();
       unsubReview();
-      unsubActive();
+      unsubActiveTrips();
     };
   }, []);
 
@@ -1334,8 +1597,8 @@ export default function DashboardPage() {
   }, [followUpTickets, reviewTickets]);
 
   const visibleCardCount = useMemo(() => {
-    return reviewTickets.length + followUpTickets.length + activeTickets.length;
-  }, [reviewTickets.length, followUpTickets.length, activeTickets.length]);
+    return reviewTickets.length + followUpTickets.length + activeItems.length;
+  }, [reviewTickets.length, followUpTickets.length, activeItems.length]);
 
   return (
     <ProtectedPage
@@ -1390,10 +1653,10 @@ export default function DashboardPage() {
                       />
 
                       <Chip
-                        label={`${activeTickets.length} active in field`}
+                        label={`${activeItems.length} active in field`}
                         size="small"
-                        color={activeTickets.length > 0 ? "success" : "default"}
-                        variant={activeTickets.length > 0 ? "filled" : "outlined"}
+                        color={activeItems.length > 0 ? "success" : "default"}
+                        variant={activeItems.length > 0 ? "filled" : "outlined"}
                         sx={{ borderRadius: 999, fontWeight: 800 }}
                       />
                     </Stack>
@@ -1418,7 +1681,7 @@ export default function DashboardPage() {
                       >
                         This dashboard keeps office action items front and center while also giving
                         dispatch a compact view of live field work, current assignments, and active
-                        ticket status.
+                        trip status across service and project work.
                       </Typography>
                     </Box>
                   </Stack>
@@ -1436,7 +1699,7 @@ export default function DashboardPage() {
               </CardContent>
             </Card>
 
-            {attentionCount === 0 && activeTickets.length === 0 ? (
+            {attentionCount === 0 && activeItems.length === 0 ? (
               <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
                 Nice — there are no current office attention items or active field jobs showing right now.
               </Alert>
@@ -1526,21 +1789,21 @@ export default function DashboardPage() {
               <Stack spacing={2}>
                 <SectionCard
                   title="Live Field Work"
-                  subtitle="Compact visibility into active tickets and who is assigned in the field."
+                  subtitle="Compact visibility into active service and project trips and who is assigned in the field."
                   icon={<MyLocationRoundedIcon />}
-                  count={activeTickets.length}
+                  count={activeItems.length}
                   accent="neutral"
                 >
                   <Stack spacing={1.25}>
-                    <AreaSnapshotCard activeTickets={activeTickets} />
+                    <AreaSnapshotCard activeItems={activeItems} />
 
-                    {activeTickets.length === 0 ? (
+                    {activeItems.length === 0 ? (
                       <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
-                        No active field tickets are showing right now.
+                        No active field work is showing right now.
                       </Alert>
                     ) : (
                       <Stack spacing={1.25}>
-                        {activeTickets.map((item) => (
+                        {activeItems.map((item) => (
                           <ActiveWorkRow key={item.id} item={item} />
                         ))}
                       </Stack>
@@ -1563,7 +1826,7 @@ export default function DashboardPage() {
                     }}
                   >
                     {[
-                      { label: "Active Now", value: activeTickets.length },
+                      { label: "Active Now", value: activeItems.length },
                       { label: "Needs Review", value: reviewTickets.length },
                       { label: "Follow-Up", value: followUpTickets.length },
                       { label: "Attention Total", value: attentionCount },
