@@ -22,6 +22,7 @@ type SharedTripCardProps = {
   title: string;
   status?: string;
   tripType?: string;
+  titleMeta?: React.ReactNode;
   subtitle?: React.ReactNode;
   customerLine?: React.ReactNode;
   progressText?: React.ReactNode;
@@ -38,6 +39,7 @@ export default function SharedTripCard({
   title,
   status,
   tripType,
+  titleMeta,
   subtitle,
   customerLine,
   progressText,
@@ -116,6 +118,24 @@ export default function SharedTripCard({
                 {title}
                 {titleSuffix ? titleSuffix : null}
               </Typography>
+
+              {titleMeta ? (
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{
+                    mt: 0.45,
+                    fontSize: 13,
+                    fontWeight: 400,
+                    lineHeight: 1.25,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {titleMeta}
+                </Typography>
+              ) : null}
             </Box>
           </Stack>
 

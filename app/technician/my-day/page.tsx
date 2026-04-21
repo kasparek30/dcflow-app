@@ -109,6 +109,7 @@ type DailyCrewOverride = {
 type MyDayItem = {
   id: string;
   headerText: string;
+  titleMeta?: string;
   subLine: string;
   techText: string;
   helperText?: string;
@@ -1098,19 +1099,19 @@ export default function TechnicianMyDayPage() {
             if (!snap.exists()) return;
             const d = snap.data() as any;
 
-            setProjectById((prev) => ({
-              ...prev,
-              [pid]: {
-                id: pid,
-                projectName: d.projectName ?? "",
-                serviceAddressLabel: d.serviceAddressLabel ?? "",
-                serviceAddressLine1: d.serviceAddressLine1 ?? "",
-                serviceAddressLine2: d.serviceAddressLine2 ?? "",
-                serviceCity: d.serviceCity ?? "",
-                serviceState: d.serviceState ?? "",
-                servicePostalCode: d.servicePostalCode ?? "",
-              },
-            }));
+setProjectById((prev) => ({
+  ...prev,
+  [pid]: {
+    id: pid,
+    projectName: d.projectName ?? "",
+    serviceAddressLabel: d.serviceAddressLabel ?? "",
+    serviceAddressLine1: d.serviceAddressLine1 ?? "",
+    serviceAddressLine2: d.serviceAddressLine2 ?? "",
+    serviceCity: d.serviceCity ?? "",
+    serviceState: d.serviceState ?? "",
+    servicePostalCode: d.servicePostalCode ?? "",
+  },
+}));
           },
           () => {
             // ignore live project errors for now
@@ -1218,31 +1219,31 @@ export default function TechnicianMyDayPage() {
         const serviceTicketId = t.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
 
-        const projectId = t.link?.projectId || "";
-        const projectInfo = projectId ? projectById[projectId] : undefined;
+const projectId = t.link?.projectId || "";
+const projectInfo = projectId ? projectById[projectId] : undefined;
 
-        let headerText = "";
-        if ((t.type || "").toLowerCase() === "service") {
-          const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
-          headerText = `Service Ticket: ${summary}`;
-        } else if ((t.type || "").toLowerCase() === "project") {
-          const projectName = safeStr(projectInfo?.projectName).trim() || "Untitled Job";
-          headerText = projectName;
-        } else {
-          headerText = `${formatType(t.type)} • ${((t.type || "") as string) || "Trip"}`;
-        }
+let headerText = "";
+let titleMeta = "";
 
-        let subLine = timeText;
-        if ((t.type || "").toLowerCase() === "project") {
-          const projectAddress = projectInfo ? buildProjectAddressLine(projectInfo) : "";
-          const stage = stageLabel(t.link?.projectStageKey || null);
-          subLine = projectAddress || stage || "";
-        } else if (st) {
-          const cust = safeStr(st.customerDisplayName).trim();
-          const addr = buildAddressLine(st);
-          const right = [cust, addr].filter(Boolean).join(" — ");
-          if (right) subLine = `${timeText} • ${right}`;
-        }
+if ((t.type || "").toLowerCase() === "service") {
+  const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
+  headerText = `Service Ticket: ${summary}`;
+} else if ((t.type || "").toLowerCase() === "project") {
+  const projectName = safeStr(projectInfo?.projectName).trim() || "Untitled Job";
+  const projectAddress = projectInfo ? buildProjectAddressLine(projectInfo) : "";
+  headerText = projectName;
+  titleMeta = projectAddress;
+} else {
+  headerText = `${formatType(t.type)} • ${((t.type || "") as string) || "Trip"}`;
+}
+
+let subLine = timeText;
+if ((t.type || "").toLowerCase() === "service" && st) {
+  const cust = safeStr(st.customerDisplayName).trim();
+  const addr = buildAddressLine(st);
+  const right = [cust, addr].filter(Boolean).join(" — ");
+  if (right) subLine = `${timeText} • ${right}`;
+}
 
         const issueDetailsText =
           (t.type || "").toLowerCase() === "service" ? safeStr(st?.issueDetails).trim() || "" : "";
@@ -1258,31 +1259,32 @@ export default function TechnicianMyDayPage() {
 
         const confirmed = whoUid && t.confirmedBy ? ((t.confirmedBy as any)[whoUid] as any) : null;
 
-        return {
-          id: t.id,
-          headerText,
-          subLine,
-          techText: `Tech: ${crew.primary}`,
-          helperText: crew.helper,
-          secondaryTechText: crew.secondaryTech,
-          secondaryHelperText: crew.secondaryHelper,
-          issueDetailsText,
-          followUpText,
-          status,
-          sortKey,
-          href,
-          tripType: t.type || "",
-          tripDate: t.date || "",
-          tripWindow: t.timeWindow || "",
-          tripStartTime: t.startTime || "",
-          tripEndTime: t.endTime || "",
-          projectId: t.link?.projectId ?? null,
-          projectStageKey: t.link?.projectStageKey ?? null,
-          confirmed: confirmed || null,
-          timerState,
-          isActive,
-          isPaused,
-        };
+return {
+  id: t.id,
+  headerText,
+  titleMeta,
+  subLine,
+  techText: `Tech: ${crew.primary}`,
+  helperText: crew.helper,
+  secondaryTechText: crew.secondaryTech,
+  secondaryHelperText: crew.secondaryHelper,
+  issueDetailsText,
+  followUpText,
+  status,
+  sortKey,
+  href,
+  tripType: t.type || "",
+  tripDate: t.date || "",
+  tripWindow: t.timeWindow || "",
+  tripStartTime: t.startTime || "",
+  tripEndTime: t.endTime || "",
+  projectId: t.link?.projectId ?? null,
+  projectStageKey: t.link?.projectStageKey ?? null,
+  confirmed: confirmed || null,
+  timerState,
+  isActive,
+  isPaused,
+};
       });
 
     mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
@@ -1883,10 +1885,11 @@ export default function TechnicianMyDayPage() {
                       >
                         <Box sx={item.isActive ? { position: "relative", zIndex: 2 } : undefined}>
                           <SharedTripCard
-                            title={item.headerText}
-                            status={item.status}
-                            tripType={item.tripType}
-                            subtitle={item.subLine}
+  title={item.headerText}
+  titleMeta={item.titleMeta}
+  status={item.status}
+  tripType={item.tripType}
+  subtitle={item.subLine}
                             crewChips={
                               <Stack
                                 direction="row"
