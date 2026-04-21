@@ -1,4 +1,3 @@
-// app/technician/my-day/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -29,6 +28,7 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
+  InputAdornment,
   InputLabel,
   MenuItem,
   Select,
@@ -50,6 +50,7 @@ import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
+import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -185,6 +186,9 @@ type CompanyEvent = {
   location?: string | null;
   notes?: string | null;
   type?: string | null;
+  appliesToRoles?: string[] | null;
+  appliesToUids?: string[] | null;
+  appliesToNames?: string[] | null;
 };
 
 function isoTodayLocal() {
@@ -242,6 +246,48 @@ function safeStr(x: unknown) {
   return typeof x === "string" ? x : "";
 }
 
+function uniqueTrimmedStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function normalizeStatus(s?: string) {
+  return (s || "").toLowerCase().trim();
+}
+
+function normalizeRole(role?: string | null) {
+  return String(role || "")
+    .trim()
+    .toLowerCase();
+}
+
+function formatRoleLabel(role?: string | null) {
+  const raw = normalizeRole(role);
+  if (!raw) return "Employee";
+  return raw
+    .split("_")
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function eventAppliesToUid(e: CompanyEvent, uid?: string | null, role?: string | null) {
+  const cleanUid = String(uid || "").trim();
+  const attendeeUids = uniqueTrimmedStrings(e.appliesToUids || []);
+  if (attendeeUids.length > 0) {
+    if (!cleanUid) return false;
+    return attendeeUids.includes(cleanUid);
+  }
+
+  const roles = uniqueTrimmedStrings(e.appliesToRoles || []).map((item) => normalizeRole(item));
+  if (roles.length === 0) return true;
+  return roles.includes(normalizeRole(role));
+}
+
 function formatWindow(window?: string) {
   const w = (window || "").toLowerCase();
   if (w === "am") return "Morning (8 AM–12 PM)";
@@ -261,14 +307,6 @@ function formatType(type?: string) {
   if (t === "project") return "Project";
   if (t === "service") return "Service";
   return type ? type : "Trip";
-}
-
-function stageLabel(stageKey?: string | null) {
-  const s = stageKey || "";
-  if (s === "roughIn") return "Rough-In";
-  if (s === "topOutVent") return "Top-Out / Vent";
-  if (s === "trimFinish") return "Trim / Finish";
-  return s;
 }
 
 function buildHref(trip: Trip) {
@@ -350,10 +388,6 @@ function buildProjectAddressLine(p: ProjectLite) {
   if (cityStateZip) parts.push(cityStateZip);
 
   return parts.filter(Boolean).join(" • ");
-}
-
-function normalizeStatus(s?: string) {
-  return (s || "").toLowerCase().trim();
 }
 
 function normalizeTimerState(timerState?: string | null, status?: string) {
@@ -687,6 +721,7 @@ export default function TechnicianMyDayPage() {
   const [employeesLoading, setEmployeesLoading] = useState(true);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [selectedEmployeeUid, setSelectedEmployeeUid] = useState<string>("");
+  const [employeeSearch, setEmployeeSearch] = useState("");
 
   const [ticketById, setTicketById] = useState<Record<string, ServiceTicketLite>>({});
   const [projectById, setProjectById] = useState<Record<string, ProjectLite>>({});
@@ -746,13 +781,13 @@ export default function TechnicianMyDayPage() {
               active: Boolean(data.active ?? false),
             };
           })
-          .filter((u) => u.active)
-          .filter((u) => ["technician", "helper", "apprentice"].includes(u.role));
+          .filter((user) => user.active)
+          .filter((user) => ["technician", "helper", "apprentice"].includes(normalizeRole(user.role)));
 
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setEmployees(items);
       } catch {
-        // ignore
+        setEmployees([]);
       } finally {
         setEmployeesLoading(false);
       }
@@ -761,6 +796,15 @@ export default function TechnicianMyDayPage() {
     loadEmployees();
   }, [canViewOtherEmployees]);
 
+  const filteredEmployees = useMemo(() => {
+    const q = employeeSearch.trim().toLowerCase();
+    if (!q) return employees;
+    return employees.filter((employee) => {
+      const haystack = `${employee.displayName} ${employee.role} ${formatRoleLabel(employee.role)}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [employees, employeeSearch]);
+
   function getSelectedEmployeeInfo(uid: string) {
     if (!uid) return { uid: "", displayName: "Employee", role: "technician" };
 
@@ -768,11 +812,13 @@ export default function TechnicianMyDayPage() {
       return { uid, displayName: myName, role: myRole || "technician" };
     }
 
-    const match = employees.find((e) => e.uid === uid);
+    const match = employees.find((employee) => employee.uid === uid);
     if (match) return { uid, displayName: match.displayName, role: match.role || "technician" };
 
     return { uid, displayName: uid, role: "technician" };
   }
+
+  const selectedEmployeeInfo = useMemo(() => getSelectedEmployeeInfo(whoUid), [whoUid, employees, myUid, myName, myRole]);
 
   useEffect(() => {
     setLoading(true);
@@ -835,9 +881,13 @@ export default function TechnicianMyDayPage() {
                 location: d.location ?? null,
                 notes: d.notes ?? d.description ?? null,
                 type: d.type ?? null,
+                appliesToRoles: Array.isArray(d.appliesToRoles) ? d.appliesToRoles : null,
+                appliesToUids: Array.isArray(d.appliesToUids) ? d.appliesToUids : null,
+                appliesToNames: Array.isArray(d.appliesToNames) ? d.appliesToNames : null,
               };
             })
-            .filter((e) => e.active);
+            .filter((event) => event.active)
+            .filter((event) => eventAppliesToUid(event, selectedEmployeeInfo.uid, selectedEmployeeInfo.role));
 
           events.sort((a, b) =>
             String(a.startTime || "99:99").localeCompare(String(b.startTime || "99:99"))
@@ -927,7 +977,7 @@ export default function TechnicianMyDayPage() {
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [todayIso, whoUid, isHelperRole, canViewOtherEmployees]);
+  }, [todayIso, whoUid, isHelperRole, canViewOtherEmployees, selectedEmployeeInfo.uid, selectedEmployeeInfo.role]);
 
   useEffect(() => {
     async function loadRecent() {
@@ -993,17 +1043,17 @@ export default function TechnicianMyDayPage() {
     if (!whoUid) return [];
 
     const explicitCrewTrips = trips
-      .filter((t) => t.active !== false)
-      .filter((t) => isUidInCrew(whoUid, t.crew));
+      .filter((trip) => trip.active !== false)
+      .filter((trip) => isUidInCrew(whoUid, trip.crew));
 
     if (!canViewOtherEmployees && isHelperRole && override?.assignedTechUid) {
       const overrideTechTrips = trips
-        .filter((t) => t.active !== false)
-        .filter((t) => (t.crew?.primaryTechUid || "") === override.assignedTechUid);
+        .filter((trip) => trip.active !== false)
+        .filter((trip) => (trip.crew?.primaryTechUid || "") === override.assignedTechUid);
 
       const merged = [...explicitCrewTrips, ...overrideTechTrips];
       const byId = new Map<string, Trip>();
-      for (const t of merged) byId.set(t.id, t);
+      for (const trip of merged) byId.set(trip.id, trip);
       return Array.from(byId.values());
     }
 
@@ -1014,7 +1064,7 @@ export default function TechnicianMyDayPage() {
     () =>
       Array.from(
         new Set(
-          visibleTrips.map((t) => String(t.link?.serviceTicketId || "").trim()).filter(Boolean)
+          visibleTrips.map((trip) => String(trip.link?.serviceTicketId || "").trim()).filter(Boolean)
         )
       ),
     [visibleTrips]
@@ -1024,7 +1074,7 @@ export default function TechnicianMyDayPage() {
     () =>
       Array.from(
         new Set(
-          visibleTrips.map((t) => String(t.link?.projectId || "").trim()).filter(Boolean)
+          visibleTrips.map((trip) => String(trip.link?.projectId || "").trim()).filter(Boolean)
         )
       ),
     [visibleTrips]
@@ -1097,19 +1147,19 @@ export default function TechnicianMyDayPage() {
             if (!snap.exists()) return;
             const d = snap.data() as any;
 
-setProjectById((prev) => ({
-  ...prev,
-  [pid]: {
-    id: pid,
-    projectName: d.projectName ?? "",
-    serviceAddressLabel: d.serviceAddressLabel ?? "",
-    serviceAddressLine1: d.serviceAddressLine1 ?? "",
-    serviceAddressLine2: d.serviceAddressLine2 ?? "",
-    serviceCity: d.serviceCity ?? "",
-    serviceState: d.serviceState ?? "",
-    servicePostalCode: d.servicePostalCode ?? "",
-  },
-}));
+            setProjectById((prev) => ({
+              ...prev,
+              [pid]: {
+                id: pid,
+                projectName: d.projectName ?? "",
+                serviceAddressLabel: d.serviceAddressLabel ?? "",
+                serviceAddressLine1: d.serviceAddressLine1 ?? "",
+                serviceAddressLine2: d.serviceAddressLine2 ?? "",
+                serviceCity: d.serviceCity ?? "",
+                serviceState: d.serviceState ?? "",
+                servicePostalCode: d.servicePostalCode ?? "",
+              },
+            }));
           },
           () => {
             // ignore live project errors for now
@@ -1135,9 +1185,9 @@ setProjectById((prev) => ({
       await Promise.all(
         visibleServiceTicketIds.map(async (tid) => {
           try {
-            const t = ticketById[tid];
-            if (!t) return;
-            if (normalizeStatus(t.status) !== "follow_up") return;
+            const ticket = ticketById[tid];
+            if (!ticket) return;
+            if (normalizeStatus(ticket.status) !== "follow_up") return;
 
             const qTrip = query(
               collection(db, "trips"),
@@ -1169,20 +1219,20 @@ setProjectById((prev) => ({
     if (!whoUid) return [];
 
     const out = recentTrips
-      .filter((t) => t.active !== false)
-      .filter((t) => String(t.type || "").toLowerCase() === "project")
-      .filter((t) => {
-        const s = normalizeStatus(t.status);
+      .filter((trip) => trip.active !== false)
+      .filter((trip) => String(trip.type || "").toLowerCase() === "project")
+      .filter((trip) => {
+        const s = normalizeStatus(trip.status);
         if (s === "cancelled") return false;
         return true;
       })
-      .filter((t) => isUidInCrew(whoUid, t.crew))
-      .filter((t) => {
-        const confirmed = t.confirmedBy ? (t.confirmedBy as any)[whoUid] : null;
+      .filter((trip) => isUidInCrew(whoUid, trip.crew))
+      .filter((trip) => {
+        const confirmed = trip.confirmedBy ? (trip.confirmedBy as any)[whoUid] : null;
         return !confirmed;
       })
-      .filter((t) => {
-        const d = String(t.date || "").trim();
+      .filter((trip) => {
+        const d = String(trip.date || "").trim();
         if (!d) return false;
         return d < todayIso;
       });
@@ -1198,91 +1248,91 @@ setProjectById((prev) => ({
 
   const items = useMemo(() => {
     const mapped: MyDayItem[] = visibleTrips
-      .filter((t) => {
-        const s = normalizeStatus(t.status);
+      .filter((trip) => {
+        const s = normalizeStatus(trip.status);
         if (!showCompleted && (s === "complete" || s === "completed")) return false;
         return true;
       })
-      .map((t) => {
-        const crew = crewDisplay(t.crew);
-        const href = buildHref(t);
+      .map((trip) => {
+        const crew = crewDisplay(trip.crew);
+        const href = buildHref(trip);
 
-        const timeText = formatTripTimeLine(t.timeWindow, t.startTime, t.endTime);
+        const timeText = formatTripTimeLine(trip.timeWindow, trip.startTime, trip.endTime);
 
-        const status = normalizeStatus(t.status) || "planned";
-        const timerState = normalizeTimerState(t.timerState, t.status);
+        const status = normalizeStatus(trip.status) || "planned";
+        const timerState = normalizeTimerState(trip.timerState, trip.status);
         const isPaused = status === "in_progress" && timerState === "paused";
         const isActive = status === "in_progress";
 
-        const serviceTicketId = t.link?.serviceTicketId || "";
+        const serviceTicketId = trip.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
 
-const projectId = t.link?.projectId || "";
-const projectInfo = projectId ? projectById[projectId] : undefined;
+        const projectId = trip.link?.projectId || "";
+        const projectInfo = projectId ? projectById[projectId] : undefined;
 
-let headerText = "";
-let titleMeta = "";
+        let headerText = "";
+        let titleMeta = "";
 
-if ((t.type || "").toLowerCase() === "service") {
-  const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
-  headerText = `Service Ticket: ${summary}`;
-} else if ((t.type || "").toLowerCase() === "project") {
-  const projectName = safeStr(projectInfo?.projectName).trim() || "Untitled Job";
-  const projectAddress = projectInfo ? buildProjectAddressLine(projectInfo) : "";
-  headerText = projectName;
-  titleMeta = projectAddress;
-} else {
-  headerText = `${formatType(t.type)} • ${((t.type || "") as string) || "Trip"}`;
-}
+        if ((trip.type || "").toLowerCase() === "service") {
+          const summary = safeStr(st?.issueSummary).trim() || "Service Ticket";
+          headerText = `Service Ticket: ${summary}`;
+        } else if ((trip.type || "").toLowerCase() === "project") {
+          const projectName = safeStr(projectInfo?.projectName).trim() || "Untitled Job";
+          const projectAddress = projectInfo ? buildProjectAddressLine(projectInfo) : "";
+          headerText = projectName;
+          titleMeta = projectAddress;
+        } else {
+          headerText = `${formatType(trip.type)} • ${((trip.type || "") as string) || "Trip"}`;
+        }
 
-let subLine = timeText;
-if ((t.type || "").toLowerCase() === "service" && st) {
-  const cust = safeStr(st.customerDisplayName).trim();
-  const addr = buildAddressLine(st);
-  const right = [cust, addr].filter(Boolean).join(" — ");
-  if (right) subLine = `${timeText} • ${right}`;
-}
+        let subLine = timeText;
+        if ((trip.type || "").toLowerCase() === "service" && st) {
+          const cust = safeStr(st.customerDisplayName).trim();
+          const addr = buildAddressLine(st);
+          const right = [cust, addr].filter(Boolean).join(" — ");
+          if (right) subLine = `${timeText} • ${right}`;
+        }
 
         const issueDetailsText =
-          (t.type || "").toLowerCase() === "service" ? safeStr(st?.issueDetails).trim() || "" : "";
+          (trip.type || "").toLowerCase() === "service" ? safeStr(st?.issueDetails).trim() || "" : "";
 
         const followUpText =
-          (t.type || "").toLowerCase() === "service" && serviceTicketId
+          (trip.type || "").toLowerCase() === "service" && serviceTicketId
             ? safeStr(followUpByTicketId[serviceTicketId]).trim() || ""
             : "";
 
         const activeBoost = isActive ? (isPaused ? "1" : "0") : "2";
-        const tKey = timeSortKey(t.startTime, t.timeWindow);
-        const sortKey = `${activeBoost}_${tKey}_${t.id}`;
+        const tKey = timeSortKey(trip.startTime, trip.timeWindow);
+        const sortKey = `${activeBoost}_${tKey}_${trip.id}`;
 
-        const confirmed = whoUid && t.confirmedBy ? ((t.confirmedBy as any)[whoUid] as any) : null;
+        const confirmed = whoUid && trip.confirmedBy ? ((trip.confirmedBy as any)[whoUid] as any) : null;
 
-return {
-  id: t.id,
-  headerText,
-  titleMeta,
-  subLine,
-  techText: `Tech: ${crew.primary}`,
-  helperText: crew.helper,
-  secondaryTechText: crew.secondaryTech,
-  secondaryHelperText: crew.secondaryHelper,
-  issueDetailsText,
-  followUpText,
-  status,
-  sortKey,
-  href,
-  tripType: t.type || "",
-  tripDate: t.date || "",
-  tripWindow: t.timeWindow || "",
-  tripStartTime: t.startTime || "",
-  tripEndTime: t.endTime || "",
-  projectId: t.link?.projectId ?? null,
-  projectStageKey: t.link?.projectStageKey ?? null,
-  confirmed: confirmed || null,
-  timerState,
-  isActive,
-  isPaused,
-};
+        return {
+          id: trip.id,
+          headerText,
+          titleMeta,
+          subLine,
+          techText: `Tech: ${crew.primary}`,
+          helperText: crew.helper,
+          secondaryTechText: crew.secondaryTech,
+          secondaryHelperText: crew.secondaryHelper,
+          issueDetailsText,
+          followUpText,
+          status,
+          sortKey,
+          href,
+          tripType: trip.type || "",
+          tripDate: trip.date || "",
+          tripWindow: trip.timeWindow || "",
+          tripStartTime: trip.startTime || "",
+          tripEndTime: trip.endTime || "",
+          projectId: trip.link?.projectId ?? null,
+          projectStageKey: trip.link?.projectStageKey ?? null,
+          confirmed: confirmed || null,
+          timerState,
+          isActive,
+          isPaused,
+        };
       });
 
     mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
@@ -1311,12 +1361,12 @@ return {
     return null;
   }, [whoUid, isHelperRole, override, canViewOtherEmployees]);
 
-  function openConfirmModalFromTrip(t: Trip) {
+  function openConfirmModalFromTrip(trip: Trip) {
     setConfirmErr("");
-    const suggested = defaultHoursForTrip(t.timeWindow, t.startTime, t.endTime);
+    const suggested = defaultHoursForTrip(trip.timeWindow, trip.startTime, trip.endTime);
     setConfirmHours(String(suggested));
     setConfirmNote("");
-    setConfirmTripId(t.id);
+    setConfirmTripId(trip.id);
     setConfirmOpen(true);
   }
 
@@ -1354,32 +1404,32 @@ return {
       });
 
       setTrips((prev) =>
-        prev.map((t) =>
-          t.id === item.id
+        prev.map((trip) =>
+          trip.id === item.id
             ? {
-                ...t,
+                ...trip,
                 status: "in_progress",
                 timerState: "running",
                 completedAt: null,
                 completedByUid: null,
                 active: true,
               }
-            : t
+            : trip
         )
       );
 
       setRecentTrips((prev) =>
-        prev.map((t) =>
-          t.id === item.id
+        prev.map((trip) =>
+          trip.id === item.id
             ? {
-                ...t,
+                ...trip,
                 status: "in_progress",
                 timerState: "running",
                 completedAt: null,
                 completedByUid: null,
                 active: true,
               }
-            : t
+            : trip
         )
       );
 
@@ -1568,22 +1618,40 @@ return {
                 </Stack>
 
                 {canViewOtherEmployees ? (
-                  <FormControl size="small" sx={{ width: "100%", maxWidth: 320 }}>
-                    <InputLabel>Employee</InputLabel>
-                    <Select
-                      label="Employee"
-                      value={selectedEmployeeUid || myUid}
-                      onChange={(e: SelectChangeEvent) => setSelectedEmployeeUid(e.target.value)}
+                  <Stack spacing={1} sx={{ width: "100%", maxWidth: 360 }}>
+                    <TextField
+                      size="small"
+                      label="Search employees"
+                      value={employeeSearch}
+                      onChange={(e) => setEmployeeSearch(e.target.value)}
                       disabled={employeesLoading}
-                    >
-                      <MenuItem value={myUid}>Me</MenuItem>
-                      {employees.map((u) => (
-                        <MenuItem key={u.uid} value={u.uid}>
-                          {u.displayName} ({u.role})
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
+                      placeholder="Search by name or role…"
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchRoundedIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+
+                    <FormControl size="small" sx={{ width: "100%" }}>
+                      <InputLabel>Employee</InputLabel>
+                      <Select
+                        label="Employee"
+                        value={selectedEmployeeUid || myUid}
+                        onChange={(e: SelectChangeEvent) => setSelectedEmployeeUid(e.target.value)}
+                        disabled={employeesLoading}
+                      >
+                        <MenuItem value={myUid}>Me ({formatRoleLabel(myRole)})</MenuItem>
+                        {filteredEmployees.map((employee) => (
+                          <MenuItem key={employee.uid} value={employee.uid}>
+                            {employee.displayName} ({formatRoleLabel(employee.role)})
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Stack>
                 ) : null}
 
                 <Box
@@ -1641,12 +1709,12 @@ return {
 
                 <SectionSurface>
                   <Stack divider={<Divider flexItem />}>
-                    {unconfirmedPastTrips.map((t) => {
-                      const crew = crewDisplay(t.crew);
-                      const timeText = formatTripTimeLine(t.timeWindow, t.startTime, t.endTime);
+                    {unconfirmedPastTrips.map((trip) => {
+                      const crew = crewDisplay(trip.crew);
+                      const timeText = formatTripTimeLine(trip.timeWindow, trip.startTime, trip.endTime);
 
                       return (
-                        <Box key={t.id} sx={{ px: { xs: 2, md: 2.5 }, py: 1.75 }}>
+                        <Box key={trip.id} sx={{ px: { xs: 2, md: 2.5 }, py: 1.75 }}>
                           <Stack spacing={1.25}>
                             <Stack
                               direction={{ xs: "column", sm: "row" }}
@@ -1656,7 +1724,7 @@ return {
                             >
                               <Stack spacing={0.5}>
                                 <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                                  Project • {t.date}
+                                  Project • {trip.date}
                                 </Typography>
                                 <Typography variant="body2" color="text.secondary">
                                   {timeText}
@@ -1667,7 +1735,7 @@ return {
                                 variant="contained"
                                 color="success"
                                 startIcon={<TaskAltRoundedIcon />}
-                                onClick={() => openConfirmModalFromTrip(t)}
+                                onClick={() => openConfirmModalFromTrip(trip)}
                               >
                                 Confirm Hours
                               </Button>
@@ -1693,7 +1761,7 @@ return {
                             </Stack>
 
                             <Typography variant="caption" color="text.secondary">
-                              Trip ID: {t.id}
+                              Trip ID: {trip.id}
                             </Typography>
                           </Stack>
                         </Box>
@@ -1727,14 +1795,14 @@ return {
               <Stack spacing={1.25}>
                 <SectionHeader
                   title={`Company event${companyEvents.length > 1 ? "s" : ""}`}
-                  subtitle="Today’s meetings and company-wide schedule events."
+                  subtitle="Today’s meetings and schedule events for this employee."
                   icon={<CampaignRoundedIcon color="success" />}
                 />
 
                 <SectionSurface>
                   <Stack divider={<Divider flexItem />}>
-                    {companyEvents.map((e) => (
-                      <Box key={e.id} sx={{ px: { xs: 2, md: 2.5 }, py: 1.75 }}>
+                    {companyEvents.map((event) => (
+                      <Box key={event.id} sx={{ px: { xs: 2, md: 2.5 }, py: 1.75 }}>
                         <Stack spacing={1}>
                           <Stack
                             direction={{ xs: "column", sm: "row" }}
@@ -1743,35 +1811,35 @@ return {
                             justifyContent="space-between"
                           >
                             <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                              {e.title}
+                              {event.title}
                             </Typography>
 
                             <Chip
                               size="small"
                               icon={<TodayRoundedIcon sx={{ fontSize: 16 }} />}
-                              label={formatEventTime(e)}
+                              label={formatEventTime(event)}
                               color="success"
                               variant="outlined"
                               sx={{ borderRadius: 1.5, fontWeight: 500 }}
                             />
                           </Stack>
 
-                          {e.location ? (
+                          {event.location ? (
                             <Stack direction="row" spacing={0.75} alignItems="center">
                               <LocationOnRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
                               <Typography variant="body2" color="text.secondary">
-                                {e.location}
+                                {event.location}
                               </Typography>
                             </Stack>
                           ) : null}
 
-                          {e.notes ? (
+                          {event.notes ? (
                             <Typography
                               variant="body2"
                               color="text.secondary"
                               sx={{ whiteSpace: "pre-wrap" }}
                             >
-                              {e.notes}
+                              {event.notes}
                             </Typography>
                           ) : null}
                         </Stack>
@@ -1883,11 +1951,11 @@ return {
                       >
                         <Box sx={item.isActive ? { position: "relative", zIndex: 2 } : undefined}>
                           <SharedTripCard
-  title={item.headerText}
-  titleMeta={item.titleMeta}
-  status={item.status}
-  tripType={item.tripType}
-  subtitle={item.subLine}
+                            title={item.headerText}
+                            titleMeta={item.titleMeta}
+                            status={item.status}
+                            tripType={item.tripType}
+                            subtitle={item.subLine}
                             crewChips={
                               <Stack
                                 direction="row"

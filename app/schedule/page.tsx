@@ -4,16 +4,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   collection,
-  getDocs,
-  query,
-  where,
-  orderBy,
   doc,
   getDoc,
+  getDocs,
   addDoc,
-  writeBatch,
-  updateDoc,
   limit,
+  orderBy,
+  query,
+  updateDoc,
+  where,
+  writeBatch,
 } from "firebase/firestore";
 import {
   Alert,
@@ -116,6 +116,13 @@ type TechRow = {
   name: string;
 };
 
+type EmployeeOption = {
+  uid: string;
+  displayName: string;
+  role: string;
+  active: boolean;
+};
+
 type TicketSummary = {
   id: string;
   issueSummary: string;
@@ -162,6 +169,8 @@ type CompanyEvent = {
   notes?: string | null;
   appliesToRoles?: string[] | null;
   appliesToUids?: string[] | null;
+  appliesToNames?: string[] | null;
+  includeAllEmployees?: boolean;
   blocksSchedule?: boolean;
   createdAt?: string;
   createdByUid?: string | null;
@@ -189,6 +198,15 @@ type PickerItem = {
   metaLeft?: string;
   preview?: string;
 };
+
+const MEETING_ELIGIBLE_ROLES = [
+  "technician",
+  "helper",
+  "apprentice",
+  "manager",
+  "dispatcher",
+  "admin",
+] as const;
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -253,6 +271,35 @@ function todayIsoLocal() {
 
 function normalizeStatus(s?: string) {
   return (s || "").trim().toLowerCase();
+}
+
+function normalizeRole(role?: string | null) {
+  return String(role || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isMeetingEligibleRole(role?: string | null) {
+  return MEETING_ELIGIBLE_ROLES.includes(normalizeRole(role) as (typeof MEETING_ELIGIBLE_ROLES)[number]);
+}
+
+function formatRoleLabel(role?: string | null) {
+  const raw = normalizeRole(role);
+  if (!raw) return "Employee";
+  return raw
+    .split("_")
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function uniqueTrimmedStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 function normalizeTicketStatus(s: any) {
@@ -347,9 +394,7 @@ function compactTimeLabel(start?: string | null, end?: string | null) {
     ? startText.replace("AM", "").replace("PM", "")
     : startText.replace(":00", "").replace("AM", "").replace("PM", "");
 
-  const endCompact = endHasMinutes
-    ? endText
-    : endText.replace(":00", "");
+  const endCompact = endHasMinutes ? endText : endText.replace(":00", "");
 
   return `${startCompact}–${endCompact}`;
 }
@@ -456,120 +501,6 @@ function defaultMeetingHours(window: string, startTime?: string | null, endTime?
 function isLockedWeeklyTimesheetStatus(status?: string) {
   const s = String(status || "").toLowerCase().trim();
   return s === "submitted" || s === "approved" || s === "exported_to_quickbooks" || s === "exported";
-}
-
-async function createPaidMeetingEntries(args: {
-  eventId: string;
-  dateIso: string;
-  title: string;
-  timeWindow: string;
-  startTime?: string | null;
-  endTime?: string | null;
-  location?: string | null;
-  appliesToRoles: string[];
-  appliesToUids?: string[];
-  createdByUid: string | null;
-}) {
-  const {
-    eventId,
-    dateIso,
-    title,
-    timeWindow,
-    startTime,
-    endTime,
-    location,
-    appliesToRoles,
-    appliesToUids,
-    createdByUid,
-  } = args;
-
-  const now = nowIso();
-  const hours = defaultMeetingHours(timeWindow, startTime, endTime);
-  const { weekStartDate, weekEndDate } = getPayrollWeekBounds(dateIso);
-
-  const usersSnap = await getDocs(collection(db, "users"));
-
-  const recipients = usersSnap.docs
-    .map((ds) => {
-      const d = ds.data() as any;
-      return {
-        uid: String(d.uid ?? ds.id),
-        displayName: String(d.displayName ?? "Employee"),
-        role: String(d.role ?? ""),
-        active: Boolean(d.active ?? false),
-      };
-    })
-    .filter((u) => u.active)
-    .filter((u) => {
-      if (Array.isArray(appliesToUids) && appliesToUids.length > 0) {
-        return appliesToUids.includes(u.uid);
-      }
-
-      return appliesToRoles
-        .map((r) => r.toLowerCase())
-        .includes((u.role || "").toLowerCase());
-    });
-
-  if (recipients.length === 0) return;
-
-  const batch = writeBatch(db);
-
-  for (const u of recipients) {
-    const timesheetId = buildWeeklyTimesheetId(u.uid, weekStartDate);
-
-    batch.set(
-      doc(db, "weeklyTimesheets", timesheetId),
-      {
-        employeeId: u.uid,
-        employeeName: u.displayName,
-        employeeRole: u.role || "employee",
-        weekStartDate,
-        weekEndDate,
-        status: "draft",
-        submittedAt: null,
-        submittedByUid: null,
-        createdAt: now,
-        createdByUid,
-        updatedAt: now,
-        updatedByUid: createdByUid,
-      },
-      { merge: true }
-    );
-
-    const timeEntryId = `meeting_${eventId}_${u.uid}`;
-
-    batch.set(
-      doc(db, "timeEntries", timeEntryId),
-      {
-        employeeId: u.uid,
-        employeeName: u.displayName,
-        employeeRole: u.role || "employee",
-        entryDate: dateIso,
-        weekStartDate,
-        weekEndDate,
-        timesheetId,
-        category: "meeting",
-        payType: "regular",
-        billable: false,
-        source: "company_meeting",
-        hours,
-        hoursSource: hours,
-        hoursLocked: true,
-        companyEventId: eventId,
-        title,
-        location: location || null,
-        entryStatus: "draft",
-        notes: null,
-        createdAt: now,
-        createdByUid,
-        updatedAt: now,
-        updatedByUid: createdByUid,
-      },
-      { merge: true }
-    );
-  }
-
-  await batch.commit();
 }
 
 function monthCalendarWorkWeeks(anchor: Date) {
@@ -702,10 +633,17 @@ function extractPtoDates(d: any): string[] {
   return [];
 }
 
-function eventAppliesToRoleOrAll(e: CompanyEvent, role: string) {
-  const roles = (e.appliesToRoles || []) as string[];
-  if (!roles || roles.length === 0) return true;
-  return roles.map((x) => String(x).toLowerCase()).includes(String(role || "").toLowerCase());
+function eventAppliesToUid(e: CompanyEvent, uid?: string | null, role?: string | null) {
+  const cleanUid = String(uid || "").trim();
+  const attendeeUids = uniqueTrimmedStrings(e.appliesToUids || []);
+  if (attendeeUids.length > 0) {
+    if (!cleanUid) return false;
+    return attendeeUids.includes(cleanUid);
+  }
+
+  const roles = uniqueTrimmedStrings(e.appliesToRoles || []).map((item) => normalizeRole(item));
+  if (roles.length === 0) return true;
+  return roles.includes(normalizeRole(role));
 }
 
 function splitTripsBySlot(cellTrips: TripDoc[]) {
@@ -865,6 +803,7 @@ export default function SchedulePage() {
   const [techsLoading, setTechsLoading] = useState(true);
   const [techsError, setTechsError] = useState("");
   const [techs, setTechs] = useState<TechRow[]>([]);
+  const [meetingEmployees, setMeetingEmployees] = useState<EmployeeOption[]>([]);
 
   const [tripsLoading, setTripsLoading] = useState(true);
   const [tripsError, setTripsError] = useState("");
@@ -917,18 +856,49 @@ export default function SchedulePage() {
   const [meetLocation, setMeetLocation] = useState("");
   const [meetNotes, setMeetNotes] = useState("");
   const [meetBlocks, setMeetBlocks] = useState(true);
+  const [meetIncludeAll, setMeetIncludeAll] = useState(true);
+  const [meetAppliesToUids, setMeetAppliesToUids] = useState<string[]>([]);
+  const [meetAttendeeSearch, setMeetAttendeeSearch] = useState("");
   const [meetSaving, setMeetSaving] = useState(false);
   const [meetErr, setMeetErr] = useState("");
   const [meetMsg, setMeetMsg] = useState("");
 
-  function findTechName(uid: string) {
-    const t = techs.find((x) => x.uid === uid);
-    return t?.name || "";
+  const allMeetingEmployeeUids = useMemo(
+    () => meetingEmployees.map((employee) => employee.uid),
+    [meetingEmployees]
+  );
+
+  const filteredMeetingEmployees = useMemo(() => {
+    const q = meetAttendeeSearch.trim().toLowerCase();
+    if (!q) return meetingEmployees;
+
+    return meetingEmployees.filter((employee) => {
+      const haystack = `${employee.displayName} ${employee.role} ${formatRoleLabel(employee.role)}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [meetingEmployees, meetAttendeeSearch]);
+
+  function setMeetingAttendees(nextUids: Array<string | null | undefined>) {
+    const allowed = new Set(allMeetingEmployeeUids);
+    const cleaned = uniqueTrimmedStrings(nextUids).filter((uid) => allowed.has(uid));
+    setMeetAppliesToUids(cleaned);
+    setMeetIncludeAll(
+      allMeetingEmployeeUids.length > 0 && allMeetingEmployeeUids.every((uid) => cleaned.includes(uid))
+    );
   }
 
-  function slotDefaults(slot: SlotKey) {
-    if (slot === "am") return { timeWindow: "am" as const, startTime: "08:00", endTime: "12:00" };
-    return { timeWindow: "pm" as const, startTime: "13:00", endTime: "17:00" };
+  function deriveMeetingUidsFromEvent(event: CompanyEvent) {
+    const explicit = uniqueTrimmedStrings(event.appliesToUids || []);
+    if (explicit.length > 0) return explicit;
+
+    const roles = uniqueTrimmedStrings(event.appliesToRoles || []).map((role) => normalizeRole(role));
+    if (roles.length > 0) {
+      return meetingEmployees
+        .filter((employee) => roles.includes(normalizeRole(employee.role)))
+        .map((employee) => employee.uid);
+    }
+
+    return allMeetingEmployeeUids;
   }
 
   async function loadOpenTicketsIfNeeded() {
@@ -965,7 +935,9 @@ export default function SchedulePage() {
           if (!stid) return;
           scheduledTicketIds.add(stid);
         });
-      } catch {}
+      } catch {
+        // ignore pre-check issues
+      }
 
       const snap = await getDocs(
         query(collection(db, "serviceTickets"), orderBy("createdAt", "desc"), limit(400))
@@ -1004,7 +976,7 @@ export default function SchedulePage() {
             null;
 
           const details = String(detailsRaw ?? "").trim();
-          const preview = details.length > 0 ? (details.length > 140 ? details.slice(0, 139) + "…" : details) : "";
+          const preview = details.length > 0 ? (details.length > 140 ? `${details.slice(0, 139)}…` : details) : "";
 
           const label = issue || "Service Ticket";
           const sub = `${customer || "Customer"}${line1 ? ` — ${line1}` : ""}${city ? `, ${city}` : ""}`;
@@ -1070,6 +1042,16 @@ export default function SchedulePage() {
     }
   }
 
+  function findTechName(uid: string) {
+    const t = techs.find((x) => x.uid === uid);
+    return t?.name || "";
+  }
+
+  function slotDefaults(slot: SlotKey) {
+    if (slot === "am") return { timeWindow: "am" as const, startTime: "08:00", endTime: "12:00" };
+    return { timeWindow: "pm" as const, startTime: "13:00", endTime: "17:00" };
+  }
+
   function openAddModal(args: { techUid: string; dateIso: string; slot: SlotKey }) {
     setAddErr("");
     setAddTechUid(args.techUid);
@@ -1102,8 +1084,8 @@ export default function SchedulePage() {
 
     return base
       .filter((x) => {
-        const a = `${x.label || ""} ${x.sublabel || ""} ${x.id || ""}`.toLowerCase();
-        return a.includes(q);
+        const haystack = `${x.label || ""} ${x.sublabel || ""} ${x.id || ""}`.toLowerCase();
+        return haystack.includes(q);
       })
       .slice(0, 80);
   }
@@ -1132,7 +1114,7 @@ export default function SchedulePage() {
     if (holidayByDate[dateIso]) return setAddErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
     if (ptoByUidByDate[techUid]?.[dateIso]) return setAddErr(`That technician is on approved PTO for ${dateIso}.`);
 
-    const todaysEvents = eventsByDate[dateIso] || [];
+    const todaysEvents = (eventsByDate[dateIso] || []).filter((event) => eventAppliesToUid(event, techUid, "technician"));
     const anyBlocking = todaysEvents.some((e) => eventBlocksSlot(e, addSlot));
     if (anyBlocking) return setAddErr("That slot is blocked by a company meeting/event.");
 
@@ -1198,6 +1180,9 @@ export default function SchedulePage() {
     setMeetLocation("");
     setMeetNotes("");
     setMeetBlocks(true);
+    setMeetIncludeAll(true);
+    setMeetAppliesToUids(allMeetingEmployeeUids);
+    setMeetAttendeeSearch("");
     setMeetErr("");
     setMeetMsg("");
   }
@@ -1210,6 +1195,8 @@ export default function SchedulePage() {
 
   function openEditMeetingModal(e: CompanyEvent) {
     resetMeetingForm();
+    const derivedUids = deriveMeetingUidsFromEvent(e);
+
     setEditingMeetId(e.id);
     setEditingMeetOriginalDate(e.date);
     setMeetDateIso(e.date);
@@ -1234,6 +1221,10 @@ export default function SchedulePage() {
     setMeetLocation(String(e.location || ""));
     setMeetNotes(String(e.notes || ""));
     setMeetBlocks(Boolean(e.blocksSchedule ?? true));
+    setMeetAppliesToUids(derivedUids);
+    setMeetIncludeAll(
+      allMeetingEmployeeUids.length > 0 && allMeetingEmployeeUids.every((uid) => derivedUids.includes(uid))
+    );
     setMeetOpen(true);
   }
 
@@ -1244,6 +1235,14 @@ export default function SchedulePage() {
     setMeetErr("");
     setMeetMsg("");
   }
+
+  useEffect(() => {
+    if (!meetOpen || editingMeetId) return;
+    if (!meetIncludeAll) return;
+    if (allMeetingEmployeeUids.length === 0) return;
+    if (meetAppliesToUids.length === allMeetingEmployeeUids.length) return;
+    setMeetAppliesToUids(allMeetingEmployeeUids);
+  }, [meetOpen, editingMeetId, meetIncludeAll, allMeetingEmployeeUids, meetAppliesToUids.length]);
 
   async function getMeetingTimeEntries(eventId: string): Promise<MeetingTimeEntryLite[]> {
     const snap = await getDocs(query(collection(db, "timeEntries"), where("companyEventId", "==", eventId)));
@@ -1267,17 +1266,19 @@ export default function SchedulePage() {
     const locked: Array<{ employeeName: string; weekStartDate: string; status: string }> = [];
 
     await Promise.all(
-      entries.map(async (e) => {
-        const wsId = buildWeeklyTimesheetId(e.employeeId, e.weekStartDate);
+      entries.map(async (entry) => {
+        const wsId = buildWeeklyTimesheetId(entry.employeeId, entry.weekStartDate);
         try {
           const tsSnap = await getDoc(doc(db, "weeklyTimesheets", wsId));
           if (!tsSnap.exists()) return;
           const d = tsSnap.data() as any;
           const status = String(d.status ?? "").toLowerCase().trim();
           if (isLockedWeeklyTimesheetStatus(status)) {
-            locked.push({ employeeName: e.employeeName || e.employeeId, weekStartDate: e.weekStartDate, status });
+            locked.push({ employeeName: entry.employeeName || entry.employeeId, weekStartDate: entry.weekStartDate, status });
           }
-        } catch {}
+        } catch {
+          // ignore timesheet check read errors here
+        }
       })
     );
 
@@ -1290,6 +1291,151 @@ export default function SchedulePage() {
     }
   }
 
+  async function assertWeeklyTimesheetsUnlockedForAttendees(args: {
+    attendeeUids: string[];
+    dateIso: string;
+    attendeeLabels?: Record<string, string>;
+  }) {
+    const { attendeeUids, dateIso, attendeeLabels = {} } = args;
+    const { weekStartDate } = getPayrollWeekBounds(dateIso);
+
+    const locked: Array<{ employeeName: string; weekStartDate: string; status: string }> = [];
+
+    await Promise.all(
+      uniqueTrimmedStrings(attendeeUids).map(async (uid) => {
+        try {
+          const tsSnap = await getDoc(doc(db, "weeklyTimesheets", buildWeeklyTimesheetId(uid, weekStartDate)));
+          if (!tsSnap.exists()) return;
+          const data = tsSnap.data() as any;
+          const status = String(data.status ?? "").toLowerCase().trim();
+          if (isLockedWeeklyTimesheetStatus(status)) {
+            locked.push({
+              employeeName: attendeeLabels[uid] || String(data.employeeName ?? uid),
+              weekStartDate,
+              status,
+            });
+          }
+        } catch {
+          // ignore timesheet read issues here
+        }
+      })
+    );
+
+    if (locked.length) {
+      const first = locked[0];
+      const more = locked.length > 1 ? ` (+${locked.length - 1} more)` : "";
+      throw new Error(
+        `This meeting cannot be saved because one or more attendees already have a locked weekly timesheet for week ${first.weekStartDate}. Example: ${first.employeeName} • status ${first.status}${more}`
+      );
+    }
+  }
+
+  async function createPaidMeetingEntries(args: {
+    eventId: string;
+    dateIso: string;
+    title: string;
+    timeWindow: string;
+    startTime?: string | null;
+    endTime?: string | null;
+    location?: string | null;
+    attendeeUids: string[];
+    attendeeNamesByUid?: Record<string, string>;
+    createdByUid: string | null;
+  }) {
+    const {
+      eventId,
+      dateIso,
+      title,
+      timeWindow,
+      startTime,
+      endTime,
+      location,
+      attendeeUids,
+      attendeeNamesByUid = {},
+      createdByUid,
+    } = args;
+
+    const cleanedAttendeeUids = uniqueTrimmedStrings(attendeeUids);
+    if (cleanedAttendeeUids.length === 0) return;
+
+    const now = nowIso();
+    const hours = defaultMeetingHours(timeWindow, startTime, endTime);
+    const { weekStartDate, weekEndDate } = getPayrollWeekBounds(dateIso);
+
+    const usersSnap = await getDocs(collection(db, "users"));
+    const userMap = new Map<string, { displayName: string; role: string; active: boolean }>();
+    usersSnap.docs.forEach((docSnap) => {
+      const data = docSnap.data() as any;
+      const uid = String(data.uid ?? docSnap.id);
+      userMap.set(uid, {
+        displayName: String(data.displayName ?? attendeeNamesByUid[uid] ?? uid),
+        role: String(data.role ?? "employee"),
+        active: Boolean(data.active ?? false),
+      });
+    });
+
+    const batch = writeBatch(db);
+
+    for (const uid of cleanedAttendeeUids) {
+      const user = userMap.get(uid);
+      const employeeName = user?.displayName || attendeeNamesByUid[uid] || uid;
+      const employeeRole = user?.role || "employee";
+      const timesheetId = buildWeeklyTimesheetId(uid, weekStartDate);
+      const timeEntryId = `meeting_${eventId}_${uid}`;
+
+      batch.set(
+        doc(db, "weeklyTimesheets", timesheetId),
+        {
+          employeeId: uid,
+          employeeName,
+          employeeRole,
+          weekStartDate,
+          weekEndDate,
+          status: "draft",
+          submittedAt: null,
+          submittedByUid: null,
+          createdAt: now,
+          createdByUid,
+          updatedAt: now,
+          updatedByUid: createdByUid,
+        },
+        { merge: true }
+      );
+
+      batch.set(
+        doc(db, "timeEntries", timeEntryId),
+        {
+          employeeId: uid,
+          employeeName,
+          employeeRole,
+          entryDate: dateIso,
+          weekStartDate,
+          weekEndDate,
+          timesheetId,
+          category: "meeting",
+          payType: "regular",
+          billable: false,
+          source: "company_meeting",
+          hours,
+          hoursSource: hours,
+          hoursLocked: true,
+          companyEventId: eventId,
+          title,
+          location: location || null,
+          entryStatus: "draft",
+          notes: null,
+          createdAt: now,
+          createdByUid,
+          updatedAt: now,
+          updatedByUid: createdByUid,
+        },
+        { merge: true }
+      );
+    }
+
+    await batch.commit();
+  }
+
   async function updateMeetingAndEntries(args: {
     eventId: string;
     originalDateIso: string;
@@ -1298,6 +1444,19 @@ export default function SchedulePage() {
     const { eventId, originalDateIso, payload } = args;
     const entries = await getMeetingTimeEntries(eventId);
     await assertMeetingEntriesNotLocked(entries);
+
+    const attendeeUids = uniqueTrimmedStrings(payload.appliesToUids || []);
+    const attendeeNames = uniqueTrimmedStrings(payload.appliesToNames || []);
+    const attendeeNamesByUid = attendeeUids.reduce<Record<string, string>>((acc, uid, index) => {
+      acc[uid] = attendeeNames[index] || uid;
+      return acc;
+    }, {});
+
+    await assertWeeklyTimesheetsUnlockedForAttendees({
+      attendeeUids,
+      dateIso: payload.date,
+      attendeeLabels: attendeeNamesByUid,
+    });
 
     const now = nowIso();
     await updateDoc(doc(db, "companyEvents", eventId), {
@@ -1310,15 +1469,41 @@ export default function SchedulePage() {
     const { weekStartDate, weekEndDate } = getPayrollWeekBounds(payload.date);
     const batch = writeBatch(db);
 
-    for (const te of entries) {
-      const timesheetId = buildWeeklyTimesheetId(te.employeeId, weekStartDate);
+    const existingByEmployeeId = new Map(entries.map((entry) => [entry.employeeId, entry]));
+    const existingEmployeeIds = new Set(existingByEmployeeId.keys());
+    const nextEmployeeIds = new Set(attendeeUids);
+
+    const usersSnap = await getDocs(collection(db, "users"));
+    const userMap = new Map<string, { displayName: string; role: string }>();
+    usersSnap.docs.forEach((docSnap) => {
+      const data = docSnap.data() as any;
+      const uid = String(data.uid ?? docSnap.id);
+      userMap.set(uid, {
+        displayName: String(data.displayName ?? attendeeNamesByUid[uid] ?? uid),
+        role: String(data.role ?? "employee"),
+      });
+    });
+
+    for (const entry of entries) {
+      if (!nextEmployeeIds.has(entry.employeeId)) {
+        batch.delete(doc(db, "timeEntries", entry.id));
+      }
+    }
+
+    for (const uid of attendeeUids) {
+      const existing = existingByEmployeeId.get(uid);
+      const user = userMap.get(uid);
+      const employeeName = user?.displayName || attendeeNamesByUid[uid] || existing?.employeeName || uid;
+      const employeeRole = user?.role || existing?.employeeRole || "employee";
+      const timesheetId = buildWeeklyTimesheetId(uid, weekStartDate);
+      const timeEntryId = existing?.id || `meeting_${eventId}_${uid}`;
 
       batch.set(
         doc(db, "weeklyTimesheets", timesheetId),
         {
-          employeeId: te.employeeId,
-          employeeName: te.employeeName,
-          employeeRole: te.employeeRole || "employee",
+          employeeId: uid,
+          employeeName,
+          employeeRole,
           weekStartDate,
           weekEndDate,
           status: "draft",
@@ -1331,11 +1516,11 @@ export default function SchedulePage() {
       );
 
       batch.set(
-        doc(db, "timeEntries", te.id),
+        doc(db, "timeEntries", timeEntryId),
         {
-          employeeId: te.employeeId,
-          employeeName: te.employeeName,
-          employeeRole: te.employeeRole || "employee",
+          employeeId: uid,
+          employeeName,
+          employeeRole,
           entryDate: payload.date,
           weekStartDate,
           weekEndDate,
@@ -1354,6 +1539,12 @@ export default function SchedulePage() {
           notes: null,
           updatedAt: now,
           updatedByUid: appUser?.uid || null,
+          ...(existingEmployeeIds.has(uid)
+            ? {}
+            : {
+                createdAt: now,
+                createdByUid: appUser?.uid || null,
+              }),
         },
         { merge: true }
       );
@@ -1374,6 +1565,8 @@ export default function SchedulePage() {
       notes: payload.notes ?? null,
       appliesToRoles: payload.appliesToRoles ?? null,
       appliesToUids: payload.appliesToUids ?? null,
+      appliesToNames: payload.appliesToNames ?? null,
+      includeAllEmployees: Boolean(payload.includeAllEmployees),
       blocksSchedule: Boolean(payload.blocksSchedule),
       updatedAt: now,
       updatedByUid: appUser?.uid || null,
@@ -1381,11 +1574,11 @@ export default function SchedulePage() {
 
     setEventsByDate((prev) => {
       const next = { ...prev };
-      const oldList = [...(next[originalDateIso] || [])].filter((x) => x.id !== eventId);
+      const oldList = [...(next[originalDateIso] || [])].filter((event) => event.id !== eventId);
       if (oldList.length) next[originalDateIso] = oldList;
       else delete next[originalDateIso];
 
-      const newList = [...(next[updatedEvent.date] || [])].filter((x) => x.id !== eventId);
+      const newList = [...(next[updatedEvent.date] || [])].filter((event) => event.id !== eventId);
       newList.push(updatedEvent);
       next[updatedEvent.date] = newList;
 
@@ -1405,12 +1598,14 @@ export default function SchedulePage() {
     });
 
     const batch = writeBatch(db);
-    for (const te of entries) batch.delete(doc(db, "timeEntries", te.id));
+    for (const entry of entries) {
+      batch.delete(doc(db, "timeEntries", entry.id));
+    }
     await batch.commit();
 
     setEventsByDate((prev) => {
       const next = { ...prev };
-      const list = [...(next[dateIso] || [])].filter((x) => x.id !== eventId);
+      const list = [...(next[dateIso] || [])].filter((event) => event.id !== eventId);
       if (list.length) next[dateIso] = list;
       else delete next[dateIso];
       return next;
@@ -1431,6 +1626,11 @@ export default function SchedulePage() {
     if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return setMeetErr("Missing/invalid date.");
     if (!title) return setMeetErr("Meeting title is required.");
 
+    const attendeeUids = uniqueTrimmedStrings(meetAppliesToUids).filter((uid) => allMeetingEmployeeUids.includes(uid));
+    if (attendeeUids.length === 0) {
+      return setMeetErr("Select at least one employee for this meeting.");
+    }
+
     if (holidayByDate[dateIso]) return setMeetErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
 
     if (meetWindow === "custom") {
@@ -1441,6 +1641,16 @@ export default function SchedulePage() {
       const eMin = minutesFromHHMM(et);
       if (sMin == null || eMin == null || eMin <= sMin) return setMeetErr("End time must be after start time.");
     }
+
+    const attendeeNames = attendeeUids.map((uid) => {
+      const employee = meetingEmployees.find((item) => item.uid === uid);
+      return employee?.displayName || uid;
+    });
+
+    const attendeeNamesByUid = attendeeUids.reduce<Record<string, string>>((acc, uid, index) => {
+      acc[uid] = attendeeNames[index] || uid;
+      return acc;
+    }, {});
 
     setMeetSaving(true);
 
@@ -1457,12 +1667,21 @@ export default function SchedulePage() {
         endTime: meetWindow === "custom" ? meetEnd : null,
         location: meetLocation.trim() || null,
         notes: meetNotes.trim() || null,
-        appliesToRoles: ["technician", "helper", "apprentice", "manager", "dispatcher", "admin"],
-        appliesToUids: [],
+        appliesToRoles: [],
+        appliesToUids: attendeeUids,
+        appliesToNames: attendeeNames,
+        includeAllEmployees:
+          allMeetingEmployeeUids.length > 0 && allMeetingEmployeeUids.every((uid) => attendeeUids.includes(uid)),
         blocksSchedule: Boolean(meetBlocks),
         updatedAt: now,
         updatedByUid: appUser?.uid || null,
       };
+
+      await assertWeeklyTimesheetsUnlockedForAttendees({
+        attendeeUids,
+        dateIso,
+        attendeeLabels: attendeeNamesByUid,
+      });
 
       if (editingMeetId) {
         await updateMeetingAndEntries({
@@ -1490,8 +1709,8 @@ export default function SchedulePage() {
         startTime: createPayload.startTime,
         endTime: createPayload.endTime,
         location: createPayload.location,
-        appliesToRoles: createPayload.appliesToRoles || [],
-        appliesToUids: createPayload.appliesToUids || [],
+        attendeeUids: createPayload.appliesToUids || [],
+        attendeeNamesByUid,
         createdByUid: appUser?.uid || null,
       });
 
@@ -1563,7 +1782,9 @@ export default function SchedulePage() {
 
       const sf = url.searchParams.get("status");
       if (sf) setStatusFilter(sf);
-    } catch {}
+    } catch {
+      // ignore url parsing issues
+    }
   }, []);
 
   useEffect(() => {
@@ -1590,7 +1811,9 @@ export default function SchedulePage() {
       url.searchParams.set("tech", techFilter);
       url.searchParams.set("status", statusFilter);
       window.history.replaceState({}, "", url.toString());
-    } catch {}
+    } catch {
+      // ignore history update issues
+    }
   }, [view, anchorIso, hideCompleted, techFilter, statusFilter]);
 
   const anchorDate = useMemo(() => fromIsoDate(anchorIso), [anchorIso]);
@@ -1617,6 +1840,51 @@ export default function SchedulePage() {
     const weekDays = workWeekDays(weekStart);
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
+
+  useEffect(() => {
+    async function loadUsers() {
+      setTechsLoading(true);
+      setTechsError("");
+      try {
+        const snap = await getDocs(collection(db, "users"));
+        const allUsers: EmployeeOption[] = snap.docs
+          .map((ds) => {
+            const d = ds.data() as any;
+            return {
+              uid: String(d.uid ?? ds.id),
+              displayName: String(d.displayName ?? "Unnamed"),
+              role: String(d.role ?? ""),
+              active: Boolean(d.active ?? false),
+            };
+          })
+          .filter((item) => item.active);
+
+        const techItems: TechRow[] = allUsers
+          .filter((item) => normalizeRole(item.role) === "technician")
+          .map((item) => ({ uid: item.uid, name: item.displayName }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        const meetingEligibleUsers = allUsers
+          .filter((item) => isMeetingEligibleRole(item.role))
+          .sort((a, b) => {
+            const byName = a.displayName.localeCompare(b.displayName);
+            if (byName !== 0) return byName;
+            return formatRoleLabel(a.role).localeCompare(formatRoleLabel(b.role));
+          });
+
+        setTechs(techItems);
+        setMeetingEmployees(meetingEligibleUsers);
+      } catch (e: any) {
+        setTechsError(e?.message || "Failed to load employees.");
+        setTechs([]);
+        setMeetingEmployees([]);
+      } finally {
+        setTechsLoading(false);
+      }
+    }
+
+    loadUsers();
+  }, []);
 
   useEffect(() => {
     async function loadHolidays() {
@@ -1721,8 +1989,7 @@ export default function SchedulePage() {
     }
 
     loadPto();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.startIso, range.endIso, techs.map((t) => t.uid).join("|")]);
+  }, [range.startIso, range.endIso, techs.map((tech) => tech.uid).join("|")]);
 
   useEffect(() => {
     async function loadEvents() {
@@ -1763,8 +2030,10 @@ export default function SchedulePage() {
             endTime: d.endTime ?? null,
             location: d.location ?? null,
             notes: d.notes ?? null,
-            appliesToRoles: d.appliesToRoles ?? null,
-            appliesToUids: d.appliesToUids ?? null,
+            appliesToRoles: Array.isArray(d.appliesToRoles) ? d.appliesToRoles : null,
+            appliesToUids: Array.isArray(d.appliesToUids) ? d.appliesToUids : null,
+            appliesToNames: Array.isArray(d.appliesToNames) ? d.appliesToNames : null,
+            includeAllEmployees: Boolean(d.includeAllEmployees),
             blocksSchedule: typeof d.blocksSchedule === "boolean" ? d.blocksSchedule : true,
             createdAt: d.createdAt ?? undefined,
             createdByUid: d.createdByUid ?? null,
@@ -1788,36 +2057,6 @@ export default function SchedulePage() {
 
     loadEvents();
   }, [range.startIso, range.endIso]);
-
-  useEffect(() => {
-    async function loadTechs() {
-      setTechsLoading(true);
-      setTechsError("");
-      try {
-        const snap = await getDocs(collection(db, "users"));
-        const items: TechRow[] = snap.docs
-          .map((ds) => {
-            const d = ds.data() as any;
-            return {
-              uid: String(d.uid ?? ds.id),
-              name: String(d.displayName ?? "Unnamed"),
-              role: String(d.role ?? ""),
-              active: Boolean(d.active),
-            };
-          })
-          .filter((x) => x.active && x.role === "technician")
-          .map((x) => ({ uid: x.uid, name: x.name }));
-
-        items.sort((a, b) => a.name.localeCompare(b.name));
-        setTechs(items);
-      } catch (e: any) {
-        setTechsError(e?.message || "Failed to load technicians.");
-      } finally {
-        setTechsLoading(false);
-      }
-    }
-    loadTechs();
-  }, []);
 
   useEffect(() => {
     async function loadTrips() {
@@ -1873,8 +2112,8 @@ export default function SchedulePage() {
 
   const serviceTicketIdsInRange = useMemo(() => {
     const set = new Set<string>();
-    for (const t of trips) {
-      const id = String(t.link?.serviceTicketId || "").trim();
+    for (const trip of trips) {
+      const id = String(trip.link?.serviceTicketId || "").trim();
       if (id) set.add(id);
     }
     return Array.from(set);
@@ -1882,8 +2121,8 @@ export default function SchedulePage() {
 
   const projectIdsInRange = useMemo(() => {
     const set = new Set<string>();
-    for (const t of trips) {
-      const id = String(t.link?.projectId || "").trim();
+    for (const trip of trips) {
+      const id = String(trip.link?.projectId || "").trim();
       if (id) set.add(id);
     }
     return Array.from(set);
@@ -1913,7 +2152,9 @@ export default function SchedulePage() {
             };
           })
         );
-      } catch {}
+      } catch {
+        // ignore ticket summary read issues
+      }
 
       if (!cancelled && Object.keys(next).length) setTicketMap((prev) => ({ ...prev, ...next }));
     }
@@ -1922,7 +2163,6 @@ export default function SchedulePage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceTicketIdsInRange.join("|")]);
 
   useEffect(() => {
@@ -1943,7 +2183,9 @@ export default function SchedulePage() {
             next[id] = { id, name: String(d.name ?? d.projectName ?? d.title ?? "Project") };
           })
         );
-      } catch {}
+      } catch {
+        // ignore project summary read issues
+      }
 
       if (!cancelled && Object.keys(next).length) setProjectMap((prev) => ({ ...prev, ...next }));
     }
@@ -1952,12 +2194,11 @@ export default function SchedulePage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectIdsInRange.join("|")]);
 
   const filteredTrips = useMemo(() => {
-    return trips.filter((t) => {
-      const s = normalizeStatus(t.status);
+    return trips.filter((trip) => {
+      const s = normalizeStatus(trip.status);
       if (hideCompleted && isCompletedStatus(s)) return false;
 
       if (statusFilter !== "ALL" && normalizeStatus(statusFilter) !== s) return false;
@@ -1965,48 +2206,48 @@ export default function SchedulePage() {
       if (techFilter === "ALL") return true;
 
       if (techFilter === "UNASSIGNED") {
-        const hasPrimary = Boolean(String(t.crew?.primaryTechUid || "").trim());
-        const hasSecondary = Boolean(String(t.crew?.secondaryTechUid || "").trim());
+        const hasPrimary = Boolean(String(trip.crew?.primaryTechUid || "").trim());
+        const hasSecondary = Boolean(String(trip.crew?.secondaryTechUid || "").trim());
         return !(hasPrimary || hasSecondary);
       }
 
-      return isTechOnTrip(t, techFilter);
+      return isTechOnTrip(trip, techFilter);
     });
   }, [trips, hideCompleted, statusFilter, techFilter]);
 
   const rows = useMemo(() => {
     const out: Array<{ key: string; label: string; uid: string | null }> = [];
 
-    const unassignedHasTrips = filteredTrips.some((t) => !primaryTechUid(t));
+    const unassignedHasTrips = filteredTrips.some((trip) => !primaryTechUid(trip));
     if (unassignedHasTrips || techFilter === "UNASSIGNED") {
       out.push({ key: "UNASSIGNED", label: "Unassigned", uid: null });
     }
 
     if (techFilter !== "ALL" && techFilter !== "UNASSIGNED") {
-      const match = techs.find((t) => t.uid === techFilter);
+      const match = techs.find((tech) => tech.uid === techFilter);
       if (match) out.push({ key: match.uid, label: match.name, uid: match.uid });
       return out;
     }
 
-    for (const t of techs) out.push({ key: t.uid, label: t.name, uid: t.uid });
+    for (const tech of techs) out.push({ key: tech.uid, label: tech.name, uid: tech.uid });
     return out;
   }, [techs, filteredTrips, techFilter]);
 
   const grid = useMemo(() => {
     const out = new Map<string, Map<string, TripDoc[]>>();
 
-    for (const t of filteredTrips) {
-      const d = String(t.date || "").trim();
+    for (const trip of filteredTrips) {
+      const d = String(trip.date || "").trim();
       if (!d) continue;
 
-      const rowUids = tripRowUids(t);
+      const rowUids = tripRowUids(trip);
       const targets = rowUids.length ? rowUids : ["UNASSIGNED"];
 
       for (const uid of targets) {
         if (!out.has(uid)) out.set(uid, new Map());
         const byDate = out.get(uid)!;
         if (!byDate.has(d)) byDate.set(d, []);
-        byDate.get(d)!.push(t);
+        byDate.get(d)!.push(trip);
       }
     }
 
@@ -2092,12 +2333,12 @@ export default function SchedulePage() {
   }, [view, anchorIso, daysForWeekOrDay]);
 
   function renderHolidayBadge(iso: string) {
-    const h = holidayByDate[iso];
-    if (!h) return null;
+    const holiday = holidayByDate[iso];
+    if (!holiday) return null;
     return (
       <InfoChip
         icon={<CelebrationRoundedIcon sx={{ fontSize: 16 }} />}
-        label={h.name}
+        label={holiday.name}
         color="warning"
       />
     );
@@ -2175,26 +2416,26 @@ export default function SchedulePage() {
   }
 
   function renderTripCard(
-    t: TripDoc,
+    trip: TripDoc,
     opts?: { showTechName?: boolean; keyValue?: string }
   ) {
-    const type = (t.type || "").toLowerCase();
+    const type = (trip.type || "").toLowerCase();
     const isService = type === "service";
     const isProject = type === "project";
 
-    const ticketId = String(t.link?.serviceTicketId || "").trim();
+    const ticketId = String(trip.link?.serviceTicketId || "").trim();
     const ticket = ticketId ? ticketMap[ticketId] : undefined;
 
-    const projectId = String(t.link?.projectId || "").trim();
+    const projectId = String(trip.link?.projectId || "").trim();
     const project = projectId ? projectMap[projectId] : undefined;
 
-    const titleText = isService
+    const title = isService
       ? ticket?.issueSummary || "Service Ticket"
       : isProject
         ? project?.name || "Project"
         : "Trip";
 
-    const timeText = formatTimeRangeForCard(t);
+    const timeText = formatTimeRangeForCard(trip);
 
     const customerLine =
       isService && ticket
@@ -2202,22 +2443,22 @@ export default function SchedulePage() {
         : "";
 
     const showTechName = Boolean(opts?.showTechName);
-    const techName = t.crew?.primaryTechName || "";
+    const techName = trip.crew?.primaryTechName || "";
 
-    const prog = isProject ? confirmationProgress(t) : null;
+    const prog = isProject ? confirmationProgress(trip) : null;
     const showProgress =
-      isProject && prog && prog.requiredCount > 0 && !isCompletedStatus(t.status);
+      isProject && prog && prog.requiredCount > 0 && !isCompletedStatus(trip.status);
 
     const cardKey =
       opts?.keyValue ||
-      `${t.id}_${String(t.date || "")}_${String(t.startTime || "")}_${String(t.endTime || "")}`;
+      `${trip.id}_${String(trip.date || "")}_${String(trip.startTime || "")}_${String(trip.endTime || "")}`;
 
     return (
       <SharedTripCard
         key={cardKey}
-        title={titleText}
-        status={t.status}
-        tripType={t.type}
+        title={title}
+        status={trip.status}
+        tripType={trip.type}
         subtitle={timeText}
         customerLine={customerLine || undefined}
         progressText={
@@ -2235,12 +2476,12 @@ export default function SchedulePage() {
           ) : undefined
         }
         onClick={() => {
-          if (t.link?.serviceTicketId) {
-            router.push(`/service-tickets/${t.link.serviceTicketId}`);
+          if (trip.link?.serviceTicketId) {
+            router.push(`/service-tickets/${trip.link.serviceTicketId}`);
             return;
           }
-          if (t.link?.projectId) {
-            router.push(`/projects/${t.link.projectId}`);
+          if (trip.link?.projectId) {
+            router.push(`/projects/${trip.link.projectId}`);
             return;
           }
           router.push("/schedule");
@@ -2250,12 +2491,15 @@ export default function SchedulePage() {
   }
 
   function computeCellAvailability(rowKey: string, iso: string, cellTrips: TripDoc[]) {
-    const amBusyTrips = cellTrips.some((t) => tripBlocksSlot(t, "am"));
-    const pmBusyTrips = cellTrips.some((t) => tripBlocksSlot(t, "pm"));
+    const amBusyTrips = cellTrips.some((trip) => tripBlocksSlot(trip, "am"));
+    const pmBusyTrips = cellTrips.some((trip) => tripBlocksSlot(trip, "pm"));
 
-    const meetings = (eventsByDate[iso] || []).filter((e) => eventAppliesToRoleOrAll(e, "technician"));
-    const amBusyMeet = meetings.some((e) => eventBlocksSlot(e, "am"));
-    const pmBusyMeet = meetings.some((e) => eventBlocksSlot(e, "pm"));
+    const meetings =
+      rowKey === "UNASSIGNED"
+        ? []
+        : (eventsByDate[iso] || []).filter((event) => eventAppliesToUid(event, rowKey, "technician"));
+    const amBusyMeet = meetings.some((event) => eventBlocksSlot(event, "am"));
+    const pmBusyMeet = meetings.some((event) => eventBlocksSlot(event, "pm"));
 
     const holiday = Boolean(holidayByDate[iso]);
     const pto = rowKey !== "UNASSIGNED" ? Boolean(ptoByUidByDate[rowKey]?.[iso]) : false;
@@ -2381,9 +2625,9 @@ export default function SchedulePage() {
                       >
                         <MenuItem value="ALL">All</MenuItem>
                         <MenuItem value="UNASSIGNED">Unassigned</MenuItem>
-                        {techs.map((t) => (
-                          <MenuItem key={t.uid} value={t.uid}>
-                            {t.name}
+                        {techs.map((tech) => (
+                          <MenuItem key={tech.uid} value={tech.uid}>
+                            {tech.name}
                           </MenuItem>
                         ))}
                       </Select>
@@ -2485,7 +2729,7 @@ export default function SchedulePage() {
                               }
 
                               const iso = toIsoDate(cellDate);
-                              const dayTrips = filteredTrips.filter((t) => String(t.date || "") === iso);
+                              const dayTrips = filteredTrips.filter((trip) => String(trip.date || "") === iso);
                               const holiday = holidayByDate[iso];
                               const ptoNames = ptoNamesByDate[iso] || [];
                               const meets = eventsByDate[iso] || [];
@@ -2569,10 +2813,10 @@ export default function SchedulePage() {
                                     </Stack>
 
                                     <Stack spacing={0.75}>
-                                      {dayTrips.slice(0, 6).map((t) =>
-                                        renderTripCard(t, {
+                                      {dayTrips.slice(0, 6).map((trip) =>
+                                        renderTripCard(trip, {
                                           showTechName: techFilter === "ALL",
-                                          keyValue: `month_${iso}_${t.id}`,
+                                          keyValue: `month_${iso}_${trip.id}`,
                                         })
                                       )}
                                       {dayTrips.length > 6 ? (
@@ -2697,8 +2941,8 @@ export default function SchedulePage() {
 
                                         {amTrips.length ? (
                                           <Stack spacing={1}>
-                                            {amTrips.map((t) =>
-                                              renderTripCard(t, { keyValue: `mobile_am_${iso}_${rowKey}_${t.id}` })
+                                            {amTrips.map((trip) =>
+                                              renderTripCard(trip, { keyValue: `mobile_am_${iso}_${rowKey}_${trip.id}` })
                                             )}
                                           </Stack>
                                         ) : null}
@@ -2712,8 +2956,8 @@ export default function SchedulePage() {
 
                                         {pmTrips.length ? (
                                           <Stack spacing={1}>
-                                            {pmTrips.map((t) =>
-                                              renderTripCard(t, { keyValue: `mobile_pm_${iso}_${rowKey}_${t.id}` })
+                                            {pmTrips.map((trip) =>
+                                              renderTripCard(trip, { keyValue: `mobile_pm_${iso}_${rowKey}_${trip.id}` })
                                             )}
                                           </Stack>
                                         ) : null}
@@ -2866,8 +3110,8 @@ export default function SchedulePage() {
 
                                             {amTrips.length ? (
                                               <Stack spacing={1}>
-                                                {amTrips.map((t) =>
-                                                  renderTripCard(t, { keyValue: `desk_am_${iso}_${rowKey}_${t.id}` })
+                                                {amTrips.map((trip) =>
+                                                  renderTripCard(trip, { keyValue: `desk_am_${iso}_${rowKey}_${trip.id}` })
                                                 )}
                                               </Stack>
                                             ) : null}
@@ -2881,8 +3125,8 @@ export default function SchedulePage() {
 
                                             {pmTrips.length ? (
                                               <Stack spacing={1}>
-                                                {pmTrips.map((t) =>
-                                                  renderTripCard(t, { keyValue: `desk_pm_${iso}_${rowKey}_${t.id}` })
+                                                {pmTrips.map((trip) =>
+                                                  renderTripCard(trip, { keyValue: `desk_pm_${iso}_${rowKey}_${trip.id}` })
                                                 )}
                                               </Stack>
                                             ) : null}
@@ -3106,7 +3350,7 @@ export default function SchedulePage() {
           <DialogContent dividers>
             <Stack spacing={2}>
               <Typography variant="body2" color="text.secondary">
-                This meeting will appear on Schedule and My Day.
+                This meeting will appear on Schedule and My Day for the selected employees only.
               </Typography>
 
               {meetErr ? <Alert severity="error">{meetErr}</Alert> : null}
@@ -3181,6 +3425,110 @@ export default function SchedulePage() {
                 minRows={3}
                 placeholder="Anything everyone should know…"
               />
+
+              <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+                <Box sx={{ px: 1.5, py: 1.25, borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}` }}>
+                  <Stack spacing={1.25}>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="subtitle2">Invite employees</Typography>
+                      <Chip
+                        size="small"
+                        label={`${meetAppliesToUids.length} selected`}
+                        variant="outlined"
+                        sx={{ borderRadius: 1.5 }}
+                      />
+                    </Stack>
+
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={meetIncludeAll}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setMeetingAttendees(allMeetingEmployeeUids);
+                            } else {
+                              setMeetIncludeAll(false);
+                            }
+                          }}
+                          disabled={meetSaving || allMeetingEmployeeUids.length === 0}
+                        />
+                      }
+                      label="Include all active employees"
+                    />
+
+                    <TextField
+                      size="small"
+                      label="Search employees"
+                      value={meetAttendeeSearch}
+                      onChange={(e) => setMeetAttendeeSearch(e.target.value)}
+                      disabled={meetSaving}
+                      placeholder="Search by name or role…"
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchRoundedIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  </Stack>
+                </Box>
+
+                <Box sx={{ maxHeight: 280, overflow: "auto" }}>
+                  {filteredMeetingEmployees.length === 0 ? (
+                    <Box sx={{ p: 2 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        No employees match that search.
+                      </Typography>
+                    </Box>
+                  ) : (
+                    filteredMeetingEmployees.map((employee) => {
+                      const checked = meetAppliesToUids.includes(employee.uid);
+                      return (
+                        <Box
+                          key={employee.uid}
+                          sx={{
+                            px: 1.5,
+                            py: 1.1,
+                            borderBottom: `1px solid ${alpha("#FFFFFF", 0.06)}`,
+                          }}
+                        >
+                          <FormControlLabel
+                            sx={{ alignItems: "flex-start", m: 0, width: "100%" }}
+                            control={
+                              <Checkbox
+                                checked={checked}
+                                disabled={meetSaving}
+                                onChange={() => {
+                                  const next = checked
+                                    ? meetAppliesToUids.filter((uid) => uid !== employee.uid)
+                                    : [...meetAppliesToUids, employee.uid];
+                                  setMeetingAttendees(next);
+                                }}
+                              />
+                            }
+                            label={
+                              <Box sx={{ pt: 0.35 }}>
+                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                  {employee.displayName}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {formatRoleLabel(employee.role)}
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        </Box>
+                      );
+                    })
+                  )}
+                </Box>
+              </Paper>
 
               <FormControlLabel
                 control={
