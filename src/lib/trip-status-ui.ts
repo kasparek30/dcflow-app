@@ -1,3 +1,4 @@
+// src/lil/trip-status-ui.ts
 import { alpha, Theme } from "@mui/material/styles";
 
 export function normalizeTripStatus(status?: string) {

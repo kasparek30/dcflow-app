@@ -157,6 +157,12 @@ type ServiceTicketLite = {
 type ProjectLite = {
   id: string;
   projectName?: string;
+  serviceAddressLabel?: string;
+  serviceAddressLine1?: string;
+  serviceAddressLine2?: string;
+  serviceCity?: string;
+  serviceState?: string;
+  servicePostalCode?: string;
 };
 
 type CompanyHoliday = {
@@ -269,6 +275,7 @@ function buildHref(trip: Trip) {
   if (!link) return "/trips";
 
   if (String(trip.type || "").toLowerCase() === "project") {
+    if (link.projectId) return `/projects/${link.projectId}`;
     return `/trips/${trip.id}`;
   }
 
@@ -316,6 +323,25 @@ function buildAddressLine(t: ServiceTicketLite) {
   const city = safeStr(t.serviceCity).trim();
   const state = safeStr(t.serviceState).trim();
   const zip = safeStr(t.servicePostalCode).trim();
+
+  if (label) parts.push(label);
+  if (line1) parts.push(line1);
+  if (line2) parts.push(line2);
+
+  const cityStateZip = [city, state, zip].filter(Boolean).join(" ");
+  if (cityStateZip) parts.push(cityStateZip);
+
+  return parts.filter(Boolean).join(" • ");
+}
+
+function buildProjectAddressLine(p: ProjectLite) {
+  const parts: string[] = [];
+  const label = safeStr(p.serviceAddressLabel).trim();
+  const line1 = safeStr(p.serviceAddressLine1).trim();
+  const line2 = safeStr(p.serviceAddressLine2).trim();
+  const city = safeStr(p.serviceCity).trim();
+  const state = safeStr(p.serviceState).trim();
+  const zip = safeStr(p.servicePostalCode).trim();
 
   if (label) parts.push(label);
   if (line1) parts.push(line1);
@@ -1077,6 +1103,12 @@ export default function TechnicianMyDayPage() {
               [pid]: {
                 id: pid,
                 projectName: d.projectName ?? "",
+                serviceAddressLabel: d.serviceAddressLabel ?? "",
+                serviceAddressLine1: d.serviceAddressLine1 ?? "",
+                serviceAddressLine2: d.serviceAddressLine2 ?? "",
+                serviceCity: d.serviceCity ?? "",
+                serviceState: d.serviceState ?? "",
+                servicePostalCode: d.servicePostalCode ?? "",
               },
             }));
           },
@@ -1202,8 +1234,9 @@ export default function TechnicianMyDayPage() {
 
         let subLine = timeText;
         if ((t.type || "").toLowerCase() === "project") {
+          const projectAddress = projectInfo ? buildProjectAddressLine(projectInfo) : "";
           const stage = stageLabel(t.link?.projectStageKey || null);
-          subLine = [stage, timeText].filter(Boolean).join(" • ");
+          subLine = projectAddress || stage || "";
         } else if (st) {
           const cust = safeStr(st.customerDisplayName).trim();
           const addr = buildAddressLine(st);
@@ -1351,7 +1384,7 @@ export default function TechnicianMyDayPage() {
       );
 
       if (res.alreadyStarted) {
-        window.location.href = `/trips/${item.id}`;
+        window.location.href = `/projects/${item.projectId}`;
       }
     } catch (e: any) {
       setError(e?.message || "Failed to start project work.");
@@ -1971,7 +2004,7 @@ export default function TechnicianMyDayPage() {
                               isProject ? (
                                 item.isActive ? (
                                   <Typography variant="caption" color="text.secondary">
-                                    Project trip active — use the bottom trip dock or open this trip for pause, resume, and closeout.
+                                    Project trip active — use the bottom trip dock or open the project for details.
                                   </Typography>
                                 ) : isCompletedProject ? (
                                   !item.confirmed ? (
@@ -2029,7 +2062,7 @@ export default function TechnicianMyDayPage() {
                                   </Button>
                                 ) : (
                                   <Typography variant="caption" color="text.secondary">
-                                    Open the project trip for full details and workflow actions.
+                                    Open the project for full details and workflow actions.
                                   </Typography>
                                 )
                               ) : isService ? (
