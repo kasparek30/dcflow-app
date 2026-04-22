@@ -195,7 +195,7 @@ export default function NewTimeEntryPage() {
 
   const [employeeId, setEmployeeId] = useState(appUser?.uid || "");
   const [entryDate, setEntryDate] = useState(todayIso);
-  const [category, setCategory] = useState<TimeEntryCategory>("manual_other");
+  const [category, setCategory] = useState<TimeEntryCategory>("office");
   const [hoursInput, setHoursInput] = useState("1");
   const [billable, setBillable] = useState(false);
   const [notes, setNotes] = useState("");
