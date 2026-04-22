@@ -5,14 +5,48 @@ import { useEffect, useMemo, useState } from "react";
 import { addDoc, collection, getDocs } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Checkbox,
+  Chip,
+  Divider,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
+import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
+import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
+
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { AppUser } from "../../../src/types/app-user";
-import type { TimeEntryCategory, TimeEntryStatus, TimeEntrySource } from "../../../src/types/time-entry";
+import type {
+  TimeEntryCategory,
+  TimeEntryStatus,
+  TimeEntrySource,
+} from "../../../src/types/time-entry";
 
 type EmployeeOption = AppUser;
+
+type ProjectStageKey = "" | "roughIn" | "topOutVent" | "trimFinish";
 
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
@@ -42,8 +76,110 @@ function defaultBillableForCategory(category: TimeEntryCategory) {
   return category === "service_ticket" || category === "project_stage";
 }
 
+function normalizeRole(role?: string | null) {
+  return String(role || "").trim().toLowerCase();
+}
+
+function formatRoleLabel(role?: string | null) {
+  const raw = normalizeRole(role);
+  if (!raw) return "Employee";
+
+  return raw
+    .split("_")
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function isSupportRole(role?: string | null) {
+  const normalized = normalizeRole(role);
+  return normalized === "helper" || normalized === "apprentice";
+}
+
+function SectionCard(props: {
+  title: string;
+  subtitle?: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card
+      elevation={0}
+      sx={{
+        borderRadius: 4,
+        border: (theme) => `1px solid ${theme.palette.divider}`,
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          px: { xs: 2, sm: 3 },
+          py: 2,
+          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
+          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.04),
+        }}
+      >
+        <Stack direction="row" spacing={1.25} alignItems="center">
+          {props.icon}
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+              {props.title}
+            </Typography>
+            {props.subtitle ? (
+              <Typography variant="body2" color="text.secondary">
+                {props.subtitle}
+              </Typography>
+            ) : null}
+          </Box>
+        </Stack>
+      </Box>
+
+      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>{props.children}</CardContent>
+    </Card>
+  );
+}
+
+function InfoField({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        borderRadius: 3,
+        height: "100%",
+        bgcolor: "background.paper",
+      }}
+    >
+      <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+        {label}
+      </Typography>
+      <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 0.75 }}>
+        {value || "—"}
+      </Typography>
+    </Paper>
+  );
+}
+
+function selectMenuProps() {
+  return {
+    MenuProps: {
+      PaperProps: {
+        sx: {
+          borderRadius: 3,
+        },
+      },
+    },
+  };
+}
+
 export default function NewTimeEntryPage() {
   const router = useRouter();
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -55,17 +191,17 @@ export default function NewTimeEntryPage() {
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
-  const todayIso = toIsoDate(new Date());
+  const todayIso = useMemo(() => toIsoDate(new Date()), []);
 
   const [employeeId, setEmployeeId] = useState(appUser?.uid || "");
   const [entryDate, setEntryDate] = useState(todayIso);
   const [category, setCategory] = useState<TimeEntryCategory>("manual_other");
-  const [hours, setHours] = useState(1);
+  const [hoursInput, setHoursInput] = useState("1");
   const [billable, setBillable] = useState(false);
   const [notes, setNotes] = useState("");
   const [serviceTicketId, setServiceTicketId] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [projectStageKey, setProjectStageKey] = useState<"" | "roughIn" | "topOutVent" | "trimFinish">("");
+  const [projectStageKey, setProjectStageKey] = useState<ProjectStageKey>("");
   const [linkedTechnicianId, setLinkedTechnicianId] = useState("");
   const [linkedTechnicianName, setLinkedTechnicianName] = useState("");
 
@@ -78,7 +214,7 @@ export default function NewTimeEntryPage() {
         const snap = await getDocs(collection(db, "users"));
 
         const items: EmployeeOption[] = snap.docs.map((docSnap) => {
-          const data = docSnap.data();
+          const data = docSnap.data() as any;
 
           return {
             uid: data.uid ?? docSnap.id,
@@ -94,7 +230,10 @@ export default function NewTimeEntryPage() {
           };
         });
 
-        items.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        items.sort((a, b) =>
+          String(a.displayName || "").localeCompare(String(b.displayName || ""))
+        );
+
         setUserOptions(items);
 
         if (!employeeId && appUser?.uid) {
@@ -114,12 +253,27 @@ export default function NewTimeEntryPage() {
     return userOptions.find((u) => u.uid === employeeId) ?? null;
   }, [userOptions, employeeId]);
 
+  const payrollWeek = useMemo(() => {
+    return entryDate ? getPayrollWeekBounds(entryDate) : null;
+  }, [entryDate]);
+
+  const parsedHours = useMemo(() => {
+    const n = Number(hoursInput);
+    return Number.isFinite(n) ? n : NaN;
+  }, [hoursInput]);
+
+  useEffect(() => {
+    if (appUser?.uid && !canCreateForOthers) {
+      setEmployeeId(appUser.uid);
+    }
+  }, [appUser?.uid, canCreateForOthers]);
+
   useEffect(() => {
     setBillable(defaultBillableForCategory(category));
   }, [category]);
 
   useEffect(() => {
-    if (selectedEmployee && (selectedEmployee.role === "helper" || selectedEmployee.role === "apprentice")) {
+    if (selectedEmployee && isSupportRole(selectedEmployee.role)) {
       setLinkedTechnicianId(selectedEmployee.preferredTechnicianId || "");
       setLinkedTechnicianName(selectedEmployee.preferredTechnicianName || "");
     } else {
@@ -141,7 +295,7 @@ export default function NewTimeEntryPage() {
       return;
     }
 
-    if (hours <= 0) {
+    if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
       setError("Hours must be greater than 0.");
       return;
     }
@@ -183,7 +337,7 @@ export default function NewTimeEntryPage() {
         weekEndDate,
 
         category,
-        hours,
+        hours: parsedHours,
         payType: "regular",
         billable,
         source,
@@ -192,8 +346,8 @@ export default function NewTimeEntryPage() {
         projectId: projectId.trim() || null,
         projectStageKey: projectStageKey || null,
 
-        linkedTechnicianId: linkedTechnicianId || null,
-        linkedTechnicianName: linkedTechnicianName || null,
+        linkedTechnicianId: linkedTechnicianId.trim() || null,
+        linkedTechnicianName: linkedTechnicianName.trim() || null,
 
         notes: notes.trim() || null,
         timesheetId: null,
@@ -215,353 +369,364 @@ export default function NewTimeEntryPage() {
   return (
     <ProtectedPage fallbackTitle="New Time Entry">
       <AppShell appUser={appUser}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-          <div>
-            <h1 style={{ fontSize: "24px", fontWeight: 900, margin: 0 }}>
-              New Time Entry
-            </h1>
-            <p style={{ marginTop: "6px", color: "#666", fontSize: "13px" }}>
-              Manual worked-hours entry only. PTO, holiday, and overtime are system-controlled.
-            </p>
-          </div>
-
-          <Link
-            href="/time-entries"
-            style={{
-              padding: "8px 12px",
-              border: "1px solid #ccc",
-              borderRadius: "10px",
-              textDecoration: "none",
-              color: "inherit",
-              background: "white",
-              height: "fit-content",
-            }}
-          >
-            Back to Time Entries
-          </Link>
-        </div>
-
-        {loadingUsers ? <p style={{ marginTop: "16px" }}>Loading users...</p> : null}
-        {loadError ? <p style={{ marginTop: "16px", color: "red" }}>{loadError}</p> : null}
-
-        {!loadingUsers && !loadError ? (
-          <form
-            onSubmit={handleSubmit}
-            style={{
-              marginTop: "16px",
-              border: "1px solid #ddd",
-              borderRadius: "12px",
-              padding: "16px",
-              maxWidth: "840px",
-              background: "#fafafa",
-              display: "grid",
-              gap: "12px",
-            }}
-          >
-            <div>
-              <label style={{ fontWeight: 700 }}>Employee</label>
-              <select
-                value={employeeId}
-                onChange={(e) => setEmployeeId(e.target.value)}
-                disabled={!canCreateForOthers}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: "4px",
-                  padding: "10px",
-                  borderRadius: "10px",
-                  border: "1px solid #ccc",
-                }}
+        <Box
+          sx={{
+            minHeight: "100%",
+            bgcolor: "background.default",
+            px: { xs: 1, sm: 2, md: 3 },
+            py: { xs: 2, md: 3 },
+          }}
+        >
+          <Stack spacing={2.5}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: { xs: 2, sm: 3 },
+                borderRadius: 4,
+                border: (theme) => `1px solid ${theme.palette.divider}`,
+                background:
+                  theme.palette.mode === "light"
+                    ? `linear-gradient(180deg, ${alpha(
+                        theme.palette.primary.main,
+                        0.06
+                      )}, ${alpha(theme.palette.primary.main, 0.01)})`
+                    : undefined,
+              }}
+            >
+              <Stack
+                direction={{ xs: "column", md: "row" }}
+                spacing={2}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", md: "center" }}
               >
-                <option value="">Select employee</option>
-                {userOptions.map((user) => (
-                  <option key={user.uid} value={user.uid}>
-                    {user.displayName} ({user.role})
-                  </option>
-                ))}
-              </select>
+                <Stack spacing={1}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                    <Chip
+                      icon={<AccessTimeFilledRoundedIcon />}
+                      label="Manual Time Entry"
+                      variant="outlined"
+                      size="small"
+                    />
+                    {payrollWeek ? (
+                      <Chip
+                        label={`${payrollWeek.weekStartDate} → ${payrollWeek.weekEndDate}`}
+                        variant="outlined"
+                        size="small"
+                      />
+                    ) : null}
+                  </Stack>
 
-              {!canCreateForOthers ? (
-                <div style={{ marginTop: "6px", fontSize: "12px", color: "#666" }}>
-                  Non-admin users can only create entries for themselves.
-                </div>
-              ) : null}
-            </div>
+                  <Typography variant="h4" sx={{ fontWeight: 900 }}>
+                    New Time Entry
+                  </Typography>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-                gap: "12px",
-              }}
-            >
-              <div>
-                <label style={{ fontWeight: 700 }}>Entry Date</label>
-                <input
-                  type="date"
-                  value={entryDate}
-                  onChange={(e) => setEntryDate(e.target.value)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                  }}
-                />
-              </div>
+                  <Typography variant="body2" color="text.secondary">
+                    Manual worked-hours entry only. PTO, holiday, and overtime remain system-controlled.
+                  </Typography>
+                </Stack>
 
-              <div>
-                <label style={{ fontWeight: 700 }}>Hours Worked</label>
-                <input
-                  type="number"
-                  min={0.25}
-                  step={0.25}
-                  value={hours}
-                  onChange={(e) => setHours(Number(e.target.value))}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                  }}
-                />
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-                gap: "12px",
-              }}
-            >
-              <div>
-                <label style={{ fontWeight: 700 }}>Work Category</label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as TimeEntryCategory)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                  }}
+                <Button
+                  component={Link}
+                  href="/time-entries"
+                  variant="outlined"
+                  startIcon={<ArrowBackRoundedIcon />}
                 >
-                  <option value="service_ticket">Service Ticket</option>
-                  <option value="project_stage">Project Stage</option>
-                  <option value="meeting">Meeting</option>
-                  <option value="shop">Shop</option>
-                  <option value="office">Office</option>
-                  <option value="manual_other">Manual Other</option>
-                </select>
-              </div>
+                  Back to Time Entries
+                </Button>
+              </Stack>
+            </Paper>
 
-              <div style={{ display: "flex", alignItems: "end" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <input
-                    type="checkbox"
-                    checked={billable}
-                    onChange={(e) => setBillable(e.target.checked)}
-                  />
-                  Billable
-                </label>
-              </div>
-            </div>
+            {loadingUsers ? <Alert severity="info">Loading users...</Alert> : null}
+            {loadError ? <Alert severity="error">{loadError}</Alert> : null}
 
-            <div
-              style={{
-                border: "1px solid #e6e6e6",
-                borderRadius: "12px",
-                padding: "12px",
-                background: "white",
-              }}
-            >
-              <div style={{ fontWeight: 800, marginBottom: "6px" }}>Payroll Handling</div>
-              <div style={{ fontSize: "12px", color: "#666" }}>
-                Manual entries are always saved as <strong>regular worked hours</strong>.  
-                PTO and holiday entries will be system-generated later, and overtime will be calculated in the weekly timesheet after 40+ regular worked hours.
-              </div>
-            </div>
+            {!loadingUsers && !loadError ? (
+              <Box component="form" onSubmit={handleSubmit}>
+                <Stack spacing={2.5}>
+                  <SectionCard
+                    title="Entry Details"
+                    subtitle="Who the time belongs to, when it happened, and how many hours to log."
+                    icon={<PersonRoundedIcon color="primary" />}
+                  >
+                    <Stack spacing={2}>
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            sm: "repeat(2, minmax(0, 1fr))",
+                          },
+                        }}
+                      >
+                        <FormControl fullWidth>
+                          <InputLabel>Employee</InputLabel>
+                          <Select
+                            label="Employee"
+                            value={employeeId}
+                            onChange={(e) => setEmployeeId(e.target.value)}
+                            disabled={!canCreateForOthers}
+                            {...selectMenuProps()}
+                          >
+                            <MenuItem value="">Select employee</MenuItem>
+                            {userOptions.map((user) => (
+                              <MenuItem key={user.uid} value={user.uid}>
+                                {user.displayName} ({formatRoleLabel(user.role)})
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
 
-            {category === "service_ticket" ? (
-              <div>
-                <label style={{ fontWeight: 700 }}>Service Ticket ID</label>
-                <input
-                  value={serviceTicketId}
-                  onChange={(e) => setServiceTicketId(e.target.value)}
-                  placeholder="Paste ticket document ID"
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    marginTop: "4px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "1px solid #ccc",
-                  }}
-                />
-              </div>
-            ) : null}
+                        <TextField
+                          label="Entry Date"
+                          type="date"
+                          value={entryDate}
+                          onChange={(e) => setEntryDate(e.target.value)}
+                          InputLabelProps={{ shrink: true }}
+                          fullWidth
+                        />
 
-            {category === "project_stage" ? (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-                  gap: "12px",
-                }}
-              >
-                <div>
-                  <label style={{ fontWeight: 700 }}>Project ID</label>
-                  <input
-                    value={projectId}
-                    onChange={(e) => setProjectId(e.target.value)}
-                    placeholder="Paste project document ID"
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      marginTop: "4px",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
-                    }}
-                  />
-                </div>
+                        <TextField
+                          label="Hours Worked"
+                          type="number"
+                          inputProps={{ min: 0.25, step: 0.25 }}
+                          value={hoursInput}
+                          onChange={(e) => setHoursInput(e.target.value)}
+                          fullWidth
+                        />
 
-                <div>
-                  <label style={{ fontWeight: 700 }}>Project Stage</label>
-                  <select
-                    value={projectStageKey}
-                    onChange={(e) =>
-                      setProjectStageKey(
-                        e.target.value as "" | "roughIn" | "topOutVent" | "trimFinish"
-                      )
-                    }
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      marginTop: "4px",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      border: "1px solid #ccc",
+                        <FormControl fullWidth>
+                          <InputLabel>Work Category</InputLabel>
+                          <Select
+                            label="Work Category"
+                            value={category}
+                            onChange={(e) => setCategory(e.target.value as TimeEntryCategory)}
+                            {...selectMenuProps()}
+                          >
+                            <MenuItem value="service_ticket">Service Ticket</MenuItem>
+                            <MenuItem value="project_stage">Project Stage</MenuItem>
+                            <MenuItem value="meeting">Meeting</MenuItem>
+                            <MenuItem value="shop">Shop</MenuItem>
+                            <MenuItem value="office">Office</MenuItem>
+                            <MenuItem value="manual_other">Manual Other</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Box>
+
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={billable}
+                            onChange={(e) => setBillable(e.target.checked)}
+                          />
+                        }
+                        label="Billable"
+                      />
+
+                      {!canCreateForOthers ? (
+                        <Typography variant="caption" color="text.secondary">
+                          Non-admin users can only create entries for themselves.
+                        </Typography>
+                      ) : null}
+
+                      {selectedEmployee ? (
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              sm: "repeat(3, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          <InfoField label="Employee" value={selectedEmployee.displayName || "—"} />
+                          <InfoField
+                            label="Role"
+                            value={formatRoleLabel(selectedEmployee.role)}
+                          />
+                          <InfoField
+                            label="Payroll Week"
+                            value={
+                              payrollWeek
+                                ? `${payrollWeek.weekStartDate} → ${payrollWeek.weekEndDate}`
+                                : "—"
+                            }
+                          />
+                        </Box>
+                      ) : null}
+                    </Stack>
+                  </SectionCard>
+
+                  <SectionCard
+                    title="Payroll Handling"
+                    subtitle="Manual entries stay regular. PTO, holiday, and overtime are handled elsewhere."
+                    icon={<InfoRoundedIcon color="primary" />}
+                  >
+                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+                      Manual entries are always saved as <strong>regular worked hours</strong>.
+                      PTO and holiday entries are system-generated later, and overtime is calculated in the weekly timesheet after 40+ regular worked hours.
+                    </Alert>
+                  </SectionCard>
+
+                  {category === "service_ticket" ? (
+                    <SectionCard
+                      title="Service Ticket Link"
+                      subtitle="Only required when the category is Service Ticket."
+                      icon={<LinkRoundedIcon color="primary" />}
+                    >
+                      <TextField
+                        label="Service Ticket ID"
+                        value={serviceTicketId}
+                        onChange={(e) => setServiceTicketId(e.target.value)}
+                        placeholder="Paste service ticket document ID"
+                        fullWidth
+                      />
+                    </SectionCard>
+                  ) : null}
+
+                  {category === "project_stage" ? (
+                    <SectionCard
+                      title="Project Link"
+                      subtitle="Only required when the category is Project Stage."
+                      icon={<WorkRoundedIcon color="primary" />}
+                    >
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            sm: "repeat(2, minmax(0, 1fr))",
+                          },
+                        }}
+                      >
+                        <TextField
+                          label="Project ID"
+                          value={projectId}
+                          onChange={(e) => setProjectId(e.target.value)}
+                          placeholder="Paste project document ID"
+                          fullWidth
+                        />
+
+                        <FormControl fullWidth>
+                          <InputLabel>Project Stage</InputLabel>
+                          <Select
+                            label="Project Stage"
+                            value={projectStageKey}
+                            onChange={(e) =>
+                              setProjectStageKey(e.target.value as ProjectStageKey)
+                            }
+                            {...selectMenuProps()}
+                          >
+                            <MenuItem value="">Select stage</MenuItem>
+                            <MenuItem value="roughIn">Rough-In</MenuItem>
+                            <MenuItem value="topOutVent">Top-Out / Vent</MenuItem>
+                            <MenuItem value="trimFinish">Trim / Finish</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Box>
+                    </SectionCard>
+                  ) : null}
+
+                  {selectedEmployee && isSupportRole(selectedEmployee.role) ? (
+                    <SectionCard
+                      title="Support Labor Link"
+                      subtitle="For helpers and apprentices, this links their time to a preferred technician."
+                      icon={<LinkRoundedIcon color="primary" />}
+                    >
+                      <Stack spacing={2}>
+                        <Typography variant="body2" color="text.secondary">
+                          Auto-filled from this helper/apprentice’s preferred technician. You can override it here if needed.
+                        </Typography>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              sm: "repeat(2, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          <TextField
+                            label="Linked Technician ID"
+                            value={linkedTechnicianId}
+                            onChange={(e) => setLinkedTechnicianId(e.target.value)}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Linked Technician Name"
+                            value={linkedTechnicianName}
+                            onChange={(e) => setLinkedTechnicianName(e.target.value)}
+                            fullWidth
+                          />
+                        </Box>
+                      </Stack>
+                    </SectionCard>
+                  ) : null}
+
+                  <SectionCard
+                    title="Notes"
+                    subtitle="Optional context for payroll review and admin reference."
+                    icon={<InfoRoundedIcon color="primary" />}
+                  >
+                    <TextField
+                      label="Notes"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      multiline
+                      minRows={5}
+                      fullWidth
+                    />
+                  </SectionCard>
+
+                  {error ? <Alert severity="error">{error}</Alert> : null}
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      p: { xs: 2, sm: 2.5 },
+                      borderRadius: 4,
+                      border: (theme) => `1px solid ${theme.palette.divider}`,
                     }}
                   >
-                    <option value="">Select stage</option>
-                    <option value="roughIn">Rough-In</option>
-                    <option value="topOutVent">Top-Out / Vent</option>
-                    <option value="trimFinish">Trim / Finish</option>
-                  </select>
-                </div>
-              </div>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1.5}
+                      alignItems={{ xs: "stretch", sm: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        Review the fields above, then save the draft time entry.
+                      </Typography>
+
+                      <Stack direction="row" spacing={1.25}>
+                        <Button
+                          component={Link}
+                          href="/time-entries"
+                          variant="outlined"
+                        >
+                          Cancel
+                        </Button>
+
+                        <Button
+                          type="submit"
+                          variant="contained"
+                          disabled={saving}
+                          startIcon={<SaveRoundedIcon />}
+                        >
+                          {saving ? "Saving..." : "Create Time Entry"}
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </Paper>
+                </Stack>
+              </Box>
             ) : null}
-
-            {(selectedEmployee?.role === "helper" || selectedEmployee?.role === "apprentice") ? (
-              <div
-                style={{
-                  border: "1px solid #e6e6e6",
-                  borderRadius: "12px",
-                  padding: "12px",
-                  background: "white",
-                  display: "grid",
-                  gap: "10px",
-                }}
-              >
-                <div style={{ fontWeight: 800 }}>Support Labor Link</div>
-
-                <div style={{ fontSize: "12px", color: "#666" }}>
-                  Auto-filled from this helper/apprentice’s preferred technician. You can override if needed.
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-                    gap: "12px",
-                  }}
-                >
-                  <div>
-                    <label style={{ fontWeight: 700 }}>Linked Technician ID</label>
-                    <input
-                      value={linkedTechnicianId}
-                      onChange={(e) => setLinkedTechnicianId(e.target.value)}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        marginTop: "4px",
-                        padding: "10px",
-                        borderRadius: "10px",
-                        border: "1px solid #ccc",
-                      }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontWeight: 700 }}>Linked Technician Name</label>
-                    <input
-                      value={linkedTechnicianName}
-                      onChange={(e) => setLinkedTechnicianName(e.target.value)}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        marginTop: "4px",
-                        padding: "10px",
-                        borderRadius: "10px",
-                        border: "1px solid #ccc",
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <div>
-              <label style={{ fontWeight: 700 }}>Notes</label>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={4}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: "4px",
-                  padding: "10px",
-                  borderRadius: "10px",
-                  border: "1px solid #ccc",
-                }}
-              />
-            </div>
-
-            {entryDate ? (
-              <div style={{ fontSize: "12px", color: "#666" }}>
-                Payroll week will be: {getPayrollWeekBounds(entryDate).weekStartDate} through{" "}
-                {getPayrollWeekBounds(entryDate).weekEndDate}
-              </div>
-            ) : null}
-
-            {error ? <p style={{ color: "red" }}>{error}</p> : null}
-
-            <button
-              type="submit"
-              disabled={saving}
-              style={{
-                padding: "10px 14px",
-                borderRadius: "10px",
-                border: "1px solid #ccc",
-                background: "white",
-                cursor: "pointer",
-                width: "fit-content",
-                fontWeight: 800,
-              }}
-            >
-              {saving ? "Saving..." : "Create Time Entry"}
-            </button>
-          </form>
-        ) : null}
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );
