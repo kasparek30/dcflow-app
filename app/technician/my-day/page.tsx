@@ -46,6 +46,7 @@ import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
+import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -183,6 +184,17 @@ type CompanyEvent = {
   appliesToRoles?: string[] | null;
   appliesToUids?: string[] | null;
   appliesToNames?: string[] | null;
+};
+
+type PtoRequestLite = {
+  id: string;
+  employeeId: string;
+  employeeName?: string;
+  startDate: string;
+  endDate: string;
+  status: string;
+  notes?: string | null;
+  active?: boolean;
 };
 
 function isoTodayLocal() {
@@ -384,6 +396,23 @@ function formatEventTime(e: CompanyEvent) {
   if (range) return range;
 
   return "—";
+}
+
+function isoDateFallsInRange(targetIso: string, startIso?: string, endIso?: string) {
+  const target = safeStr(targetIso);
+  const start = safeStr(startIso);
+  const end = safeStr(endIso) || start;
+
+  if (!target || !start) return false;
+  return target >= start && target <= end;
+}
+
+function formatPtoDateRange(startDate?: string, endDate?: string) {
+  const start = safeStr(startDate);
+  const end = safeStr(endDate) || start;
+  if (!start) return "—";
+  if (start === end) return start;
+  return `${start} → ${end}`;
 }
 
 async function startProjectTripFromMyDay(args: {
@@ -594,6 +623,7 @@ export default function TechnicianMyDayPage() {
 
   const [holiday, setHoliday] = useState<CompanyHoliday | null>(null);
   const [companyEvents, setCompanyEvents] = useState<CompanyEvent[]>([]);
+  const [currentPto, setCurrentPto] = useState<PtoRequestLite | null>(null);
 
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
@@ -794,6 +824,47 @@ export default function TechnicianMyDayPage() {
         }
       )
     );
+
+    if (whoUid) {
+      const ptoQ = query(collection(db, "ptoRequests"), where("employeeId", "==", whoUid));
+
+      unsubs.push(
+        onSnapshot(
+          ptoQ,
+          (snap) => {
+            const matches = snap.docs
+              .map((ds) => {
+                const d = ds.data() as any;
+                return {
+                  id: ds.id,
+                  employeeId: String(d.employeeId || "").trim(),
+                  employeeName: String(d.employeeName || "").trim() || undefined,
+                  startDate: String(d.startDate || "").trim(),
+                  endDate: String(d.endDate || d.startDate || "").trim(),
+                  status: String(d.status || "").trim().toLowerCase(),
+                  notes: d.notes ?? null,
+                  active: typeof d.active === "boolean" ? d.active : true,
+                } as PtoRequestLite;
+              })
+              .filter((pto) => pto.active !== false)
+              .filter((pto) => pto.status === "approved")
+              .filter((pto) => isoDateFallsInRange(todayIso, pto.startDate, pto.endDate))
+              .sort((a, b) => {
+                const aKey = `${a.startDate}_${a.endDate}_${a.id}`;
+                const bKey = `${b.startDate}_${b.endDate}_${b.id}`;
+                return bKey.localeCompare(aKey);
+              });
+
+            setCurrentPto(matches[0] || null);
+          },
+          () => {
+            setCurrentPto(null);
+          }
+        )
+      );
+    } else {
+      setCurrentPto(null);
+    }
 
     if (!canViewOtherEmployees && isHelperRole && whoUid) {
       const overrideQ = query(
@@ -1344,6 +1415,82 @@ export default function TechnicianMyDayPage() {
               </Alert>
             ) : null}
 
+            {currentPto ? (
+              <SectionSurface>
+                <Box
+                  sx={{
+                    px: { xs: 2, md: 2.5 },
+                    py: 2,
+                    borderBottom: `1px solid ${alpha(theme.palette.warning.main, 0.2)}`,
+                    bgcolor: alpha(theme.palette.warning.main, 0.08),
+                  }}
+                >
+                  <SectionHeader
+                    title="Approved PTO"
+                    subtitle="This employee is out on approved PTO today."
+                    icon={<BeachAccessRoundedIcon color="warning" />}
+                  />
+                </Box>
+
+                <Box sx={{ px: { xs: 2, md: 2.5 }, py: 2 }}>
+                  <Stack spacing={1.5}>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                        {selectedEmployeeInfo.displayName || currentPto.employeeName || "Employee"}
+                      </Typography>
+
+                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                        <Chip
+                          size="small"
+                          color="warning"
+                          variant="filled"
+                          label="Approved"
+                          sx={{ fontWeight: 700 }}
+                        />
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={formatPtoDateRange(currentPto.startDate, currentPto.endDate)}
+                          sx={{ fontWeight: 500 }}
+                        />
+                      </Stack>
+                    </Stack>
+
+                    <Typography variant="body2" color="text.secondary">
+                      PTO coverage includes today.
+                    </Typography>
+
+                    {currentPto.notes ? (
+                      <Box
+                        sx={{
+                          pl: 1.25,
+                          borderLeft: `3px solid ${alpha(theme.palette.warning.main, 0.45)}`,
+                        }}
+                      >
+                        <Typography
+                          variant="caption"
+                          sx={{ fontWeight: 700, color: "warning.dark" }}
+                        >
+                          PTO notes
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{ mt: 0.35, color: "text.secondary", whiteSpace: "pre-wrap" }}
+                        >
+                          {currentPto.notes}
+                        </Typography>
+                      </Box>
+                    ) : null}
+                  </Stack>
+                </Box>
+              </SectionSurface>
+            ) : null}
+
             {holiday ? (
               <Alert
                 severity="warning"
@@ -1440,10 +1587,12 @@ export default function TechnicianMyDayPage() {
 
             {!loading && !error ? (
               items.length === 0 ? (
-                <Alert severity="info" variant="outlined" sx={{ borderRadius: 4 }}>
-                  {holiday
-                    ? `No trips scheduled. Today is a company holiday: ${holiday.name}.`
-                    : "No trips scheduled for this employee today."}
+                <Alert severity={currentPto ? "warning" : "info"} variant="outlined" sx={{ borderRadius: 4 }}>
+                  {currentPto
+                    ? `${selectedEmployeeInfo.displayName || "This employee"} is on approved PTO today.`
+                    : holiday
+                      ? `No trips scheduled. Today is a company holiday: ${holiday.name}.`
+                      : "No trips scheduled for this employee today."}
                 </Alert>
               ) : (
                 <Stack spacing={1.5}>
