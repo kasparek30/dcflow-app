@@ -284,17 +284,7 @@ export default function EmployeeProfilesPage() {
   }
 
   return (
-    <ProtectedPage
-  fallbackTitle="My Day"
-  allowedRoles={[
-    "admin",
-    "dispatcher",
-    "manager",
-    "technician",
-    "helper",
-    "apprentice",
-  ]}
->
+    <ProtectedPage fallbackTitle="Employee Profiles" allowedRoles={["admin"]}>
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
           <Stack spacing={4}>

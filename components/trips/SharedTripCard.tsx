@@ -1,4 +1,3 @@
-// components/trips/SharedTripCard.tsx
 "use client";
 
 import * as React from "react";
@@ -14,8 +13,8 @@ import {
 import { alpha, useTheme } from "@mui/material/styles";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
-import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
-import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import PlumbingRoundedIcon from "@mui/icons-material/PlumbingRounded";
+import SquareFootRoundedIcon from "@mui/icons-material/SquareFootRounded";
 import { getTripStatusTone } from "../../src/lib/trip-status-ui";
 
 type SharedTripCardProps = {
@@ -55,10 +54,25 @@ export default function SharedTripCard({
   const tone = getTripStatusTone(theme, status);
   const type = String(tripType || "").toLowerCase();
   const isProject = type === "project";
+  const isService = type === "service";
 
   const hasMetaRows = Boolean(subtitle || customerLine || progressText);
   const hasInlineDetails = Boolean(detailBlock || followUpBlock);
   const hasFooter = Boolean(footer);
+
+  const iconBg = isProject
+    ? alpha("#F59E0B", 0.14)
+    : isService
+      ? alpha(theme.palette.primary.main, 0.14)
+      : alpha(theme.palette.primary.main, 0.14);
+
+  const iconColor = isProject
+    ? "#FFD89C"
+    : isService
+      ? theme.palette.primary.light
+      : theme.palette.primary.light;
+
+  const TripTypeIcon = isProject ? SquareFootRoundedIcon : PlumbingRoundedIcon;
 
   const mainContent = (
     <Box
@@ -88,17 +102,11 @@ export default function SharedTripCard({
                 display: "grid",
                 placeItems: "center",
                 flexShrink: 0,
-                backgroundColor: isProject
-                  ? alpha("#F59E0B", 0.14)
-                  : alpha(theme.palette.primary.main, 0.14),
-                color: isProject ? "#FFD89C" : theme.palette.primary.light,
+                backgroundColor: iconBg,
+                color: iconColor,
               }}
             >
-              {isProject ? (
-                <ConstructionRoundedIcon sx={{ fontSize: { xs: 20, md: 21 } }} />
-              ) : (
-                <PrecisionManufacturingRoundedIcon sx={{ fontSize: { xs: 20, md: 21 } }} />
-              )}
+              <TripTypeIcon sx={{ fontSize: { xs: 20, md: 21 } }} />
             </Box>
 
             <Box sx={{ minWidth: 0, flex: 1 }}>

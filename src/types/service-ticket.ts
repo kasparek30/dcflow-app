@@ -1,3 +1,4 @@
+// src/types/service-ticket.ts
 export type ServiceTicketStatus =
   | "new"
   | "scheduled"
