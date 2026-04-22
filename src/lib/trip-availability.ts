@@ -11,6 +11,16 @@ export type TripCrew = {
   secondaryHelperName?: string | null;
 };
 
+export type DispatchOverrideInfo = {
+  enabled: boolean;
+  reason?: string | null;
+  createdAt?: string;
+  createdByUid?: string | null;
+  createdByName?: string | null;
+  conflictTypes?: string[];
+  conflictTripIds?: string[];
+};
+
 export type TripDocLite = {
   id: string;
   active?: boolean | null;
@@ -21,6 +31,7 @@ export type TripDocLite = {
   endTime?: string;
   crew?: TripCrew | null;
   timerState?: string | null;
+  dispatchOverride?: DispatchOverrideInfo | null;
 };
 
 export type PtoRequestLite = {

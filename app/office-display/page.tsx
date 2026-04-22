@@ -329,6 +329,23 @@ function holidayIsActive(d: any) {
   return true;
 }
 
+function meetingTimeText(e: CompanyEvent) {
+  const w = String(e.timeWindow || "").toLowerCase();
+  if (w === "all_day") return "All day";
+  if (w === "am") return "AM";
+  if (w === "pm") return "PM";
+  if (e.startTime && e.endTime) {
+    return `${formatTime12h(String(e.startTime))}–${formatTime12h(String(e.endTime))}`;
+  }
+  if (e.startTime) return formatTime12h(String(e.startTime));
+  return "Custom";
+}
+
+function meetingChipLabel(e: CompanyEvent) {
+  const time = meetingTimeText(e);
+  return `${e.title} ${time ? `• ${time}` : ""}`;
+}
+
 function MaterialSymbolIcon({
   name,
   size = 14,
@@ -516,11 +533,11 @@ export default function OfficeDisplayPage() {
           }
 
           for (const k of Object.keys(map)) {
-            map[k].sort(
-              (a, b) =>
-                String(a.timeWindow || "").localeCompare(String(b.timeWindow || "")) ||
-                a.title.localeCompare(b.title)
-            );
+            map[k].sort((a, b) => {
+              const aKey = `${String(a.startTime || "99:99")}_${String(a.timeWindow || "")}_${a.title}`;
+              const bKey = `${String(b.startTime || "99:99")}_${String(b.timeWindow || "")}_${b.title}`;
+              return aKey.localeCompare(bKey);
+            });
           }
 
           setEventsByDate(map);
@@ -1067,83 +1084,6 @@ export default function OfficeDisplayPage() {
     );
   }
 
-  function renderMeetingsForDay(dayIso: string) {
-    const list = eventsByDate[dayIso] || [];
-    if (!list.length) return null;
-
-    const head = list.slice(0, 2);
-    const extra = list.length - head.length;
-
-    return (
-      <Stack spacing={0.5} sx={{ mt: 0.75 }}>
-        {head.map((e) => {
-          const w = String(e.timeWindow || "").toLowerCase();
-          const time =
-            w === "all_day"
-              ? "All day"
-              : w === "am"
-                ? "AM"
-                : w === "pm"
-                  ? "PM"
-                  : e.startTime && e.endTime
-                    ? `${formatTime12h(String(e.startTime))}–${formatTime12h(String(e.endTime))}`
-                    : "Custom";
-
-          return (
-            <Paper
-              key={e.id}
-              elevation={0}
-              sx={{
-                px: 0.9,
-                py: 0.8,
-                borderRadius: 1.5,
-                backgroundColor: alpha(theme.palette.success.main, 0.08),
-                border: `1px solid ${alpha(theme.palette.success.main, 0.16)}`,
-              }}
-            >
-              <Stack spacing={0.25}>
-                <Stack direction="row" spacing={0.5} alignItems="center">
-                  <CampaignRoundedIcon sx={{ fontSize: 13, color: "#CFFFE0" }} />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: "#E1FFEA",
-                      fontWeight: 500,
-                      lineHeight: 1.2,
-                    }}
-                  >
-                    {e.title}
-                  </Typography>
-                </Stack>
-
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: alpha("#E1FFEA", 0.88),
-                  }}
-                >
-                  {time}
-                  {e.location ? ` • ${e.location}` : ""}
-                </Typography>
-              </Stack>
-            </Paper>
-          );
-        })}
-
-        {extra > 0 ? (
-          <Typography
-            variant="caption"
-            sx={{
-              color: alpha("#E1FFEA", 0.88),
-            }}
-          >
-            +{extra} more meeting(s)
-          </Typography>
-        ) : null}
-      </Stack>
-    );
-  }
-
   const headerH = 96;
   const outerPad = 16;
   const gridH = `calc(100vh - ${headerH}px - ${outerPad * 2}px - 12px)`;
@@ -1312,12 +1252,16 @@ export default function OfficeDisplayPage() {
             {days.map(({ d, iso }) => {
               const ptoNames = ptoNamesByDate[iso] || [];
               const holidays = holidaysByDate[iso] || [];
+              const meetings = eventsByDate[iso] || [];
 
               const holidayLabel =
                 holidays.length === 1 ? holidays[0].name : `${holidays.length} Holidays`;
 
               const ptoLabel =
                 ptoNames.length === 1 ? `PTO: ${ptoNames[0]}` : `PTO: ${ptoNames.length} employees`;
+
+              const visibleMeetings = meetings.slice(0, 1);
+              const extraMeetings = Math.max(0, meetings.length - visibleMeetings.length);
 
               return (
                 <Box
@@ -1394,14 +1338,53 @@ export default function OfficeDisplayPage() {
                             }}
                           />
                         ) : null}
+
+                        {visibleMeetings.map((e) => (
+                          <Chip
+                            key={e.id}
+                            size="small"
+                            icon={<CampaignRoundedIcon sx={{ fontSize: 15 }} />}
+                            label={meetingChipLabel(e)}
+                            variant="outlined"
+                            sx={{
+                              maxWidth: "100%",
+                              borderRadius: 1.25,
+                              fontWeight: 500,
+                              color: "#DDFBE8",
+                              backgroundColor: alpha(theme.palette.success.main, 0.10),
+                              border: `1px solid ${alpha(theme.palette.success.main, 0.24)}`,
+                              "& .MuiChip-label": {
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              },
+                              "& .MuiChip-icon": {
+                                color: "#B8F5CC",
+                              },
+                            }}
+                          />
+                        ))}
+
+                        {extraMeetings > 0 ? (
+                          <Chip
+                            size="small"
+                            label={`+${extraMeetings} more`}
+                            variant="outlined"
+                            sx={{
+                              borderRadius: 1.25,
+                              fontWeight: 500,
+                              color: "#DDFBE8",
+                              backgroundColor: alpha(theme.palette.success.main, 0.06),
+                              border: `1px solid ${alpha(theme.palette.success.main, 0.18)}`,
+                            }}
+                          />
+                        ) : null}
                       </Stack>
 
                       <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
                         {formatIsoMDY(iso)}
                       </Typography>
                     </Stack>
-
-                    {renderMeetingsForDay(iso)}
                   </Stack>
                 </Box>
               );

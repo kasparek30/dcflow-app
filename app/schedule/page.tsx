@@ -93,6 +93,16 @@ type TripConfirmedEntry = {
   confirmedAt: string;
 };
 
+type DispatchOverrideInfo = {
+  enabled: boolean;
+  reason: string | null;
+  createdAt: string;
+  createdByUid: string | null;
+  createdByName: string | null;
+  conflictTypes: string[];
+  conflictTripIds: string[];
+};
+
 type TripDoc = {
   id: string;
   active: boolean;
@@ -107,6 +117,7 @@ type TripDoc = {
   outcome?: string | null;
   readyToBillAt?: string | null;
   confirmedBy?: Record<string, TripConfirmedEntry> | null;
+  dispatchOverride?: DispatchOverrideInfo | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -197,6 +208,12 @@ type PickerItem = {
   metaRight?: string;
   metaLeft?: string;
   preview?: string;
+};
+
+type AddSlotConflictSummary = {
+  hardMessages: string[];
+  softMessages: string[];
+  softTripIds: string[];
 };
 
 const MEETING_ELIGIBLE_ROLES = [
@@ -318,6 +335,14 @@ function ticketIsSchedulableByStatus(d: any) {
 function isCompletedStatus(status?: string) {
   const s = normalizeStatus(status);
   return s === "complete" || s === "completed";
+}
+
+function isInProgressStatus(status?: string) {
+  return normalizeStatus(status) === "in_progress";
+}
+
+function isPlannedStatus(status?: string) {
+  return normalizeStatus(status) === "planned";
 }
 
 function primaryTechUid(t: TripDoc) {
@@ -677,6 +702,116 @@ function splitTripsBySlot(cellTrips: TripDoc[]) {
   return { amTrips: am, pmTrips: pm.filter((x) => !amIds.has(x.id)) };
 }
 
+function computeCellAvailability(args: {
+  rowKey: string;
+  iso: string;
+  cellTrips: TripDoc[];
+  eventsByDate: Record<string, CompanyEvent[]>;
+  holidayByDate: Record<string, CompanyHoliday>;
+  ptoByUidByDate: Record<string, Record<string, PtoDay>>;
+}) {
+  const { rowKey, iso, cellTrips, eventsByDate, holidayByDate, ptoByUidByDate } = args;
+  const meetings =
+    rowKey === "UNASSIGNED"
+      ? []
+      : (eventsByDate[iso] || []).filter((event) => eventAppliesToUid(event, rowKey, "technician"));
+
+  const holiday = Boolean(holidayByDate[iso]);
+  const pto = rowKey !== "UNASSIGNED" ? Boolean(ptoByUidByDate[rowKey]?.[iso]) : false;
+
+  const amHardTrip = cellTrips.some(
+    (trip) => tripBlocksSlot(trip, "am") && isInProgressStatus(trip.status)
+  );
+  const pmHardTrip = cellTrips.some(
+    (trip) => tripBlocksSlot(trip, "pm") && isInProgressStatus(trip.status)
+  );
+
+  const amSoftTrip = cellTrips.some(
+    (trip) => tripBlocksSlot(trip, "am") && isPlannedStatus(trip.status)
+  );
+  const pmSoftTrip = cellTrips.some(
+    (trip) => tripBlocksSlot(trip, "pm") && isPlannedStatus(trip.status)
+  );
+
+  const amMeeting = meetings.some((event) => eventBlocksSlot(event, "am"));
+  const pmMeeting = meetings.some((event) => eventBlocksSlot(event, "pm"));
+
+  const amHardBusy = holiday || pto || amMeeting || amHardTrip;
+  const pmHardBusy = holiday || pto || pmMeeting || pmHardTrip;
+
+  const amSoftBusy = !amHardBusy && amSoftTrip;
+  const pmSoftBusy = !pmHardBusy && pmSoftTrip;
+
+  return {
+    amHardBusy,
+    pmHardBusy,
+    amSoftBusy,
+    pmSoftBusy,
+    allHardBusy: amHardBusy && pmHardBusy,
+    meetings,
+  };
+}
+
+function computeAddSlotConflict(args: {
+  techUid: string;
+  dateIso: string;
+  slot: SlotKey;
+  trips: TripDoc[];
+  holidayByDate: Record<string, CompanyHoliday>;
+  ptoByUidByDate: Record<string, Record<string, PtoDay>>;
+  eventsByDate: Record<string, CompanyEvent[]>;
+}) {
+  const hard = new Set<string>();
+  const soft = new Set<string>();
+  const softTripIds = new Set<string>();
+
+  const { techUid, dateIso, slot, trips, holidayByDate, ptoByUidByDate, eventsByDate } = args;
+
+  const holiday = holidayByDate[dateIso];
+  if (holiday) {
+    hard.add(`That date is a company holiday (${holiday.name}).`);
+  }
+
+  const pto = ptoByUidByDate[techUid]?.[dateIso];
+  if (pto) {
+    hard.add(`That technician is on approved PTO for ${dateIso}.`);
+  }
+
+  const meetings = (eventsByDate[dateIso] || []).filter((event) =>
+    eventAppliesToUid(event, techUid, "technician")
+  );
+  const meetingBlock = meetings.some((event) => eventBlocksSlot(event, slot));
+  if (meetingBlock) {
+    hard.add(`That ${slot.toUpperCase()} slot is blocked by a company meeting/event.`);
+  }
+
+  const overlappingTrips = trips.filter(
+    (trip) =>
+      trip.active !== false &&
+      String(trip.date || "").trim() === dateIso &&
+      isTechOnTrip(trip, techUid) &&
+      tripBlocksSlot(trip, slot)
+  );
+
+  for (const trip of overlappingTrips) {
+    const status = normalizeStatus(trip.status);
+    const detail = `${formatTimeRangeForCard(trip)}`;
+
+    if (status === "in_progress") {
+      hard.add(`That technician already has an in-progress trip in this slot (${detail}).`);
+    } else if (status === "planned") {
+      soft.add(`That technician already has a planned trip in this slot (${detail}). Dispatch Override can be used if needed.`);
+      softTripIds.add(trip.id);
+    }
+  }
+
+  return {
+    hardMessages: Array.from(hard),
+    softMessages: Array.from(soft),
+    softTripIds: Array.from(softTripIds),
+  } satisfies AddSlotConflictSummary;
+}
+
 function InfoChip({
   icon,
   label,
@@ -834,6 +969,10 @@ export default function SchedulePage() {
   const [addSelectedId, setAddSelectedId] = useState("");
   const [addAdvancedId, setAddAdvancedId] = useState("");
   const [addNotes, setAddNotes] = useState("");
+  const [addDispatchOverrideEnabled, setAddDispatchOverrideEnabled] =
+    useState(false);
+  const [addDispatchOverrideReason, setAddDispatchOverrideReason] =
+    useState("");
   const [addSaving, setAddSaving] = useState(false);
   const [addErr, setAddErr] = useState("");
 
@@ -877,6 +1016,33 @@ export default function SchedulePage() {
       return haystack.includes(q);
     });
   }, [meetingEmployees, meetAttendeeSearch]);
+
+  const addSlotConflicts = useMemo(() => {
+    if (!addOpen || !addTechUid || !addDateIso) {
+      return {
+        hardMessages: [],
+        softMessages: [],
+        softTripIds: [],
+      } satisfies AddSlotConflictSummary;
+    }
+
+    return computeAddSlotConflict({
+      techUid: addTechUid,
+      dateIso: addDateIso,
+      slot: addSlot,
+      trips,
+      holidayByDate,
+      ptoByUidByDate,
+      eventsByDate,
+    });
+  }, [addOpen, addTechUid, addDateIso, addSlot, trips, holidayByDate, ptoByUidByDate, eventsByDate]);
+
+  useEffect(() => {
+    if (addSlotConflicts.softMessages.length === 0) {
+      setAddDispatchOverrideEnabled(false);
+      setAddDispatchOverrideReason("");
+    }
+  }, [addSlotConflicts.softMessages.length]);
 
   function setMeetingAttendees(nextUids: Array<string | null | undefined>) {
     const allowed = new Set(allMeetingEmployeeUids);
@@ -1062,6 +1228,8 @@ export default function SchedulePage() {
     setAddSelectedId("");
     setAddAdvancedId("");
     setAddNotes("");
+    setAddDispatchOverrideEnabled(false);
+    setAddDispatchOverrideReason("");
     setAddOpen(true);
     loadOpenTicketsIfNeeded();
   }
@@ -1075,6 +1243,8 @@ export default function SchedulePage() {
     setAddSelectedId("");
     setAddAdvancedId("");
     setAddNotes("");
+    setAddDispatchOverrideEnabled(false);
+    setAddDispatchOverrideReason("");
   }
 
   function currentPickerItems(): PickerItem[] {
@@ -1111,12 +1281,29 @@ export default function SchedulePage() {
       return setAddErr(addTripType === "service" ? "Choose an open Service Ticket." : "Choose a Project.");
     }
 
-    if (holidayByDate[dateIso]) return setAddErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
-    if (ptoByUidByDate[techUid]?.[dateIso]) return setAddErr(`That technician is on approved PTO for ${dateIso}.`);
+    const liveConflicts = computeAddSlotConflict({
+      techUid,
+      dateIso,
+      slot: addSlot,
+      trips,
+      holidayByDate,
+      ptoByUidByDate,
+      eventsByDate,
+    });
 
-    const todaysEvents = (eventsByDate[dateIso] || []).filter((event) => eventAppliesToUid(event, techUid, "technician"));
-    const anyBlocking = todaysEvents.some((e) => eventBlocksSlot(e, addSlot));
-    if (anyBlocking) return setAddErr("That slot is blocked by a company meeting/event.");
+    if (liveConflicts.hardMessages.length > 0) {
+      return setAddErr(liveConflicts.hardMessages[0]);
+    }
+
+    if (liveConflicts.softMessages.length > 0) {
+      if (!addDispatchOverrideEnabled) {
+        return setAddErr("This slot already has a planned trip. Enable Dispatch Override to continue.");
+      }
+
+      if (!addDispatchOverrideReason.trim()) {
+        return setAddErr("Dispatch Override reason is required.");
+      }
+    }
 
     setAddSaving(true);
     setAddErr("");
@@ -1126,6 +1313,19 @@ export default function SchedulePage() {
       const techName = findTechName(techUid) || "Technician";
       const slot = slotDefaults(addSlot);
 
+      const dispatchOverride =
+        liveConflicts.softMessages.length > 0
+          ? ({
+              enabled: true,
+              reason: addDispatchOverrideReason.trim(),
+              createdAt: now,
+              createdByUid: appUser?.uid || null,
+              createdByName: appUser?.displayName || null,
+              conflictTypes: ["scheduled_overlap"],
+              conflictTripIds: liveConflicts.softTripIds,
+            } satisfies DispatchOverrideInfo)
+          : null;
+
       const payload: any = {
         active: true,
         type: addTripType,
@@ -1134,6 +1334,7 @@ export default function SchedulePage() {
         timeWindow: slot.timeWindow,
         startTime: slot.startTime,
         endTime: slot.endTime,
+        dispatchOverride,
         crew: {
           primaryTechUid: techUid,
           primaryTechName: techName,
@@ -2090,6 +2291,7 @@ export default function SchedulePage() {
             outcome: d.outcome ?? null,
             readyToBillAt: d.readyToBillAt ?? null,
             confirmedBy: d.confirmedBy ?? null,
+            dispatchOverride: d.dispatchOverride ?? null,
             createdAt: d.createdAt ?? undefined,
             updatedAt: d.updatedAt ?? undefined,
           };
@@ -2260,6 +2462,34 @@ export default function SchedulePage() {
 
     return out;
   }, [filteredTrips]);
+
+  const fullGrid = useMemo(() => {
+    const out = new Map<string, Map<string, TripDoc[]>>();
+
+    for (const trip of trips) {
+      const d = String(trip.date || "").trim();
+      if (!d) continue;
+
+      const rowUids = tripRowUids(trip);
+      const targets = rowUids.length ? rowUids : ["UNASSIGNED"];
+
+      for (const uid of targets) {
+        if (!out.has(uid)) out.set(uid, new Map());
+        const byDate = out.get(uid)!;
+        if (!byDate.has(d)) byDate.set(d, []);
+        byDate.get(d)!.push(trip);
+      }
+    }
+
+    for (const [, byDate] of out) {
+      for (const [d, list] of byDate) {
+        list.sort(compareTripTime);
+        byDate.set(d, list);
+      }
+    }
+
+    return out;
+  }, [trips]);
 
   function goPrev() {
     if (view === "day") {
@@ -2465,15 +2695,36 @@ export default function SchedulePage() {
           showProgress ? `Confirmed: ${prog!.confirmedCount}/${prog!.requiredCount}` : undefined
         }
         titleSuffix={
-          showTechName && techName ? (
-            <Typography
-              component="span"
-              variant="caption"
-              sx={{ ml: 1, color: "text.secondary" }}
-            >
-              • {techName}
-            </Typography>
-          ) : undefined
+          <Box
+            component="span"
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.75,
+              ml: 1,
+              flexWrap: "wrap",
+            }}
+          >
+            {showTechName && techName ? (
+              <Typography
+                component="span"
+                variant="caption"
+                sx={{ color: "text.secondary" }}
+              >
+                • {techName}
+              </Typography>
+            ) : null}
+
+            {trip.dispatchOverride?.enabled ? (
+              <Chip
+                size="small"
+                color="warning"
+                variant="outlined"
+                label="Override"
+                sx={{ height: 20 }}
+              />
+            ) : null}
+          </Box>
         }
         onClick={() => {
           if (trip.link?.serviceTicketId) {
@@ -2488,26 +2739,6 @@ export default function SchedulePage() {
         }}
       />
     );
-  }
-
-  function computeCellAvailability(rowKey: string, iso: string, cellTrips: TripDoc[]) {
-    const amBusyTrips = cellTrips.some((trip) => tripBlocksSlot(trip, "am"));
-    const pmBusyTrips = cellTrips.some((trip) => tripBlocksSlot(trip, "pm"));
-
-    const meetings =
-      rowKey === "UNASSIGNED"
-        ? []
-        : (eventsByDate[iso] || []).filter((event) => eventAppliesToUid(event, rowKey, "technician"));
-    const amBusyMeet = meetings.some((event) => eventBlocksSlot(event, "am"));
-    const pmBusyMeet = meetings.some((event) => eventBlocksSlot(event, "pm"));
-
-    const holiday = Boolean(holidayByDate[iso]);
-    const pto = rowKey !== "UNASSIGNED" ? Boolean(ptoByUidByDate[rowKey]?.[iso]) : false;
-
-    const amBusy = amBusyTrips || amBusyMeet || holiday || pto;
-    const pmBusy = pmBusyTrips || pmBusyMeet || holiday || pto;
-
-    return { amBusy, pmBusy, allBusy: amBusy && pmBusy, meetings };
   }
 
   const monthWeeksSafe = useMemo(() => (view === "month" ? monthWeeks : []), [view, monthWeeks]);
@@ -2879,17 +3110,29 @@ export default function SchedulePage() {
                               {rows.map((r) => {
                                 const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
                                 const cellTrips = grid.get(rowKey)?.get(iso) || [];
+                                const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
                                 const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
-                                const { amBusy, pmBusy, allBusy, meetings } = computeCellAvailability(rowKey, iso, cellTrips);
+                                const availability = computeCellAvailability({
+                                  rowKey,
+                                  iso,
+                                  cellTrips: availabilityTrips,
+                                  eventsByDate,
+                                  holidayByDate,
+                                  ptoByUidByDate,
+                                });
                                 const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
                                 const isPast = iso < todayIso;
 
-                                const canShowPlus =
+                                const canShowAmPlus =
                                   canEditSchedule &&
                                   rowKey !== "UNASSIGNED" &&
-                                  !holiday &&
-                                  !pto &&
-                                  !allBusy &&
+                                  !availability.amHardBusy &&
+                                  !isPast;
+
+                                const canShowPmPlus =
+                                  canEditSchedule &&
+                                  rowKey !== "UNASSIGNED" &&
+                                  !availability.pmHardBusy &&
                                   !isPast;
 
                                 return (
@@ -2903,7 +3146,7 @@ export default function SchedulePage() {
                                         ? alpha(theme.palette.warning.main, 0.08)
                                         : pto
                                           ? alpha(theme.palette.secondary.main, 0.08)
-                                          : meetings.length
+                                          : availability.meetings.length
                                             ? alpha(theme.palette.success.main, 0.05)
                                             : "background.paper",
                                     }}
@@ -2932,9 +3175,9 @@ export default function SchedulePage() {
                                           />
                                         ) : null}
 
-                                        {canShowPlus && !amBusy ? (
+                                        {canShowAmPlus ? (
                                           <ScheduleSlotButton
-                                            label="Add AM"
+                                            label={availability.amSoftBusy ? "Override AM" : "Add AM"}
                                             onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
                                           />
                                         ) : null}
@@ -2947,9 +3190,9 @@ export default function SchedulePage() {
                                           </Stack>
                                         ) : null}
 
-                                        {canShowPlus && !pmBusy ? (
+                                        {canShowPmPlus ? (
                                           <ScheduleSlotButton
-                                            label="Add PM"
+                                            label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
                                             onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
                                           />
                                         ) : null}
@@ -2964,7 +3207,7 @@ export default function SchedulePage() {
 
                                         {amTrips.length === 0 && pmTrips.length === 0 ? (
                                           <Typography variant="caption" color="text.secondary">
-                                            {holiday ? "Holiday" : pto ? "PTO" : meetings.length ? "Meeting(s)" : "—"}
+                                            {holiday ? "Holiday" : pto ? "PTO" : availability.meetings.length ? "Meeting(s)" : "—"}
                                           </Typography>
                                         ) : null}
                                       </Stack>
@@ -3055,18 +3298,30 @@ export default function SchedulePage() {
                                     {daysForWeekOrDay.map((d) => {
                                       const iso = toIsoDate(d);
                                       const cellTrips = grid.get(rowKey)?.get(iso) || [];
+                                      const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
                                       const holiday = holidayByDate[iso];
                                       const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
-                                      const { amBusy, pmBusy, allBusy, meetings } = computeCellAvailability(rowKey, iso, cellTrips);
+                                      const availability = computeCellAvailability({
+                                        rowKey,
+                                        iso,
+                                        cellTrips: availabilityTrips,
+                                        eventsByDate,
+                                        holidayByDate,
+                                        ptoByUidByDate,
+                                      });
                                       const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
                                       const isPast = iso < todayIso;
 
-                                      const canShowPlus =
+                                      const canShowAmPlus =
                                         canEditSchedule &&
                                         rowKey !== "UNASSIGNED" &&
-                                        !allBusy &&
-                                        !holiday &&
-                                        !pto &&
+                                        !availability.amHardBusy &&
+                                        !isPast;
+
+                                      const canShowPmPlus =
+                                        canEditSchedule &&
+                                        rowKey !== "UNASSIGNED" &&
+                                        !availability.pmHardBusy &&
                                         !isPast;
 
                                       return (
@@ -3078,7 +3333,7 @@ export default function SchedulePage() {
                                               ? alpha(theme.palette.warning.main, 0.08)
                                               : pto
                                                 ? alpha(theme.palette.secondary.main, 0.08)
-                                                : meetings.length
+                                                : availability.meetings.length
                                                   ? alpha(theme.palette.success.main, 0.05)
                                                   : "transparent",
                                           }}
@@ -3101,9 +3356,9 @@ export default function SchedulePage() {
                                               />
                                             ) : null}
 
-                                            {canShowPlus && !amBusy ? (
+                                            {canShowAmPlus ? (
                                               <ScheduleSlotButton
-                                                label="Add AM"
+                                                label={availability.amSoftBusy ? "Override AM" : "Add AM"}
                                                 onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
                                               />
                                             ) : null}
@@ -3116,9 +3371,9 @@ export default function SchedulePage() {
                                               </Stack>
                                             ) : null}
 
-                                            {canShowPlus && !pmBusy ? (
+                                            {canShowPmPlus ? (
                                               <ScheduleSlotButton
-                                                label="Add PM"
+                                                label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
                                                 onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
                                               />
                                             ) : null}
@@ -3133,7 +3388,7 @@ export default function SchedulePage() {
 
                                             {amTrips.length === 0 && pmTrips.length === 0 ? (
                                               <Typography variant="caption" color="text.secondary">
-                                                {holiday ? "Holiday" : pto ? "PTO" : meetings.length ? "Meeting(s)" : "—"}
+                                                {holiday ? "Holiday" : pto ? "PTO" : availability.meetings.length ? "Meeting(s)" : "—"}
                                               </Typography>
                                             ) : null}
                                           </Stack>
@@ -3330,6 +3585,42 @@ export default function SchedulePage() {
                 placeholder="Optional dispatch note…"
               />
 
+              {addSlotConflicts.hardMessages.length > 0 ? (
+                <Alert severity="error" variant="outlined">
+                  {addSlotConflicts.hardMessages[0]}
+                </Alert>
+              ) : null}
+
+              {addSlotConflicts.softMessages.length > 0 &&
+              addSlotConflicts.hardMessages.length === 0 ? (
+                <Stack spacing={1.25}>
+                  <Alert severity="warning" variant="outlined">
+                    {addSlotConflicts.softMessages[0]}
+                  </Alert>
+
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={addDispatchOverrideEnabled}
+                        onChange={(e) => setAddDispatchOverrideEnabled(e.target.checked)}
+                      />
+                    }
+                    label="Dispatch Override this planned overlap"
+                  />
+
+                  {addDispatchOverrideEnabled ? (
+                    <TextField
+                      label="Dispatch Override Reason"
+                      value={addDispatchOverrideReason}
+                      onChange={(e) => setAddDispatchOverrideReason(e.target.value)}
+                      placeholder="Example: emergency callback, VIP customer, short diagnostic visit, etc."
+                      multiline
+                      minRows={2}
+                    />
+                  ) : null}
+                </Stack>
+              ) : null}
+
               {addErr ? <Alert severity="error">{addErr}</Alert> : null}
             </Stack>
           </DialogContent>
@@ -3338,7 +3629,17 @@ export default function SchedulePage() {
             <Button onClick={closeAddModal} disabled={addSaving}>
               Cancel
             </Button>
-            <Button onClick={submitAddTrip} disabled={addSaving} variant="contained">
+            <Button
+              onClick={submitAddTrip}
+              disabled={
+                addSaving ||
+                addSlotConflicts.hardMessages.length > 0 ||
+                (addSlotConflicts.softMessages.length > 0 &&
+                  (!addDispatchOverrideEnabled ||
+                    !Boolean(addDispatchOverrideReason.trim())))
+              }
+              variant="contained"
+            >
               {addSaving ? "Scheduling…" : "Schedule Trip"}
             </Button>
           </DialogActions>

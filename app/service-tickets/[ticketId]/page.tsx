@@ -1,4 +1,3 @@
-// app/service-tickets/[ticketId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -67,12 +66,8 @@ import {
   type CrewMemberSelection,
   type PtoRequestLite,
   type TripDocLite,
-  formatAvailabilityOptionLabel,
   getHolidayNamesForDate,
-  getMemberAvailability,
   normalizeCompanyHoliday,
-  optionShouldBeDisabled,
-  summarizeBlockingReasons,
   windowToTimes as availabilityWindowToTimes,
 } from "../../../src/lib/trip-availability";
 import {
@@ -126,6 +121,16 @@ type TripMaterial = {
   notes?: string;
 };
 
+type DispatchOverrideInfo = {
+  enabled: boolean;
+  reason: string | null;
+  createdAt: string;
+  createdByUid: string | null;
+  createdByName: string | null;
+  conflictTypes: string[];
+  conflictTripIds: string[];
+};
+
 type TripDoc = {
   id: string;
   active: boolean;
@@ -137,6 +142,7 @@ type TripDoc = {
   endTime: string;
   crew?: TripCrew | null;
   crewConfirmed?: TripCrew | null;
+  dispatchOverride?: DispatchOverrideInfo | null;
   link?: {
     serviceTicketId?: string | null;
     projectId?: string | null;
@@ -224,6 +230,12 @@ type ExistingTimeEntry = {
   hoursLocked?: boolean;
   createdAt?: string;
   createdByUid?: string | null;
+};
+
+type DispatchConflictSummary = {
+  hardMessages: string[];
+  softMessages: string[];
+  softTripIds: string[];
 };
 
 function nowIso() {
@@ -637,6 +649,220 @@ function crewUidsFromCrew(crew?: TripCrew | null) {
   );
 }
 
+function dateFallsWithinPto(date: string, request: PtoRequestLite) {
+  return date >= String(request.startDate || "") && date <= String(request.endDate || "");
+}
+
+function tripHasCrewUidGeneric(trip: any, uid: string) {
+  if (!uid) return false;
+  return (
+    String(trip?.crew?.primaryTechUid || "").trim() === uid ||
+    String(trip?.crew?.helperUid || "").trim() === uid ||
+    String(trip?.crew?.secondaryTechUid || "").trim() === uid ||
+    String(trip?.crew?.secondaryHelperUid || "").trim() === uid
+  );
+}
+
+function isPlannedTripLikeStatus(status?: string | null) {
+  return String(status || "").trim().toLowerCase() === "planned";
+}
+
+function isInProgressTripLikeStatus(status?: string | null) {
+  return String(status || "").trim().toLowerCase() === "in_progress";
+}
+
+function getTripRangeLite(trip: any) {
+  const timeWindow = String(trip?.timeWindow || "").toLowerCase().trim();
+  if (timeWindow === "am") return { start: "08:00", end: "12:00" };
+  if (timeWindow === "pm") return { start: "13:00", end: "17:00" };
+  if (timeWindow === "all_day") return { start: "08:00", end: "17:00" };
+  return {
+    start: String(trip?.startTime || ""),
+    end: String(trip?.endTime || ""),
+  };
+}
+
+function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+  if (!aStart || !aEnd || !bStart || !bEnd) return false;
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function formatTime12h(hhmm?: string) {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return "—";
+  const [hhRaw, mmRaw] = hhmm.split(":").map((x) => Number(x));
+  let hh = hhRaw;
+  const ampm = hh >= 12 ? "PM" : "AM";
+  hh = hh % 12;
+  if (hh === 0) hh = 12;
+  if (mmRaw === 0) return `${hh}${ampm}`;
+  return `${hh}:${String(mmRaw).padStart(2, "0")}${ampm}`;
+}
+
+function collectDispatchOverrideConflicts(args: {
+  members: CrewMemberSelection[];
+  date: string;
+  timeWindow: TripTimeWindow;
+  startTime: string;
+  endTime: string;
+  dayTrips: TripDocLite[];
+  ptoRequests: PtoRequestLite[];
+  holidayNames: string[];
+  holidayOverrideEnabled: boolean;
+  excludeTripId?: string | null;
+}) {
+  const hard = new Set<string>();
+  const soft = new Set<string>();
+  const softTripIds = new Set<string>();
+
+  const selectedRange =
+    args.timeWindow === "custom"
+      ? {
+          start: String(args.startTime || ""),
+          end: String(args.endTime || ""),
+        }
+      : availabilityWindowToTimes(args.timeWindow);
+
+  if (args.holidayNames.length > 0 && !args.holidayOverrideEnabled) {
+    hard.add(`Selected day is a company holiday (${args.holidayNames.join(", ")}).`);
+  }
+
+  for (const member of args.members) {
+    const approvedPto = args.ptoRequests.find(
+      (request) =>
+        String(request.employeeId || "").trim() === member.uid &&
+        String(request.status || "").trim().toLowerCase() === "approved" &&
+        dateFallsWithinPto(args.date, request)
+    );
+
+    if (approvedPto) {
+      hard.add(
+        `${member.name} has approved PTO (${approvedPto.startDate} to ${approvedPto.endDate}).`
+      );
+    }
+
+    for (const trip of args.dayTrips || []) {
+      if (!trip || trip.active === false) continue;
+      if (args.excludeTripId && String((trip as any).id || "") === args.excludeTripId) continue;
+      if (!tripHasCrewUidGeneric(trip, member.uid)) continue;
+
+      const status = String((trip as any).status || "").trim().toLowerCase();
+      if (status !== "planned" && status !== "in_progress") continue;
+
+      const tripRange = getTripRangeLite(trip);
+      if (
+        !rangesOverlap(
+          selectedRange.start,
+          selectedRange.end,
+          tripRange.start,
+          tripRange.end
+        )
+      ) {
+        continue;
+      }
+
+      const detail = `${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`;
+
+      if (isInProgressTripLikeStatus((trip as any).status)) {
+        hard.add(`${member.name} is already on an in-progress trip (${detail}).`);
+      } else if (isPlannedTripLikeStatus((trip as any).status)) {
+        soft.add(
+          `${member.name} already has a scheduled trip (${detail}). Dispatch Override can be used if needed.`
+        );
+        softTripIds.add(String((trip as any).id || ""));
+      }
+    }
+  }
+
+  return {
+    hardMessages: Array.from(hard),
+    softMessages: Array.from(soft),
+    softTripIds: Array.from(softTripIds).filter(Boolean),
+  } satisfies DispatchConflictSummary;
+}
+
+function getOptionAvailabilityLabel(args: {
+  baseLabel: string;
+  uid: string;
+  name: string;
+  role: "technician" | "helper";
+  date: string;
+  timeWindow: TripTimeWindow;
+  startTime: string;
+  endTime: string;
+  holidayNames: string[];
+  holidayOverrideEnabled: boolean;
+  ptoRequests: PtoRequestLite[];
+  dayTrips: TripDocLite[];
+  excludeTripId?: string | null;
+}) {
+  const selectedRange =
+    args.timeWindow === "custom"
+      ? {
+          start: String(args.startTime || ""),
+          end: String(args.endTime || ""),
+        }
+      : availabilityWindowToTimes(args.timeWindow);
+
+  if (args.holidayNames.length > 0 && !args.holidayOverrideEnabled) {
+    return {
+      label: `${args.baseLabel} — Holiday`,
+      disabled: true,
+    };
+  }
+
+  const approvedPto = args.ptoRequests.find(
+    (request) =>
+      String(request.employeeId || "").trim() === args.uid &&
+      String(request.status || "").trim().toLowerCase() === "approved" &&
+      dateFallsWithinPto(args.date, request)
+  );
+
+  if (approvedPto) {
+    return {
+      label: `${args.baseLabel} — PTO`,
+      disabled: true,
+    };
+  }
+
+  for (const trip of args.dayTrips || []) {
+    if (!trip || trip.active === false) continue;
+    if (args.excludeTripId && String((trip as any).id || "") === args.excludeTripId) continue;
+    if (!tripHasCrewUidGeneric(trip, args.uid)) continue;
+
+    const status = String((trip as any).status || "").trim().toLowerCase();
+    if (status !== "planned" && status !== "in_progress") continue;
+
+    const tripRange = getTripRangeLite(trip);
+    if (
+      !rangesOverlap(
+        selectedRange.start,
+        selectedRange.end,
+        tripRange.start,
+        tripRange.end
+      )
+    ) {
+      continue;
+    }
+
+    if (status === "in_progress") {
+      return {
+        label: `${args.baseLabel} — In Progress`,
+        disabled: true,
+      };
+    }
+
+    return {
+      label: `${args.baseLabel} — Scheduled overlap (override allowed)`,
+      disabled: false,
+    };
+  }
+
+  return {
+    label: args.baseLabel,
+    disabled: false,
+  };
+}
+
 async function findOpenTripsForTicketId(
   serviceTicketId: string,
   excludeTripId?: string
@@ -984,6 +1210,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   >({});
   const [tripHolidayOverride, setTripHolidayOverride] = useState(false);
   const [editTripHolidayOverride, setEditTripHolidayOverride] = useState(false);
+  const [tripDispatchOverrideEnabled, setTripDispatchOverrideEnabled] =
+    useState(false);
+  const [tripDispatchOverrideReason, setTripDispatchOverrideReason] =
+    useState("");
+  const [editTripDispatchOverrideEnabled, setEditTripDispatchOverrideEnabled] =
+    useState(false);
+  const [editTripDispatchOverrideReason, setEditTripDispatchOverrideReason] =
+    useState("");
 
   const [trips, setTrips] = useState<TripDoc[]>([]);
   const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>(
@@ -1253,11 +1487,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           })
         );
 
-setCompanyHolidays(
-  holidaySnap.docs
-    .map((ds) => normalizeCompanyHoliday(ds.data(), ds.id))
-    .filter((holiday): holiday is CompanyHolidayLite => Boolean(holiday))
-);
+        setCompanyHolidays(
+          holidaySnap.docs
+            .map((ds) => normalizeCompanyHoliday(ds.data(), ds.id))
+            .filter((holiday): holiday is CompanyHolidayLite => Boolean(holiday))
+        );
 
         const nextTrips = tripSnap.docs.map((ds) => mapTripLikeFromDoc(ds));
         setTrips(nextTrips);
@@ -1389,6 +1623,7 @@ setCompanyHolidays(
       endTime: trip.endTime ?? "",
       crew: trip.crew ?? null,
       crewConfirmed: trip.crewConfirmed ?? null,
+      dispatchOverride: trip.dispatchOverride ?? null,
       link: trip.link ?? undefined,
       notes: trip.notes ?? null,
       cancelReason: trip.cancelReason ?? null,
@@ -1463,30 +1698,6 @@ setCompanyHolidays(
     return selections;
   }
 
-  function buildCrewAvailability(args: {
-    date: string;
-    timeWindow: TripTimeWindow;
-    startTime: string;
-    endTime: string;
-    members: CrewMemberSelection[];
-    excludeTripId?: string | null;
-  }) {
-    const dayTrips = availabilityTripsByDate[args.date] || [];
-
-    return args.members.map((member) =>
-      getMemberAvailability({
-        member,
-        date: args.date,
-        timeWindow: args.timeWindow,
-        startTime: args.startTime,
-        endTime: args.endTime,
-        ptoRequests,
-        dayTrips,
-        excludeTripId: args.excludeTripId,
-      })
-    );
-  }
-
   async function loadAvailabilityTripsForDate(date: string) {
     if (!date?.trim()) return;
 
@@ -1506,18 +1717,26 @@ setCompanyHolidays(
     timeWindow: TripTimeWindow;
     startTime: string;
     endTime: string;
+    holidayNames: string[];
+    holidayOverrideEnabled: boolean;
     excludeTripId?: string | null;
   }) {
-    return getMemberAvailability({
-      member: {
-        uid: args.uid,
-        name: args.name,
-        role: args.role,
-      },
+    return getOptionAvailabilityLabel({
+      baseLabel:
+        args.role === "helper"
+          ? `${args.name} (${normalizeRole(
+              helperCandidates.find((helper) => helper.uid === args.uid)?.laborRole
+            ) || "helper"})`
+          : args.name,
+      uid: args.uid,
+      name: args.name,
+      role: args.role,
       date: args.date,
       timeWindow: args.timeWindow,
       startTime: args.startTime,
       endTime: args.endTime,
+      holidayNames: args.holidayNames,
+      holidayOverrideEnabled: args.holidayOverrideEnabled,
       ptoRequests,
       dayTrips: availabilityTripsByDate[args.date] || [],
       excludeTripId: args.excludeTripId,
@@ -1559,80 +1778,95 @@ setCompanyHolidays(
     ]
   );
 
-  const scheduleCrewAvailability = useMemo(
+  const scheduleDispatchConflicts = useMemo(
     () =>
-      buildCrewAvailability({
+      collectDispatchOverrideConflicts({
+        members: scheduleCrewSelections,
         date: tripDate,
         timeWindow: tripTimeWindow,
         startTime: tripStartTime,
         endTime: tripEndTime,
-        members: scheduleCrewSelections,
+        dayTrips: availabilityTripsByDate[tripDate] || [],
+        ptoRequests,
+        holidayNames: scheduleHolidayNames,
+        holidayOverrideEnabled: tripHolidayOverride,
       }),
     [
+      scheduleCrewSelections,
       tripDate,
       tripTimeWindow,
       tripStartTime,
       tripEndTime,
-      scheduleCrewSelections,
       availabilityTripsByDate,
       ptoRequests,
+      scheduleHolidayNames,
+      tripHolidayOverride,
     ]
   );
 
-  const editCrewAvailability = useMemo(
+  const editDispatchConflicts = useMemo(
     () =>
-      buildCrewAvailability({
+      collectDispatchOverrideConflicts({
+        members: editCrewSelections,
         date: editTripDate,
         timeWindow: editTripTimeWindow,
         startTime: editTripStartTime,
         endTime: editTripEndTime,
-        members: editCrewSelections,
+        dayTrips: availabilityTripsByDate[editTripDate] || [],
+        ptoRequests,
+        holidayNames: editHolidayNames,
+        holidayOverrideEnabled: editTripHolidayOverride,
         excludeTripId: editTripId,
       }),
     [
+      editCrewSelections,
       editTripDate,
       editTripTimeWindow,
       editTripStartTime,
       editTripEndTime,
-      editCrewSelections,
-      editTripId,
       availabilityTripsByDate,
       ptoRequests,
+      editHolidayNames,
+      editTripHolidayOverride,
+      editTripId,
     ]
   );
 
-  const scheduleBlockingReasons = useMemo(
-    () =>
-      summarizeBlockingReasons({
-        members: scheduleCrewAvailability,
-        holidayNames: scheduleHolidayNames,
-        holidayOverrideEnabled: tripHolidayOverride,
-      }),
-    [scheduleCrewAvailability, scheduleHolidayNames, tripHolidayOverride]
-  );
+  useEffect(() => {
+    if (scheduleDispatchConflicts.softMessages.length === 0) {
+      setTripDispatchOverrideEnabled(false);
+      setTripDispatchOverrideReason("");
+    }
+  }, [scheduleDispatchConflicts.softMessages.length]);
 
-  const editBlockingReasons = useMemo(
-    () =>
-      summarizeBlockingReasons({
-        members: editCrewAvailability,
-        holidayNames: editHolidayNames,
-        holidayOverrideEnabled: editTripHolidayOverride,
-      }),
-    [editCrewAvailability, editHolidayNames, editTripHolidayOverride]
-  );
+  useEffect(() => {
+    if (editDispatchConflicts.softMessages.length === 0) {
+      setEditTripDispatchOverrideEnabled(false);
+      setEditTripDispatchOverrideReason("");
+    }
+  }, [editDispatchConflicts.softMessages.length]);
 
   const scheduleCanSubmit = useMemo(() => {
     if (!tripDate.trim()) return false;
     if (!tripPrimaryTechUid.trim()) return false;
     if (!tripStartTime.trim() || !tripEndTime.trim()) return false;
     if (tripEndTime <= tripStartTime) return false;
-    return scheduleBlockingReasons.length === 0;
+    if (scheduleDispatchConflicts.hardMessages.length > 0) return false;
+    if (scheduleDispatchConflicts.softMessages.length > 0) {
+      return (
+        tripDispatchOverrideEnabled &&
+        Boolean(tripDispatchOverrideReason.trim())
+      );
+    }
+    return true;
   }, [
     tripDate,
     tripPrimaryTechUid,
     tripStartTime,
     tripEndTime,
-    scheduleBlockingReasons,
+    scheduleDispatchConflicts,
+    tripDispatchOverrideEnabled,
+    tripDispatchOverrideReason,
   ]);
 
   const editCanSubmit = useMemo(() => {
@@ -1640,13 +1874,22 @@ setCompanyHolidays(
     if (!editTripPrimaryTechUid.trim()) return false;
     if (!editTripStartTime.trim() || !editTripEndTime.trim()) return false;
     if (editTripEndTime <= editTripStartTime) return false;
-    return editBlockingReasons.length === 0;
+    if (editDispatchConflicts.hardMessages.length > 0) return false;
+    if (editDispatchConflicts.softMessages.length > 0) {
+      return (
+        editTripDispatchOverrideEnabled &&
+        Boolean(editTripDispatchOverrideReason.trim())
+      );
+    }
+    return true;
   }, [
     editTripDate,
     editTripPrimaryTechUid,
     editTripStartTime,
     editTripEndTime,
-    editBlockingReasons,
+    editDispatchConflicts,
+    editTripDispatchOverrideEnabled,
+    editTripDispatchOverrideReason,
   ]);
 
   function deriveNextTicketStatus(
@@ -2107,28 +2350,40 @@ setCompanyHolidays(
 
     await loadAvailabilityTripsForDate(tripDate);
 
-    const latestCrewAvailability = buildCrewAvailability({
-      date: tripDate,
-      timeWindow: tripTimeWindow,
-      startTime: tripStartTime,
-      endTime: tripEndTime,
+    const latestDispatchConflicts = collectDispatchOverrideConflicts({
       members: buildCrewSelections({
         primaryTechUid: tripPrimaryTechUid,
         secondaryTechUid: tripSecondaryTechUid,
         helperUid: tripHelperUid,
         secondaryHelperUid: tripSecondaryHelperUid,
       }),
-    });
-
-    const latestBlockingReasons = summarizeBlockingReasons({
-      members: latestCrewAvailability,
+      date: tripDate,
+      timeWindow: tripTimeWindow,
+      startTime: tripStartTime,
+      endTime: tripEndTime,
+      dayTrips: availabilityTripsByDate[tripDate] || [],
+      ptoRequests,
       holidayNames: getHolidayNamesForDate(companyHolidays, tripDate),
       holidayOverrideEnabled: tripHolidayOverride,
     });
 
-    if (latestBlockingReasons.length > 0) {
-      setTripSaveError(latestBlockingReasons[0]);
+    if (latestDispatchConflicts.hardMessages.length > 0) {
+      setTripSaveError(latestDispatchConflicts.hardMessages[0]);
       return;
+    }
+
+    if (latestDispatchConflicts.softMessages.length > 0) {
+      if (!tripDispatchOverrideEnabled) {
+        setTripSaveError(
+          "This selection overlaps another planned trip. Enable Dispatch Override to continue."
+        );
+        return;
+      }
+
+      if (!tripDispatchOverrideReason.trim()) {
+        setTripSaveError("Dispatch Override reason is required.");
+        return;
+      }
     }
 
     setTripSaving(true);
@@ -2150,6 +2405,19 @@ setCompanyHolidays(
         ? findHelperName(secondaryHelperUid) || "Unnamed Helper"
         : null;
 
+      const dispatchOverride =
+        latestDispatchConflicts.softMessages.length > 0
+          ? ({
+              enabled: true,
+              reason: tripDispatchOverrideReason.trim(),
+              createdAt: now,
+              createdByUid: appUser?.uid || null,
+              createdByName: appUser?.displayName || null,
+              conflictTypes: ["scheduled_overlap"],
+              conflictTripIds: latestDispatchConflicts.softTripIds,
+            } satisfies DispatchOverrideInfo)
+          : null;
+
       const payload = {
         active: true,
         type: "service",
@@ -2160,6 +2428,7 @@ setCompanyHolidays(
         endTime: tripEndTime,
         billableHours: null,
         noMaterialsUsed: false,
+        dispatchOverride,
         crew: {
           primaryTechUid: tripPrimaryTechUid,
           primaryTechName: primaryName,
@@ -2270,10 +2539,14 @@ setCompanyHolidays(
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
       setTripSaveSuccess(
-        `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`
+        dispatchOverride
+          ? `Trip scheduled with Dispatch Override. Ticket status is now ${formatTicketStatus(nextStatus)}.`
+          : `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`
       );
       setTripNotes("");
       setTripHolidayOverride(false);
+      setTripDispatchOverrideEnabled(false);
+      setTripDispatchOverrideReason("");
     } catch (err: unknown) {
       setTripSaveError(
         err instanceof Error ? err.message : "Failed to create trip."
@@ -2742,6 +3015,8 @@ setCompanyHolidays(
     setEditTripHelperUid(String(trip.crew?.helperUid || ""));
     setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
     setEditTripHolidayOverride(false);
+    setEditTripDispatchOverrideEnabled(Boolean(trip.dispatchOverride?.enabled));
+    setEditTripDispatchOverrideReason(String(trip.dispatchOverride?.reason || ""));
 
     const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
     const tripHelperUid = String(trip.crew?.helperUid || "").trim();
@@ -2799,28 +3074,38 @@ setCompanyHolidays(
 
       await loadAvailabilityTripsForDate(editTripDate);
 
-      const latestCrewAvailability = buildCrewAvailability({
-        date: editTripDate,
-        timeWindow: editTripTimeWindow,
-        startTime: editTripStartTime,
-        endTime: editTripEndTime,
+      const latestDispatchConflicts = collectDispatchOverrideConflicts({
         members: buildCrewSelections({
           primaryTechUid: editTripPrimaryTechUid,
           secondaryTechUid: editTripSecondaryTechUid,
           helperUid: editTripHelperUid,
           secondaryHelperUid: editTripSecondaryHelperUid,
         }),
+        date: editTripDate,
+        timeWindow: editTripTimeWindow,
+        startTime: editTripStartTime,
+        endTime: editTripEndTime,
+        dayTrips: availabilityTripsByDate[editTripDate] || [],
+        ptoRequests,
+        holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
+        holidayOverrideEnabled: editTripHolidayOverride,
         excludeTripId: trip.id,
       });
 
-      const latestBlockingReasons = summarizeBlockingReasons({
-        members: latestCrewAvailability,
-        holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
-        holidayOverrideEnabled: editTripHolidayOverride,
-      });
+      if (latestDispatchConflicts.hardMessages.length > 0) {
+        throw new Error(latestDispatchConflicts.hardMessages[0]);
+      }
 
-      if (latestBlockingReasons.length > 0) {
-        throw new Error(latestBlockingReasons[0]);
+      if (latestDispatchConflicts.softMessages.length > 0) {
+        if (!editTripDispatchOverrideEnabled) {
+          throw new Error(
+            "This selection overlaps another planned trip. Enable Dispatch Override to continue."
+          );
+        }
+
+        if (!editTripDispatchOverrideReason.trim()) {
+          throw new Error("Dispatch Override reason is required.");
+        }
       }
 
       const now = nowIso();
@@ -2851,6 +3136,19 @@ setCompanyHolidays(
         secondaryHelperName,
       };
 
+      const dispatchOverride =
+        latestDispatchConflicts.softMessages.length > 0
+          ? ({
+              enabled: true,
+              reason: editTripDispatchOverrideReason.trim(),
+              createdAt: now,
+              createdByUid: appUser?.uid || null,
+              createdByName: appUser?.displayName || null,
+              conflictTypes: ["scheduled_overlap"],
+              conflictTripIds: latestDispatchConflicts.softTripIds,
+            } satisfies DispatchOverrideInfo)
+          : null;
+
       await updateDoc(doc(db, "trips", trip.id), {
         date: editTripDate,
         timeWindow: editTripTimeWindow,
@@ -2858,6 +3156,7 @@ setCompanyHolidays(
         endTime: editTripEndTime,
         crew: nextCrew,
         crewConfirmed: null,
+        dispatchOverride,
         notes: editTripNotes.trim() || null,
         updatedAt: now,
         updatedByUid: myUid || null,
@@ -2900,6 +3199,7 @@ setCompanyHolidays(
                 endTime: editTripEndTime,
                 crew: nextCrew,
                 crewConfirmed: null,
+                dispatchOverride,
                 notes: editTripNotes.trim() || null,
                 updatedAt: now,
                 updatedByUid: myUid || null,
@@ -2922,6 +3222,7 @@ setCompanyHolidays(
             startTime: editTripStartTime,
             endTime: editTripEndTime,
             crew: nextCrew,
+            dispatchOverride,
           },
         ];
         return nextByDate;
@@ -2945,6 +3246,8 @@ setCompanyHolidays(
       );
 
       setEditTripId(null);
+      setEditTripDispatchOverrideEnabled(false);
+      setEditTripDispatchOverrideReason("");
     } catch (err: unknown) {
       setEditTripErr(
         err instanceof Error ? err.message : "Failed to update trip."
@@ -3119,6 +3422,7 @@ setCompanyHolidays(
           endTime: hhmmLocal(addMinutes(now, 60)),
           billableHours: null,
           noMaterialsUsed: false,
+          dispatchOverride: null,
           crew: {
             primaryTechUid: myUid,
             primaryTechName: appUser?.displayName || "Technician",
@@ -3903,18 +4207,18 @@ setCompanyHolidays(
                 <Section
                   title="Trips"
                   icon={<ScheduleRoundedIcon color="primary" />}
-action={
-  canDispatch ? (
-    <Button
-      component={Link}
-      href={`/service-tickets/${ticketId}/schedule`}
-      variant="contained"
-      disabled={isInvoicedTicket}
-    >
-      Schedule Trip
-    </Button>
-  ) : null
-}
+                  action={
+                    canDispatch ? (
+                      <Button
+                        component={Link}
+                        href={`/service-tickets/${ticketId}/schedule`}
+                        variant="contained"
+                        disabled={isInvoicedTicket}
+                      >
+                        Schedule Trip
+                      </Button>
+                    ) : null
+                  }
                 >
                   <Stack spacing={1.5}>
                     {trips.length === 0 ? (
@@ -4009,6 +4313,14 @@ action={
                                     label={`Timer: ${timerState}`}
                                     variant="outlined"
                                   />
+                                  {trip.dispatchOverride?.enabled ? (
+                                    <Chip
+                                      size="small"
+                                      color="warning"
+                                      variant="outlined"
+                                      label="Dispatch Override"
+                                    />
+                                  ) : null}
                                 </Stack>
                               </Box>
 
@@ -4166,6 +4478,12 @@ action={
                               Timer minutes: <strong>{billableMinutes}</strong> (gross{" "}
                               {grossMinutes} - paused {pausedMinutes})
                             </Typography>
+
+                            {trip.dispatchOverride?.enabled ? (
+                              <Alert severity="warning" variant="outlined">
+                                Dispatch Override: {trip.dispatchOverride.reason || "No reason entered."}
+                              </Alert>
+                            ) : null}
 
                             {normalizeTripStatus(trip.status) === "complete" ? (
                               <Typography variant="body2" color="text.secondary">
@@ -4597,7 +4915,7 @@ action={
                   >
                     <MenuItem value="">Select a technician…</MenuItem>
                     {technicians.map((tech) => {
-                      const availability = availabilityForOption({
+                      const option = availabilityForOption({
                         uid: tech.uid,
                         name: tech.displayName,
                         role: "technician",
@@ -4605,6 +4923,8 @@ action={
                         timeWindow: editTripTimeWindow,
                         startTime: editTripStartTime,
                         endTime: editTripEndTime,
+                        holidayNames: editHolidayNames,
+                        holidayOverrideEnabled: editTripHolidayOverride,
                         excludeTripId: editTripId,
                       });
 
@@ -4612,13 +4932,9 @@ action={
                         <MenuItem
                           key={tech.uid}
                           value={tech.uid}
-                          disabled={optionShouldBeDisabled({ availability })}
+                          disabled={option.disabled}
                         >
-                          {formatAvailabilityOptionLabel({
-                            baseLabel: tech.displayName,
-                            availability,
-                            holidayNames: editHolidayNames,
-                          })}
+                          {option.label}
                         </MenuItem>
                       );
                     })}
@@ -4634,7 +4950,7 @@ action={
                     {technicians
                       .filter((tech) => tech.uid !== editTripPrimaryTechUid)
                       .map((tech) => {
-                        const availability = availabilityForOption({
+                        const option = availabilityForOption({
                           uid: tech.uid,
                           name: tech.displayName,
                           role: "technician",
@@ -4642,6 +4958,8 @@ action={
                           timeWindow: editTripTimeWindow,
                           startTime: editTripStartTime,
                           endTime: editTripEndTime,
+                          holidayNames: editHolidayNames,
+                          holidayOverrideEnabled: editTripHolidayOverride,
                           excludeTripId: editTripId,
                         });
 
@@ -4649,13 +4967,9 @@ action={
                           <MenuItem
                             key={tech.uid}
                             value={tech.uid}
-                            disabled={optionShouldBeDisabled({ availability })}
+                            disabled={option.disabled}
                           >
-                            {formatAvailabilityOptionLabel({
-                              baseLabel: tech.displayName,
-                              availability,
-                              holidayNames: editHolidayNames,
-                            })}
+                            {option.label}
                           </MenuItem>
                         );
                       })}
@@ -4682,7 +4996,7 @@ action={
                   >
                     <MenuItem value="">— None —</MenuItem>
                     {helperCandidates.map((helper) => {
-                      const availability = availabilityForOption({
+                      const option = availabilityForOption({
                         uid: helper.uid,
                         name: helper.name,
                         role: "helper",
@@ -4690,6 +5004,8 @@ action={
                         timeWindow: editTripTimeWindow,
                         startTime: editTripStartTime,
                         endTime: editTripEndTime,
+                        holidayNames: editHolidayNames,
+                        holidayOverrideEnabled: editTripHolidayOverride,
                         excludeTripId: editTripId,
                       });
 
@@ -4697,13 +5013,9 @@ action={
                         <MenuItem
                           key={helper.uid}
                           value={helper.uid}
-                          disabled={optionShouldBeDisabled({ availability })}
+                          disabled={option.disabled}
                         >
-                          {formatAvailabilityOptionLabel({
-                            baseLabel: `${helper.name} (${helper.laborRole})`,
-                            availability,
-                            holidayNames: editHolidayNames,
-                          })}
+                          {option.label}
                         </MenuItem>
                       );
                     })}
@@ -4717,7 +5029,7 @@ action={
                   >
                     <MenuItem value="">— None —</MenuItem>
                     {helperCandidates.map((helper) => {
-                      const availability = availabilityForOption({
+                      const option = availabilityForOption({
                         uid: helper.uid,
                         name: helper.name,
                         role: "helper",
@@ -4725,6 +5037,8 @@ action={
                         timeWindow: editTripTimeWindow,
                         startTime: editTripStartTime,
                         endTime: editTripEndTime,
+                        holidayNames: editHolidayNames,
+                        holidayOverrideEnabled: editTripHolidayOverride,
                         excludeTripId: editTripId,
                       });
 
@@ -4732,13 +5046,9 @@ action={
                         <MenuItem
                           key={helper.uid}
                           value={helper.uid}
-                          disabled={optionShouldBeDisabled({ availability })}
+                          disabled={option.disabled}
                         >
-                          {formatAvailabilityOptionLabel({
-                            baseLabel: `${helper.name} (${helper.laborRole})`,
-                            availability,
-                            holidayNames: editHolidayNames,
-                          })}
+                          {option.label}
                         </MenuItem>
                       );
                     })}
@@ -4775,16 +5085,52 @@ action={
                     />
                   ) : null}
 
-                  {editBlockingReasons.length > 0 ? (
+                  {editDispatchConflicts.hardMessages.length > 0 ? (
                     <Alert severity="error" variant="outlined">
-                      {editBlockingReasons[0]}
+                      {editDispatchConflicts.hardMessages[0]}
                     </Alert>
+                  ) : null}
+
+                  {editDispatchConflicts.softMessages.length > 0 &&
+                  editDispatchConflicts.hardMessages.length === 0 ? (
+                    <Stack spacing={1.25}>
+                      <Alert severity="warning" variant="outlined">
+                        {editDispatchConflicts.softMessages[0]}
+                      </Alert>
+
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={editTripDispatchOverrideEnabled}
+                            onChange={(e) =>
+                              setEditTripDispatchOverrideEnabled(e.target.checked)
+                            }
+                          />
+                        }
+                        label="Dispatch Override this planned overlap"
+                      />
+
+                      {editTripDispatchOverrideEnabled ? (
+                        <TextField
+                          label="Dispatch Override Reason"
+                          value={editTripDispatchOverrideReason}
+                          onChange={(e) =>
+                            setEditTripDispatchOverrideReason(e.target.value)
+                          }
+                          placeholder="Example: emergency callback, VIP customer, short diagnostic visit, etc."
+                          multiline
+                          minRows={2}
+                        />
+                      ) : null}
+                    </Stack>
                   ) : null}
 
                   {editTripErr ? <Alert severity="error">{editTripErr}</Alert> : null}
 
                   <Typography variant="body2" color="text.secondary">
-                    Only planned trips can be edited or rescheduled now.
+                    Planned overlaps can be saved with Dispatch Override. In-progress trip
+                    conflicts, PTO, and holidays remain blocked unless their separate override
+                    is enabled.
                   </Typography>
                 </Stack>
               </DialogContent>
