@@ -1,3 +1,4 @@
+// app/service-tickets/[ticketId]/schedule/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -115,35 +116,34 @@ type CompanyHolidayLite = {
 
 type DispatchOverrideInfo = {
   enabled: boolean;
-  reason: string | null;
-  createdAt: string;
-  createdByUid: string | null;
-  createdByName: string | null;
-  conflictTypes: string[];
-  conflictTripIds: string[];
+  reason?: string | null;
+  createdAt?: string;
+  createdByUid?: string | null;
+  createdByName?: string | null;
+  conflictTypes?: string[];
+  conflictTripIds?: string[];
 };
 
 type TripDocLite = {
   id: string;
   active: boolean;
+  type?: string | null;
   status: string;
   date: string;
   timeWindow: TripTimeWindow | string;
   startTime: string;
   endTime: string;
   crew?: TripCrew | null;
+  timerState?: string | null;
   dispatchOverride?: DispatchOverrideInfo | null;
 };
 
-type SelectedMemberLite = {
-  uid: string;
-  name: string;
-};
-
-type DispatchConflictSummary = {
-  hardConflicts: string[];
-  softConflicts: string[];
-  softConflictTripIds: string[];
+type SelectedOverlapConflict = {
+  memberUid: string;
+  memberName: string;
+  tripId: string;
+  tripType: "service" | "project" | "trip";
+  rangeLabel: string;
 };
 
 function nowIso() {
@@ -212,7 +212,7 @@ function getNextBusinessDays(startIso: string, count: number) {
   return out;
 }
 
-function normalizeStatus(value?: string) {
+function normalizeStatus(value?: string | null) {
   return String(value || "").trim().toLowerCase();
 }
 
@@ -244,7 +244,7 @@ function windowToTimes(window: TripTimeWindow) {
   return { start: "09:00", end: "10:00" };
 }
 
-function formatTime12h(hhmm?: string) {
+function formatTime12h(hhmm?: string | null) {
   if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return "—";
   const [hhRaw, mmRaw] = hhmm.split(":").map((x) => Number(x));
   let hh = hhRaw;
@@ -260,16 +260,9 @@ function isTicketTerminal(status?: string) {
   return s === "completed" || s === "cancelled" || s === "invoiced";
 }
 
-function isInProgressTripStatus(status?: string) {
-  return normalizeStatus(status) === "in_progress";
-}
-
-function isPlannedTripStatus(status?: string) {
-  return normalizeStatus(status) === "planned";
-}
-
 function isOpenTripStatus(status?: string) {
-  return isPlannedTripStatus(status) || isInProgressTripStatus(status);
+  const s = normalizeStatus(status);
+  return s === "planned" || s === "in_progress";
 }
 
 function hasOpenTrips(trips: TripDocLite[]) {
@@ -329,88 +322,6 @@ function buildReason(
   return { kind, label, detail };
 }
 
-function collectDispatchConflicts(args: {
-  members: SelectedMemberLite[];
-  date: string;
-  timeWindow: TripTimeWindow;
-  startTime: string;
-  endTime: string;
-  holidays: CompanyHolidayLite[];
-  ptoRequests: PtoRequestLite[];
-  dayTrips: TripDocLite[];
-  holidayOverrideEnabled: boolean;
-}) {
-  const hard = new Set<string>();
-  const soft = new Set<string>();
-  const softTripIds = new Set<string>();
-
-  const selectedRange = getRangeForWindow({
-    timeWindow: args.timeWindow,
-    startTime: args.startTime,
-    endTime: args.endTime,
-  });
-
-  if (args.holidays.length > 0 && !args.holidayOverrideEnabled) {
-    hard.add(
-      `Selected day is a company holiday (${args.holidays
-        .map((holiday) => holiday.name)
-        .join(", ")}).`
-    );
-  }
-
-  for (const member of args.members) {
-    const approvedPto = args.ptoRequests.find(
-      (request) =>
-        request.employeeId === member.uid &&
-        request.status === "approved" &&
-        dateFallsWithinPto(args.date, request)
-    );
-
-    if (approvedPto) {
-      hard.add(
-        `${member.name} has approved PTO (${approvedPto.startDate} to ${approvedPto.endDate}).`
-      );
-    }
-
-    for (const trip of args.dayTrips) {
-      if (trip.active === false) continue;
-      if (!isOpenTripStatus(trip.status)) continue;
-      if (!tripHasCrewUid(trip, member.uid)) continue;
-
-      const tripRange = getTripRange(trip);
-      if (
-        !rangesOverlap(
-          selectedRange.start,
-          selectedRange.end,
-          tripRange.start,
-          tripRange.end
-        )
-      ) {
-        continue;
-      }
-
-      const detail = `${formatTime12h(tripRange.start)}–${formatTime12h(
-        tripRange.end
-      )}`;
-
-      if (isInProgressTripStatus(trip.status)) {
-        hard.add(`${member.name} is already on an in-progress trip (${detail}).`);
-      } else {
-        soft.add(
-          `${member.name} already has a scheduled trip (${detail}). Dispatch Override can be used if needed.`
-        );
-        softTripIds.add(trip.id);
-      }
-    }
-  }
-
-  return {
-    hardConflicts: Array.from(hard),
-    softConflicts: Array.from(soft),
-    softConflictTripIds: Array.from(softTripIds),
-  } satisfies DispatchConflictSummary;
-}
-
 function analyzeMemberAvailability(args: {
   uid: string;
   name: string;
@@ -448,7 +359,7 @@ function analyzeMemberAvailability(args: {
     endTime: args.endTime,
   });
 
-  const overlappingTrip = args.dayTrips.find((trip) => {
+  const blockingTrip = args.dayTrips.find((trip) => {
     if (trip.active === false) return false;
     if (!isOpenTripStatus(trip.status)) return false;
     if (!tripHasCrewUid(trip, args.uid)) return false;
@@ -462,15 +373,20 @@ function analyzeMemberAvailability(args: {
     );
   });
 
-  if (overlappingTrip) {
-    const tripRange = getTripRange(overlappingTrip);
+  if (blockingTrip) {
+    const tripRange = getTripRange(blockingTrip);
+    const typeLabel =
+      normalizeStatus(blockingTrip.type) === "project"
+        ? "Project"
+        : normalizeStatus(blockingTrip.type) === "service"
+          ? "Service"
+          : "Trip";
+
     reasons.push(
       buildReason(
         "overlap",
-        isInProgressTripStatus(overlappingTrip.status)
-          ? "In Progress"
-          : "Scheduled Trip",
-        `${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`
+        "Overlapping Trip",
+        `${typeLabel} • ${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`
       )
     );
   }
@@ -520,10 +436,10 @@ function analyzeMemberAvailability(args: {
       detail: approvedReason.detail,
       disabled: true,
     };
-  } else if (overlapReason && overlappingTrip && isInProgressTripStatus(overlappingTrip.status)) {
+  } else if (overlapReason) {
     status = {
       kind: "overlap",
-      label: "In Progress",
+      label: "Booked",
       detail: overlapReason.detail,
       disabled: true,
     };
@@ -533,13 +449,6 @@ function analyzeMemberAvailability(args: {
       label: "Holiday",
       detail: holidayReason.detail,
       disabled: true,
-    };
-  } else if (overlapReason) {
-    status = {
-      kind: "overlap",
-      label: "Booked • Override",
-      detail: overlapReason.detail,
-      disabled: false,
     };
   } else if (pendingReason) {
     status = {
@@ -588,6 +497,7 @@ async function findOpenTripsForTicketId(serviceTicketId: string) {
       const candidate: TripDocLite = {
         id: docSnap.id,
         active: data.active ?? true,
+        type: String(data.type || ""),
         status: String(data.status || ""),
         date: String(data.date || ""),
         timeWindow: String(data.timeWindow || "custom"),
@@ -616,6 +526,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     appUser?.role === "manager";
 
   const canOverrideHoliday = canDispatch;
+  const canOverrideOverlap = canDispatch;
 
   const initialBusinessDate = useMemo(
     () => firstBusinessDayOnOrAfter(isoTodayLocal()),
@@ -731,6 +642,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           return {
             id: ds.id,
             active: trip.active ?? true,
+            type: String(trip.type || ""),
             status: String(trip.status || ""),
             date: String(trip.date || ""),
             timeWindow: String(trip.timeWindow || "custom"),
@@ -828,6 +740,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           return {
             id: ds.id,
             active: trip.active ?? true,
+            type: String(trip.type || ""),
             status: String(trip.status || ""),
             date: String(trip.date || ""),
             timeWindow: String(trip.timeWindow || "custom"),
@@ -872,7 +785,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     const techMap = new Map(technicians.map((tech) => [tech.uid, tech.displayName]));
     const helperMap = new Map(helpers.map((helper) => [helper.uid, helper.name]));
 
-    const out: SelectedMemberLite[] = [];
+    const out: Array<{ uid: string; name: string }> = [];
 
     const pushUnique = (uid: string, name: string) => {
       if (!uid) return;
@@ -997,40 +910,73 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     holidayOverrideEnabled,
   ]);
 
-  const selectedDispatchConflicts = useMemo(() => {
-    return collectDispatchConflicts({
-      members: selectedMembers,
-      date: selectedDate,
+  const selectedOverlapConflicts = useMemo(() => {
+    const selectedRange = getRangeForWindow({
       timeWindow: selectedWindow,
       startTime: selectedStartTime,
       endTime: selectedEndTime,
-      holidays: selectedDateHolidays,
-      ptoRequests: selectedDatePto,
-      dayTrips,
-      holidayOverrideEnabled,
     });
+
+    const dedup = new Map<string, SelectedOverlapConflict>();
+
+    for (const member of selectedMembers) {
+      for (const trip of dayTrips) {
+        if (trip.active === false) continue;
+        if (!isOpenTripStatus(trip.status)) continue;
+        if (!tripHasCrewUid(trip, member.uid)) continue;
+
+        const tripRange = getTripRange(trip);
+        const overlaps = rangesOverlap(
+          selectedRange.start,
+          selectedRange.end,
+          tripRange.start,
+          tripRange.end
+        );
+
+        if (!overlaps) continue;
+
+        const tripType =
+          normalizeStatus(trip.type) === "project"
+            ? "project"
+            : normalizeStatus(trip.type) === "service"
+              ? "service"
+              : "trip";
+
+        const key = `${member.uid}_${trip.id}`;
+
+        dedup.set(key, {
+          memberUid: member.uid,
+          memberName: member.name,
+          tripId: trip.id,
+          tripType,
+          rangeLabel: `${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`,
+        });
+      }
+    }
+
+    return Array.from(dedup.values());
   }, [
     selectedMembers,
-    selectedDate,
+    dayTrips,
     selectedWindow,
     selectedStartTime,
     selectedEndTime,
-    selectedDateHolidays,
-    selectedDatePto,
-    dayTrips,
-    holidayOverrideEnabled,
   ]);
 
-  useEffect(() => {
-    if (selectedDispatchConflicts.softConflicts.length === 0) {
-      setDispatchOverrideEnabled(false);
-      setDispatchOverrideReason("");
-    }
-  }, [selectedDispatchConflicts.softConflicts.length]);
+  const overlapConflictTripIds = useMemo(() => {
+    return Array.from(new Set(selectedOverlapConflicts.map((item) => item.tripId)));
+  }, [selectedOverlapConflicts]);
 
   const existingOpenTrips = useMemo(() => {
     return ticketTrips.filter((trip) => trip.active !== false && isOpenTripStatus(trip.status));
   }, [ticketTrips]);
+
+  useEffect(() => {
+    if (selectedOverlapConflicts.length === 0) {
+      setDispatchOverrideEnabled(false);
+      setDispatchOverrideReason("");
+    }
+  }, [selectedOverlapConflicts]);
 
   function handlePickSlot(uid: string, window: Exclude<TripTimeWindow, "custom">) {
     setSelectedPrimaryUid(uid);
@@ -1098,23 +1044,44 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
       return;
     }
 
-    if (selectedDispatchConflicts.hardConflicts.length > 0) {
-      setSaveError(selectedDispatchConflicts.hardConflicts[0]);
+    if (selectedDateHolidays.length > 0 && !holidayOverrideEnabled) {
+      setSaveError(
+        `Selected day is a company holiday (${selectedDateHolidays
+          .map((holiday) => holiday.name)
+          .join(", ")}). Enable Holiday Override to continue.`
+      );
       return;
     }
 
-    if (selectedDispatchConflicts.softConflicts.length > 0) {
-      if (!dispatchOverrideEnabled) {
-        setSaveError(
-          "This selection overlaps another planned trip. Enable Dispatch Override to continue."
-        );
-        return;
-      }
+    if (
+      selectedOverlapConflicts.length > 0 &&
+      !dispatchOverrideEnabled
+    ) {
+      setSaveError(
+        "One or more selected crew members already have an overlapping trip. Enable Dispatch Override to continue."
+      );
+      return;
+    }
 
-      if (!dispatchOverrideReason.trim()) {
-        setSaveError("Dispatch Override reason is required.");
-        return;
-      }
+    if (dispatchOverrideEnabled && !dispatchOverrideReason.trim()) {
+      setSaveError("Dispatch override reason is required.");
+      return;
+    }
+
+    const blockingReasons = selectedCrewSummary.flatMap((member) =>
+      member.reasons.filter(
+        (reason) =>
+          reason.kind === "approved_pto" ||
+          reason.kind === "holiday" ||
+          (reason.kind === "overlap" && !dispatchOverrideEnabled)
+      )
+    );
+
+    if (blockingReasons.length > 0) {
+      setSaveError(
+        "One or more selected crew members have a hard conflict. Pick a different slot or use holiday / dispatch override when allowed."
+      );
+      return;
     }
 
     setSaving(true);
@@ -1137,17 +1104,27 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         ? findHelperName(secondaryHelperUid) || "Unnamed Helper"
         : null;
 
-      const dispatchOverride =
-        selectedDispatchConflicts.softConflicts.length > 0
-          ? ({
+      const dispatchOverridePayload =
+        dispatchOverrideEnabled && selectedOverlapConflicts.length > 0
+          ? {
               enabled: true,
               reason: dispatchOverrideReason.trim(),
               createdAt: now,
               createdByUid: appUser?.uid || null,
-              createdByName: appUser?.displayName || null,
-              conflictTypes: ["scheduled_overlap"],
-              conflictTripIds: selectedDispatchConflicts.softConflictTripIds,
-            } satisfies DispatchOverrideInfo)
+              createdByName: (appUser as any)?.displayName || null,
+              conflictTypes: Array.from(
+                new Set(
+                  selectedOverlapConflicts.map((conflict) =>
+                    conflict.tripType === "project"
+                      ? "project_overlap"
+                      : conflict.tripType === "service"
+                        ? "service_overlap"
+                        : "trip_overlap"
+                  )
+                )
+              ),
+              conflictTripIds: overlapConflictTripIds,
+            }
           : null;
 
       const payload = {
@@ -1171,13 +1148,13 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           secondaryHelperName,
         },
         crewConfirmed: null,
-        dispatchOverride,
         link: {
           serviceTicketId: ticket.id,
           projectId: null,
           projectStageKey: null,
         },
         notes: notes.trim() || null,
+        dispatchOverride: dispatchOverridePayload,
         cancelReason: null,
         timerState: "not_started",
         actualStartAt: null,
@@ -1234,13 +1211,10 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
       });
 
       setSaveSuccess(
-        dispatchOverride
-          ? "Trip scheduled with Dispatch Override."
+        dispatchOverridePayload
+          ? "Trip scheduled with dispatch override."
           : "Trip scheduled successfully."
       );
-
-      setDispatchOverrideEnabled(false);
-      setDispatchOverrideReason("");
 
       setTimeout(() => {
         router.push(`/service-tickets/${ticket.id}`);
@@ -1384,7 +1358,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       </Typography>
                       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                         Pick a working day first, then choose an available technician / time
-                        block below. Planned overlaps can be scheduled with Dispatch Override.
+                        block below. Company holidays stay blocked unless explicitly overridden.
                       </Typography>
                     </Box>
 
@@ -1662,6 +1636,68 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       </TextField>
                     </Box>
 
+                    {selectedOverlapConflicts.length > 0 ? (
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 3,
+                          borderColor: alpha(theme.palette.warning.main, 0.4),
+                          backgroundColor: alpha(theme.palette.warning.main, 0.06),
+                        }}
+                      >
+                        <Stack spacing={1.25}>
+                          <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2 }}>
+                            One or more selected crew members already have an overlapping trip in this time slot.
+                            You can still dispatch this service trip by using Dispatch Override.
+                          </Alert>
+
+                          <Stack spacing={0.75}>
+                            {selectedOverlapConflicts.map((conflict) => (
+                              <Typography
+                                key={`${conflict.memberUid}_${conflict.tripId}`}
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                • {conflict.memberName} already assigned to{" "}
+                                {conflict.tripType === "project"
+                                  ? "a project trip"
+                                  : conflict.tripType === "service"
+                                    ? "a service trip"
+                                    : "another trip"}{" "}
+                                during {conflict.rangeLabel}
+                              </Typography>
+                            ))}
+                          </Stack>
+
+                          {canOverrideOverlap ? (
+                            <>
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    checked={dispatchOverrideEnabled}
+                                    onChange={(e) => setDispatchOverrideEnabled(e.target.checked)}
+                                  />
+                                }
+                                label="Enable Dispatch Override for this overlapping service dispatch"
+                              />
+
+                              {dispatchOverrideEnabled ? (
+                                <TextField
+                                  label="Dispatch Override Reason"
+                                  value={dispatchOverrideReason}
+                                  onChange={(e) => setDispatchOverrideReason(e.target.value)}
+                                  multiline
+                                  minRows={3}
+                                  placeholder="Example: emergency no-water call, quick diagnostic, high-priority customer, etc."
+                                />
+                              ) : null}
+                            </>
+                          ) : null}
+                        </Stack>
+                      </Paper>
+                    ) : null}
+
                     <TextField
                       label="Trip Notes"
                       multiline
@@ -1701,14 +1737,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                         <Typography variant="body2" color="text.secondary">
                           Helper: {findHelperName(selectedHelperUid) || "—"}
                         </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Dispatch Override:{" "}
-                          {selectedDispatchConflicts.softConflicts.length > 0
-                            ? dispatchOverrideEnabled
-                              ? "Enabled"
-                              : "Available"
-                            : "Not needed"}
-                        </Typography>
+                        {dispatchOverrideEnabled && selectedOverlapConflicts.length > 0 ? (
+                          <Typography variant="body2" color="warning.main">
+                            Dispatch Override: Enabled
+                          </Typography>
+                        ) : null}
                       </Stack>
                     </Paper>
 
@@ -1716,42 +1749,6 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
                         Loading availability for {selectedDate}...
                       </Alert>
-                    ) : null}
-
-                    {selectedDispatchConflicts.hardConflicts.length > 0 ? (
-                      <Alert severity="error" variant="outlined" sx={{ borderRadius: 3 }}>
-                        {selectedDispatchConflicts.hardConflicts[0]}
-                      </Alert>
-                    ) : null}
-
-                    {selectedDispatchConflicts.softConflicts.length > 0 &&
-                    selectedDispatchConflicts.hardConflicts.length === 0 ? (
-                      <Stack spacing={1.25}>
-                        <Alert severity="warning" variant="outlined" sx={{ borderRadius: 3 }}>
-                          {selectedDispatchConflicts.softConflicts[0]}
-                        </Alert>
-
-                        <FormControlLabel
-                          control={
-                            <Checkbox
-                              checked={dispatchOverrideEnabled}
-                              onChange={(e) => setDispatchOverrideEnabled(e.target.checked)}
-                            />
-                          }
-                          label="Dispatch Override this planned overlap"
-                        />
-
-                        {dispatchOverrideEnabled ? (
-                          <TextField
-                            label="Dispatch Override Reason"
-                            value={dispatchOverrideReason}
-                            onChange={(e) => setDispatchOverrideReason(e.target.value)}
-                            placeholder="Example: emergency callback, VIP customer, short diagnostic visit, etc."
-                            multiline
-                            minRows={2}
-                          />
-                        ) : null}
-                      </Stack>
                     ) : null}
 
                     {saveError ? (

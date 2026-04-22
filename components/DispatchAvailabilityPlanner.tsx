@@ -1,3 +1,4 @@
+// components/DispatchAvailabilityPlanner.tsx
 "use client";
 
 import {
@@ -83,12 +84,29 @@ const defaultStatus: PlannerSlotStatus = {
   disabled: false,
 };
 
+function canPickSlot(status: PlannerSlotStatus) {
+  return (
+    status.kind === "available" ||
+    status.kind === "pending_pto" ||
+    status.kind === "overlap"
+  );
+}
+
 function slotButtonCopy(status: PlannerSlotStatus) {
   if (status.kind === "available") return status.label;
   if (status.kind === "pending_pto") return "Pending PTO";
   if (status.kind === "holiday") return "Holiday";
   if (status.kind === "approved_pto") return "PTO";
-  return "Booked";
+  return "Booked • Override";
+}
+
+function slotButtonSubcopy(status: PlannerSlotStatus) {
+  if (status.kind === "available") return "Tap to assign";
+  if (status.kind === "pending_pto") return "Tap to assign";
+  if (status.kind === "overlap") return "Tap to override";
+  if (status.kind === "holiday") return "Blocked";
+  if (status.kind === "approved_pto") return "Blocked";
+  return "";
 }
 
 function slotButtonStyles(args: {
@@ -116,12 +134,31 @@ function slotButtonStyles(args: {
 
   if (status.kind === "pending_pto") {
     return {
-      color: palette.warning.dark,
-      bgcolor: alpha(palette.warning.main, 0.08),
-      borderColor: alpha(palette.warning.main, 0.34),
+      color: selected ? palette.warning.contrastText : palette.warning.dark,
+      bgcolor: selected
+        ? palette.warning.main
+        : alpha(palette.warning.main, 0.08),
+      borderColor: alpha(palette.warning.main, selected ? 1 : 0.34),
       "&:hover": {
-        bgcolor: alpha(palette.warning.main, 0.14),
+        bgcolor: selected
+          ? palette.warning.dark
+          : alpha(palette.warning.main, 0.14),
         borderColor: palette.warning.main,
+      },
+    };
+  }
+
+  if (status.kind === "overlap") {
+    return {
+      color: selected ? palette.error.contrastText : palette.error.dark,
+      bgcolor: selected ? palette.error.main : alpha(palette.error.main, 0.08),
+      borderColor: alpha(palette.error.main, selected ? 1 : 0.36),
+      boxShadow: isAllDay
+        ? `0 0 0 1px ${alpha(palette.error.main, selected ? 0.3 : 0.12)}`
+        : "none",
+      "&:hover": {
+        bgcolor: selected ? palette.error.dark : alpha(palette.error.main, 0.14),
+        borderColor: palette.error.main,
       },
     };
   }
@@ -131,6 +168,7 @@ function slotButtonStyles(args: {
       color: palette.warning.dark,
       bgcolor: alpha(palette.warning.main, selected ? 0.16 : 0.08),
       borderColor: alpha(palette.warning.main, 0.38),
+      opacity: 0.8,
       "&:hover": {
         bgcolor: alpha(palette.warning.main, 0.16),
         borderColor: palette.warning.main,
@@ -142,7 +180,7 @@ function slotButtonStyles(args: {
     color: palette.error.dark,
     bgcolor: alpha(palette.error.main, 0.08),
     borderColor: alpha(palette.error.main, 0.3),
-    opacity: 0.72,
+    opacity: 0.8,
     "&:hover": {
       bgcolor: alpha(palette.error.main, 0.1),
       borderColor: alpha(palette.error.main, 0.4),
@@ -165,13 +203,18 @@ export default function DispatchAvailabilityPlanner(props: Props) {
       <Stack spacing={2}>
         <Box>
           <Typography variant="h6" fontWeight={800}>
-            Choose an Open Tech / Time Block
+            Choose a Tech / Time Block
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            AM and PM are half-day options. All Day is intentionally larger so dispatch
-            can instantly see it reserves the full day.
+            Open slots assign normally. Booked slots can still be selected for dispatch
+            override on service work. Approved PTO and company holidays remain blocked.
           </Typography>
         </Box>
+
+        <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+          Red booked slots are now selectable for override. Once selected, the service
+          trip form below will show the Dispatch Override section.
+        </Alert>
 
         {props.holidayNames.length > 0 ? (
           <Alert
@@ -250,15 +293,16 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                         props.selectedPrimaryUid === tech.uid &&
                         props.selectedWindow === slot.key;
                       const isAllDay = slot.key === "all_day";
+                      const pickable = Boolean(props.date) && canPickSlot(status);
 
                       return (
                         <Button
                           key={`${tech.uid}_${slot.key}`}
                           variant="outlined"
-                          disabled={!props.date || status.disabled}
+                          disabled={!pickable}
                           onClick={() => props.onPickSlot(tech.uid, slot.key)}
                           sx={{
-                            minHeight: isAllDay ? 68 : 56,
+                            minHeight: isAllDay ? 72 : 58,
                             gridColumn: isAllDay ? { xs: "1 / -1", sm: "1 / -1" } : "auto",
                             borderRadius: isAllDay ? 4 : 999,
                             textTransform: "none",
@@ -286,6 +330,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                             >
                               {slot.label} • {slot.timeLabel}
                             </Typography>
+
                             <Typography
                               variant="caption"
                               fontWeight={700}
@@ -293,6 +338,18 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                             >
                               {slotButtonCopy(status)}
                             </Typography>
+
+                            {slotButtonSubcopy(status) ? (
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  lineHeight: 1.1,
+                                  opacity: selected ? 0.95 : 0.8,
+                                }}
+                              >
+                                {slotButtonSubcopy(status)}
+                              </Typography>
+                            ) : null}
                           </Stack>
                         </Button>
                       );
@@ -343,9 +400,9 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                     icon = <EventBusyRoundedIcon />;
                     body = `Approved PTO • ${approved.detail}`;
                   } else if (overlap) {
-                    severity = "error";
-                    icon = <ErrorOutlineRoundedIcon />;
-                    body = `${overlap.label} • ${overlap.detail}`;
+                    severity = "warning";
+                    icon = <WarningAmberRoundedIcon />;
+                    body = `${overlap.label} • ${overlap.detail} • Dispatch override available`;
                   } else if (holiday) {
                     severity = "warning";
                     icon = <WarningAmberRoundedIcon />;
@@ -375,7 +432,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Chip label="Approved PTO = blocked" color="error" variant="outlined" />
-          <Chip label="Overlap = blocked" color="error" variant="outlined" />
+          <Chip label="Overlap = selectable override" color="warning" variant="outlined" />
           <Chip label="Holiday = explicit override" color="warning" variant="outlined" />
           <Chip label="Pending PTO = note only" color="warning" variant="outlined" />
         </Stack>
