@@ -1,10 +1,10 @@
 // app/time-entries/new/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, getDocs } from "firebase/firestore";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { addDoc, collection, getDocs } from "firebase/firestore";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
@@ -12,27 +12,18 @@ import {
   Card,
   CardContent,
   Checkbox,
-  Chip,
-  Divider,
   FormControl,
   FormControlLabel,
   InputLabel,
   MenuItem,
-  Paper,
   Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { alpha, useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
-import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
-import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
-import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
-import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
-import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
-import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
-
+import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
@@ -46,8 +37,6 @@ import type {
 
 type EmployeeOption = AppUser;
 
-type ProjectStageKey = "" | "roughIn" | "topOutVent" | "trimFinish";
-
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -57,7 +46,7 @@ function toIsoDate(date: Date) {
 
 function getPayrollWeekBounds(entryDate: string) {
   const date = new Date(`${entryDate}T12:00:00`);
-  const day = date.getDay(); // Sun 0 ... Sat 6
+  const day = date.getDay();
 
   const mondayOffset = day === 0 ? -6 : 1 - day;
   const monday = new Date(date);
@@ -76,110 +65,17 @@ function defaultBillableForCategory(category: TimeEntryCategory) {
   return category === "service_ticket" || category === "project_stage";
 }
 
-function normalizeRole(role?: string | null) {
-  return String(role || "").trim().toLowerCase();
+function safeTrim(x: unknown) {
+  return String(x ?? "").trim();
 }
 
-function formatRoleLabel(role?: string | null) {
-  const raw = normalizeRole(role);
-  if (!raw) return "Employee";
-
-  return raw
-    .split("_")
-    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : ""))
-    .join(" ");
+function isIsoDate(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(safeTrim(value));
 }
 
-function isSupportRole(role?: string | null) {
-  const normalized = normalizeRole(role);
-  return normalized === "helper" || normalized === "apprentice";
-}
-
-function SectionCard(props: {
-  title: string;
-  subtitle?: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card
-      elevation={0}
-      sx={{
-        borderRadius: 4,
-        border: (theme) => `1px solid ${theme.palette.divider}`,
-        overflow: "hidden",
-      }}
-    >
-      <Box
-        sx={{
-          px: { xs: 2, sm: 3 },
-          py: 2,
-          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.04),
-        }}
-      >
-        <Stack direction="row" spacing={1.25} alignItems="center">
-          {props.icon}
-          <Box>
-            <Typography variant="h6" sx={{ fontWeight: 800 }}>
-              {props.title}
-            </Typography>
-            {props.subtitle ? (
-              <Typography variant="body2" color="text.secondary">
-                {props.subtitle}
-              </Typography>
-            ) : null}
-          </Box>
-        </Stack>
-      </Box>
-
-      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>{props.children}</CardContent>
-    </Card>
-  );
-}
-
-function InfoField({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        p: 2,
-        borderRadius: 3,
-        height: "100%",
-        bgcolor: "background.paper",
-      }}
-    >
-      <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.2 }}>
-        {label}
-      </Typography>
-      <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 0.75 }}>
-        {value || "—"}
-      </Typography>
-    </Paper>
-  );
-}
-
-function selectMenuProps() {
-  return {
-    MenuProps: {
-      PaperProps: {
-        sx: {
-          borderRadius: 3,
-        },
-      },
-    },
-  };
-}
-
-export default function NewTimeEntryPage() {
+function NewTimeEntryPageContent() {
   const router = useRouter();
-  const theme = useTheme();
+  const searchParams = useSearchParams();
   const { appUser } = useAuthContext();
 
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -191,17 +87,23 @@ export default function NewTimeEntryPage() {
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
-  const todayIso = useMemo(() => toIsoDate(new Date()), []);
+  const todayIso = toIsoDate(new Date());
+  const requestedDate = safeTrim(searchParams.get("date"));
+  const requestedWeekStart = safeTrim(searchParams.get("weekStart"));
+
+  const initialDate = isIsoDate(requestedDate) ? requestedDate : todayIso;
 
   const [employeeId, setEmployeeId] = useState(appUser?.uid || "");
-  const [entryDate, setEntryDate] = useState(todayIso);
+  const [entryDate, setEntryDate] = useState(initialDate);
   const [category, setCategory] = useState<TimeEntryCategory>("office");
-  const [hoursInput, setHoursInput] = useState("1");
+  const [hours, setHours] = useState(1);
   const [billable, setBillable] = useState(false);
   const [notes, setNotes] = useState("");
   const [serviceTicketId, setServiceTicketId] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [projectStageKey, setProjectStageKey] = useState<ProjectStageKey>("");
+  const [projectStageKey, setProjectStageKey] = useState<
+    "" | "roughIn" | "topOutVent" | "trimFinish"
+  >("");
   const [linkedTechnicianId, setLinkedTechnicianId] = useState("");
   const [linkedTechnicianName, setLinkedTechnicianName] = useState("");
 
@@ -209,12 +111,18 @@ export default function NewTimeEntryPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (isIsoDate(requestedDate)) {
+      setEntryDate(requestedDate);
+    }
+  }, [requestedDate]);
+
+  useEffect(() => {
     async function loadUsers() {
       try {
         const snap = await getDocs(collection(db, "users"));
 
         const items: EmployeeOption[] = snap.docs.map((docSnap) => {
-          const data = docSnap.data() as any;
+          const data: any = docSnap.data();
 
           return {
             uid: data.uid ?? docSnap.id,
@@ -230,10 +138,7 @@ export default function NewTimeEntryPage() {
           };
         });
 
-        items.sort((a, b) =>
-          String(a.displayName || "").localeCompare(String(b.displayName || ""))
-        );
-
+        items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setUserOptions(items);
 
         if (!employeeId && appUser?.uid) {
@@ -253,27 +158,15 @@ export default function NewTimeEntryPage() {
     return userOptions.find((u) => u.uid === employeeId) ?? null;
   }, [userOptions, employeeId]);
 
-  const payrollWeek = useMemo(() => {
-    return entryDate ? getPayrollWeekBounds(entryDate) : null;
-  }, [entryDate]);
-
-  const parsedHours = useMemo(() => {
-    const n = Number(hoursInput);
-    return Number.isFinite(n) ? n : NaN;
-  }, [hoursInput]);
-
-  useEffect(() => {
-    if (appUser?.uid && !canCreateForOthers) {
-      setEmployeeId(appUser.uid);
-    }
-  }, [appUser?.uid, canCreateForOthers]);
-
   useEffect(() => {
     setBillable(defaultBillableForCategory(category));
   }, [category]);
 
   useEffect(() => {
-    if (selectedEmployee && isSupportRole(selectedEmployee.role)) {
+    if (
+      selectedEmployee &&
+      (selectedEmployee.role === "helper" || selectedEmployee.role === "apprentice")
+    ) {
       setLinkedTechnicianId(selectedEmployee.preferredTechnicianId || "");
       setLinkedTechnicianName(selectedEmployee.preferredTechnicianName || "");
     } else {
@@ -281,6 +174,24 @@ export default function NewTimeEntryPage() {
       setLinkedTechnicianName("");
     }
   }, [selectedEmployee]);
+
+  const payrollWeek = useMemo(() => {
+    if (!entryDate) return { weekStartDate: "", weekEndDate: "" };
+    return getPayrollWeekBounds(entryDate);
+  }, [entryDate]);
+
+  const backHref = useMemo(() => {
+    const params = new URLSearchParams();
+    const weekStart = isIsoDate(requestedWeekStart)
+      ? requestedWeekStart
+      : payrollWeek.weekStartDate;
+
+    if (weekStart) {
+      params.set("weekStart", weekStart);
+    }
+
+    return `/time-entries${params.toString() ? `?${params.toString()}` : ""}`;
+  }, [payrollWeek.weekStartDate, requestedWeekStart]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -295,7 +206,7 @@ export default function NewTimeEntryPage() {
       return;
     }
 
-    if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+    if (hours <= 0) {
       setError("Hours must be greater than 0.");
       return;
     }
@@ -337,7 +248,7 @@ export default function NewTimeEntryPage() {
         weekEndDate,
 
         category,
-        hours: parsedHours,
+        hours,
         payType: "regular",
         billable,
         source,
@@ -346,8 +257,8 @@ export default function NewTimeEntryPage() {
         projectId: projectId.trim() || null,
         projectStageKey: projectStageKey || null,
 
-        linkedTechnicianId: linkedTechnicianId.trim() || null,
-        linkedTechnicianName: linkedTechnicianName.trim() || null,
+        linkedTechnicianId: linkedTechnicianId || null,
+        linkedTechnicianName: linkedTechnicianName || null,
 
         notes: notes.trim() || null,
         timesheetId: null,
@@ -358,7 +269,7 @@ export default function NewTimeEntryPage() {
         updatedAt: nowIso,
       });
 
-      router.push("/time-entries");
+      router.push(`/time-entries?weekStart=${weekStartDate}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create time entry.");
     } finally {
@@ -369,85 +280,64 @@ export default function NewTimeEntryPage() {
   return (
     <ProtectedPage fallbackTitle="New Time Entry">
       <AppShell appUser={appUser}>
-        <Box
-          sx={{
-            minHeight: "100%",
-            bgcolor: "background.default",
-            px: { xs: 1, sm: 2, md: 3 },
-            py: { xs: 2, md: 3 },
-          }}
-        >
-          <Stack spacing={2.5}>
-            <Paper
-              elevation={0}
-              sx={{
-                p: { xs: 2, sm: 3 },
-                borderRadius: 4,
-                border: (theme) => `1px solid ${theme.palette.divider}`,
-                background:
-                  theme.palette.mode === "light"
-                    ? `linear-gradient(180deg, ${alpha(
-                        theme.palette.primary.main,
-                        0.06
-                      )}, ${alpha(theme.palette.primary.main, 0.01)})`
-                    : undefined,
-              }}
+        <Stack spacing={2.5}>
+          <Box sx={{ px: { xs: 0.25, sm: 0.5 }, pt: { xs: 0.25, sm: 0.5 } }}>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              justifyContent="space-between"
+              alignItems={{ xs: "flex-start", sm: "center" }}
+              spacing={1.5}
             >
-              <Stack
-                direction={{ xs: "column", md: "row" }}
-                spacing={2}
-                justifyContent="space-between"
-                alignItems={{ xs: "flex-start", md: "center" }}
-              >
-                <Stack spacing={1}>
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                    <Chip
-                      icon={<AccessTimeFilledRoundedIcon />}
-                      label="Manual Time Entry"
-                      variant="outlined"
-                      size="small"
-                    />
-                    {payrollWeek ? (
-                      <Chip
-                        label={`${payrollWeek.weekStartDate} → ${payrollWeek.weekEndDate}`}
-                        variant="outlined"
-                        size="small"
-                      />
-                    ) : null}
-                  </Stack>
-
-                  <Typography variant="h4" sx={{ fontWeight: 900 }}>
-                    New Time Entry
-                  </Typography>
-
-                  <Typography variant="body2" color="text.secondary">
-                    Manual worked-hours entry only. PTO, holiday, and overtime remain system-controlled.
-                  </Typography>
-                </Stack>
-
-                <Button
-                  component={Link}
-                  href="/time-entries"
-                  variant="outlined"
-                  startIcon={<ArrowBackRoundedIcon />}
+              <Box>
+                <Typography
+                  variant="h4"
+                  sx={{
+                    fontWeight: 800,
+                    letterSpacing: -0.5,
+                    fontSize: { xs: "1.9rem", sm: "2.2rem" },
+                    lineHeight: 1.05,
+                  }}
                 >
-                  Back to Time Entries
-                </Button>
-              </Stack>
-            </Paper>
+                  New Time Entry
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                  Manual worked-hours entry only. PTO, holiday, and overtime are system-controlled.
+                </Typography>
+              </Box>
 
-            {loadingUsers ? <Alert severity="info">Loading users...</Alert> : null}
-            {loadError ? <Alert severity="error">{loadError}</Alert> : null}
+              <Button
+                component={Link}
+                href={backHref}
+                variant="outlined"
+                startIcon={<ArrowBackRoundedIcon />}
+              >
+                Back to Time Entries
+              </Button>
+            </Stack>
+          </Box>
 
-            {!loadingUsers && !loadError ? (
-              <Box component="form" onSubmit={handleSubmit}>
-                <Stack spacing={2.5}>
-                  <SectionCard
-                    title="Entry Details"
-                    subtitle="Who the time belongs to, when it happened, and how many hours to log."
-                    icon={<PersonRoundedIcon color="primary" />}
-                  >
+          {loadingUsers ? (
+            <Alert severity="info" sx={{ borderRadius: 3 }}>
+              Loading users...
+            </Alert>
+          ) : null}
+
+          {loadError ? (
+            <Alert severity="error" sx={{ borderRadius: 3 }}>
+              {loadError}
+            </Alert>
+          ) : null}
+
+          {!loadingUsers && !loadError ? (
+            <Box component="form" onSubmit={handleSubmit}>
+              <Stack spacing={2.25} sx={{ maxWidth: 960 }}>
+                <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                     <Stack spacing={2}>
+                      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                        Entry Details
+                      </Typography>
+
                       <Box
                         sx={{
                           display: "grid",
@@ -465,12 +355,11 @@ export default function NewTimeEntryPage() {
                             value={employeeId}
                             onChange={(e) => setEmployeeId(e.target.value)}
                             disabled={!canCreateForOthers}
-                            {...selectMenuProps()}
                           >
                             <MenuItem value="">Select employee</MenuItem>
                             {userOptions.map((user) => (
                               <MenuItem key={user.uid} value={user.uid}>
-                                {user.displayName} ({formatRoleLabel(user.role)})
+                                {user.displayName} ({user.role})
                               </MenuItem>
                             ))}
                           </Select>
@@ -489,8 +378,8 @@ export default function NewTimeEntryPage() {
                           label="Hours Worked"
                           type="number"
                           inputProps={{ min: 0.25, step: 0.25 }}
-                          value={hoursInput}
-                          onChange={(e) => setHoursInput(e.target.value)}
+                          value={hours}
+                          onChange={(e) => setHours(Number(e.target.value))}
                           fullWidth
                         />
 
@@ -499,8 +388,9 @@ export default function NewTimeEntryPage() {
                           <Select
                             label="Work Category"
                             value={category}
-                            onChange={(e) => setCategory(e.target.value as TimeEntryCategory)}
-                            {...selectMenuProps()}
+                            onChange={(e) =>
+                              setCategory(e.target.value as TimeEntryCategory)
+                            }
                           >
                             <MenuItem value="service_ticket">Service Ticket</MenuItem>
                             <MenuItem value="project_stage">Project Stage</MenuItem>
@@ -512,6 +402,12 @@ export default function NewTimeEntryPage() {
                         </FormControl>
                       </Box>
 
+                      {!canCreateForOthers ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Non-admin users can only create entries for themselves.
+                        </Typography>
+                      ) : null}
+
                       <FormControlLabel
                         control={
                           <Checkbox
@@ -521,122 +417,117 @@ export default function NewTimeEntryPage() {
                         }
                         label="Billable"
                       />
+                    </Stack>
+                  </CardContent>
+                </Card>
 
-                      {!canCreateForOthers ? (
-                        <Typography variant="caption" color="text.secondary">
-                          Non-admin users can only create entries for themselves.
+                <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={1.5}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <InfoOutlinedIcon color="primary" fontSize="small" />
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          Payroll Handling
+                        </Typography>
+                      </Stack>
+
+                      <Typography variant="body2" color="text.secondary">
+                        Manual entries are always saved as <strong>regular worked hours</strong>.
+                        PTO and holiday entries will be system-generated later, and overtime will
+                        be calculated in the weekly timesheet after 40+ regular worked hours.
+                      </Typography>
+
+                      {entryDate ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Payroll week: <strong>{payrollWeek.weekStartDate}</strong> through{" "}
+                          <strong>{payrollWeek.weekEndDate}</strong>
                         </Typography>
                       ) : null}
+                    </Stack>
+                  </CardContent>
+                </Card>
 
-                      {selectedEmployee ? (
+                {category === "service_ticket" ? (
+                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                      <Stack spacing={2}>
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          Linked Work
+                        </Typography>
+
+                        <TextField
+                          label="Service Ticket ID"
+                          value={serviceTicketId}
+                          onChange={(e) => setServiceTicketId(e.target.value)}
+                          placeholder="Paste ticket document ID"
+                          fullWidth
+                        />
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                ) : null}
+
+                {category === "project_stage" ? (
+                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                      <Stack spacing={2}>
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          Linked Work
+                        </Typography>
+
                         <Box
                           sx={{
                             display: "grid",
                             gap: 2,
                             gridTemplateColumns: {
                               xs: "1fr",
-                              sm: "repeat(3, minmax(0, 1fr))",
+                              sm: "repeat(2, minmax(0, 1fr))",
                             },
                           }}
                         >
-                          <InfoField label="Employee" value={selectedEmployee.displayName || "—"} />
-                          <InfoField
-                            label="Role"
-                            value={formatRoleLabel(selectedEmployee.role)}
+                          <TextField
+                            label="Project ID"
+                            value={projectId}
+                            onChange={(e) => setProjectId(e.target.value)}
+                            placeholder="Paste project document ID"
+                            fullWidth
                           />
-                          <InfoField
-                            label="Payroll Week"
-                            value={
-                              payrollWeek
-                                ? `${payrollWeek.weekStartDate} → ${payrollWeek.weekEndDate}`
-                                : "—"
-                            }
-                          />
+
+                          <FormControl fullWidth>
+                            <InputLabel>Project Stage</InputLabel>
+                            <Select
+                              label="Project Stage"
+                              value={projectStageKey}
+                              onChange={(e) =>
+                                setProjectStageKey(
+                                  e.target.value as "" | "roughIn" | "topOutVent" | "trimFinish"
+                                )
+                              }
+                            >
+                              <MenuItem value="">Select stage</MenuItem>
+                              <MenuItem value="roughIn">Rough-In</MenuItem>
+                              <MenuItem value="topOutVent">Top-Out / Vent</MenuItem>
+                              <MenuItem value="trimFinish">Trim / Finish</MenuItem>
+                            </Select>
+                          </FormControl>
                         </Box>
-                      ) : null}
-                    </Stack>
-                  </SectionCard>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                ) : null}
 
-                  <SectionCard
-                    title="Payroll Handling"
-                    subtitle="Manual entries stay regular. PTO, holiday, and overtime are handled elsewhere."
-                    icon={<InfoRoundedIcon color="primary" />}
-                  >
-                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
-                      Manual entries are always saved as <strong>regular worked hours</strong>.
-                      PTO and holiday entries are system-generated later, and overtime is calculated in the weekly timesheet after 40+ regular worked hours.
-                    </Alert>
-                  </SectionCard>
-
-                  {category === "service_ticket" ? (
-                    <SectionCard
-                      title="Service Ticket Link"
-                      subtitle="Only required when the category is Service Ticket."
-                      icon={<LinkRoundedIcon color="primary" />}
-                    >
-                      <TextField
-                        label="Service Ticket ID"
-                        value={serviceTicketId}
-                        onChange={(e) => setServiceTicketId(e.target.value)}
-                        placeholder="Paste service ticket document ID"
-                        fullWidth
-                      />
-                    </SectionCard>
-                  ) : null}
-
-                  {category === "project_stage" ? (
-                    <SectionCard
-                      title="Project Link"
-                      subtitle="Only required when the category is Project Stage."
-                      icon={<WorkRoundedIcon color="primary" />}
-                    >
-                      <Box
-                        sx={{
-                          display: "grid",
-                          gap: 2,
-                          gridTemplateColumns: {
-                            xs: "1fr",
-                            sm: "repeat(2, minmax(0, 1fr))",
-                          },
-                        }}
-                      >
-                        <TextField
-                          label="Project ID"
-                          value={projectId}
-                          onChange={(e) => setProjectId(e.target.value)}
-                          placeholder="Paste project document ID"
-                          fullWidth
-                        />
-
-                        <FormControl fullWidth>
-                          <InputLabel>Project Stage</InputLabel>
-                          <Select
-                            label="Project Stage"
-                            value={projectStageKey}
-                            onChange={(e) =>
-                              setProjectStageKey(e.target.value as ProjectStageKey)
-                            }
-                            {...selectMenuProps()}
-                          >
-                            <MenuItem value="">Select stage</MenuItem>
-                            <MenuItem value="roughIn">Rough-In</MenuItem>
-                            <MenuItem value="topOutVent">Top-Out / Vent</MenuItem>
-                            <MenuItem value="trimFinish">Trim / Finish</MenuItem>
-                          </Select>
-                        </FormControl>
-                      </Box>
-                    </SectionCard>
-                  ) : null}
-
-                  {selectedEmployee && isSupportRole(selectedEmployee.role) ? (
-                    <SectionCard
-                      title="Support Labor Link"
-                      subtitle="For helpers and apprentices, this links their time to a preferred technician."
-                      icon={<LinkRoundedIcon color="primary" />}
-                    >
+                {selectedEmployee?.role === "helper" ||
+                selectedEmployee?.role === "apprentice" ? (
+                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                       <Stack spacing={2}>
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          Support Labor Link
+                        </Typography>
+
                         <Typography variant="body2" color="text.secondary">
-                          Auto-filled from this helper/apprentice’s preferred technician. You can override it here if needed.
+                          Auto-filled from this helper/apprentice’s preferred technician. You can
+                          override if needed.
                         </Typography>
 
                         <Box
@@ -664,70 +555,90 @@ export default function NewTimeEntryPage() {
                           />
                         </Box>
                       </Stack>
-                    </SectionCard>
-                  ) : null}
+                    </CardContent>
+                  </Card>
+                ) : null}
 
-                  <SectionCard
-                    title="Notes"
-                    subtitle="Optional context for payroll review and admin reference."
-                    icon={<InfoRoundedIcon color="primary" />}
-                  >
-                    <TextField
-                      label="Notes"
-                      value={notes}
-                      onChange={(e) => setNotes(e.target.value)}
-                      multiline
-                      minRows={5}
-                      fullWidth
-                    />
-                  </SectionCard>
-
-                  {error ? <Alert severity="error">{error}</Alert> : null}
-
-                  <Paper
-                    elevation={0}
-                    sx={{
-                      p: { xs: 2, sm: 2.5 },
-                      borderRadius: 4,
-                      border: (theme) => `1px solid ${theme.palette.divider}`,
-                    }}
-                  >
-                    <Stack
-                      direction={{ xs: "column", sm: "row" }}
-                      spacing={1.5}
-                      alignItems={{ xs: "stretch", sm: "center" }}
-                      justifyContent="space-between"
-                    >
-                      <Typography variant="body2" color="text.secondary">
-                        Review the fields above, then save the draft time entry.
+                <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={2}>
+                      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                        Notes
                       </Typography>
 
-                      <Stack direction="row" spacing={1.25}>
-                        <Button
-                          component={Link}
-                          href="/time-entries"
-                          variant="outlined"
-                        >
-                          Cancel
-                        </Button>
-
-                        <Button
-                          type="submit"
-                          variant="contained"
-                          disabled={saving}
-                          startIcon={<SaveRoundedIcon />}
-                        >
-                          {saving ? "Saving..." : "Create Time Entry"}
-                        </Button>
-                      </Stack>
+                      <TextField
+                        label="Notes"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        multiline
+                        minRows={5}
+                        fullWidth
+                      />
                     </Stack>
-                  </Paper>
+                  </CardContent>
+                </Card>
+
+                {error ? (
+                  <Alert severity="error" sx={{ borderRadius: 3 }}>
+                    {error}
+                  </Alert>
+                ) : null}
+
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1.25}
+                  alignItems={{ xs: "stretch", sm: "center" }}
+                >
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    disabled={saving}
+                    startIcon={<EditNoteRoundedIcon />}
+                  >
+                    {saving ? "Saving..." : "Create Time Entry"}
+                  </Button>
+
+                  <Button
+                    component={Link}
+                    href={backHref}
+                    variant="outlined"
+                    disabled={saving}
+                  >
+                    Cancel
+                  </Button>
                 </Stack>
-              </Box>
-            ) : null}
-          </Stack>
-        </Box>
+              </Stack>
+            </Box>
+          ) : null}
+        </Stack>
       </AppShell>
     </ProtectedPage>
+  );
+}
+
+export default function NewTimeEntryPage() {
+  return (
+    <Suspense
+      fallback={
+        <ProtectedPage fallbackTitle="New Time Entry">
+          <AppShell appUser={null}>
+            <Stack spacing={2.5}>
+              <Box sx={{ px: { xs: 0.25, sm: 0.5 }, pt: { xs: 0.25, sm: 0.5 } }}>
+                <Stack spacing={1.25}>
+                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                    New Time Entry
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Loading form...
+                  </Typography>
+                </Stack>
+              </Box>
+            </Stack>
+          </AppShell>
+        </ProtectedPage>
+      }
+    >
+      <NewTimeEntryPageContent />
+    </Suspense>
   );
 }

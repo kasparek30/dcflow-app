@@ -15,6 +15,7 @@ import {
 } from "firebase/firestore";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -27,6 +28,7 @@ import {
   DialogTitle,
   Divider,
   FormControlLabel,
+  MenuItem,
   Snackbar,
   Stack,
   TextField,
@@ -40,11 +42,27 @@ import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import type { AppUser } from "../../../src/types/app-user";
 import type { TimeEntry } from "../../../src/types/time-entry";
 import type { WeeklyTimesheet } from "../../../src/types/weekly-timesheet";
 
 type Props = {
   params: Promise<{ timeEntryId: string }>;
+};
+
+type ProjectStageValue = "" | "roughIn" | "topOutVent" | "trimFinish";
+
+type UserOption = {
+  uid: string;
+  displayName: string;
+  email: string;
+  role: AppUser["role"];
+  active: boolean;
+  laborRoleType?: AppUser["laborRoleType"];
+  preferredTechnicianId?: string | null;
+  preferredTechnicianName?: string | null;
+  holidayEligible?: boolean;
+  defaultDailyHolidayHours?: number;
 };
 
 type LocalTimeEntry = TimeEntry & {
@@ -127,6 +145,17 @@ function safeStr(x: unknown) {
 
 function safeTrim(x: unknown) {
   return safeStr(x).trim();
+}
+
+function normalizeProjectStageKey(value: unknown): ProjectStageValue {
+  const raw = safeTrim(value).toLowerCase();
+
+  if (!raw) return "";
+  if (raw === "roughin" || raw === "rough_in") return "roughIn";
+  if (raw === "topoutvent" || raw === "top_out_vent") return "topOutVent";
+  if (raw === "trimfinish" || raw === "trim_finish") return "trimFinish";
+
+  return "";
 }
 
 function normalizeCategory(raw: unknown) {
@@ -224,11 +253,28 @@ function formatSourceLabel(source?: string) {
 }
 
 function formatStage(stageKey?: string) {
-  const s = safeTrim(stageKey).toLowerCase();
-  if (s === "roughin" || s === "rough_in" || s === "roughin") return "Rough-In";
-  if (s === "topoutvent" || s === "top_out_vent") return "Top-Out / Vent";
-  if (s === "trimfinish" || s === "trim_finish") return "Trim / Finish";
+  const normalized = normalizeProjectStageKey(stageKey);
+  if (normalized === "roughIn") return "Rough-In";
+  if (normalized === "topOutVent") return "Top-Out / Vent";
+  if (normalized === "trimFinish") return "Trim / Finish";
   return safeTrim(stageKey) || "—";
+}
+
+function formatRoleLabel(role?: string | null) {
+  const raw = safeTrim(role).toLowerCase();
+  if (!raw) return "Employee";
+  return raw
+    .split("_")
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function buildUserOptionLabel(user: UserOption | null | undefined) {
+  if (!user) return "";
+  const name = safeTrim(user.displayName) || safeTrim(user.uid) || "Unnamed User";
+  const role = formatRoleLabel(user.role);
+  const inactive = user.active === false ? " • Inactive" : "";
+  return `${name} (${role})${inactive}`;
 }
 
 function buildAddressLine(ticket: ServiceTicketLite) {
@@ -397,10 +443,18 @@ export default function TimeEntryDetailPage({ params }: Props) {
   const [billable, setBillable] = useState(false);
   const [serviceTicketId, setServiceTicketId] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [projectStageKey, setProjectStageKey] = useState<"" | "roughIn" | "topOutVent" | "trimFinish">("");
+  const [projectStageKey, setProjectStageKey] = useState<ProjectStageValue>("");
   const [linkedTechnicianId, setLinkedTechnicianId] = useState("");
   const [linkedTechnicianName, setLinkedTechnicianName] = useState("");
   const [notes, setNotes] = useState("");
+
+  const [employeeId, setEmployeeId] = useState("");
+  const [employeeName, setEmployeeName] = useState("");
+  const [employeeRole, setEmployeeRole] = useState<AppUser["role"] | "">("");
+  const [employeeLaborRoleType, setEmployeeLaborRoleType] = useState<AppUser["laborRoleType"] | null>(null);
+
+  const [userOptions, setUserOptions] = useState<UserOption[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
 
   const [trip, setTrip] = useState<TripDoc | null>(null);
   const [ticket, setTicket] = useState<ServiceTicketLite | null>(null);
@@ -412,6 +466,41 @@ export default function TimeEntryDetailPage({ params }: Props) {
     appUser?.role === "admin" ||
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
+
+  useEffect(() => {
+    async function loadUsers() {
+      if (!canEditOtherUsers) return;
+
+      setUsersLoading(true);
+      try {
+        const snap = await getDocs(collection(db, "users"));
+        const items: UserOption[] = snap.docs.map((docSnap) => {
+          const data: any = docSnap.data();
+          return {
+            uid: data.uid ?? docSnap.id,
+            displayName: data.displayName ?? "Unnamed User",
+            email: data.email ?? "",
+            role: (data.role ?? "technician") as AppUser["role"],
+            active: typeof data.active === "boolean" ? data.active : true,
+            laborRoleType: (data.laborRoleType ?? undefined) as AppUser["laborRoleType"],
+            preferredTechnicianId: data.preferredTechnicianId ?? null,
+            preferredTechnicianName: data.preferredTechnicianName ?? null,
+            holidayEligible: data.holidayEligible ?? undefined,
+            defaultDailyHolidayHours: data.defaultDailyHolidayHours ?? undefined,
+          };
+        });
+
+        items.sort((a, b) => buildUserOptionLabel(a).localeCompare(buildUserOptionLabel(b)));
+        setUserOptions(items);
+      } catch {
+        setUserOptions([]);
+      } finally {
+        setUsersLoading(false);
+      }
+    }
+
+    loadUsers();
+  }, [canEditOtherUsers]);
 
   useEffect(() => {
     async function loadEntry() {
@@ -450,7 +539,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
           serviceTicketId: data.serviceTicketId ?? undefined,
           projectId: data.projectId ?? undefined,
-          projectStageKey: data.projectStageKey ?? undefined,
+          projectStageKey: normalizeProjectStageKey(data.projectStageKey) || undefined,
 
           linkedTechnicianId: data.linkedTechnicianId ?? undefined,
           linkedTechnicianName: data.linkedTechnicianName ?? undefined,
@@ -474,12 +563,15 @@ export default function TimeEntryDetailPage({ params }: Props) {
         setBillable(Boolean(item.billable));
         setServiceTicketId(item.serviceTicketId ?? "");
         setProjectId(item.projectId ?? "");
-        setProjectStageKey(
-          (item.projectStageKey as "" | "roughIn" | "topOutVent" | "trimFinish") ?? ""
-        );
+        setProjectStageKey(normalizeProjectStageKey(item.projectStageKey));
         setLinkedTechnicianId(item.linkedTechnicianId ?? "");
         setLinkedTechnicianName(item.linkedTechnicianName ?? "");
         setNotes(item.notes ?? "");
+
+        setEmployeeId(item.employeeId ?? "");
+        setEmployeeName(item.employeeName ?? "");
+        setEmployeeRole((item.employeeRole as AppUser["role"]) ?? "");
+        setEmployeeLaborRoleType((item.laborRoleType as AppUser["laborRoleType"]) ?? null);
 
         const directTimesheetId = buildWeeklyTimesheetId(item.employeeId, item.weekStartDate);
         const directTimesheetSnap = await getDoc(doc(db, "weeklyTimesheets", directTimesheetId));
@@ -705,18 +797,79 @@ export default function TimeEntryDetailPage({ params }: Props) {
   const isPtoEntry = normalizedEntryCategory === "pto";
   const isMeetingEntry = normalizedEntryCategory === "meeting";
   const isManualEntry = safeTrim(entry?.source).toLowerCase() === "manual_entry";
+  const isAdminOverride = canEditOtherUsers;
+
+  const selectedEmployeeOption = useMemo<UserOption | null>(() => {
+    const found = userOptions.find((user) => user.uid === employeeId);
+    if (found) return found;
+    if (!employeeId) return null;
+
+    return {
+      uid: employeeId,
+      displayName: employeeName || employeeId,
+      email: "",
+      role: ((employeeRole || "technician") as AppUser["role"]),
+      active: true,
+      laborRoleType: (employeeLaborRoleType ?? undefined) as AppUser["laborRoleType"],
+      preferredTechnicianId: null,
+      preferredTechnicianName: null,
+      holidayEligible: undefined,
+      defaultDailyHolidayHours: undefined,
+    };
+  }, [employeeId, employeeLaborRoleType, employeeName, employeeRole, userOptions]);
+
+  const technicianOptions = useMemo<UserOption[]>(() => {
+    const filtered = userOptions.filter(
+      (user) => safeTrim(user.role).toLowerCase() === "technician"
+    );
+
+    const currentLinkedMissing =
+      linkedTechnicianId &&
+      !filtered.some((user) => user.uid === linkedTechnicianId);
+
+    if (currentLinkedMissing) {
+      filtered.push({
+        uid: linkedTechnicianId,
+        displayName: linkedTechnicianName || linkedTechnicianId,
+        email: "",
+        role: "technician" as AppUser["role"],
+        active: true,
+        laborRoleType: undefined,
+        preferredTechnicianId: null,
+        preferredTechnicianName: null,
+        holidayEligible: undefined,
+        defaultDailyHolidayHours: undefined,
+      });
+    }
+
+    filtered.sort((a, b) => buildUserOptionLabel(a).localeCompare(buildUserOptionLabel(b)));
+    return filtered;
+  }, [linkedTechnicianId, linkedTechnicianName, userOptions]);
+
+  const selectedLinkedTechOption = useMemo<UserOption | null>(() => {
+    if (!linkedTechnicianId) return null;
+    return technicianOptions.find((user) => user.uid === linkedTechnicianId) ?? null;
+  }, [linkedTechnicianId, technicianOptions]);
+
+  const selectedEmployeeIsSupportLabor = useMemo(() => {
+    const role = safeTrim(selectedEmployeeOption?.role || employeeRole).toLowerCase();
+    return role === "helper" || role === "apprentice";
+  }, [employeeRole, selectedEmployeeOption?.role]);
 
   const canEdit = useMemo(() => {
     if (!entry || !appUser) return false;
-    if (!isOwnEntry && !canEditOtherUsers) return false;
+
+    if (isAdminOverride) return true;
+    if (!isOwnEntry) return false;
     if (isTimesheetLocked) return false;
     if (isEntryHoursLocked) return false;
-    if (isHolidayEntry && !canEditOtherUsers) return false;
+    if (isHolidayEntry) return false;
+
     return true;
   }, [
     appUser,
-    canEditOtherUsers,
     entry,
+    isAdminOverride,
     isEntryHoursLocked,
     isHolidayEntry,
     isOwnEntry,
@@ -725,10 +878,15 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
   const canDelete = useMemo(() => {
     if (!entry) return false;
-    if (!canEdit) return false;
     if (!isManualEntry) return false;
+
+    if (isAdminOverride) return true;
+    if (!canEdit) return false;
+    if (isTimesheetLocked) return false;
+    if (isEntryHoursLocked) return false;
+
     return true;
-  }, [canEdit, entry, isManualEntry]);
+  }, [canEdit, entry, isAdminOverride, isEntryHoursLocked, isManualEntry, isTimesheetLocked]);
 
   const canEditBillable = useMemo(() => {
     if (!canEdit) return false;
@@ -740,6 +898,43 @@ export default function TimeEntryDetailPage({ params }: Props) {
     if (!entry) return "";
     return buildAutoNotes({ entry, trip, ticket, project, event });
   }, [entry, trip, ticket, project, event]);
+
+  function handleEmployeeSelection(nextEmployee: UserOption | null) {
+    if (!nextEmployee) {
+      setEmployeeId("");
+      setEmployeeName("");
+      setEmployeeRole("");
+      setEmployeeLaborRoleType(null);
+      setLinkedTechnicianId("");
+      setLinkedTechnicianName("");
+      return;
+    }
+
+    setEmployeeId(nextEmployee.uid);
+    setEmployeeName(nextEmployee.displayName || nextEmployee.uid);
+    setEmployeeRole(nextEmployee.role || ("technician" as AppUser["role"]));
+    setEmployeeLaborRoleType(nextEmployee.laborRoleType ?? null);
+
+    const normalizedRole = safeTrim(nextEmployee.role).toLowerCase();
+    if (normalizedRole === "helper" || normalizedRole === "apprentice") {
+      setLinkedTechnicianId(safeTrim(nextEmployee.preferredTechnicianId) || "");
+      setLinkedTechnicianName(safeTrim(nextEmployee.preferredTechnicianName) || "");
+    } else {
+      setLinkedTechnicianId("");
+      setLinkedTechnicianName("");
+    }
+  }
+
+  function handleLinkedTechSelection(nextTech: UserOption | null) {
+    if (!nextTech) {
+      setLinkedTechnicianId("");
+      setLinkedTechnicianName("");
+      return;
+    }
+
+    setLinkedTechnicianId(nextTech.uid);
+    setLinkedTechnicianName(nextTech.displayName || nextTech.uid);
+  }
 
   function appendAutoToNotes() {
     const auto = safeTrim(suggestedAutoNotes);
@@ -774,13 +969,32 @@ export default function TimeEntryDetailPage({ params }: Props) {
       return;
     }
 
+    const normalizedStageKey = normalizeProjectStageKey(projectStageKey);
+
+    const nextEmployeeResolved = selectedEmployeeOption;
+    const nextEmployeeId = safeTrim(employeeId) || safeTrim(entry.employeeId);
+    const nextEmployeeName =
+      safeTrim(nextEmployeeResolved?.displayName) ||
+      safeTrim(employeeName) ||
+      safeTrim(entry.employeeName);
+    const nextEmployeeRole =
+      (nextEmployeeResolved?.role ||
+        employeeRole ||
+        (entry.employeeRole as AppUser["role"]) ||
+        ("technician" as AppUser["role"])) as AppUser["role"];
+    const nextLaborRoleType =
+      (nextEmployeeResolved?.laborRoleType ??
+        employeeLaborRoleType ??
+        (entry.laborRoleType as AppUser["laborRoleType"]) ??
+        null) as AppUser["laborRoleType"] | null;
+
     if (hours <= 0) {
       setError("Hours must be greater than 0.");
       return;
     }
 
-    if (isHolidayEntry && !canEditOtherUsers) {
-      setError("Holiday hours are read-only for employees.");
+    if (isAdminOverride && !nextEmployeeId) {
+      setError("Employee is required.");
       return;
     }
 
@@ -794,7 +1008,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
         setError("Project ID is required for project entries.");
         return;
       }
-      if (!projectStageKey) {
+      if (!normalizedStageKey) {
         setError("Project stage is required for project entries.");
         return;
       }
@@ -806,19 +1020,26 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
     try {
       const nowIso = new Date().toISOString();
+      const employeeChanged = nextEmployeeId !== safeTrim(entry.employeeId);
 
       await updateDoc(doc(db, "timeEntries", entry.id), {
+        employeeId: nextEmployeeId,
+        employeeName: nextEmployeeName,
+        employeeRole: nextEmployeeRole,
+        laborRoleType: nextLaborRoleType,
+
         hours,
         billable: canEditBillable ? billable : false,
 
         serviceTicketId: safeTrim(serviceTicketId) || null,
         projectId: safeTrim(projectId) || null,
-        projectStageKey: projectStageKey || null,
+        projectStageKey: normalizedStageKey || null,
 
         linkedTechnicianId: safeTrim(linkedTechnicianId) || null,
         linkedTechnicianName: safeTrim(linkedTechnicianName) || null,
 
         notes: safeTrim(notes) || null,
+        timesheetId: employeeChanged ? null : entry.timesheetId ?? null,
         updatedAt: nowIso,
       });
 
@@ -826,19 +1047,29 @@ export default function TimeEntryDetailPage({ params }: Props) {
         prev
           ? {
               ...prev,
+              employeeId: nextEmployeeId,
+              employeeName: nextEmployeeName,
+              employeeRole: nextEmployeeRole,
+              laborRoleType: nextLaborRoleType ?? undefined,
               hours,
               billable: canEditBillable ? billable : false,
               serviceTicketId: safeTrim(serviceTicketId) || undefined,
               projectId: safeTrim(projectId) || undefined,
-              projectStageKey: projectStageKey || undefined,
+              projectStageKey: normalizedStageKey || undefined,
               linkedTechnicianId: safeTrim(linkedTechnicianId) || undefined,
               linkedTechnicianName: safeTrim(linkedTechnicianName) || undefined,
               notes: safeTrim(notes) || undefined,
+              timesheetId: employeeChanged ? undefined : prev.timesheetId,
               updatedAt: nowIso,
             }
           : prev
       );
 
+      if (employeeChanged) {
+        setMatchingTimesheet(null);
+      }
+
+      setProjectStageKey(normalizedStageKey);
       setSaveMsg("Time entry saved.");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save time entry.");
@@ -854,7 +1085,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
     }
 
     if (!canDelete) {
-      setError("Only editable manual entries can be deleted here.");
+      setError("Only allowed manual entries can be deleted here.");
       return;
     }
 
@@ -899,7 +1130,16 @@ export default function TimeEntryDetailPage({ params }: Props) {
                 Back to Time Entries
               </Button>
 
-              <Button variant="contained" onClick={() => router.push("/weekly-timesheet")}>
+              <Button
+                variant="contained"
+                onClick={() =>
+                  router.push(
+                    entry?.weekStartDate
+                      ? `/weekly-timesheet?weekStart=${entry.weekStartDate}`
+                      : "/weekly-timesheet"
+                  )
+                }
+              >
                 Review Weekly Timesheet
               </Button>
             </Stack>
@@ -981,25 +1221,34 @@ export default function TimeEntryDetailPage({ params }: Props) {
                         label={canEdit ? "Editable" : "Read-only"}
                         color={canEdit ? "success" : "warning"}
                       />
+                      {isAdminOverride ? (
+                        <Chip label="Admin override" color="info" variant="outlined" />
+                      ) : null}
                       {isTimesheetLocked ? <Chip label="Timesheet locked" color="warning" variant="outlined" /> : null}
                       {isEntryHoursLocked ? <Chip label="Hours locked" color="warning" variant="outlined" /> : null}
                       {isHolidayEntry ? <Chip label="Holiday entry" color="success" variant="outlined" /> : null}
                       {isPtoEntry ? <Chip label="PTO entry" color="secondary" variant="outlined" /> : null}
                     </Stack>
 
-                    {isTimesheetLocked ? (
+                    {isAdminOverride ? (
+                      <Alert severity="info">
+                        Admin / Manager / Dispatcher override is active. You can edit this entry even if it came from trip workflow or belongs to a locked weekly timesheet.
+                      </Alert>
+                    ) : null}
+
+                    {!isAdminOverride && isTimesheetLocked ? (
                       <Alert severity="warning">
                         The matching weekly timesheet is <strong>{matchingTimesheet?.status}</strong>, so this entry is locked.
                       </Alert>
                     ) : null}
 
-                    {isEntryHoursLocked ? (
+                    {!isAdminOverride && isEntryHoursLocked ? (
                       <Alert severity="warning">
                         This entry has <strong>hoursLocked = true</strong> and is controlled by system workflow.
                       </Alert>
                     ) : null}
 
-                    {isHolidayEntry && !canEditOtherUsers ? (
+                    {!isAdminOverride && isHolidayEntry ? (
                       <Alert severity="info">
                         Holiday entries are included for payroll review, but employees do not directly edit holiday hours here.
                       </Alert>
@@ -1024,6 +1273,41 @@ export default function TimeEntryDetailPage({ params }: Props) {
                     <Typography variant="h6" sx={{ fontWeight: 800 }}>
                       Entry Details
                     </Typography>
+
+                    {canEditOtherUsers ? (
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                          gap: 2,
+                        }}
+                      >
+                        <Autocomplete<UserOption, false, false, false>
+                          options={userOptions}
+                          value={selectedEmployeeOption}
+                          onChange={(_, value) => handleEmployeeSelection(value)}
+                          getOptionLabel={(option) => buildUserOptionLabel(option)}
+                          isOptionEqualToValue={(option, value) => option.uid === value.uid}
+                          loading={usersLoading}
+                          disabled={!canEdit}
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              label="Employee"
+                              helperText="Admin can reassign this entry to a different employee."
+                              fullWidth
+                            />
+                          )}
+                        />
+
+                        <TextField
+                          label="Employee Role"
+                          value={formatRoleLabel(selectedEmployeeOption?.role || employeeRole)}
+                          disabled
+                          fullWidth
+                        />
+                      </Box>
+                    ) : null}
 
                     <Box
                       sx={{
@@ -1093,52 +1377,81 @@ export default function TimeEntryDetailPage({ params }: Props) {
                           select
                           value={projectStageKey}
                           onChange={(e) =>
-                            setProjectStageKey(
-                              e.target.value as "" | "roughIn" | "topOutVent" | "trimFinish"
-                            )
+                            setProjectStageKey(normalizeProjectStageKey(e.target.value))
                           }
                           disabled={!canEdit}
                           fullWidth
                         >
-                          <Box component="option" value="">
-                            Select stage
-                          </Box>
-                          <Box component="option" value="roughIn">
-                            Rough-In
-                          </Box>
-                          <Box component="option" value="topOutVent">
-                            Top-Out / Vent
-                          </Box>
-                          <Box component="option" value="trimFinish">
-                            Trim / Finish
-                          </Box>
+                          <MenuItem value="">Select stage</MenuItem>
+                          <MenuItem value="roughIn">Rough-In</MenuItem>
+                          <MenuItem value="topOutVent">Top-Out / Vent</MenuItem>
+                          <MenuItem value="trimFinish">Trim / Finish</MenuItem>
                         </TextField>
                       </Box>
                     ) : null}
 
                     {!isPtoEntry && !isHolidayEntry ? (
-                      <Box
-                        sx={{
-                          display: "grid",
-                          gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
-                          gap: 2,
-                        }}
-                      >
-                        <TextField
-                          label="Linked Technician ID"
-                          value={linkedTechnicianId}
-                          onChange={(e) => setLinkedTechnicianId(e.target.value)}
-                          disabled={!canEdit}
-                          fullWidth
-                        />
-                        <TextField
-                          label="Linked Technician Name"
-                          value={linkedTechnicianName}
-                          onChange={(e) => setLinkedTechnicianName(e.target.value)}
-                          disabled={!canEdit}
-                          fullWidth
-                        />
-                      </Box>
+                      canEditOtherUsers ? (
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                            gap: 2,
+                          }}
+                        >
+                          <Autocomplete<UserOption, false, false, false>
+                            options={technicianOptions}
+                            value={selectedLinkedTechOption}
+                            onChange={(_, value) => handleLinkedTechSelection(value)}
+                            getOptionLabel={(option) => buildUserOptionLabel(option)}
+                            isOptionEqualToValue={(option, value) => option.uid === value.uid}
+                            loading={usersLoading}
+                            disabled={!canEdit}
+                            renderInput={(params) => (
+                              <TextField
+                                {...params}
+                                label="Linked Technician"
+                                helperText={
+                                  selectedEmployeeIsSupportLabor
+                                    ? "Support labor selected — choose or confirm the supervising technician."
+                                    : "Optional technician link for payroll support."
+                                }
+                                fullWidth
+                              />
+                            )}
+                          />
+
+                          <TextField
+                            label="Linked Technician ID"
+                            value={linkedTechnicianId}
+                            disabled
+                            fullWidth
+                          />
+                        </Box>
+                      ) : (
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                            gap: 2,
+                          }}
+                        >
+                          <TextField
+                            label="Linked Technician ID"
+                            value={linkedTechnicianId}
+                            onChange={(e) => setLinkedTechnicianId(e.target.value)}
+                            disabled={!canEdit}
+                            fullWidth
+                          />
+                          <TextField
+                            label="Linked Technician Name"
+                            value={linkedTechnicianName}
+                            onChange={(e) => setLinkedTechnicianName(e.target.value)}
+                            disabled={!canEdit}
+                            fullWidth
+                          />
+                        </Box>
+                      )
                     ) : null}
 
                     <TextField
@@ -1365,7 +1678,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
           <DialogTitle>Delete time entry?</DialogTitle>
           <DialogContent>
             <Typography variant="body2" color="text.secondary">
-              This only deletes the time entry itself. Manual entries can be deleted here, but system-generated PTO, holiday, or locked records should not be removed from this screen.
+              This only deletes the time entry itself. Manual entries can be deleted here. Admin override also allows manual-entry cleanup when needed during payroll support.
             </Typography>
           </DialogContent>
           <DialogActions>

@@ -1,3 +1,4 @@
+// app/time-entries/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -101,7 +102,9 @@ function pad2(n: number) {
 }
 
 function toIsoDate(date: Date) {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(
+    date.getDate()
+  )}`;
 }
 
 function getMondayForWeekOffset(weekOffset: number) {
@@ -176,7 +179,9 @@ function firstMeaningfulLine(notes?: string) {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const preferred = lines.find((line) => !line.startsWith("AUTO_TIME_FROM_TRIP:"));
+  const preferred = lines.find(
+    (line) => !line.startsWith("AUTO_TIME_FROM_TRIP:")
+  );
   return preferred || lines[0] || "";
 }
 
@@ -293,7 +298,12 @@ function stageLabel(stage?: string) {
 
 function isTimesheetLockedStatus(status: unknown) {
   const s = safeTrim(status).toLowerCase();
-  return s === "submitted" || s === "approved" || s === "exported" || s === "exported_to_quickbooks";
+  return (
+    s === "submitted" ||
+    s === "approved" ||
+    s === "exported" ||
+    s === "exported_to_quickbooks"
+  );
 }
 
 function getEntryKind(entry: TimeEntry) {
@@ -371,18 +381,27 @@ function TimeEntriesPageContent() {
   const [loading, setLoading] = useState(true);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [holidayByDate, setHolidayByDate] = useState<Record<string, CompanyHoliday>>({});
+  const [holidayByDate, setHolidayByDate] = useState<
+    Record<string, CompanyHoliday>
+  >({});
   const [error, setError] = useState("");
 
-  const [statusFilter, setStatusFilter] = useState<"all" | TimeEntry["entryStatus"]>("all");
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilterValue>("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | TimeEntry["entryStatus"]
+  >("all");
+  const [categoryFilter, setCategoryFilter] =
+    useState<CategoryFilterValue>("all");
   const [weekOffset, setWeekOffset] = useState(0);
 
   const [myWeekLocked, setMyWeekLocked] = useState(false);
-  const [myWeekStatus, setMyWeekStatus] = useState<string>("");
+  const [myWeekStatus, setMyWeekStatus] = useState("");
 
-  const [ticketMiniById, setTicketMiniById] = useState<Record<string, ServiceTicketMini>>({});
-  const [projectMiniById, setProjectMiniById] = useState<Record<string, ProjectMini>>({});
+  const [ticketMiniById, setTicketMiniById] = useState<
+    Record<string, ServiceTicketMini>
+  >({});
+  const [projectMiniById, setProjectMiniById] = useState<
+    Record<string, ProjectMini>
+  >({});
 
   const [rejectedWeekReason, setRejectedWeekReason] = useState("");
   const [rejectedWeekStatus, setRejectedWeekStatus] = useState("");
@@ -494,7 +513,9 @@ function TimeEntriesPageContent() {
       try {
         let snap;
         try {
-          snap = await getDocs(query(collection(db, "companyHolidays"), where("active", "==", true)));
+          snap = await getDocs(
+            query(collection(db, "companyHolidays"), where("active", "==", true))
+          );
         } catch {
           snap = await getDocs(collection(db, "companyHolidays"));
         }
@@ -507,7 +528,9 @@ function TimeEntriesPageContent() {
           const active = typeof d.active === "boolean" ? d.active : true;
           if (!active) continue;
 
-          const rawDate = String(d.date ?? d.holidayDate ?? d.holiday_date ?? "").trim();
+          const rawDate = String(
+            d.date ?? d.holidayDate ?? d.holiday_date ?? ""
+          ).trim();
           if (!rawDate || !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) continue;
           if (rawDate < weekStart || rawDate > weekEnd) continue;
 
@@ -713,18 +736,24 @@ function TimeEntriesPageContent() {
       items = items.filter((entry) => entry.employeeId === appUser.uid);
     }
 
-    items = items.filter((entry) => entry.entryDate >= weekStart && entry.entryDate <= weekEnd);
+    items = items.filter(
+      (entry) => entry.entryDate >= weekStart && entry.entryDate <= weekEnd
+    );
 
     if (statusFilter !== "all") {
       items = items.filter((entry) => entry.entryStatus === statusFilter);
     }
 
     if (categoryFilter !== "all") {
-      items = items.filter((entry) => normalizeCategory((entry as any).category) === categoryFilter);
+      items = items.filter(
+        (entry) => normalizeCategory((entry as any).category) === categoryFilter
+      );
     }
 
     return [...items].sort((a, b) => {
-      if (a.entryDate !== b.entryDate) return a.entryDate.localeCompare(b.entryDate);
+      if (a.entryDate !== b.entryDate) {
+        return a.entryDate.localeCompare(b.entryDate);
+      }
       if (canSeeAll && a.employeeName !== b.employeeName) {
         return safeTrim(a.employeeName).localeCompare(safeTrim(b.employeeName));
       }
@@ -885,7 +914,9 @@ function TimeEntriesPageContent() {
       const mini = tid ? ticketMiniById[tid] : null;
       return {
         title: mini?.customerDisplayName || "Service Ticket",
-        subtitle: mini?.issueSummary || truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+        subtitle:
+          mini?.issueSummary ||
+          truncateLine(firstMeaningfulLine((entry as any).notes), 70),
       };
     }
 
@@ -895,7 +926,9 @@ function TimeEntriesPageContent() {
       const stage = stageLabel((entry as any).projectStageKey);
       return {
         title: mini?.projectName || "Project",
-        subtitle: stage ? `Stage: ${stage}` : truncateLine(firstMeaningfulLine((entry as any).notes), 70),
+        subtitle:
+          stage ||
+          truncateLine(firstMeaningfulLine((entry as any).notes), 70),
       };
     }
 
@@ -910,7 +943,8 @@ function TimeEntriesPageContent() {
       return {
         title: "Paid Time Off",
         subtitle:
-          truncateLine(firstMeaningfulLine((entry as any).notes), 70) || "Approved PTO for this day",
+          truncateLine(firstMeaningfulLine((entry as any).notes), 70) ||
+          "Approved PTO for this day",
       };
     }
 
@@ -918,7 +952,8 @@ function TimeEntriesPageContent() {
       return {
         title: "Company Holiday",
         subtitle:
-          truncateLine(firstMeaningfulLine((entry as any).notes), 70) || "Paid holiday time",
+          truncateLine(firstMeaningfulLine((entry as any).notes), 70) ||
+          "Paid holiday time",
       };
     }
 
@@ -942,6 +977,18 @@ function TimeEntriesPageContent() {
     };
   }
 
+  function buildAddEntryHref(dateIso?: string) {
+    const params = new URLSearchParams();
+    const targetDate = safeTrim(dateIso) || (isCurrentWeek ? toIsoDate(new Date()) : weekStart);
+
+    if (targetDate) params.set("date", targetDate);
+    if (weekStart) params.set("weekStart", weekStart);
+
+    return `/time-entries/new?${params.toString()}`;
+  }
+
+  const topAddHref = buildAddEntryHref();
+
   return (
     <ProtectedPage fallbackTitle="Time Entries">
       <AppShell appUser={appUser}>
@@ -964,8 +1011,8 @@ function TimeEntriesPageContent() {
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                     Review and update your time entries for the week of{" "}
-                    <strong>{buildWeekRangeLabel(weekStart, weekEnd)}</strong>, then return to
-                    your weekly timesheet and resubmit it.
+                    <strong>{buildWeekRangeLabel(weekStart, weekEnd)}</strong>, then return
+                    to your weekly timesheet and resubmit it.
                   </Typography>
 
                   {rejectedWeekStatus === "rejected" && rejectedWeekReason ? (
@@ -985,16 +1032,9 @@ function TimeEntriesPageContent() {
                   />
 
                   {statusFilter === "rejected" ? (
-                    <Chip
-                      color="info"
-                      label="Filtered: Rejected only"
-                      variant="filled"
-                    />
+                    <Chip color="info" label="Filtered: Rejected only" variant="filled" />
                   ) : (
-                    <Chip
-                      label="Showing all statuses"
-                      variant="outlined"
-                    />
+                    <Chip label="Showing all statuses" variant="outlined" />
                   )}
                 </Stack>
 
@@ -1022,9 +1062,7 @@ function TimeEntriesPageContent() {
                   <Button
                     variant="outlined"
                     startIcon={<TaskAltRoundedIcon />}
-                    onClick={() =>
-                      router.push(`/weekly-timesheet?weekOffset=${weekOffset}`)
-                    }
+                    onClick={() => router.push(`/weekly-timesheet?weekOffset=${weekOffset}`)}
                   >
                     Review Weekly Timesheet
                   </Button>
@@ -1033,194 +1071,220 @@ function TimeEntriesPageContent() {
             </Alert>
           ) : null}
 
-          <Card variant="outlined" sx={{ borderRadius: 4 }}>
-            <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-              <Stack spacing={2.5}>
-                <Stack
-                  direction={{ xs: "column", md: "row" }}
-                  justifyContent="space-between"
-                  alignItems={{ xs: "flex-start", md: "center" }}
-                  spacing={2}
+          <Box
+            sx={{
+              px: { xs: 0.25, sm: 0.5 },
+              pt: { xs: 0.25, sm: 0.5 },
+            }}
+          >
+            <Stack spacing={2}>
+              <Box>
+                <Typography
+                  variant="h4"
+                  sx={{
+                    fontWeight: 800,
+                    letterSpacing: -0.6,
+                    fontSize: { xs: "1.9rem", sm: "2.2rem" },
+                    lineHeight: 1.05,
+                  }}
                 >
-                  <Box>
-                    <Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: -0.5 }}>
-                      {isCurrentWeek ? "This Week’s Time Entries" : "Weekly Time Entries"}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-                      {buildWeekRangeLabel(weekStart, weekEnd)}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      {canSeeAll
-                        ? "Viewing weekly entries across employees."
-                        : "Review worked time, PTO, and holiday hours before weekly submission."}
-                    </Typography>
-                  </Box>
+                  {isCurrentWeek ? "This Week’s Time Entries" : "Weekly Time Entries"}
+                </Typography>
 
-                  <Stack
-                    direction={{ xs: "column", sm: "row" }}
-                    spacing={1.25}
-                    width={{ xs: "100%", md: "auto" }}
-                  >
-                    <Button
-                      variant="outlined"
-                      startIcon={<ChevronLeftRoundedIcon />}
-                      onClick={() => setWeekOffset((prev) => prev - 1)}
-                      fullWidth={false}
-                    >
-                      Previous
-                    </Button>
+                <Typography variant="body1" color="text.secondary" sx={{ mt: 0.75 }}>
+                  {buildWeekRangeLabel(weekStart, weekEnd)}
+                </Typography>
 
-                    <Button
-                      variant={isCurrentWeek ? "contained" : "outlined"}
-                      startIcon={<TodayRoundedIcon />}
-                      onClick={() => setWeekOffset(0)}
-                    >
-                      This Week
-                    </Button>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {canSeeAll
+                    ? "Viewing weekly entries across employees."
+                    : "Review worked time, PTO, and holiday hours before weekly submission."}
+                </Typography>
+              </Box>
 
-                    <Button
-                      variant="outlined"
-                      endIcon={<ChevronRightRoundedIcon />}
-                      onClick={() => setWeekOffset((prev) => prev + 1)}
-                    >
-                      Next
-                    </Button>
-                  </Stack>
-                </Stack>
-
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  {!canSeeAll && myWeekStatus ? (
-                    <Chip
-                      color={getStatusChipColor(myWeekStatus as TimeEntry["entryStatus"])}
-                      label={`Timesheet: ${formatStatus(myWeekStatus as TimeEntry["entryStatus"])}`}
-                    />
-                  ) : null}
-
-                  {!canSeeAll ? (
-                    <Chip
-                      color={myWeekLocked ? "warning" : "success"}
-                      label={myWeekLocked ? "Week locked" : "Week editable"}
-                      variant={myWeekLocked ? "filled" : "outlined"}
-                    />
-                  ) : (
-                    <Chip label="All employees" variant="outlined" />
-                  )}
-
-                  {showRejectedFocus ? (
-                    <Chip
-                      color="error"
-                      variant="outlined"
-                      label="Rejected-timesheet correction flow"
-                    />
-                  ) : null}
-                </Stack>
-
-                {!canSeeAll && myWeekLocked ? (
-                  <Alert severity="warning" sx={{ borderRadius: 3 }}>
-                    This payroll week is locked because your weekly timesheet has already been submitted, approved, or exported.
-                  </Alert>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {!canSeeAll && myWeekStatus ? (
+                  <Chip
+                    color={getStatusChipColor(myWeekStatus as TimeEntry["entryStatus"])}
+                    label={`Timesheet: ${formatStatus(
+                      myWeekStatus as TimeEntry["entryStatus"]
+                    )}`}
+                  />
                 ) : null}
 
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
-                  <Button
-                    variant="contained"
-                    onClick={() => router.push(`/weekly-timesheet?weekOffset=${weekOffset}`)}
-                    endIcon={<ArrowForwardRoundedIcon />}
-                  >
-                    Review Weekly Timesheet
-                  </Button>
+                {!canSeeAll ? (
+                  <Chip
+                    color={myWeekLocked ? "warning" : "success"}
+                    label={myWeekLocked ? "Week locked" : "Week editable"}
+                    variant={myWeekLocked ? "filled" : "outlined"}
+                  />
+                ) : (
+                  <Chip label="All employees" variant="outlined" />
+                )}
 
-                  <Button
+                {showRejectedFocus ? (
+                  <Chip
+                    color="error"
                     variant="outlined"
-                    onClick={() => router.push("/time-entries/new")}
-                    disabled={!canSeeAll && myWeekLocked}
-                    startIcon={<EditNoteRoundedIcon />}
-                  >
-                    Add Time Entry
-                  </Button>
-                </Stack>
+                    label="Rejected-timesheet correction flow"
+                  />
+                ) : null}
               </Stack>
-            </CardContent>
-          </Card>
+
+              {!canSeeAll && myWeekLocked ? (
+                <Alert severity="warning" sx={{ borderRadius: 3 }}>
+                  This payroll week is locked because your weekly timesheet has already been
+                  submitted, approved, or exported.
+                </Alert>
+              ) : null}
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 1,
+                  gridTemplateColumns: {
+                    xs: "repeat(3, minmax(0, 1fr))",
+                    sm: "repeat(3, max-content)",
+                  },
+                  alignItems: "center",
+                }}
+              >
+                <Button
+                  variant="outlined"
+                  startIcon={<ChevronLeftRoundedIcon />}
+                  onClick={() => setWeekOffset((prev) => prev - 1)}
+                  sx={{ minWidth: 0 }}
+                >
+                  Previous
+                </Button>
+
+                <Button
+                  variant={isCurrentWeek ? "contained" : "outlined"}
+                  startIcon={<TodayRoundedIcon />}
+                  onClick={() => setWeekOffset(0)}
+                  sx={{ minWidth: 0 }}
+                >
+                  This Week
+                </Button>
+
+                <Button
+                  variant="outlined"
+                  endIcon={<ChevronRightRoundedIcon />}
+                  onClick={() => setWeekOffset((prev) => prev + 1)}
+                  sx={{ minWidth: 0 }}
+                >
+                  Next
+                </Button>
+              </Box>
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 1,
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    sm: "repeat(2, max-content)",
+                  },
+                }}
+              >
+                <Button
+                  variant="contained"
+                  onClick={() => router.push(`/weekly-timesheet?weekOffset=${weekOffset}`)}
+                  endIcon={<ArrowForwardRoundedIcon />}
+                >
+                  Review Weekly Timesheet
+                </Button>
+
+                <Button
+                  component={Link}
+                  href={topAddHref}
+                  variant="outlined"
+                  disabled={!canSeeAll && myWeekLocked}
+                  startIcon={<EditNoteRoundedIcon />}
+                >
+                  Add Time Entry
+                </Button>
+              </Box>
+            </Stack>
+          </Box>
 
           <Box
             sx={{
               display: "grid",
               gridTemplateColumns: {
-                xs: "1fr",
-                sm: "repeat(2, minmax(0, 1fr))",
+                xs: "repeat(2, minmax(0, 1fr))",
                 lg: "repeat(4, minmax(0, 1fr))",
               },
-              gap: 2,
+              gap: 1.5,
             }}
           >
             <Card variant="outlined" sx={{ borderRadius: 4 }}>
-              <CardContent>
-                <Stack spacing={1}>
+              <CardContent sx={{ p: 2 }}>
+                <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
                     <AccessTimeRoundedIcon color="primary" fontSize="small" />
                     <Typography variant="overline" color="text.secondary">
                       Worked
                     </Typography>
                   </Stack>
-                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 800 }}>
                     {weekBreakdown.worked.toFixed(2)}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Work hours this week
+                    Work hours
                   </Typography>
                 </Stack>
               </CardContent>
             </Card>
 
             <Card variant="outlined" sx={{ borderRadius: 4 }}>
-              <CardContent>
-                <Stack spacing={1}>
+              <CardContent sx={{ p: 2 }}>
+                <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
                     <BeachAccessRoundedIcon color="secondary" fontSize="small" />
                     <Typography variant="overline" color="text.secondary">
                       PTO
                     </Typography>
                   </Stack>
-                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 800 }}>
                     {weekBreakdown.pto.toFixed(2)}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Paid time off hours
+                    PTO hours
                   </Typography>
                 </Stack>
               </CardContent>
             </Card>
 
             <Card variant="outlined" sx={{ borderRadius: 4 }}>
-              <CardContent>
-                <Stack spacing={1}>
+              <CardContent sx={{ p: 2 }}>
+                <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
                     <CelebrationRoundedIcon color="success" fontSize="small" />
                     <Typography variant="overline" color="text.secondary">
                       Holiday
                     </Typography>
                   </Stack>
-                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 800 }}>
                     {weekBreakdown.holiday.toFixed(2)}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Paid holiday hours
+                    Holiday hours
                   </Typography>
                 </Stack>
               </CardContent>
             </Card>
 
             <Card variant="outlined" sx={{ borderRadius: 4 }}>
-              <CardContent>
-                <Stack spacing={1}>
+              <CardContent sx={{ p: 2 }}>
+                <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
                     <TodayRoundedIcon color="info" fontSize="small" />
                     <Typography variant="overline" color="text.secondary">
                       Total Paid
                     </Typography>
                   </Stack>
-                  <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 800 }}>
                     {weekBreakdown.paid.toFixed(2)}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
@@ -1232,7 +1296,7 @@ function TimeEntriesPageContent() {
           </Box>
 
           <Card variant="outlined" sx={{ borderRadius: 4 }}>
-            <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+            <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
               <Stack spacing={2}>
                 <Typography variant="h6" sx={{ fontWeight: 800 }}>
                   Filters
@@ -1241,7 +1305,10 @@ function TimeEntriesPageContent() {
                 <Box
                   sx={{
                     display: "grid",
-                    gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                    gridTemplateColumns: {
+                      xs: "1fr",
+                      sm: "repeat(2, minmax(0, 1fr))",
+                    },
                     gap: 2,
                     maxWidth: 760,
                   }}
@@ -1285,7 +1352,8 @@ function TimeEntriesPageContent() {
                 </Box>
 
                 <Typography variant="body2" color="text.secondary">
-                  Showing {visibleEntries.length} {visibleEntries.length === 1 ? "entry" : "entries"} for this payroll week.
+                  Showing {visibleEntries.length}{" "}
+                  {visibleEntries.length === 1 ? "entry" : "entries"} for this payroll week.
                 </Typography>
               </Stack>
             </CardContent>
@@ -1314,7 +1382,7 @@ function TimeEntriesPageContent() {
           ) : null}
 
           {!loading && !error ? (
-            <Stack spacing={2.5}>
+            <Stack spacing={2.25}>
               {payrollWeekDays.map((day) => {
                 const rows = entriesByDay[day.isoDate] ?? [];
                 const holiday = holidayByDate[day.isoDate] ?? null;
@@ -1325,9 +1393,11 @@ function TimeEntriesPageContent() {
                   paid: 0,
                 };
 
+                const dayAddHref = buildAddEntryHref(day.isoDate);
+
                 return (
                   <Card key={day.isoDate} variant="outlined" sx={{ borderRadius: 4 }}>
-                    <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                    <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                       <Stack spacing={2}>
                         <Stack
                           direction={{ xs: "column", md: "row" }}
@@ -1336,10 +1406,10 @@ function TimeEntriesPageContent() {
                           spacing={1.5}
                         >
                           <Box>
-                            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                            <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.15 }}>
                               {day.label} • {formatDisplayDate(day.isoDate)}
                             </Typography>
-                            <Typography variant="body2" color="text.secondary">
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>
                               {day.isoDate}
                             </Typography>
 
@@ -1354,19 +1424,38 @@ function TimeEntriesPageContent() {
                             ) : null}
                           </Box>
 
-                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                            <Chip label={`Worked ${breakdown.worked.toFixed(2)}`} variant="outlined" />
-                            <Chip
-                              label={`PTO ${breakdown.pto.toFixed(2)}`}
-                              color="secondary"
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            alignItems={{ xs: "stretch", sm: "center" }}
+                            sx={{ width: { xs: "100%", md: "auto" } }}
+                          >
+                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                              <Chip label={`Worked ${breakdown.worked.toFixed(2)}`} variant="outlined" />
+                              <Chip
+                                label={`PTO ${breakdown.pto.toFixed(2)}`}
+                                color="secondary"
+                                variant="outlined"
+                              />
+                              <Chip
+                                label={`Holiday ${breakdown.holiday.toFixed(2)}`}
+                                color="success"
+                                variant="outlined"
+                              />
+                              <Chip label={`Paid ${breakdown.paid.toFixed(2)}`} color="info" />
+                            </Stack>
+
+                            <Button
+                              component={Link}
+                              href={dayAddHref}
                               variant="outlined"
-                            />
-                            <Chip
-                              label={`Holiday ${breakdown.holiday.toFixed(2)}`}
-                              color="success"
-                              variant="outlined"
-                            />
-                            <Chip label={`Paid ${breakdown.paid.toFixed(2)}`} color="info" />
+                              size="small"
+                              disabled={!canSeeAll && myWeekLocked}
+                              startIcon={<EditNoteRoundedIcon />}
+                              sx={{ whiteSpace: "nowrap" }}
+                            >
+                              Add Time Entry
+                            </Button>
                           </Stack>
                         </Stack>
 
@@ -1381,31 +1470,38 @@ function TimeEntriesPageContent() {
                               bgcolor: "background.default",
                             }}
                           >
-                            <CardContent>
+                            <CardContent sx={{ p: { xs: 2, sm: 2.25 } }}>
                               <Stack spacing={1.5} alignItems="flex-start">
                                 <Typography variant="body1" sx={{ fontWeight: 700 }}>
-                                  {holiday ? "No time entries, but this is a company holiday" : "No entries for this day"}
+                                  {holiday
+                                    ? "No time entries, but this is a company holiday"
+                                    : "No entries for this day"}
                                 </Typography>
+
                                 <Typography variant="body2" color="text.secondary">
                                   {holiday
-                                    ? `${holiday.name || "Company Holiday"} is on the company holiday calendar for this payroll day.`
+                                    ? `${
+                                        holiday.name || "Company Holiday"
+                                      } is on the company holiday calendar for this payroll day.`
                                     : "Worked time, approved PTO, and paid holidays will all appear here for review."}
                                 </Typography>
+
                                 {!canSeeAll && !myWeekLocked ? (
                                   <Button
+                                    component={Link}
+                                    href={dayAddHref}
                                     variant="outlined"
                                     size="small"
                                     startIcon={<EditNoteRoundedIcon />}
-                                    onClick={() => router.push("/time-entries/new")}
                                   >
-                                    Add entry
+                                    Add Time Entry
                                   </Button>
                                 ) : null}
                               </Stack>
                             </CardContent>
                           </Card>
                         ) : (
-                          <Stack spacing={1.5}>
+                          <Stack spacing={1.25}>
                             {rows.map((entry) => {
                               const { title, subtitle } = renderTitleAndSubtitle(entry);
                               const categoryLabel = formatCategoryLabel((entry as any).category);
@@ -1429,20 +1525,64 @@ function TimeEntriesPageContent() {
                                         },
                                   }}
                                 >
-                                  <CardContent sx={{ p: { xs: 2, sm: 2.25 } }}>
-                                    <Stack spacing={1.5}>
+                                  <CardContent sx={{ p: { xs: 1.75, sm: 2 } }}>
+                                    <Stack spacing={1.35}>
                                       <Stack
                                         direction={{ xs: "column", sm: "row" }}
                                         justifyContent="space-between"
                                         alignItems={{ xs: "flex-start", sm: "flex-start" }}
-                                        spacing={1.5}
+                                        spacing={1.25}
                                       >
-                                        <Box sx={{ minWidth: 0 }}>
+                                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                                          <Stack
+                                            direction="row"
+                                            spacing={0.75}
+                                            flexWrap="wrap"
+                                            useFlexGap
+                                            sx={{ mb: 0.85 }}
+                                          >
+                                            <Chip
+                                              size="small"
+                                              label={categoryLabel}
+                                              variant="outlined"
+                                            />
+                                            <Chip
+                                              size="small"
+                                              label={formatStatus(entry.entryStatus)}
+                                              color={getStatusChipColor(entry.entryStatus)}
+                                            />
+                                            <Chip
+                                              size="small"
+                                              label={
+                                                kind === "holiday"
+                                                  ? "Holiday pay"
+                                                  : kind === "pto"
+                                                  ? "PTO pay"
+                                                  : "Worked"
+                                              }
+                                              color={getKindChipColor(kind)}
+                                              variant={kind === "worked" ? "outlined" : "filled"}
+                                            />
+                                            {synthetic ? (
+                                              <Chip
+                                                size="small"
+                                                label="Calendar holiday"
+                                                color="success"
+                                                variant="outlined"
+                                              />
+                                            ) : null}
+                                          </Stack>
+
                                           <Typography
                                             variant="subtitle1"
-                                            sx={{ fontWeight: 900, lineHeight: 1.2 }}
+                                            sx={{
+                                              fontWeight: 900,
+                                              lineHeight: 1.15,
+                                            }}
                                           >
-                                            {canSeeAll ? `${safeTrim(entry.employeeName) || "Employee"} • ` : ""}
+                                            {canSeeAll
+                                              ? `${safeTrim(entry.employeeName) || "Employee"} • `
+                                              : ""}
                                             {title}
                                           </Typography>
 
@@ -1450,7 +1590,7 @@ function TimeEntriesPageContent() {
                                             <Typography
                                               variant="body2"
                                               color="text.secondary"
-                                              sx={{ mt: 0.5 }}
+                                              sx={{ mt: 0.5, whiteSpace: "pre-wrap" }}
                                             >
                                               {subtitle}
                                             </Typography>
@@ -1461,6 +1601,7 @@ function TimeEntriesPageContent() {
                                           sx={{
                                             textAlign: { xs: "left", sm: "right" },
                                             whiteSpace: "nowrap",
+                                            minWidth: { sm: 92 },
                                           }}
                                         >
                                           <Typography variant="h6" sx={{ fontWeight: 900 }}>
@@ -1472,8 +1613,12 @@ function TimeEntriesPageContent() {
                                         </Box>
                                       </Stack>
 
-                                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                        <Chip size="small" label={categoryLabel} variant="outlined" />
+                                      <Stack
+                                        direction="row"
+                                        spacing={1}
+                                        flexWrap="wrap"
+                                        useFlexGap
+                                      >
                                         <Chip
                                           size="small"
                                           label={formatSourceLabel(entry.source)}
@@ -1481,39 +1626,19 @@ function TimeEntriesPageContent() {
                                         />
                                         <Chip
                                           size="small"
-                                          label={formatStatus(entry.entryStatus)}
-                                          color={getStatusChipColor(entry.entryStatus)}
+                                          label={`Billable: ${entry.billable ? "Yes" : "No"}`}
+                                          variant="outlined"
                                         />
-                                        <Chip
-                                          size="small"
-                                          label={
-                                            kind === "holiday"
-                                              ? "Holiday pay"
-                                              : kind === "pto"
-                                              ? "PTO pay"
-                                              : "Worked"
-                                          }
-                                          color={getKindChipColor(kind)}
-                                          variant={kind === "worked" ? "outlined" : "filled"}
-                                        />
-                                        {synthetic ? (
-                                          <Chip
-                                            size="small"
-                                            label="Calendar holiday"
-                                            color="success"
-                                            variant="outlined"
-                                          />
-                                        ) : null}
                                       </Stack>
 
                                       <Stack
                                         direction={{ xs: "column", sm: "row" }}
                                         justifyContent="space-between"
                                         alignItems={{ xs: "flex-start", sm: "center" }}
-                                        spacing={1}
+                                        spacing={0.75}
                                       >
                                         <Typography variant="caption" color="text.secondary">
-                                          Billable: <strong>{entry.billable ? "Yes" : "No"}</strong>
+                                          {safeTrim(entry.entryDate)} • {formatCategoryLabel((entry as any).category)}
                                         </Typography>
 
                                         <Typography
@@ -1521,7 +1646,7 @@ function TimeEntriesPageContent() {
                                           color={synthetic ? "text.secondary" : "primary.main"}
                                           sx={{ fontWeight: 800 }}
                                         >
-                                          {synthetic ? "Calendar-based holiday display" : "Open entry →"}
+                                          {synthetic ? "Calendar holiday display" : "Open entry →"}
                                         </Typography>
                                       </Stack>
                                     </Stack>
@@ -1558,7 +1683,8 @@ function TimeEntriesPageContent() {
           <Fab
             color="primary"
             variant="extended"
-            onClick={() => router.push("/time-entries/new")}
+            component={Link}
+            href={topAddHref}
             sx={{
               position: "fixed",
               right: 24,
@@ -1582,15 +1708,14 @@ export default function TimeEntriesPage() {
         <ProtectedPage fallbackTitle="Time Entries">
           <AppShell appUser={null}>
             <Stack spacing={2.5}>
-              <Card variant="outlined" sx={{ borderRadius: 4 }}>
-                <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                  <Stack spacing={1.5}>
-                    <Skeleton variant="text" width={220} height={40} />
-                    <Skeleton variant="text" width={180} height={24} />
-                    <Skeleton variant="rectangular" height={52} sx={{ borderRadius: 3 }} />
-                  </Stack>
-                </CardContent>
-              </Card>
+              <Box sx={{ px: { xs: 0.25, sm: 0.5 }, pt: { xs: 0.25, sm: 0.5 } }}>
+                <Stack spacing={1.5}>
+                  <Skeleton variant="text" width={240} height={44} />
+                  <Skeleton variant="text" width={180} height={24} />
+                  <Skeleton variant="rectangular" height={44} sx={{ borderRadius: 3 }} />
+                  <Skeleton variant="rectangular" height={44} sx={{ borderRadius: 3 }} />
+                </Stack>
+              </Box>
 
               <Stack spacing={2}>
                 {[0, 1, 2].map((i) => (
