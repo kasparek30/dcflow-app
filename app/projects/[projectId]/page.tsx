@@ -1,4 +1,3 @@
-// app/projects/[projectId]/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -17,6 +16,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
+import { useRouter } from "next/navigation";
 import {
   Alert,
   Box,
@@ -46,11 +46,13 @@ import { alpha, useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import DeleteForeverRoundedIcon from "@mui/icons-material/DeleteForeverRounded";
 import EditCalendarRoundedIcon from "@mui/icons-material/EditCalendarRounded";
 import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
 import NoteAltRoundedIcon from "@mui/icons-material/NoteAltRounded";
+import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
 import RouteRoundedIcon from "@mui/icons-material/RouteRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
@@ -83,6 +85,18 @@ type EmployeeProfileOption = {
   laborRole?: string;
   defaultPairedTechUid?: string | null;
 };
+
+type CustomerOption = {
+  id: string;
+  displayName: string;
+  phonePrimary?: string;
+};
+
+type EditableProjectType =
+  | "new_construction"
+  | "remodel"
+  | "time_materials"
+  | "other";
 
 type StageKey = "roughIn" | "topOutVent" | "trimFinish";
 
@@ -138,6 +152,53 @@ function formatStageStatus(status: Project["roughIn"]["status"]) {
     default:
       return status;
   }
+}
+
+function formatProjectType(projectType?: string) {
+  const t = String(projectType || "").toLowerCase();
+  if (t === "new_construction") return "New Construction";
+  if (t === "remodel") return "Remodel";
+  if (t === "time_materials") return "Time + Materials";
+  return "Other";
+}
+
+function money2(n: number) {
+  return Number((Number(n) || 0).toFixed(2));
+}
+
+function formatCurrency(value?: number) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+function buildStageBilledAmounts(projectType: EditableProjectType, totalBid: number) {
+  const bid = Number(totalBid) || 0;
+
+  if (projectType === "new_construction") {
+    return {
+      roughIn: money2(bid * 0.25),
+      topOutVent: money2(bid * 0.5),
+      trimFinish: money2(bid * 0.25),
+    };
+  }
+
+  if (projectType === "remodel") {
+    return {
+      roughIn: money2(bid * 0.5),
+      topOutVent: 0,
+      trimFinish: money2(bid * 0.5),
+    };
+  }
+
+  return {
+    roughIn: 0,
+    topOutVent: 0,
+    trimFinish: 0,
+  };
 }
 
 function pad2(n: number) {
@@ -232,12 +293,9 @@ function getEnabledStages(projectType: string): StageKey[] {
   const t = String(projectType || "").toLowerCase();
   if (t === "new_construction") return ["roughIn", "topOutVent", "trimFinish"];
   if (t === "remodel") return ["roughIn", "trimFinish"];
-  if (
-    t === "time_materials" ||
-    t === "time+materials" ||
-    t === "time_and_materials"
-  )
+  if (t === "time_materials" || t === "time+materials" || t === "time_and_materials") {
     return [];
+  }
   return ["roughIn", "topOutVent", "trimFinish"];
 }
 
@@ -269,14 +327,14 @@ function makeProjectTripId(projectId: string, stageKey: StageKey, dateIso: strin
 
 function defaultStageTripDate(
   stageKey: StageKey,
-  args: { roughStart: string; topStart: string; trimStart: string }
+  args: { roughStart: string; topStart: string; trimStart: string },
 ) {
   const start =
     stageKey === "roughIn"
       ? safeTrim(args.roughStart)
       : stageKey === "topOutVent"
-      ? safeTrim(args.topStart)
-      : safeTrim(args.trimStart);
+        ? safeTrim(args.topStart)
+        : safeTrim(args.trimStart);
 
   if (start) return start;
   return toIsoDate(new Date());
@@ -289,13 +347,11 @@ type TripModalState = {
   mode: TripModalMode;
   stageKey: StageKey | null;
   tripId: string | null;
-
   date: string;
   timeWindow: "am" | "pm" | "all_day" | "custom";
   startTime: string;
   endTime: string;
   notes: string;
-
   primaryTechUid: string;
   helperUid: string;
   secondaryTechUid: string;
@@ -344,6 +400,40 @@ function InfoField({
         {value || "—"}
       </Typography>
     </Paper>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: React.ReactNode;
+  helper?: React.ReactNode;
+}) {
+  return (
+    <Card
+      sx={{
+        borderRadius: 4,
+        boxShadow: "none",
+        border: (theme) => `1px solid ${theme.palette.divider}`,
+      }}
+    >
+      <CardContent>
+        <Typography variant="subtitle2" color="text.secondary">
+          {label}
+        </Typography>
+        <Typography variant="h5" sx={{ mt: 1, fontWeight: 800 }}>
+          {value}
+        </Typography>
+        {helper ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+            {helper}
+          </Typography>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -418,6 +508,7 @@ function selectMenuProps() {
 }
 
 export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
+  const router = useRouter();
   const theme = useTheme();
   const { appUser } = useAuthContext();
 
@@ -425,6 +516,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [projectId, setProjectId] = useState("");
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState("");
+
+  const [customersLoading, setCustomersLoading] = useState(true);
+  const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  const [customersError, setCustomersError] = useState("");
 
   const [techLoading, setTechLoading] = useState(true);
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
@@ -438,7 +533,26 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
 
-  const [bidStatus, setBidStatus] = useState<"draft" | "submitted" | "won" | "lost">("draft");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [projectTypeValue, setProjectTypeValue] =
+    useState<EditableProjectType>("new_construction");
+  const [description, setDescription] = useState("");
+  const [bidStatus, setBidStatus] =
+    useState<"draft" | "submitted" | "won" | "lost">("draft");
+  const [totalBidAmount, setTotalBidAmount] = useState("0");
+  const [projectActive, setProjectActive] = useState(true);
+
+  const [serviceAddressLabel, setServiceAddressLabel] = useState("");
+  const [serviceAddressLine1, setServiceAddressLine1] = useState("");
+  const [serviceAddressLine2, setServiceAddressLine2] = useState("");
+  const [serviceCity, setServiceCity] = useState("");
+  const [serviceState, setServiceState] = useState("TX");
+  const [servicePostalCode, setServicePostalCode] = useState("");
 
   const [projectPrimaryUid, setProjectPrimaryUid] = useState("");
   const [projectSecondaryUid, setProjectSecondaryUid] = useState("");
@@ -491,6 +605,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     appUser?.role === "dispatcher" ||
     appUser?.role === "manager";
 
+  const canDeleteProject =
+    appUser?.role === "admin" || appUser?.role === "manager";
+
   const isFieldRole =
     appUser?.role === "technician" ||
     appUser?.role === "helper" ||
@@ -524,11 +641,21 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     return candidates;
   }, [employeeProfiles]);
 
+  const selectedCustomer = useMemo(() => {
+    return customers.find((customer) => customer.id === selectedCustomerId) ?? null;
+  }, [customers, selectedCustomerId]);
+
+  const totalBidNumber = useMemo(() => Number(totalBidAmount) || 0, [totalBidAmount]);
+
+  const stageAmountPreview = useMemo(() => {
+    return buildStageBilledAmounts(projectTypeValue, totalBidNumber);
+  }, [projectTypeValue, totalBidNumber]);
+
   function computeDefaultHelperForTech(techUid: string) {
     const uid = techUid.trim();
     if (!uid) return "";
     const match = helperCandidates.find(
-      (h) => String(h.defaultPairedTechUid || "").trim() === uid
+      (h) => String(h.defaultPairedTechUid || "").trim() === uid,
     );
     return match?.uid || "";
   }
@@ -553,8 +680,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       stageKey === "roughIn"
         ? roughInAssign
         : stageKey === "topOutVent"
-        ? topOutAssign
-        : trimAssign;
+          ? topOutAssign
+          : trimAssign;
 
     if (stageState.overrideEnabled) {
       return {
@@ -625,7 +752,23 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         } as any;
 
         setProject(item);
+
+        setSelectedCustomerId(item.customerId || "");
+        setProjectName(item.projectName || "");
+        setProjectTypeValue(
+          (item.projectType as EditableProjectType) || "new_construction",
+        );
+        setDescription(item.description || "");
         setBidStatus(item.bidStatus);
+        setTotalBidAmount(String(Number(item.totalBidAmount ?? 0)));
+        setProjectActive(Boolean(item.active));
+
+        setServiceAddressLabel(item.serviceAddressLabel || "Job Site");
+        setServiceAddressLine1(item.serviceAddressLine1 || "");
+        setServiceAddressLine2(item.serviceAddressLine2 || "");
+        setServiceCity(item.serviceCity || "");
+        setServiceState(item.serviceState || "TX");
+        setServicePostalCode(item.servicePostalCode || "");
 
         const seededProjectPrimary =
           (data.primaryTechnicianId as string | undefined) ||
@@ -649,9 +792,9 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         const trimStaff = stageStaffing(item.trimFinish);
 
         const pickHelper1 = (staff?: StageStaffing) =>
-          Array.isArray(staff?.helperIds) ? staff!.helperIds![0] || "" : "";
+          Array.isArray(staff?.helperIds) ? staff.helperIds[0] || "" : "";
         const pickHelper2 = (staff?: StageStaffing) =>
-          Array.isArray(staff?.helperIds) ? staff!.helperIds![1] || "" : "";
+          Array.isArray(staff?.helperIds) ? staff.helperIds[1] || "" : "";
 
         setRoughInAssign({
           primaryUid: roughStaff?.primaryTechnicianId || "",
@@ -710,6 +853,34 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   }, [params]);
 
   useEffect(() => {
+    async function loadCustomers() {
+      try {
+        setCustomersLoading(true);
+        setCustomersError("");
+
+        const snap = await getDocs(collection(db, "customers"));
+        const items: CustomerOption[] = snap.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            id: docSnap.id,
+            displayName: data.displayName ?? "Unnamed Customer",
+            phonePrimary: data.phonePrimary ?? "",
+          };
+        });
+
+        items.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        setCustomers(items);
+      } catch (err: unknown) {
+        setCustomersError(err instanceof Error ? err.message : "Failed to load customers.");
+      } finally {
+        setCustomersLoading(false);
+      }
+    }
+
+    loadCustomers();
+  }, []);
+
+  useEffect(() => {
     async function loadTechnicians() {
       try {
         const snap = await getDocs(collection(db, "users"));
@@ -760,7 +931,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         setEmployeeProfiles(items);
       } catch (err: unknown) {
         setProfilesError(
-          err instanceof Error ? err.message : "Failed to load employee profiles."
+          err instanceof Error ? err.message : "Failed to load employee profiles.",
         );
       } finally {
         setProfilesLoading(false);
@@ -844,7 +1015,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           collection(db, "trips"),
           where("link.projectId", "==", projectId),
           orderBy("date", "asc"),
-          orderBy("startTime", "asc")
+          orderBy("startTime", "asc"),
         );
 
         const snap = await getDocs(qTrips);
@@ -886,6 +1057,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     return getEnabledStages(project.projectType);
   }, [project]);
 
+  useEffect(() => {
+    if (enabledStages.length === 0) return;
+    if (!enabledStages.includes(activeStageTab)) {
+      setActiveStageTab(enabledStages[0]);
+    }
+  }, [enabledStages, activeStageTab]);
+
   const hasStages = enabledStages.length > 0;
 
   const tripsByStage = useMemo(() => {
@@ -904,9 +1082,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
     for (const k of Object.keys(map) as StageKey[]) {
       map[k].sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
-          `${b.date}_${b.startTime}_${b.id}`
-        )
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
       );
     }
 
@@ -917,9 +1093,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     return projectTrips
       .filter((t) => !String(t.link?.projectStageKey || "").trim())
       .sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
-          `${b.date}_${b.startTime}_${b.id}`
-        )
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
       );
   }, [projectTrips]);
 
@@ -967,8 +1141,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 updatedAt: now,
                 updatedByUid: myUid || null,
               }
-            : x
-        )
+            : x,
+        ),
       );
     } catch (e: any) {
       alert(e?.message || "Failed to cancel trip.");
@@ -985,8 +1159,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
     const ok = window.confirm(
       `Permanently delete this trip?\n\n${t.date} • ${formatTripWindow(
-        String(t.timeWindow || "")
-      )} • ${t.startTime}-${t.endTime}\n\nThis cannot be undone.`
+        String(t.timeWindow || ""),
+      )} • ${t.startTime}-${t.endTime}\n\nThis cannot be undone.`,
     );
     if (!ok) return;
 
@@ -1007,15 +1181,15 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       stageKey === "roughIn"
         ? roughInScheduledDate.trim()
         : stageKey === "topOutVent"
-        ? topOutVentScheduledDate.trim()
-        : trimFinishScheduledDate.trim();
+          ? topOutVentScheduledDate.trim()
+          : trimFinishScheduledDate.trim();
 
     const endRaw =
       stageKey === "roughIn"
         ? roughInScheduledEndDate.trim()
         : stageKey === "topOutVent"
-        ? topOutVentScheduledEndDate.trim()
-        : trimFinishScheduledEndDate.trim();
+          ? topOutVentScheduledEndDate.trim()
+          : trimFinishScheduledEndDate.trim();
 
     const end = endRaw || start;
 
@@ -1035,7 +1209,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const primaryUid = crew.primary.trim();
     if (!primaryUid) {
       alert(
-        "Stage crew requires a Primary Technician (either stage override or project default)."
+        "Stage crew requires a Primary Technician (either stage override or project default).",
       );
       return;
     }
@@ -1125,7 +1299,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         collection(db, "trips"),
         where("link.projectId", "==", project.id),
         orderBy("date", "asc"),
-        orderBy("startTime", "asc")
+        orderBy("startTime", "asc"),
       );
       const snap = await getDocs(qTrips);
       const items: TripDoc[] = snap.docs.map((ds) => {
@@ -1227,10 +1401,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       const newTrip: TripDoc = { id, ...(payload as any) };
       setProjectTrips((prev) =>
         [...prev, newTrip].sort((a, b) =>
-          `${a.date}_${a.startTime}_${a.id}`.localeCompare(
-            `${b.date}_${b.startTime}_${b.id}`
-          )
-        )
+          `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+        ),
       );
     } catch (e: any) {
       alert(e?.message || "Failed to add trip.");
@@ -1302,10 +1474,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const createdRef = await addDoc(collection(db, "trips"), payload as any);
     setProjectTrips((prev) =>
       [...prev, { id: createdRef.id, ...(payload as any) }].sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
-          `${b.date}_${b.startTime}_${b.id}`
-        )
-      )
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+      ),
     );
   }
 
@@ -1484,10 +1654,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           const newTrip: TripDoc = { id, ...(payload as any) };
           setProjectTrips((prev) =>
             [...prev, newTrip].sort((a, b) =>
-              `${a.date}_${a.startTime}_${a.id}`.localeCompare(
-                `${b.date}_${b.startTime}_${b.id}`
-              )
-            )
+              `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+            ),
           );
 
           setTripModalOk("✅ Trip scheduled.");
@@ -1547,8 +1715,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 updatedAt: now,
                 updatedByUid: myUid || null,
               }
-            : x
-        )
+            : x,
+        ),
       );
 
       setTripModalOk("✅ Trip updated.");
@@ -1564,12 +1732,31 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     e.preventDefault();
     if (!project) return;
 
+    if (!selectedCustomerId.trim()) {
+      setSaveError("Please select a linked customer.");
+      return;
+    }
+
+    if (!projectName.trim()) {
+      setSaveError("Project name is required.");
+      return;
+    }
+
+    if (!serviceAddressLine1.trim() || !serviceCity.trim() || !serviceState.trim() || !servicePostalCode.trim()) {
+      setSaveError("Complete the job site address before saving.");
+      return;
+    }
+
     setSaveError("");
     setSaveSuccess("");
     setSaving(true);
 
     try {
       const now = nowIso();
+      const selectedCustomerRecord =
+        customers.find((customer) => customer.id === selectedCustomerId.trim()) ?? null;
+      const totalBid = Number(totalBidAmount) || 0;
+      const stageAmounts = buildStageBilledAmounts(projectTypeValue, totalBid);
 
       const projPrimary = projectPrimaryUid.trim() || null;
       const projSecondary = projectSecondaryUid.trim() || null;
@@ -1635,6 +1822,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         scheduledDate: roughInScheduledDate || null,
         scheduledEndDate: roughInScheduledEndDate || null,
         completedDate: roughInCompletedDate || null,
+        billedAmount: stageAmounts.roughIn,
         staffing: staffingToFirestore(roughStaff),
       };
 
@@ -1644,6 +1832,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         scheduledDate: topOutVentScheduledDate || null,
         scheduledEndDate: topOutVentScheduledEndDate || null,
         completedDate: topOutVentCompletedDate || null,
+        billedAmount: stageAmounts.topOutVent,
         staffing: staffingToFirestore(topStaff),
       };
 
@@ -1653,11 +1842,29 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         scheduledDate: trimFinishScheduledDate || null,
         scheduledEndDate: trimFinishScheduledEndDate || null,
         completedDate: trimFinishCompletedDate || null,
+        billedAmount: stageAmounts.trimFinish,
         staffing: staffingToFirestore(trimStaff),
       };
 
       await updateDoc(doc(db, "projects", project.id), {
+        customerId: selectedCustomerId.trim(),
+        customerDisplayName:
+          selectedCustomerRecord?.displayName || project.customerDisplayName || null,
+
+        projectName: projectName.trim(),
+        projectType: projectTypeValue,
+        description: description.trim() || null,
+
+        serviceAddressLabel: serviceAddressLabel.trim() || "Job Site",
+        serviceAddressLine1: serviceAddressLine1.trim(),
+        serviceAddressLine2: serviceAddressLine2.trim() || null,
+        serviceCity: serviceCity.trim(),
+        serviceState: serviceState.trim().toUpperCase(),
+        servicePostalCode: servicePostalCode.trim(),
+
         bidStatus,
+        totalBidAmount: totalBid,
+        active: projectActive,
 
         primaryTechnicianId: projPrimary,
         primaryTechnicianName: projPrimary ? findTechName(projPrimary) || null : null,
@@ -1684,23 +1891,85 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         prev
           ? ({
               ...prev,
+              customerId: selectedCustomerId.trim(),
+              customerDisplayName:
+                selectedCustomerRecord?.displayName || prev.customerDisplayName,
+              projectName: projectName.trim(),
+              projectType: projectTypeValue,
+              description: description.trim() || undefined,
+              serviceAddressLabel: serviceAddressLabel.trim() || "Job Site",
+              serviceAddressLine1: serviceAddressLine1.trim(),
+              serviceAddressLine2: serviceAddressLine2.trim() || undefined,
+              serviceCity: serviceCity.trim(),
+              serviceState: serviceState.trim().toUpperCase(),
+              servicePostalCode: servicePostalCode.trim(),
               bidStatus,
+              totalBidAmount: totalBid,
+              active: projectActive,
               roughIn: nextRoughIn,
               topOutVent: nextTopOut,
               trimFinish: nextTrim,
               updatedAt: now,
             } as any)
-          : prev
+          : prev,
       );
+
       setSaveSuccess("✅ Project updates saved.");
     } catch (err: unknown) {
       setSaveError(
-        err instanceof Error ? err.message : "Failed to save project updates."
+        err instanceof Error ? err.message : "Failed to save project updates.",
       );
     } finally {
       setSaving(false);
     }
   }
+
+  async function handleDeleteProject() {
+    if (!project) return;
+    if (!canDeleteProject) return;
+
+    setDeleteBusy(true);
+    setDeleteError("");
+
+    try {
+      const tripsSnap = await getDocs(
+        query(collection(db, "trips"), where("link.projectId", "==", project.id)),
+      );
+
+      const batchMax = 450;
+      let batch = writeBatch(db);
+      let count = 0;
+
+      for (const tripDoc of tripsSnap.docs) {
+        batch.delete(tripDoc.ref);
+        count += 1;
+
+        if (count >= batchMax) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      if (count > 0) {
+        await batch.commit();
+      }
+
+      await deleteDoc(doc(db, "projects", project.id));
+
+      setDeleteDialogOpen(false);
+      router.push("/projects");
+    } catch (err: unknown) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete project.",
+      );
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  const displayCustomerName =
+    selectedCustomer?.displayName || project?.customerDisplayName || "—";
 
   const projectPrimaryName = projectPrimaryUid ? findTechName(projectPrimaryUid) : "";
   const projectSecondaryName = projectSecondaryUid ? findTechName(projectSecondaryUid) : "";
@@ -1756,18 +2025,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
   function statusChipColor(status: string): "default" | "primary" | "success" | "warning" | "error" {
     const s = String(status || "").toLowerCase();
-    if (s === "complete") return "success";
-    if (s === "in_progress") return "warning";
-    if (s === "scheduled") return "primary";
-    if (s === "cancelled") return "error";
+    if (s === "complete" || s === "won") return "success";
+    if (s === "in_progress" || s === "draft") return "warning";
+    if (s === "scheduled" || s === "submitted") return "primary";
+    if (s === "cancelled" || s === "lost") return "error";
     return "default";
   }
 
-  function TripRow({
-    t,
-  }: {
-    t: TripDoc;
-  }) {
+  function TripRow({ t }: { t: TripDoc }) {
     const canEditThis = canCurrentUserEditTrip(t);
     const cancelled = t.status === "cancelled" || t.active === false;
 
@@ -1780,101 +2045,95 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       : "";
 
     return (
-      <Paper
-        variant="outlined"
+      <Card
         sx={{
-          p: 2,
           borderRadius: 4,
-          bgcolor: cancelled
-            ? alpha(theme.palette.error.main, 0.04)
-            : "background.paper",
+          boxShadow: "none",
+          border: `1px solid ${theme.palette.divider}`,
+          bgcolor: cancelled ? alpha(theme.palette.error.main, 0.04) : "background.paper",
         }}
       >
-        <Stack spacing={1.5}>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1.25}
-            justifyContent="space-between"
-            alignItems={{ xs: "flex-start", sm: "center" }}
-          >
-            <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-              {t.date} • {formatTripWindow(String(t.timeWindow || "all_day"))} •{" "}
-              {t.startTime}–{t.endTime}
-            </Typography>
-
-            <Chip
-              label={
-                cancelled
-                  ? "Cancelled"
-                  : (t.status || "planned").replaceAll("_", " ").toUpperCase()
-              }
-              color={statusChipColor(cancelled ? "cancelled" : t.status)}
-              variant={cancelled ? "filled" : "outlined"}
-              size="small"
-            />
-          </Stack>
-
-          <Typography variant="body2" color="text.secondary">
-            <strong>Crew:</strong> {tech}
-            {helper}
-            {secondTech}
-            {secondHelper}
-          </Typography>
-
-          {t.notes ? (
-            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
-              {t.notes}
-            </Typography>
-          ) : null}
-
-          {t.cancelReason ? (
-            <Typography variant="caption" color="text.secondary">
-              Cancel reason: {t.cancelReason}
-            </Typography>
-          ) : null}
-
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Button
-              variant="outlined"
-              onClick={() => openEditTrip(t)}
-              disabled={!canEditThis}
+        <CardContent sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.25}
+              justifyContent="space-between"
+              alignItems={{ xs: "flex-start", sm: "center" }}
             >
-              Edit
-            </Button>
+              <Box>
+                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                  {t.date} • {formatTripWindow(String(t.timeWindow || "all_day"))} •{" "}
+                  {t.startTime}–{t.endTime}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Crew: {tech}
+                  {helper}
+                  {secondTech}
+                  {secondHelper}
+                </Typography>
+              </Box>
 
-            {canEditProject ? (
-              <>
-                <Button
-                  variant="text"
-                  color="warning"
-                  onClick={() => cancelTrip(t)}
-                  disabled={cancelled}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="text"
-                  color="error"
-                  onClick={() => removeTrip(t)}
-                >
-                  Delete
-                </Button>
-              </>
+              <Chip
+                label={
+                  cancelled
+                    ? "Cancelled"
+                    : (t.status || "planned").replaceAll("_", " ").toUpperCase()
+                }
+                color={statusChipColor(cancelled ? "cancelled" : t.status)}
+                variant={cancelled ? "filled" : "outlined"}
+                size="small"
+              />
+            </Stack>
+
+            {t.notes ? (
+              <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+                {t.notes}
+              </Typography>
+            ) : null}
+
+            {t.cancelReason ? (
+              <Typography variant="caption" color="text.secondary">
+                Cancel reason: {t.cancelReason}
+              </Typography>
+            ) : null}
+
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button
+                variant="outlined"
+                onClick={() => openEditTrip(t)}
+                disabled={!canEditThis}
+                sx={{ borderRadius: 99 }}
+              >
+                Edit
+              </Button>
+
+              {canEditProject ? (
+                <>
+                  <Button
+                    variant="text"
+                    color="warning"
+                    onClick={() => cancelTrip(t)}
+                    disabled={cancelled}
+                  >
+                    Cancel
+                  </Button>
+                  <Button variant="text" color="error" onClick={() => removeTrip(t)}>
+                    Delete
+                  </Button>
+                </>
+              ) : null}
+            </Stack>
+
+            {!canEditThis ? (
+              <Typography variant="caption" color="text.secondary">
+                Techs can edit trips they are assigned to. Admin / Dispatcher / Manager can
+                edit any trip.
+              </Typography>
             ) : null}
           </Stack>
-
-          {!canEditThis ? (
-            <Typography variant="caption" color="text.secondary">
-              Techs can edit trips they are assigned to. Admin / Dispatcher / Manager can
-              edit any trip.
-            </Typography>
-          ) : null}
-
-          <Typography variant="caption" color="text.disabled">
-            Trip ID: {t.id}
-          </Typography>
-        </Stack>
-      </Paper>
+        </CardContent>
+      </Card>
     );
   }
 
@@ -1921,9 +2180,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   label="Date"
                   type="date"
                   value={tripModal.date}
-                  onChange={(e) =>
-                    setTripModal((m) => ({ ...m, date: e.target.value }))
-                  }
+                  onChange={(e) => setTripModal((m) => ({ ...m, date: e.target.value }))}
                   InputLabelProps={{ shrink: true }}
                   disabled={tripModalBusy}
                   fullWidth
@@ -1954,9 +2211,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   label="Start Time"
                   type="time"
                   value={tripModal.startTime}
-                  onChange={(e) =>
-                    setTripModal((m) => ({ ...m, startTime: e.target.value }))
-                  }
+                  onChange={(e) => setTripModal((m) => ({ ...m, startTime: e.target.value }))}
                   InputLabelProps={{ shrink: true }}
                   disabled={tripModalBusy || tripModal.timeWindow !== "custom"}
                   fullWidth
@@ -1966,9 +2221,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   label="End Time"
                   type="time"
                   value={tripModal.endTime}
-                  onChange={(e) =>
-                    setTripModal((m) => ({ ...m, endTime: e.target.value }))
-                  }
+                  onChange={(e) => setTripModal((m) => ({ ...m, endTime: e.target.value }))}
                   InputLabelProps={{ shrink: true }}
                   disabled={tripModalBusy || tripModal.timeWindow !== "custom"}
                   fullWidth
@@ -2026,9 +2279,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       <Select
                         label="Helper"
                         value={tripModal.helperUid}
-                        onChange={(e) =>
-                          setTripModal((m) => ({ ...m, helperUid: e.target.value }))
-                        }
+                        onChange={(e) => setTripModal((m) => ({ ...m, helperUid: e.target.value }))}
                         disabled={tripModalBusy}
                         {...selectMenuProps()}
                       >
@@ -2100,9 +2351,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               <TextField
                 label="Trip Notes"
                 value={tripModal.notes}
-                onChange={(e) =>
-                  setTripModal((m) => ({ ...m, notes: e.target.value }))
-                }
+                onChange={(e) => setTripModal((m) => ({ ...m, notes: e.target.value }))}
                 multiline
                 minRows={4}
                 disabled={tripModalBusy}
@@ -2134,8 +2383,61 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             <Button onClick={closeTripModal} disabled={tripModalBusy}>
               Cancel
             </Button>
-            <Button variant="contained" onClick={saveTripModal} disabled={tripModalBusy}>
+            <Button
+              variant="contained"
+              onClick={saveTripModal}
+              disabled={tripModalBusy}
+              sx={{ borderRadius: 99, boxShadow: "none" }}
+            >
               {tripModalBusy ? "Saving..." : "Save Changes"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={deleteDialogOpen}
+          onClose={deleteBusy ? undefined : () => setDeleteDialogOpen(false)}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: { borderRadius: 4 },
+          }}
+        >
+          <DialogTitle sx={{ fontWeight: 800 }}>Delete Project?</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Alert severity="warning">
+                This will permanently delete this project and all linked project trips.
+                This action cannot be undone.
+              </Alert>
+
+              <Box>
+                <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                  {projectName || project?.projectName || "Untitled Project"}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {displayCustomerName}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {serviceAddressLine1 || project?.serviceAddressLine1 || "No address"}
+                </Typography>
+              </Box>
+
+              {deleteError ? <Alert severity="error">{deleteError}</Alert> : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={() => setDeleteDialogOpen(false)} disabled={deleteBusy}>
+              Cancel
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              onClick={handleDeleteProject}
+              disabled={deleteBusy}
+              sx={{ borderRadius: 99, boxShadow: "none" }}
+            >
+              {deleteBusy ? "Deleting..." : "Delete Project"}
             </Button>
           </DialogActions>
         </Dialog>
@@ -2163,7 +2465,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     theme.palette.mode === "light"
                       ? `linear-gradient(180deg, ${alpha(
                           theme.palette.primary.main,
-                          0.06
+                          0.06,
                         )}, ${alpha(theme.palette.primary.main, 0.01)})`
                       : undefined,
                 }}
@@ -2174,24 +2476,32 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   justifyContent="space-between"
                   alignItems={{ xs: "flex-start", md: "center" }}
                 >
-                  <Stack spacing={1}>
+                  <Stack spacing={1.25}>
                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                       <Chip
                         icon={<WorkRoundedIcon />}
-                        label={project.projectType}
-                        variant="outlined"
+                        label={formatProjectType(projectTypeValue)}
+                        variant="filled"
+                        color="primary"
                         size="small"
                       />
                       <Chip
-                        label={formatBidStatus(project.bidStatus)}
-                        color={statusChipColor(project.bidStatus)}
-                        variant="outlined"
+                        icon={<PaidRoundedIcon />}
+                        label={formatBidStatus(bidStatus)}
+                        color={statusChipColor(bidStatus)}
+                        variant="filled"
+                        size="small"
+                      />
+                      <Chip
+                        label={projectActive ? "Active" : "Inactive"}
+                        color={projectActive ? "success" : "default"}
+                        variant={projectActive ? "filled" : "outlined"}
                         size="small"
                       />
                     </Stack>
 
-                    <Typography variant="h4" sx={{ fontWeight: 900 }}>
-                      {project.projectName}
+                    <Typography variant="h4" sx={{ fontWeight: 900, letterSpacing: -0.4 }}>
+                      {projectName || "Untitled Project"}
                     </Typography>
 
                     <Typography variant="body2" color="text.secondary">
@@ -2202,16 +2512,51 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     </Typography>
                   </Stack>
 
-                  <Button
-                    component={Link}
-                    href="/projects"
-                    variant="outlined"
-                    startIcon={<ArrowBackRoundedIcon />}
-                  >
-                    Back to Projects
-                  </Button>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Button
+                      component={Link}
+                      href="/projects"
+                      variant="outlined"
+                      startIcon={<ArrowBackRoundedIcon />}
+                      sx={{ borderRadius: 99 }}
+                    >
+                      Back to Projects
+                    </Button>
+
+                    {canDeleteProject ? (
+                      <Button
+                        color="error"
+                        variant="outlined"
+                        startIcon={<DeleteForeverRoundedIcon />}
+                        onClick={() => {
+                          setDeleteError("");
+                          setDeleteDialogOpen(true);
+                        }}
+                        sx={{ borderRadius: 99 }}
+                      >
+                        Delete Project
+                      </Button>
+                    ) : null}
+                  </Stack>
                 </Stack>
               </Paper>
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 2,
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    sm: "repeat(2, minmax(0, 1fr))",
+                    lg: "repeat(4, minmax(0, 1fr))",
+                  },
+                }}
+              >
+                <MetricCard label="Customer" value={displayCustomerName} />
+                <MetricCard label="Project Type" value={formatProjectType(projectTypeValue)} />
+                <MetricCard label="Bid Status" value={formatBidStatus(bidStatus)} />
+                <MetricCard label="Total Bid" value={formatCurrency(totalBidNumber)} />
+              </Box>
 
               <Box
                 sx={{
@@ -2225,7 +2570,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               >
                 <SectionCard
                   title="Customer"
-                  subtitle="Linked customer on this project"
+                  subtitle="Current linked customer"
                   icon={<GroupRoundedIcon color="primary" />}
                 >
                   <Box
@@ -2238,17 +2583,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       },
                     }}
                   >
-                    <InfoField
-                      label="Customer"
-                      value={project.customerDisplayName || "—"}
-                    />
-                    <InfoField label="Customer ID" value={project.customerId || "—"} />
+                    <InfoField label="Customer" value={displayCustomerName} />
+                    <InfoField label="Customer ID" value={selectedCustomerId || project.customerId || "—"} />
                   </Box>
                 </SectionCard>
 
                 <SectionCard
                   title="Project Address"
-                  subtitle="Primary service location"
+                  subtitle="Current job site"
                   icon={<HomeWorkRoundedIcon color="primary" />}
                 >
                   <Box
@@ -2261,14 +2603,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       },
                     }}
                   >
-                    <InfoField label="Label" value={project.serviceAddressLabel || "—"} />
-                    <InfoField label="Address 1" value={project.serviceAddressLine1 || "—"} />
-                    <InfoField label="Address 2" value={project.serviceAddressLine2 || "—"} />
+                    <InfoField label="Label" value={serviceAddressLabel || "—"} />
+                    <InfoField label="Address 1" value={serviceAddressLine1 || "—"} />
+                    <InfoField label="Address 2" value={serviceAddressLine2 || "—"} />
                     <InfoField
                       label="City / State / ZIP"
-                      value={`${project.serviceCity || "—"}, ${project.serviceState || "—"} ${
-                        project.servicePostalCode || ""
-                      }`}
+                      value={`${serviceCity || "—"}, ${serviceState || "—"} ${servicePostalCode || ""}`}
                     />
                   </Box>
                 </SectionCard>
@@ -2276,28 +2616,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
               <SectionCard
                 title="Project Overview"
-                subtitle="Project defaults are used as stage fallback and can still be overridden per stage or per trip."
+                subtitle="Project defaults act as the fallback crew for stages and trips unless you override them."
                 icon={<InfoRoundedIcon color="primary" />}
               >
                 <Stack spacing={2}>
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 2,
-                      gridTemplateColumns: {
-                        xs: "1fr",
-                        sm: "repeat(3, minmax(0, 1fr))",
-                      },
-                    }}
-                  >
-                    <InfoField label="Project Type" value={project.projectType} />
-                    <InfoField label="Bid Status" value={formatBidStatus(project.bidStatus)} />
-                    <InfoField
-                      label="Total Bid"
-                      value={`$${Number(project.totalBidAmount || 0).toFixed(2)}`}
-                    />
-                  </Box>
-
                   <Paper
                     variant="outlined"
                     sx={{
@@ -2335,12 +2657,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       </Box>
 
                       <Typography variant="caption" color="text.secondary">
-                        You can still override crew per-stage and per-trip.
+                        Stage overrides are optional. Trip-level edits still take precedence for that trip.
                       </Typography>
                     </Stack>
                   </Paper>
 
-                  {project.description ? (
+                  {description ? (
                     <>
                       <Divider />
                       <Stack spacing={1}>
@@ -2348,7 +2670,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                           Description
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
-                          {project.description}
+                          {description}
                         </Typography>
                       </Stack>
                     </>
@@ -2359,7 +2681,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               {hasStages ? (
                 <SectionCard
                   title="Stages"
-                  subtitle="Stage details and stage trips are managed together."
+                  subtitle="Stage schedule, crew, and trips are managed together here."
                   icon={<ConstructionRoundedIcon color="primary" />}
                   action={
                     canEditProject ? (
@@ -2368,6 +2690,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                           variant="outlined"
                           startIcon={<SyncRoundedIcon />}
                           onClick={() => syncStageTrips(activeStageTab)}
+                          sx={{ borderRadius: 99 }}
                         >
                           Sync Stage Trips
                         </Button>
@@ -2375,6 +2698,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                           variant="contained"
                           startIcon={<EditCalendarRoundedIcon />}
                           onClick={() => openCreateTrip(activeStageTab)}
+                          sx={{ borderRadius: 99, boxShadow: "none" }}
                         >
                           Schedule New Trip
                         </Button>
@@ -2403,9 +2727,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     const effPrimary = effective.primary
                       ? findTechName(effective.primary)
                       : "Unassigned";
-                    const effHelper = effective.helper
-                      ? findHelperName(effective.helper)
-                      : "—";
+                    const effHelper = effective.helper ? findHelperName(effective.helper) : "—";
                     const effSecondary = effective.secondary
                       ? findTechName(effective.secondary)
                       : "—";
@@ -2436,7 +2758,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                               <Chip
                                 label={formatStageStatus(st.status)}
                                 color={statusChipColor(st.status)}
-                                variant="outlined"
+                                variant="filled"
                                 size="small"
                               />
                             </Stack>
@@ -2713,7 +3035,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                               <Stack direction="row" spacing={1} alignItems="center">
                                 <RouteRoundedIcon color="primary" />
                                 <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                                  Trips
+                                  Stage Trips
                                 </Typography>
                                 <Chip
                                   label={activeStageTrips.length}
@@ -2727,12 +3049,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                                   <Button
                                     variant="outlined"
                                     onClick={() => addStageTrip(activeStageTab)}
+                                    sx={{ borderRadius: 99 }}
                                   >
                                     Quick Add Trip
                                   </Button>
                                   <Button
                                     variant="contained"
                                     onClick={() => openCreateTrip(activeStageTab)}
+                                    sx={{ borderRadius: 99, boxShadow: "none" }}
                                   >
                                     Schedule New Trip
                                   </Button>
@@ -2745,8 +3069,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
                             {!tripsLoading && !tripsError && activeStageTrips.length === 0 ? (
                               <Alert severity="info" variant="outlined">
-                                No trips created for this stage yet. Use <strong>Sync Stage Trips</strong>{" "}
-                                to generate daily schedule blocks.
+                                No trips created for this stage yet. Use{" "}
+                                <strong>Sync Stage Trips</strong> to generate daily schedule blocks.
                               </Alert>
                             ) : null}
 
@@ -2766,7 +3090,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               ) : (
                 <SectionCard
                   title="Project Trips"
-                  subtitle="This project type has no stages. Trips here are the schedule blocks for this project."
+                  subtitle="This project type does not use stages. Trips here are the scheduling blocks for the project."
                   icon={<RouteRoundedIcon color="primary" />}
                   action={
                     canEditProject ? (
@@ -2774,6 +3098,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                         variant="contained"
                         onClick={() => openCreateTrip(null)}
                         startIcon={<EditCalendarRoundedIcon />}
+                        sx={{ borderRadius: 99, boxShadow: "none" }}
                       >
                         Schedule New Trip
                       </Button>
@@ -2802,11 +3127,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               )}
 
               <SectionCard
-                title="Update Project"
-                subtitle="Saves project defaults, stage status/schedule/crew overrides, and internal notes."
+                title="Edit Project"
+                subtitle="Update the linked customer, basics, address, financial details, defaults, stage data, and internal notes."
                 icon={<NoteAltRoundedIcon color="primary" />}
               >
                 <Stack spacing={1.5} sx={{ mb: 2 }}>
+                  {customersLoading ? <Typography>Loading customers...</Typography> : null}
+                  {customersError ? <Alert severity="error">{customersError}</Alert> : null}
                   {techLoading ? <Typography>Loading technicians...</Typography> : null}
                   {techError ? <Alert severity="error">{techError}</Alert> : null}
                   {profilesLoading ? <Typography>Loading employee profiles...</Typography> : null}
@@ -2814,33 +3141,268 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 </Stack>
 
                 <Box component="form" onSubmit={handleSaveUpdates}>
-                  <Stack spacing={2}>
-                    <Box
+                  <Stack spacing={2.5}>
+                    <Paper
+                      variant="outlined"
                       sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: {
-                          xs: "1fr",
-                          sm: "repeat(2, minmax(0, 1fr))",
-                        },
+                        p: 2,
+                        borderRadius: 4,
                       }}
                     >
-                      <FormControl fullWidth>
-                        <InputLabel>Bid Status</InputLabel>
-                        <Select
-                          label="Bid Status"
-                          value={bidStatus}
-                          onChange={(e) => setBidStatus(e.target.value as any)}
-                          disabled={!canEditProject}
-                          {...selectMenuProps()}
+                      <Stack spacing={2}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          Project Basics
+                        </Typography>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              md: "repeat(2, minmax(0, 1fr))",
+                            },
+                          }}
                         >
-                          <MenuItem value="draft">Draft</MenuItem>
-                          <MenuItem value="submitted">Submitted</MenuItem>
-                          <MenuItem value="won">Won</MenuItem>
-                          <MenuItem value="lost">Lost</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </Box>
+                          <FormControl fullWidth>
+                            <InputLabel>Linked Customer</InputLabel>
+                            <Select
+                              label="Linked Customer"
+                              value={selectedCustomerId}
+                              onChange={(e) => setSelectedCustomerId(e.target.value)}
+                              disabled={!canEditProject || customersLoading}
+                              {...selectMenuProps()}
+                            >
+                              <MenuItem value="">Select customer...</MenuItem>
+                              {customers.map((customer) => (
+                                <MenuItem key={customer.id} value={customer.id}>
+                                  {customer.displayName}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+
+                          <TextField
+                            label="Project Name"
+                            value={projectName}
+                            onChange={(e) => setProjectName(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+
+                          <TextField
+                            select
+                            label="Project Type"
+                            value={projectTypeValue}
+                            onChange={(e) =>
+                              setProjectTypeValue(e.target.value as EditableProjectType)
+                            }
+                            disabled={!canEditProject}
+                            fullWidth
+                          >
+                            <MenuItem value="new_construction">New Construction</MenuItem>
+                            <MenuItem value="remodel">Remodel</MenuItem>
+                            <MenuItem value="time_materials">Time + Materials</MenuItem>
+                            <MenuItem value="other">Other</MenuItem>
+                          </TextField>
+
+                          <Box sx={{ display: "flex", alignItems: "center" }}>
+                            <FormControlLabel
+                              control={
+                                <Switch
+                                  checked={projectActive}
+                                  onChange={(e) => setProjectActive(e.target.checked)}
+                                  disabled={!canEditProject}
+                                />
+                              }
+                              label={projectActive ? "Project is active" : "Project is inactive"}
+                            />
+                          </Box>
+
+                          <Box sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}>
+                            <TextField
+                              label="Description"
+                              value={description}
+                              onChange={(e) => setDescription(e.target.value)}
+                              multiline
+                              minRows={4}
+                              disabled={!canEditProject}
+                              fullWidth
+                            />
+                          </Box>
+                        </Box>
+
+                        {projectTypeValue !== project.projectType ? (
+                          <Alert severity="info" variant="outlined">
+                            Project type changes will update the stage layout after you save.
+                          </Alert>
+                        ) : null}
+                      </Stack>
+                    </Paper>
+
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 4,
+                      }}
+                    >
+                      <Stack spacing={2}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          Job Site Address
+                        </Typography>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              md: "repeat(2, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          <TextField
+                            label="Address Label"
+                            value={serviceAddressLabel}
+                            onChange={(e) => setServiceAddressLabel(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Street Address"
+                            value={serviceAddressLine1}
+                            onChange={(e) => setServiceAddressLine1(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="Address Line 2"
+                            value={serviceAddressLine2}
+                            onChange={(e) => setServiceAddressLine2(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="City"
+                            value={serviceCity}
+                            onChange={(e) => setServiceCity(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="State"
+                            value={serviceState}
+                            onChange={(e) => setServiceState(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+
+                          <TextField
+                            label="ZIP"
+                            value={servicePostalCode}
+                            onChange={(e) => setServicePostalCode(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+                        </Box>
+                      </Stack>
+                    </Paper>
+
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 4,
+                        bgcolor: alpha(theme.palette.primary.main, 0.03),
+                      }}
+                    >
+                      <Stack spacing={2}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          Financial / Bid
+                        </Typography>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              sm: "repeat(2, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          <FormControl fullWidth>
+                            <InputLabel>Bid Status</InputLabel>
+                            <Select
+                              label="Bid Status"
+                              value={bidStatus}
+                              onChange={(e) => setBidStatus(e.target.value as any)}
+                              disabled={!canEditProject}
+                              {...selectMenuProps()}
+                            >
+                              <MenuItem value="draft">Draft</MenuItem>
+                              <MenuItem value="submitted">Submitted</MenuItem>
+                              <MenuItem value="won">Won</MenuItem>
+                              <MenuItem value="lost">Lost</MenuItem>
+                            </Select>
+                          </FormControl>
+
+                          <TextField
+                            label="Total Bid Amount"
+                            type="number"
+                            inputProps={{ min: 0, step: "0.01" }}
+                            value={totalBidAmount}
+                            onChange={(e) => setTotalBidAmount(e.target.value)}
+                            disabled={!canEditProject}
+                            fullWidth
+                          />
+                        </Box>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 1.5,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              md:
+                                projectTypeValue === "time_materials"
+                                  ? "1fr"
+                                  : "repeat(3, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          {projectTypeValue !== "time_materials" ? (
+                            <>
+                              <InfoField
+                                label="Rough-In Preview"
+                                value={formatCurrency(stageAmountPreview.roughIn)}
+                              />
+                              {projectTypeValue === "new_construction" ? (
+                                <InfoField
+                                  label="Top-Out / Vent Preview"
+                                  value={formatCurrency(stageAmountPreview.topOutVent)}
+                                />
+                              ) : (
+                                <InfoField label="Top-Out / Vent Preview" value={formatCurrency(0)} />
+                              )}
+                              <InfoField
+                                label="Trim / Finish Preview"
+                                value={formatCurrency(stageAmountPreview.trimFinish)}
+                              />
+                            </>
+                          ) : (
+                            <Alert severity="info" variant="outlined">
+                              Time + Materials does not use stage billing splits. Billing will be driven by trip labor, materials, and later billing review.
+                            </Alert>
+                          )}
+                        </Box>
+                      </Stack>
+                    </Paper>
 
                     <Paper
                       variant="outlined"
@@ -2910,9 +3472,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                               control={
                                 <Switch
                                   checked={projectUseDefaultHelper}
-                                  onChange={(e) =>
-                                    setProjectUseDefaultHelper(e.target.checked)
-                                  }
+                                  onChange={(e) => setProjectUseDefaultHelper(e.target.checked)}
                                   disabled={!canEditProject}
                                 />
                               }
@@ -2945,9 +3505,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                             <Select
                               label="Secondary Helper"
                               value={projectSecondaryHelperUid}
-                              onChange={(e) =>
-                                setProjectSecondaryHelperUid(e.target.value)
-                              }
+                              onChange={(e) => setProjectSecondaryHelperUid(e.target.value)}
                               disabled={!canEditProject}
                               {...selectMenuProps()}
                             >
@@ -2982,12 +3540,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                         type="submit"
                         variant="contained"
                         disabled={saving || !canEditProject}
+                        sx={{ borderRadius: 99, boxShadow: "none" }}
                       >
                         {saving
                           ? "Saving..."
                           : canEditProject
-                          ? "Save Project Updates"
-                          : "Read Only"}
+                            ? "Save Project Updates"
+                            : "Read Only"}
                       </Button>
 
                       {!canEditProject ? (
@@ -3015,7 +3574,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     },
                   }}
                 >
-                  <InfoField label="Active" value={String(project.active)} />
+                  <InfoField label="Active" value={String(projectActive)} />
                   <InfoField label="Created At" value={project.createdAt || "—"} />
                   <InfoField label="Updated At" value={project.updatedAt || "—"} />
                 </Box>

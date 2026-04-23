@@ -45,7 +45,7 @@ export type Project = {
   servicePostalCode: string;
 
   projectName: string;
-  projectType: "new_construction" | "remodel" | "other";
+  projectType: "new_construction" | "remodel" | "time_materials" | "other";
   description?: string;
 
   bidStatus: ProjectBidStatus;

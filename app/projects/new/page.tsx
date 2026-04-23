@@ -1,15 +1,51 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, getDocs, updateDoc, doc } from "firebase/firestore";
+import Link from "next/link";
+import { addDoc, collection, doc, getDocs, updateDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardActionArea,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Divider,
+  InputAdornment,
+  MenuItem,
+  Skeleton,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
+import ApartmentRoundedIcon from "@mui/icons-material/ApartmentRounded";
+import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
+import BusinessRoundedIcon from "@mui/icons-material/BusinessRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
+import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
+import PersonSearchRoundedIcon from "@mui/icons-material/PersonSearchRounded";
+import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
+import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
+
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { ServiceAddress } from "../../../src/types/customer";
-
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+} from "firebase/storage";
 
 type CustomerOption = {
   id: string;
@@ -56,6 +92,15 @@ function money2(n: number) {
   return Number((Number(n) || 0).toFixed(2));
 }
 
+function formatCurrency(value: number | string) {
+  const num = Number(value) || 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(num);
+}
+
 function buildStageBilledAmounts(projectType: ProjectType, totalBid: number) {
   const bid = Number(totalBid) || 0;
 
@@ -75,7 +120,6 @@ function buildStageBilledAmounts(projectType: ProjectType, totalBid: number) {
     };
   }
 
-  // time_materials
   return {
     roughIn: 0,
     topOutVent: 0,
@@ -84,12 +128,40 @@ function buildStageBilledAmounts(projectType: ProjectType, totalBid: number) {
 }
 
 function uid() {
-  // good enough for filenames/keys
   return Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
+}
+
+function getProjectTypeLabel(projectType: ProjectType) {
+  switch (projectType) {
+    case "new_construction":
+      return "New Construction";
+    case "remodel":
+      return "Remodel";
+    case "time_materials":
+      return "Time + Materials";
+    default:
+      return "Project";
+  }
+}
+
+function getBidStatusLabel(status: "draft" | "submitted" | "won" | "lost") {
+  switch (status) {
+    case "draft":
+      return "Draft";
+    case "submitted":
+      return "Submitted";
+    case "won":
+      return "Won";
+    case "lost":
+      return "Lost";
+    default:
+      return status;
+  }
 }
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [customersLoading, setCustomersLoading] = useState(true);
@@ -106,27 +178,25 @@ export default function NewProjectPage() {
   const [totalBidAmount, setTotalBidAmount] = useState("0");
   const [internalNotes, setInternalNotes] = useState("");
 
-  // ✅ Job Site Address (not customer service address dropdown)
   const [jobStreet1, setJobStreet1] = useState("");
   const [jobStreet2, setJobStreet2] = useState("");
   const [jobCity, setJobCity] = useState("");
   const [jobState, setJobState] = useState("TX");
   const [jobZip, setJobZip] = useState("");
 
-  // ✅ Plans upload
   const [planFiles, setPlanFiles] = useState<File[]>([]);
   const [uploadingPlans, setUploadingPlans] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<string>("");
+  const [uploadStatus, setUploadStatus] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  // -----------------------------
-  // Load customers
-  // -----------------------------
   useEffect(() => {
     async function loadCustomers() {
       try {
+        setCustomersLoading(true);
+        setCustomersError("");
+
         const snap = await getDocs(collection(db, "customers"));
 
         const items: CustomerOption[] = snap.docs.map((docSnap) => {
@@ -185,6 +255,12 @@ export default function NewProjectPage() {
     return customers.find((customer) => customer.id === selectedCustomerId) ?? null;
   }, [customers, selectedCustomerId]);
 
+  const totalBidNumber = useMemo(() => Number(totalBidAmount) || 0, [totalBidAmount]);
+
+  const stagePreview = useMemo(() => {
+    return buildStageBilledAmounts(projectType, totalBidNumber);
+  }, [projectType, totalBidNumber]);
+
   function handleSelectCustomer(customerId: string) {
     setSelectedCustomerId(customerId);
     setError("");
@@ -194,13 +270,9 @@ export default function NewProjectPage() {
     setSelectedCustomerId("");
   }
 
-  // -----------------------------
-  // Plans upload helpers
-  // -----------------------------
   function onPickPlans(files: FileList | null) {
     if (!files) return;
     const list = Array.from(files);
-    // Keep it simple: append
     setPlanFiles((prev) => [...prev, ...list]);
   }
 
@@ -252,13 +324,9 @@ export default function NewProjectPage() {
       return uploadedMeta;
     } finally {
       setUploadingPlans(false);
-      // keep status text visible; don’t clear immediately
     }
   }
 
-  // -----------------------------
-  // Submit
-  // -----------------------------
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
@@ -272,7 +340,6 @@ export default function NewProjectPage() {
       return;
     }
 
-    // ✅ Job site address validation (light)
     if (!jobStreet1.trim() || !jobCity.trim() || !jobState.trim() || !jobZip.trim()) {
       setError("Please complete the Job Site Address (Street, City, State, Zip).");
       return;
@@ -284,18 +351,15 @@ export default function NewProjectPage() {
     try {
       const now = nowIso();
       const totalBid = Number(totalBidAmount) || 0;
-
       const stageAmounts = buildStageBilledAmounts(projectType, totalBid);
 
-      // We keep stage objects on the doc for schema consistency,
-      // even for time_materials where the UI will hide stages.
       const baseStage = (billedAmount: number) => ({
         status: "not_started",
         scheduledDate: null,
         scheduledEndDate: null,
         completedDate: null,
         billed: false,
-        billedAmount: billedAmount,
+        billedAmount,
         staffing: null,
       });
 
@@ -303,7 +367,6 @@ export default function NewProjectPage() {
         customerId: selectedCustomer.id,
         customerDisplayName: selectedCustomer.displayName,
 
-        // Job site address (NOT customer serviceAddresses)
         serviceAddressId: null,
         serviceAddressLabel: "Job Site",
         serviceAddressLine1: jobStreet1.trim(),
@@ -326,7 +389,6 @@ export default function NewProjectPage() {
         assignedTechnicianId: null,
         assignedTechnicianName: null,
 
-        // ✅ plans placeholder
         planFiles: [],
 
         internalNotes: internalNotes.trim() || null,
@@ -335,7 +397,6 @@ export default function NewProjectPage() {
         updatedAt: now,
       });
 
-      // ✅ Upload plans after project exists
       let uploaded = [];
       if (planFiles.length) {
         uploaded = await uploadPlans(docRef.id);
@@ -356,417 +417,696 @@ export default function NewProjectPage() {
     }
   }
 
-  // -----------------------------
-  // Styling helpers (DCFlow vibe)
-  // -----------------------------
-  const pageWrap: React.CSSProperties = {
-    display: "grid",
-    gap: 14,
-    maxWidth: 980,
-  };
-
-  const card: React.CSSProperties = {
-    border: "1px solid rgba(15,23,42,0.12)",
-    borderRadius: 14,
-    padding: 16,
-    background: "white",
-    boxShadow: "0 10px 30px rgba(2,6,23,0.05)",
-  };
-
-  const cardHeader: React.CSSProperties = {
-    fontSize: 16,
-    fontWeight: 950,
-    margin: 0,
-    marginBottom: 10,
-    letterSpacing: "-0.2px",
-  };
-
-  const label: React.CSSProperties = { fontWeight: 900, fontSize: 12, color: "#0f172a" };
-
-  const input: React.CSSProperties = {
-    display: "block",
-    width: "100%",
-    padding: "10px 12px",
-    marginTop: 6,
-    borderRadius: 12,
-    border: "1px solid rgba(15,23,42,0.14)",
-    outline: "none",
-  };
-
-  const textarea: React.CSSProperties = {
-    ...input,
-    minHeight: 92,
-    resize: "vertical",
-  };
-
-  const select: React.CSSProperties = { ...input, background: "white" };
-
-  const primaryBtn: React.CSSProperties = {
-    padding: "12px 16px",
-    borderRadius: 12,
-    border: "1px solid rgba(37,99,235,0.40)",
-    background: "#2563eb",
-    color: "white",
-    cursor: "pointer",
-    fontWeight: 950,
-    width: "fit-content",
-    boxShadow: "0 12px 26px rgba(37,99,235,0.22)",
-  };
-
-  const secondaryBtn: React.CSSProperties = {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(15,23,42,0.14)",
-    background: "white",
-    cursor: "pointer",
-    fontWeight: 900,
-    width: "fit-content",
-  };
-
-  const subtle: React.CSSProperties = { fontSize: 12, color: "rgba(15,23,42,0.62)" };
-
   return (
     <ProtectedPage fallbackTitle="New Project">
       <AppShell appUser={appUser}>
-        <div style={pageWrap}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
-            <div>
-              <h1 style={{ fontSize: 26, fontWeight: 1000, margin: 0, letterSpacing: "-0.3px" }}>New Project</h1>
-              <div style={{ marginTop: 6, ...subtle }}>
-                Create a project for a contractor/GC (customer), with a separate job-site address.
-              </div>
-            </div>
-          </div>
-
-          {customersLoading ? <p>Loading customers…</p> : null}
-          {customersError ? <p style={{ color: "#b91c1c", fontWeight: 900 }}>{customersError}</p> : null}
-
-          {!customersLoading && !customersError ? (
-            <form onSubmit={handleSubmit} style={{ display: "grid", gap: 14 }}>
-              {/* Customer */}
-              <div style={card}>
-                <h2 style={cardHeader}>Customer (GC / Contractor)</h2>
-
-                <div>
-                  <div style={label}>Search Customer</div>
-                  <input
-                    value={customerSearch}
-                    onChange={(e) => setCustomerSearch(e.target.value)}
-                    placeholder="Search by name, phone, billing address…"
-                    style={input}
-                  />
-                </div>
-
-                {selectedCustomer ? (
-                  <div
-                    style={{
-                      marginTop: 12,
-                      border: "1px solid rgba(15,23,42,0.12)",
-                      borderRadius: 12,
-                      padding: 12,
-                      background: "rgba(2,6,23,0.02)",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      flexWrap: "wrap",
-                      alignItems: "flex-start",
-                    }}
+        <Box sx={{ maxWidth: 1080, mx: "auto", pb: 10 }}>
+          <Stack spacing={3}>
+            <Box
+              sx={{
+                borderRadius: 4,
+                p: { xs: 2, sm: 3 },
+                backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+              }}
+            >
+              <Stack spacing={2}>
+                <Box>
+                  <Button
+                    component={Link}
+                    href="/projects"
+                    startIcon={<ArrowBackRoundedIcon />}
+                    sx={{ mb: 1, ml: -1, borderRadius: 99 }}
                   >
-                    <div style={{ minWidth: 240 }}>
-                      <div style={{ fontWeight: 950 }}>{selectedCustomer.displayName}</div>
-                      <div style={{ marginTop: 4, ...subtle }}>{selectedCustomer.phonePrimary || "No phone"}</div>
-                      <div style={{ marginTop: 4, ...subtle }}>{selectedCustomer.billingAddressLine1}</div>
-                      <div style={{ marginTop: 4, ...subtle }}>
-                        {selectedCustomer.billingCity}, {selectedCustomer.billingState} {selectedCustomer.billingPostalCode}
-                      </div>
-                    </div>
+                    Back to Projects
+                  </Button>
 
-                    <button type="button" onClick={handleClearSelectedCustomer} style={secondaryBtn}>
-                      Change Customer
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-                    {filteredCustomers.length === 0 ? (
-                      <div
-                        style={{
-                          border: "1px dashed rgba(15,23,42,0.22)",
-                          borderRadius: 12,
-                          padding: 12,
-                          background: "rgba(2,6,23,0.02)",
-                          color: "rgba(15,23,42,0.65)",
-                          fontSize: 13,
-                          fontWeight: 800,
+                  <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: -0.4 }}>
+                    New Project
+                  </Typography>
+                  <Typography
+                    variant="body1"
+                    color="text.secondary"
+                    sx={{ mt: 0.75, maxWidth: 760 }}
+                  >
+                    Create a project for a contractor or GC, set the job site address,
+                    choose the workflow type, and optionally attach plans before moving
+                    into scheduling and field execution.
+                  </Typography>
+                </Box>
+
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Chip
+                    icon={<BusinessRoundedIcon />}
+                    label={selectedCustomer ? selectedCustomer.displayName : "Select customer"}
+                    color={selectedCustomer ? "primary" : "default"}
+                    variant={selectedCustomer ? "filled" : "outlined"}
+                  />
+                  <Chip
+                    icon={<WorkRoundedIcon />}
+                    label={getProjectTypeLabel(projectType)}
+                    variant="outlined"
+                  />
+                  <Chip
+                    icon={<PaidRoundedIcon />}
+                    label={getBidStatusLabel(bidStatus)}
+                    variant="outlined"
+                  />
+                </Stack>
+              </Stack>
+            </Box>
+
+            <form onSubmit={handleSubmit}>
+              <Stack spacing={3}>
+                {customersError ? <Alert severity="error">{customersError}</Alert> : null}
+                {error ? <Alert severity="error">{error}</Alert> : null}
+
+                <Card
+                  sx={{
+                    borderRadius: 4,
+                    boxShadow: "none",
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={2}>
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        <PersonSearchRoundedIcon color="primary" />
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            Customer (GC / Contractor)
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Search and select the customer this project belongs to.
+                          </Typography>
+                        </Box>
+                      </Stack>
+
+                      <TextField
+                        value={customerSearch}
+                        onChange={(e) => setCustomerSearch(e.target.value)}
+                        placeholder="Search by name, phone, billing address..."
+                        fullWidth
+                        size="small"
+                        InputProps={{
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <SearchRoundedIcon fontSize="small" />
+                            </InputAdornment>
+                          ),
                         }}
-                      >
-                        No matching customers found.
-                      </div>
-                    ) : (
-                      filteredCustomers.map((customer) => (
-                        <button
-                          key={customer.id}
-                          type="button"
-                          onClick={() => handleSelectCustomer(customer.id)}
-                          style={{
-                            textAlign: "left",
-                            border: "1px solid rgba(15,23,42,0.12)",
-                            borderRadius: 12,
-                            padding: 12,
-                            background: "white",
-                            cursor: "pointer",
+                      />
+
+                      {customersLoading ? (
+                        <Stack spacing={1.5}>
+                          {Array.from({ length: 4 }).map((_, index) => (
+                            <Skeleton
+                              key={index}
+                              variant="rounded"
+                              height={82}
+                              sx={{ borderRadius: 3 }}
+                            />
+                          ))}
+                        </Stack>
+                      ) : selectedCustomer ? (
+                        <Box
+                          sx={{
+                            borderRadius: 3,
+                            p: 2,
+                            backgroundColor: alpha(theme.palette.primary.main, 0.05),
+                            border: `1px solid ${alpha(theme.palette.primary.main, 0.14)}`,
                           }}
                         >
-                          <div style={{ fontWeight: 950 }}>{customer.displayName}</div>
-                          <div style={{ marginTop: 4, ...subtle }}>{customer.phonePrimary || "No phone"}</div>
-                          <div style={{ marginTop: 4, ...subtle }}>{customer.billingAddressLine1}</div>
-                          <div style={{ marginTop: 4, ...subtle }}>
-                            {customer.billingCity}, {customer.billingState} {customer.billingPostalCode}
-                          </div>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={2}
+                            justifyContent="space-between"
+                            alignItems={{ xs: "flex-start", sm: "center" }}
+                          >
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                {selectedCustomer.displayName}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                                {selectedCustomer.phonePrimary || "No phone"}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                                {selectedCustomer.billingAddressLine1}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {selectedCustomer.billingCity}, {selectedCustomer.billingState}{" "}
+                                {selectedCustomer.billingPostalCode}
+                              </Typography>
+                            </Box>
 
-              {/* Job Site Address */}
-              <div style={card}>
-                <h2 style={cardHeader}>Job Site Address</h2>
-                <div style={{ ...subtle, marginTop: -2, marginBottom: 10 }}>
-                  This is the service location for the project (not the customer billing/service address list).
-                </div>
+                            <Button
+                              type="button"
+                              onClick={handleClearSelectedCustomer}
+                              variant="outlined"
+                              sx={{ borderRadius: 99 }}
+                            >
+                              Change Customer
+                            </Button>
+                          </Stack>
+                        </Box>
+                      ) : filteredCustomers.length === 0 ? (
+                        <Box
+                          sx={{
+                            borderRadius: 3,
+                            p: 2,
+                            border: `1px dashed ${theme.palette.divider}`,
+                            backgroundColor: alpha(theme.palette.text.primary, 0.02),
+                          }}
+                        >
+                          <Typography variant="body2" color="text.secondary">
+                            No matching customers found.
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <Box sx={{ display: "grid", gap: 1.25 }}>
+                          {filteredCustomers.map((customer) => (
+                            <Card
+                              key={customer.id}
+                              sx={{
+                                borderRadius: 3,
+                                boxShadow: "none",
+                                border: `1px solid ${theme.palette.divider}`,
+                              }}
+                            >
+                              <CardActionArea onClick={() => handleSelectCustomer(customer.id)}>
+                                <CardContent sx={{ p: 2 }}>
+                                  <Stack spacing={0.5}>
+                                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                      {customer.displayName}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {customer.phonePrimary || "No phone"}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {customer.billingAddressLine1}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {customer.billingCity}, {customer.billingState}{" "}
+                                      {customer.billingPostalCode}
+                                    </Typography>
+                                  </Stack>
+                                </CardContent>
+                              </CardActionArea>
+                            </Card>
+                          ))}
+                        </Box>
+                      )}
+                    </Stack>
+                  </CardContent>
+                </Card>
 
-                <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <div style={label}>Street Address</div>
-                    <input
-                      value={jobStreet1}
-                      onChange={(e) => setJobStreet1(e.target.value)}
-                      placeholder="123 Main St"
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
+                <Card
+                  sx={{
+                    borderRadius: 4,
+                    boxShadow: "none",
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={2}>
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        <LocationOnRoundedIcon color="primary" />
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            Job Site Address
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            This is the actual service location for the project.
+                          </Typography>
+                        </Box>
+                      </Stack>
 
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <div style={label}>Address Line 2 (optional)</div>
-                    <input
-                      value={jobStreet2}
-                      onChange={(e) => setJobStreet2(e.target.value)}
-                      placeholder="Unit, suite, lot, etc."
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={label}>City</div>
-                    <input
-                      value={jobCity}
-                      onChange={(e) => setJobCity(e.target.value)}
-                      placeholder="La Grange"
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={label}>State</div>
-                    <input
-                      value={jobState}
-                      onChange={(e) => setJobState(e.target.value)}
-                      placeholder="TX"
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={label}>Zip</div>
-                    <input
-                      value={jobZip}
-                      onChange={(e) => setJobZip(e.target.value)}
-                      placeholder="78945"
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Project Basics */}
-              <div style={card}>
-                <h2 style={cardHeader}>Project Basics</h2>
-
-                <div style={{ display: "grid", gap: 12 }}>
-                  <div>
-                    <div style={label}>Project Name</div>
-                    <input
-                      value={projectName}
-                      onChange={(e) => setProjectName(e.target.value)}
-                      placeholder="Example: Dees Project"
-                      required
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={label}>Project Type</div>
-                    <select
-                      value={projectType}
-                      onChange={(e) => setProjectType(e.target.value as ProjectType)}
-                      style={select}
-                      disabled={!selectedCustomer}
-                    >
-                      <option value="new_construction">New Construction</option>
-                      <option value="remodel">Remodel</option>
-                      <option value="time_materials">Time + Materials</option>
-                    </select>
-
-                    <div style={{ marginTop: 8, ...subtle }}>
-                      This controls the stages/layout:
-                      <strong> New Construction</strong> (3 stages),
-                      <strong> Remodel</strong> (2 stages),
-                      <strong> Time + Materials</strong> (no stages).
-                    </div>
-                  </div>
-
-                  <div>
-                    <div style={label}>Project Description</div>
-                    <textarea
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value)}
-                      rows={4}
-                      style={textarea}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Bid */}
-              <div style={card}>
-                <h2 style={cardHeader}>Bid & Admin</h2>
-
-                <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-                  <div>
-                    <div style={label}>Bid Status</div>
-                    <select
-                      value={bidStatus}
-                      onChange={(e) => setBidStatus(e.target.value as any)}
-                      style={select}
-                      disabled={!selectedCustomer}
-                    >
-                      <option value="draft">Draft</option>
-                      <option value="submitted">Submitted</option>
-                      <option value="won">Won</option>
-                      <option value="lost">Lost</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <div style={label}>Total Bid Amount</div>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={totalBidAmount}
-                      onChange={(e) => setTotalBidAmount(e.target.value)}
-                      required
-                      style={input}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <div style={label}>Internal Notes</div>
-                    <textarea
-                      value={internalNotes}
-                      onChange={(e) => setInternalNotes(e.target.value)}
-                      rows={3}
-                      style={textarea}
-                      disabled={!selectedCustomer}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Plans */}
-              <div style={card}>
-                <h2 style={cardHeader}>Plans / Attachments</h2>
-                <div style={subtle}>Attach any plans, PDFs, photos, or notes provided by the contractor.</div>
-
-                <div style={{ marginTop: 12 }}>
-                  <input
-                    type="file"
-                    multiple
-                    onChange={(e) => onPickPlans(e.target.files)}
-                    disabled={!selectedCustomer || saving || uploadingPlans}
-                  />
-                  <div style={{ marginTop: 8, ...subtle }}>
-                    Files upload after the project is created (saved under this project).
-                  </div>
-                </div>
-
-                {planFiles.length ? (
-                  <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-                    {planFiles.map((f, idx) => (
-                      <div
-                        key={`${f.name}-${idx}`}
-                        style={{
-                          border: "1px solid rgba(15,23,42,0.12)",
-                          borderRadius: 12,
-                          padding: 10,
-                          background: "rgba(2,6,23,0.02)",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: 10,
-                          alignItems: "center",
-                          flexWrap: "wrap",
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                          gap: 2,
                         }}
                       >
-                        <div style={{ minWidth: 260 }}>
-                          <div style={{ fontWeight: 900 }}>{f.name}</div>
-                          <div style={subtle}>
-                            {(f.size / 1024 / 1024).toFixed(2)} MB • {f.type || "file"}
-                          </div>
-                        </div>
+                        <TextField
+                          label="Street Address"
+                          value={jobStreet1}
+                          onChange={(e) => setJobStreet1(e.target.value)}
+                          placeholder="123 Main St"
+                          fullWidth
+                          disabled={!selectedCustomer}
+                          sx={{ gridColumn: { xs: "1 / -1", sm: "1 / -1" } }}
+                        />
 
-                        <button type="button" onClick={() => removePlanAt(idx)} style={secondaryBtn} disabled={saving || uploadingPlans}>
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      marginTop: 12,
-                      border: "1px dashed rgba(15,23,42,0.22)",
-                      borderRadius: 12,
-                      padding: 12,
-                      background: "rgba(2,6,23,0.02)",
-                      color: "rgba(15,23,42,0.65)",
-                      fontSize: 13,
-                      fontWeight: 800,
-                    }}
-                  >
-                    No attachments selected.
-                  </div>
-                )}
+                        <TextField
+                          label="Address Line 2"
+                          value={jobStreet2}
+                          onChange={(e) => setJobStreet2(e.target.value)}
+                          placeholder="Unit, suite, lot, etc."
+                          fullWidth
+                          disabled={!selectedCustomer}
+                          sx={{ gridColumn: { xs: "1 / -1", sm: "1 / -1" } }}
+                        />
 
-                {uploadStatus ? <div style={{ marginTop: 10, ...subtle }}>{uploadStatus}</div> : null}
-              </div>
+                        <TextField
+                          label="City"
+                          value={jobCity}
+                          onChange={(e) => setJobCity(e.target.value)}
+                          placeholder="La Grange"
+                          fullWidth
+                          disabled={!selectedCustomer}
+                        />
 
-              {error ? <p style={{ color: "#b91c1c", fontWeight: 900 }}>{error}</p> : null}
+                        <TextField
+                          label="State"
+                          value={jobState}
+                          onChange={(e) => setJobState(e.target.value)}
+                          placeholder="TX"
+                          fullWidth
+                          disabled={!selectedCustomer}
+                        />
 
-              <button type="submit" disabled={saving || uploadingPlans} style={primaryBtn}>
-                {saving ? "Creating…" : uploadingPlans ? "Uploading…" : "Create Project"}
-              </button>
+                        <TextField
+                          label="Zip"
+                          value={jobZip}
+                          onChange={(e) => setJobZip(e.target.value)}
+                          placeholder="78945"
+                          fullWidth
+                          disabled={!selectedCustomer}
+                        />
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Card
+                  sx={{
+                    borderRadius: 4,
+                    boxShadow: "none",
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={2}>
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        <WorkRoundedIcon color="primary" />
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            Project Basics
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Set the name, project type, and a short description.
+                          </Typography>
+                        </Box>
+                      </Stack>
+
+                      <TextField
+                        label="Project Name"
+                        value={projectName}
+                        onChange={(e) => setProjectName(e.target.value)}
+                        placeholder="Example: Dees Project"
+                        required
+                        fullWidth
+                        disabled={!selectedCustomer}
+                      />
+
+                      <TextField
+                        select
+                        label="Project Type"
+                        value={projectType}
+                        onChange={(e) => setProjectType(e.target.value as ProjectType)}
+                        fullWidth
+                        disabled={!selectedCustomer}
+                      >
+                        <MenuItem value="new_construction">New Construction</MenuItem>
+                        <MenuItem value="remodel">Remodel</MenuItem>
+                        <MenuItem value="time_materials">Time + Materials</MenuItem>
+                      </TextField>
+
+                      <Box
+                        sx={{
+                          borderRadius: 3,
+                          p: 1.5,
+                          backgroundColor: alpha(theme.palette.primary.main, 0.05),
+                          border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+                        }}
+                      >
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                          Workflow preview
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                          {projectType === "new_construction"
+                            ? "New Construction uses 3 stages: Rough-In, Top-Out / Vent, and Trim / Finish."
+                            : projectType === "remodel"
+                              ? "Remodel uses 2 stages: Rough-In and Trim / Finish."
+                              : "Time + Materials does not use stage billing. Work will flow through trips and billing review."}
+                        </Typography>
+                      </Box>
+
+                      <TextField
+                        label="Project Description"
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        multiline
+                        minRows={4}
+                        fullWidth
+                        disabled={!selectedCustomer}
+                      />
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Card
+                  sx={{
+                    borderRadius: 4,
+                    boxShadow: "none",
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={2.5}>
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        <PaidRoundedIcon color="primary" />
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            Bid & Admin
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Set the bid status, total amount, and internal notes.
+                          </Typography>
+                        </Box>
+                      </Stack>
+
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                          gap: 2,
+                        }}
+                      >
+                        <TextField
+                          select
+                          label="Bid Status"
+                          value={bidStatus}
+                          onChange={(e) =>
+                            setBidStatus(e.target.value as "draft" | "submitted" | "won" | "lost")
+                          }
+                          fullWidth
+                          disabled={!selectedCustomer}
+                        >
+                          <MenuItem value="draft">Draft</MenuItem>
+                          <MenuItem value="submitted">Submitted</MenuItem>
+                          <MenuItem value="won">Won</MenuItem>
+                          <MenuItem value="lost">Lost</MenuItem>
+                        </TextField>
+
+                        <TextField
+                          label="Total Bid Amount"
+                          type="number"
+                          inputProps={{ min: 0, step: "0.01" }}
+                          value={totalBidAmount}
+                          onChange={(e) => setTotalBidAmount(e.target.value)}
+                          fullWidth
+                          disabled={!selectedCustomer}
+                          InputProps={{
+                            startAdornment: (
+                              <InputAdornment position="start">$</InputAdornment>
+                            ),
+                          }}
+                        />
+                      </Box>
+
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            md: projectType === "time_materials" ? "1fr" : "repeat(3, minmax(0, 1fr))",
+                          },
+                          gap: 1.5,
+                        }}
+                      >
+                        {projectType !== "time_materials" ? (
+                          <>
+                            <Card
+                              sx={{
+                                borderRadius: 3,
+                                boxShadow: "none",
+                                border: `1px solid ${theme.palette.divider}`,
+                              }}
+                            >
+                              <CardContent>
+                                <Typography variant="subtitle2" color="text.secondary">
+                                  Rough-In
+                                </Typography>
+                                <Typography variant="h6" sx={{ mt: 1, fontWeight: 700 }}>
+                                  {formatCurrency(stagePreview.roughIn)}
+                                </Typography>
+                              </CardContent>
+                            </Card>
+
+                            {projectType === "new_construction" ? (
+                              <Card
+                                sx={{
+                                  borderRadius: 3,
+                                  boxShadow: "none",
+                                  border: `1px solid ${theme.palette.divider}`,
+                                }}
+                              >
+                                <CardContent>
+                                  <Typography variant="subtitle2" color="text.secondary">
+                                    Top-Out / Vent
+                                  </Typography>
+                                  <Typography variant="h6" sx={{ mt: 1, fontWeight: 700 }}>
+                                    {formatCurrency(stagePreview.topOutVent)}
+                                  </Typography>
+                                </CardContent>
+                              </Card>
+                            ) : null}
+
+                            <Card
+                              sx={{
+                                borderRadius: 3,
+                                boxShadow: "none",
+                                border: `1px solid ${theme.palette.divider}`,
+                              }}
+                            >
+                              <CardContent>
+                                <Typography variant="subtitle2" color="text.secondary">
+                                  Trim / Finish
+                                </Typography>
+                                <Typography variant="h6" sx={{ mt: 1, fontWeight: 700 }}>
+                                  {formatCurrency(stagePreview.trimFinish)}
+                                </Typography>
+                              </CardContent>
+                            </Card>
+                          </>
+                        ) : (
+                          <Box
+                            sx={{
+                              borderRadius: 3,
+                              p: 2,
+                              backgroundColor: alpha(theme.palette.success.main, 0.08),
+                              border: `1px solid ${alpha(theme.palette.success.main, 0.16)}`,
+                            }}
+                          >
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              Time + Materials billing
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                              This project type does not pre-split billing into staged bid amounts.
+                              Billing will be driven by trip labor, materials, and later billing review.
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+
+                      <TextField
+                        label="Internal Notes"
+                        value={internalNotes}
+                        onChange={(e) => setInternalNotes(e.target.value)}
+                        multiline
+                        minRows={3}
+                        fullWidth
+                        disabled={!selectedCustomer}
+                      />
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Card
+                  sx={{
+                    borderRadius: 4,
+                    boxShadow: "none",
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Stack spacing={2}>
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        <AttachFileRoundedIcon color="primary" />
+                        <Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            Plans / Attachments
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Attach plans, PDFs, photos, or notes provided by the contractor.
+                          </Typography>
+                        </Box>
+                      </Stack>
+
+                      <Box>
+                        <Button
+                          component="label"
+                          variant="outlined"
+                          startIcon={<AttachFileRoundedIcon />}
+                          disabled={!selectedCustomer || saving || uploadingPlans}
+                          sx={{ borderRadius: 99 }}
+                        >
+                          Add Files
+                          <input
+                            hidden
+                            type="file"
+                            multiple
+                            onChange={(e) => onPickPlans(e.target.files)}
+                          />
+                        </Button>
+
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                          Files upload after the project record is created.
+                        </Typography>
+                      </Box>
+
+                      {planFiles.length ? (
+                        <Stack spacing={1.25}>
+                          {planFiles.map((f, idx) => (
+                            <Card
+                              key={`${f.name}-${idx}`}
+                              sx={{
+                                borderRadius: 3,
+                                boxShadow: "none",
+                                border: `1px solid ${theme.palette.divider}`,
+                              }}
+                            >
+                              <CardContent sx={{ p: 2 }}>
+                                <Stack
+                                  direction={{ xs: "column", sm: "row" }}
+                                  spacing={1.5}
+                                  justifyContent="space-between"
+                                  alignItems={{ xs: "flex-start", sm: "center" }}
+                                >
+                                  <Stack direction="row" spacing={1.25} alignItems="center">
+                                    <DescriptionRoundedIcon color="action" />
+                                    <Box>
+                                      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                        {f.name}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        {(f.size / 1024 / 1024).toFixed(2)} MB • {f.type || "file"}
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+
+                                  <Button
+                                    type="button"
+                                    onClick={() => removePlanAt(idx)}
+                                    variant="outlined"
+                                    color="inherit"
+                                    startIcon={<DeleteOutlineRoundedIcon />}
+                                    disabled={saving || uploadingPlans}
+                                    sx={{ borderRadius: 99 }}
+                                  >
+                                    Remove
+                                  </Button>
+                                </Stack>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </Stack>
+                      ) : (
+                        <Box
+                          sx={{
+                            borderRadius: 3,
+                            p: 2,
+                            border: `1px dashed ${theme.palette.divider}`,
+                            backgroundColor: alpha(theme.palette.text.primary, 0.02),
+                          }}
+                        >
+                          <Typography variant="body2" color="text.secondary">
+                            No attachments selected.
+                          </Typography>
+                        </Box>
+                      )}
+
+                      {uploadStatus ? (
+                        <Alert severity="info" icon={<AttachFileRoundedIcon fontSize="inherit" />}>
+                          {uploadStatus}
+                        </Alert>
+                      ) : null}
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Card
+                  sx={{
+                    position: "sticky",
+                    bottom: 16,
+                    zIndex: 5,
+                    borderRadius: 4,
+                    boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.12)}`,
+                    border: `1px solid ${alpha(theme.palette.primary.main, 0.14)}`,
+                  }}
+                >
+                  <CardContent sx={{ p: 2 }}>
+                    <Stack
+                      direction={{ xs: "column", md: "row" }}
+                      spacing={2}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", md: "center" }}
+                    >
+                      <Box>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                          Ready to create project
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          Customer: {selectedCustomer?.displayName || "Not selected"} • Type:{" "}
+                          {getProjectTypeLabel(projectType)} • Bid: {formatCurrency(totalBidAmount)}
+                        </Typography>
+                      </Box>
+
+                      <Stack direction="row" spacing={1.25}>
+                        <Button
+                          component={Link}
+                          href="/projects"
+                          variant="outlined"
+                          color="inherit"
+                          sx={{ borderRadius: 99 }}
+                          disabled={saving || uploadingPlans}
+                        >
+                          Cancel
+                        </Button>
+
+                        <Button
+                          type="submit"
+                          variant="contained"
+                          sx={{ borderRadius: 99, minWidth: 164, boxShadow: "none" }}
+                          disabled={saving || uploadingPlans || customersLoading}
+                          startIcon={
+                            saving || uploadingPlans ? (
+                              <CircularProgress color="inherit" size={18} />
+                            ) : undefined
+                          }
+                        >
+                          {saving ? "Creating..." : uploadingPlans ? "Uploading..." : "Create Project"}
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Stack>
             </form>
-          ) : null}
-        </div>
+          </Stack>
+        </Box>
       </AppShell>
     </ProtectedPage>
   );
