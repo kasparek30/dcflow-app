@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["http://localhost:3000", "https://dcflow.app"],
+    "method": ["GET", "HEAD", "POST", "PUT", "DELETE"],
+    "responseHeader": ["Content-Type", "x-goog-resumable", "Authorization"],
+    "maxAgeSeconds": 3600
+  }
+]

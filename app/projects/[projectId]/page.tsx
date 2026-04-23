@@ -44,14 +44,18 @@ import {
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import DeleteForeverRoundedIcon from "@mui/icons-material/DeleteForeverRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import EditCalendarRoundedIcon from "@mui/icons-material/EditCalendarRounded";
 import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
 import NoteAltRoundedIcon from "@mui/icons-material/NoteAltRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
 import RouteRoundedIcon from "@mui/icons-material/RouteRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
@@ -63,6 +67,13 @@ import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { Project, StageStaffing } from "../../../src/types/project";
 import type { AppUser } from "../../../src/types/app-user";
+import {
+  deleteObject,
+  getDownloadURL,
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+} from "firebase/storage";
 
 type ProjectDetailPageProps = {
   params: Promise<{
@@ -97,6 +108,16 @@ type EditableProjectType =
   | "remodel"
   | "time_materials"
   | "other";
+
+type PlanFileMeta = {
+  name: string;
+  url: string;
+  path: string;
+  size: number;
+  contentType: string;
+  uploadedAt: string;
+  uploadedByUid: string | null;
+};
 
 type StageKey = "roughIn" | "topOutVent" | "trimFinish";
 
@@ -199,6 +220,25 @@ function buildStageBilledAmounts(projectType: EditableProjectType, totalBid: num
     topOutVent: 0,
     trimFinish: 0,
   };
+}
+
+function formatFileSize(bytes?: number) {
+  const size = Number(bytes || 0);
+  if (size >= 1024 * 1024 * 1024) return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
+  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${size} B`;
+}
+
+function formatUploadedAt(value?: string) {
+  if (!value) return "Unknown upload time";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function makeUploadKey() {
+  return Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
 }
 
 function pad2(n: number) {
@@ -537,6 +577,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
+  const [existingPlanFiles, setExistingPlanFiles] = useState<PlanFileMeta[]>([]);
+  const [pendingPlanFiles, setPendingPlanFiles] = useState<File[]>([]);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [attachmentsStatus, setAttachmentsStatus] = useState("");
+  const [attachmentsError, setAttachmentsError] = useState("");
+  const [attachmentsSuccess, setAttachmentsSuccess] = useState("");
+
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectTypeValue, setProjectTypeValue] =
@@ -751,7 +798,20 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           updatedAt: data.updatedAt ?? undefined,
         } as any;
 
+        const planFiles: PlanFileMeta[] = Array.isArray(data.planFiles)
+          ? data.planFiles.map((file: any) => ({
+              name: file?.name ?? "Unnamed file",
+              url: file?.url ?? "",
+              path: file?.path ?? "",
+              size: Number(file?.size ?? 0),
+              contentType: file?.contentType ?? "application/octet-stream",
+              uploadedAt: file?.uploadedAt ?? "",
+              uploadedByUid: file?.uploadedByUid ?? null,
+            }))
+          : [];
+
         setProject(item);
+        setExistingPlanFiles(planFiles);
 
         setSelectedCustomerId(item.customerId || "");
         setProjectName(item.projectName || "");
@@ -1101,6 +1161,115 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     if (canEditProject) return true;
     if (!isFieldRole) return false;
     return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
+  }
+
+  function onPickPlanFiles(files: FileList | null) {
+    if (!files) return;
+    setAttachmentsError("");
+    setAttachmentsSuccess("");
+    setAttachmentsStatus("");
+    setPendingPlanFiles((prev) => [...prev, ...Array.from(files)]);
+  }
+
+  function removePendingPlanAt(index: number) {
+    setPendingPlanFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function uploadSelectedPlanFiles() {
+    if (!project || !pendingPlanFiles.length || !canEditProject) return;
+
+    setAttachmentsBusy(true);
+    setAttachmentsError("");
+    setAttachmentsSuccess("");
+    setAttachmentsStatus("Preparing uploads...");
+
+    const storage = getStorage();
+    const uploadedMeta: PlanFileMeta[] = [];
+
+    try {
+      for (let i = 0; i < pendingPlanFiles.length; i += 1) {
+        const file = pendingPlanFiles[i];
+        setAttachmentsStatus(`Uploading ${i + 1}/${pendingPlanFiles.length}: ${file.name}`);
+
+        const safeName = file.name.replace(/[^\w.\-() ]+/g, "_");
+        const path = `projectPlans/${project.id}/${makeUploadKey()}_${safeName}`;
+        const ref = storageRef(storage, path);
+
+        await uploadBytes(ref, file, {
+          contentType: file.type || "application/octet-stream",
+        });
+
+        const url = await getDownloadURL(ref);
+
+        uploadedMeta.push({
+          name: file.name,
+          url,
+          path,
+          size: file.size,
+          contentType: file.type || "application/octet-stream",
+          uploadedAt: nowIso(),
+          uploadedByUid: appUser?.uid || null,
+        });
+      }
+
+      const nextPlanFiles = [...existingPlanFiles, ...uploadedMeta];
+      const updatedAt = nowIso();
+
+      await updateDoc(doc(db, "projects", project.id), {
+        planFiles: nextPlanFiles,
+        updatedAt,
+      });
+
+      setExistingPlanFiles(nextPlanFiles);
+      setPendingPlanFiles([]);
+      setAttachmentsStatus("");
+      setAttachmentsSuccess("✅ Attachments uploaded.");
+      setProject((prev) => (prev ? ({ ...prev, updatedAt } as any) : prev));
+    } catch (err: unknown) {
+      setAttachmentsError(
+        err instanceof Error ? err.message : "Failed to upload attachments.",
+      );
+    } finally {
+      setAttachmentsBusy(false);
+    }
+  }
+
+  async function removeExistingPlan(file: PlanFileMeta) {
+    if (!project || !canEditProject) return;
+
+    const ok = window.confirm(`Remove attachment "${file.name}" from this project?`);
+    if (!ok) return;
+
+    setAttachmentsBusy(true);
+    setAttachmentsError("");
+    setAttachmentsSuccess("");
+    setAttachmentsStatus(`Removing ${file.name}...`);
+
+    try {
+      if (file.path) {
+        const storage = getStorage();
+        await deleteObject(storageRef(storage, file.path));
+      }
+
+      const nextPlanFiles = existingPlanFiles.filter((item) => item.path !== file.path);
+      const updatedAt = nowIso();
+
+      await updateDoc(doc(db, "projects", project.id), {
+        planFiles: nextPlanFiles,
+        updatedAt,
+      });
+
+      setExistingPlanFiles(nextPlanFiles);
+      setAttachmentsStatus("");
+      setAttachmentsSuccess("✅ Attachment removed.");
+      setProject((prev) => (prev ? ({ ...prev, updatedAt } as any) : prev));
+    } catch (err: unknown) {
+      setAttachmentsError(
+        err instanceof Error ? err.message : "Failed to remove attachment.",
+      );
+    } finally {
+      setAttachmentsBusy(false);
+    }
   }
 
   async function cancelTrip(t: TripDoc) {
@@ -1742,7 +1911,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       return;
     }
 
-    if (!serviceAddressLine1.trim() || !serviceCity.trim() || !serviceState.trim() || !servicePostalCode.trim()) {
+    if (
+      !serviceAddressLine1.trim() ||
+      !serviceCity.trim() ||
+      !serviceState.trim() ||
+      !servicePostalCode.trim()
+    ) {
       setSaveError("Complete the job site address before saving.");
       return;
     }
@@ -2584,7 +2758,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     }}
                   >
                     <InfoField label="Customer" value={displayCustomerName} />
-                    <InfoField label="Customer ID" value={selectedCustomerId || project.customerId || "—"} />
+                    <InfoField
+                      label="Customer ID"
+                      value={selectedCustomerId || project.customerId || "—"}
+                    />
                   </Box>
                 </SectionCard>
 
@@ -3125,6 +3302,188 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   </Stack>
                 </SectionCard>
               )}
+
+              <SectionCard
+                title="Plans / Attachments"
+                subtitle="Review existing files, upload more plans later, or remove files from the project."
+                icon={<AttachFileRoundedIcon color="primary" />}
+                action={
+                  canEditProject ? (
+                    <>
+                      <Button
+                        component="label"
+                        variant="outlined"
+                        startIcon={<AttachFileRoundedIcon />}
+                        disabled={attachmentsBusy}
+                        sx={{ borderRadius: 99 }}
+                      >
+                        Add Files
+                        <input
+                          hidden
+                          type="file"
+                          multiple
+                          onChange={(e) => onPickPlanFiles(e.target.files)}
+                        />
+                      </Button>
+                      <Button
+                        variant="contained"
+                        onClick={uploadSelectedPlanFiles}
+                        disabled={!pendingPlanFiles.length || attachmentsBusy}
+                        sx={{ borderRadius: 99, boxShadow: "none" }}
+                      >
+                        {attachmentsBusy ? "Working..." : "Upload Selected"}
+                      </Button>
+                    </>
+                  ) : (
+                    <Chip
+                      label={`${existingPlanFiles.length} File${existingPlanFiles.length === 1 ? "" : "s"}`}
+                      variant="outlined"
+                      size="small"
+                    />
+                  )
+                }
+              >
+                <Stack spacing={2}>
+                  {attachmentsError ? <Alert severity="error">{attachmentsError}</Alert> : null}
+                  {attachmentsSuccess ? <Alert severity="success">{attachmentsSuccess}</Alert> : null}
+                  {attachmentsStatus ? <Alert severity="info">{attachmentsStatus}</Alert> : null}
+
+                  {pendingPlanFiles.length > 0 ? (
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 4,
+                        bgcolor: alpha(theme.palette.primary.main, 0.03),
+                      }}
+                    >
+                      <Stack spacing={1.5}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          Selected to upload
+                        </Typography>
+
+                        <Stack spacing={1.25}>
+                          {pendingPlanFiles.map((file, index) => (
+                            <Card
+                              key={`${file.name}-${index}`}
+                              sx={{
+                                borderRadius: 3,
+                                boxShadow: "none",
+                                border: `1px solid ${theme.palette.divider}`,
+                              }}
+                            >
+                              <CardContent sx={{ p: 2 }}>
+                                <Stack
+                                  direction={{ xs: "column", sm: "row" }}
+                                  spacing={1.5}
+                                  justifyContent="space-between"
+                                  alignItems={{ xs: "flex-start", sm: "center" }}
+                                >
+                                  <Stack direction="row" spacing={1.25} alignItems="center">
+                                    <DescriptionRoundedIcon color="action" />
+                                    <Box>
+                                      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                        {file.name}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        {formatFileSize(file.size)} • {file.type || "file"}
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+
+                                  <Button
+                                    variant="outlined"
+                                    color="inherit"
+                                    startIcon={<DeleteOutlineRoundedIcon />}
+                                    onClick={() => removePendingPlanAt(index)}
+                                    disabled={attachmentsBusy}
+                                    sx={{ borderRadius: 99 }}
+                                  >
+                                    Remove
+                                  </Button>
+                                </Stack>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </Stack>
+                      </Stack>
+                    </Paper>
+                  ) : null}
+
+                  {existingPlanFiles.length === 0 ? (
+                    <Alert severity="info" variant="outlined">
+                      No attachments uploaded yet.
+                    </Alert>
+                  ) : (
+                    <Stack spacing={1.25}>
+                      {existingPlanFiles.map((file) => (
+                        <Card
+                          key={file.path || `${file.name}-${file.uploadedAt}`}
+                          sx={{
+                            borderRadius: 3,
+                            boxShadow: "none",
+                            border: `1px solid ${theme.palette.divider}`,
+                          }}
+                        >
+                          <CardContent sx={{ p: 2 }}>
+                            <Stack spacing={1.5}>
+                              <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1.5}
+                                justifyContent="space-between"
+                                alignItems={{ xs: "flex-start", sm: "center" }}
+                              >
+                                <Stack direction="row" spacing={1.25} alignItems="center">
+                                  <DescriptionRoundedIcon color="action" />
+                                  <Box>
+                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                      {file.name}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {formatFileSize(file.size)} •{" "}
+                                      {file.contentType || "file"}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Uploaded {formatUploadedAt(file.uploadedAt)}
+                                    </Typography>
+                                  </Box>
+                                </Stack>
+
+                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                  <Button
+                                    component="a"
+                                    href={file.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    variant="outlined"
+                                    startIcon={<OpenInNewRoundedIcon />}
+                                    sx={{ borderRadius: 99 }}
+                                  >
+                                    Open
+                                  </Button>
+
+                                  {canEditProject ? (
+                                    <Button
+                                      variant="outlined"
+                                      color="error"
+                                      startIcon={<DeleteOutlineRoundedIcon />}
+                                      onClick={() => removeExistingPlan(file)}
+                                      disabled={attachmentsBusy}
+                                      sx={{ borderRadius: 99 }}
+                                    >
+                                      Remove
+                                    </Button>
+                                  ) : null}
+                                </Stack>
+                              </Stack>
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  )}
+                </Stack>
+              </SectionCard>
 
               <SectionCard
                 title="Edit Project"
