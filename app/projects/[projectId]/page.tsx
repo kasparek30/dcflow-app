@@ -16,9 +16,10 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -31,9 +32,13 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
+  FormLabel,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
+  Radio,
+  RadioGroup,
   Select,
   Stack,
   Switch,
@@ -46,27 +51,36 @@ import { alpha, useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import DeleteForeverRoundedIcon from "@mui/icons-material/DeleteForeverRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import EditCalendarRoundedIcon from "@mui/icons-material/EditCalendarRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
+import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
 import NoteAltRoundedIcon from "@mui/icons-material/NoteAltRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
+import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
+import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import RouteRoundedIcon from "@mui/icons-material/RouteRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
+import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
+import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
 
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
-import type { Project, StageStaffing } from "../../../src/types/project";
 import type { AppUser } from "../../../src/types/app-user";
+import type { Project, StageStaffing } from "../../../src/types/project";
 import {
   deleteObject,
   getDownloadURL,
@@ -74,12 +88,6 @@ import {
   ref as storageRef,
   uploadBytes,
 } from "firebase/storage";
-
-type ProjectDetailPageProps = {
-  params: Promise<{
-    projectId: string;
-  }>;
-};
 
 type TechnicianOption = {
   uid: string;
@@ -119,6 +127,33 @@ type PlanFileMeta = {
   uploadedByUid: string | null;
 };
 
+type ProjectActivityType =
+  | "project_updated"
+  | "trip_created"
+  | "trip_updated"
+  | "trip_cancelled"
+  | "trip_deleted"
+  | "trip_started"
+  | "trip_paused"
+  | "trip_resumed"
+  | "trip_closeout_saved"
+  | "trip_reopened"
+  | "trip_notes_saved"
+  | "attachment_added"
+  | "attachment_removed";
+
+type ProjectActivityEntry = {
+  id: string;
+  type: ProjectActivityType;
+  title: string;
+  description?: string | null;
+  details?: string[];
+  createdAt: string;
+  createdByUid?: string | null;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+};
+
 type StageKey = "roughIn" | "topOutVent" | "trimFinish";
 
 type StageAssignmentState = {
@@ -128,6 +163,109 @@ type StageAssignmentState = {
   secondaryHelperUid: string;
   useDefaultHelper: boolean;
   overrideEnabled: boolean;
+};
+
+type TripTimerState = "idle" | "running" | "paused" | "stopped";
+
+type TripCrew = {
+  primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+  helperUid?: string | null;
+  helperName?: string | null;
+  secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+  secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+};
+
+type TripDoc = {
+  id: string;
+  active: boolean;
+  type: "service" | "project" | string;
+  status: string;
+  date: string;
+  timeWindow: "am" | "pm" | "all_day" | "custom" | string;
+  startTime: string;
+  endTime: string;
+  crew?: TripCrew | null;
+  link?: {
+    projectId?: string | null;
+    projectStageKey?: string | null;
+    serviceTicketId?: string | null;
+  } | null;
+  notes?: string | null;
+  cancelReason?: string | null;
+  timerState?: TripTimerState | string | null;
+  startedAt?: string | null;
+  pausedAt?: string | null;
+  completedAt?: string | null;
+  closeout?: any;
+  materialsUsedToday?: string | null;
+  createdAt?: string;
+  createdByUid?: string | null;
+  updatedAt?: string;
+  updatedByUid?: string | null;
+};
+
+type TripModalMode = "create" | "edit";
+
+type TripModalState = {
+  open: boolean;
+  mode: TripModalMode;
+  stageKey: StageKey | null;
+  tripId: string | null;
+  date: string;
+  timeWindow: "am" | "pm" | "all_day" | "custom";
+  startTime: string;
+  endTime: string;
+  notes: string;
+  primaryTechUid: string;
+  helperUid: string;
+  secondaryTechUid: string;
+  secondaryHelperUid: string;
+};
+
+type CloseoutOutcome = "done_today" | "complete_stage" | "complete_project";
+
+type CloseoutNeedsWork = "no" | "yes";
+
+type TripCloseoutModalState = {
+  open: boolean;
+  tripId: string | null;
+  outcome: CloseoutOutcome;
+  needsMoreWork: CloseoutNeedsWork;
+  hoursWorkedToday: string;
+  workNotes: string;
+  materialsUsedToday: string;
+  saving: boolean;
+  error: string;
+};
+
+type BasicsDraft = {
+  customerId: string;
+  projectName: string;
+  projectType: EditableProjectType;
+  description: string;
+  active: boolean;
+};
+
+type AddressBidDraft = {
+  serviceAddressLine1: string;
+  serviceAddressLine2: string;
+  serviceCity: string;
+  serviceState: string;
+  servicePostalCode: string;
+  bidStatus: "draft" | "submitted" | "won" | "lost";
+  totalBidAmount: string;
+};
+
+type CrewNotesDraft = {
+  primaryUid: string;
+  secondaryUid: string;
+  helperUid: string;
+  secondaryHelperUid: string;
+  useDefaultHelper: boolean;
+  internalNotes: string;
 };
 
 function emptyStageAssignment(): StageAssignmentState {
@@ -141,8 +279,82 @@ function emptyStageAssignment(): StageAssignmentState {
   };
 }
 
+function emptyTripModal(): TripModalState {
+  return {
+    open: false,
+    mode: "create",
+    stageKey: null,
+    tripId: null,
+    date: "",
+    timeWindow: "all_day",
+    startTime: "08:00",
+    endTime: "17:00",
+    notes: "",
+    primaryTechUid: "",
+    helperUid: "",
+    secondaryTechUid: "",
+    secondaryHelperUid: "",
+  };
+}
+
+function emptyCloseoutModal(): TripCloseoutModalState {
+  return {
+    open: false,
+    tripId: null,
+    outcome: "done_today",
+    needsMoreWork: "no",
+    hoursWorkedToday: "",
+    workNotes: "",
+    materialsUsedToday: "",
+    saving: false,
+    error: "",
+  };
+}
+
 function normalizeRole(role?: string) {
   return (role || "").trim().toLowerCase();
+}
+
+function safeTrim(x: any) {
+  return String(x || "").trim();
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function toIsoDate(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function fromIsoDate(iso: string) {
+  const [y, m, day] = iso.split("-").map((x) => Number(x));
+  return new Date(y, (m || 1) - 1, day || 1);
+}
+
+function addDays(d: Date, days: number) {
+  const out = new Date(d);
+  out.setDate(out.getDate() + days);
+  return out;
+}
+
+function dateRangeIso(startIso: string, endIso: string) {
+  const start = fromIsoDate(startIso);
+  const end = fromIsoDate(endIso);
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  const out: string[] = [];
+  let cur = new Date(start);
+  while (cur <= end) {
+    out.push(toIsoDate(cur));
+    cur = addDays(cur, 1);
+  }
+  return out;
 }
 
 function formatBidStatus(status: Project["bidStatus"]) {
@@ -230,117 +442,11 @@ function formatFileSize(bytes?: number) {
   return `${size} B`;
 }
 
-function formatUploadedAt(value?: string) {
-  if (!value) return "Unknown upload time";
+function formatDateTime(value?: string) {
+  if (!value) return "Unknown";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
-}
-
-function makeUploadKey() {
-  return Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
-}
-
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
-}
-
-function toIsoDate(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
-function fromIsoDate(iso: string) {
-  const [y, m, day] = iso.split("-").map((x) => Number(x));
-  return new Date(y, (m || 1) - 1, day || 1);
-}
-
-function addDays(d: Date, days: number) {
-  const out = new Date(d);
-  out.setDate(out.getDate() + days);
-  return out;
-}
-
-function dateRangeIso(startIso: string, endIso: string) {
-  const start = fromIsoDate(startIso);
-  const end = fromIsoDate(endIso);
-  start.setHours(0, 0, 0, 0);
-  end.setHours(0, 0, 0, 0);
-
-  const out: string[] = [];
-  let cur = new Date(start);
-  while (cur <= end) {
-    out.push(toIsoDate(cur));
-    cur = addDays(cur, 1);
-  }
-  return out;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-type TripCrew = {
-  primaryTechUid?: string | null;
-  primaryTechName?: string | null;
-  helperUid?: string | null;
-  helperName?: string | null;
-  secondaryTechUid?: string | null;
-  secondaryTechName?: string | null;
-  secondaryHelperUid?: string | null;
-  secondaryHelperName?: string | null;
-};
-
-type TripDoc = {
-  id: string;
-  active: boolean;
-  type: "service" | "project" | string;
-  status: string;
-  date: string;
-  timeWindow: "am" | "pm" | "all_day" | "custom" | string;
-  startTime: string;
-  endTime: string;
-  crew?: TripCrew | null;
-  link?: {
-    projectId?: string | null;
-    projectStageKey?: string | null;
-    serviceTicketId?: string | null;
-  } | null;
-  notes?: string | null;
-  cancelReason?: string | null;
-  createdAt?: string;
-  createdByUid?: string | null;
-  updatedAt?: string;
-  updatedByUid?: string | null;
-};
-
-function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
-  if (!uid || !crew) return false;
-  return (
-    (crew.primaryTechUid || "") === uid ||
-    (crew.helperUid || "") === uid ||
-    (crew.secondaryTechUid || "") === uid ||
-    (crew.secondaryHelperUid || "") === uid
-  );
-}
-
-function stageLabel(stageKey: StageKey) {
-  if (stageKey === "roughIn") return "Rough-In";
-  if (stageKey === "topOutVent") return "Top-Out / Vent";
-  return "Trim / Finish";
-}
-
-function getEnabledStages(projectType: string): StageKey[] {
-  const t = String(projectType || "").toLowerCase();
-  if (t === "new_construction") return ["roughIn", "topOutVent", "trimFinish"];
-  if (t === "remodel") return ["roughIn", "trimFinish"];
-  if (t === "time_materials" || t === "time+materials" || t === "time_and_materials") {
-    return [];
-  }
-  return ["roughIn", "topOutVent", "trimFinish"];
-}
-
-function safeTrim(x: any) {
-  return String(x || "").trim();
 }
 
 function formatTripWindow(w: string) {
@@ -358,6 +464,22 @@ function windowToTimes(window: string) {
   if (w === "pm") return { start: "13:00", end: "17:00" };
   if (w === "all_day") return { start: "08:00", end: "17:00" };
   return { start: "09:00", end: "10:00" };
+}
+
+function stageLabel(stageKey: StageKey) {
+  if (stageKey === "roughIn") return "Rough-In";
+  if (stageKey === "topOutVent") return "Top-Out / Vent";
+  return "Trim / Finish";
+}
+
+function getEnabledStages(projectType: string): StageKey[] {
+  const t = String(projectType || "").toLowerCase();
+  if (t === "new_construction") return ["roughIn", "topOutVent", "trimFinish"];
+  if (t === "remodel") return ["roughIn", "trimFinish"];
+  if (t === "time_materials" || t === "time+materials" || t === "time_and_materials") {
+    return [];
+  }
+  return ["roughIn", "topOutVent", "trimFinish"];
 }
 
 function makeProjectTripId(projectId: string, stageKey: StageKey, dateIso: string) {
@@ -380,40 +502,87 @@ function defaultStageTripDate(
   return toIsoDate(new Date());
 }
 
-type TripModalMode = "create" | "edit";
+function makeUploadKey() {
+  return Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
+}
 
-type TripModalState = {
-  open: boolean;
-  mode: TripModalMode;
-  stageKey: StageKey | null;
-  tripId: string | null;
-  date: string;
-  timeWindow: "am" | "pm" | "all_day" | "custom";
-  startTime: string;
-  endTime: string;
-  notes: string;
-  primaryTechUid: string;
-  helperUid: string;
-  secondaryTechUid: string;
-  secondaryHelperUid: string;
-};
+function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
+  if (!uid || !crew) return false;
+  return (
+    (crew.primaryTechUid || "") === uid ||
+    (crew.helperUid || "") === uid ||
+    (crew.secondaryTechUid || "") === uid ||
+    (crew.secondaryHelperUid || "") === uid
+  );
+}
 
-function emptyTripModal(): TripModalState {
-  return {
-    open: false,
-    mode: "create",
-    stageKey: null,
-    tripId: null,
-    date: "",
-    timeWindow: "all_day",
-    startTime: "08:00",
-    endTime: "17:00",
-    notes: "",
-    primaryTechUid: "",
-    helperUid: "",
-    secondaryTechUid: "",
-    secondaryHelperUid: "",
-  };
+function statusChipColor(
+  status: string,
+): "default" | "primary" | "success" | "warning" | "error" {
+  const s = String(status || "").toLowerCase();
+  if (s === "complete" || s === "won" || s === "resolved") return "success";
+  if (s === "in_progress" || s === "draft") return "warning";
+  if (s === "scheduled" || s === "submitted" || s === "planned") return "primary";
+  if (s === "cancelled" || s === "lost") return "error";
+  return "default";
+}
+
+function activityTypeColor(
+  type: ProjectActivityType,
+): "default" | "primary" | "success" | "warning" | "error" {
+  switch (type) {
+    case "attachment_added":
+    case "trip_closeout_saved":
+      return "success";
+    case "attachment_removed":
+    case "trip_paused":
+    case "trip_cancelled":
+      return "warning";
+    case "trip_created":
+    case "trip_updated":
+    case "trip_started":
+    case "trip_resumed":
+      return "primary";
+    case "trip_deleted":
+      return "error";
+    case "trip_reopened":
+    case "trip_notes_saved":
+    case "project_updated":
+    default:
+      return "default";
+  }
+}
+
+function activityTypeLabel(type: ProjectActivityType) {
+  switch (type) {
+    case "attachment_added":
+      return "Attachment Added";
+    case "attachment_removed":
+      return "Attachment Removed";
+    case "trip_created":
+      return "Trip Created";
+    case "trip_updated":
+      return "Trip Updated";
+    case "trip_cancelled":
+      return "Trip Cancelled";
+    case "trip_deleted":
+      return "Trip Deleted";
+    case "trip_started":
+      return "Trip Started";
+    case "trip_paused":
+      return "Trip Paused";
+    case "trip_resumed":
+      return "Trip Resumed";
+    case "trip_closeout_saved":
+      return "Closeout Saved";
+    case "trip_reopened":
+      return "Trip Reopened";
+    case "trip_notes_saved":
+      return "Notes Saved";
+    case "project_updated":
+    default:
+      return "Project Updated";
+  }
 }
 
 function InfoField({
@@ -526,6 +695,7 @@ function SectionCard({
               ) : null}
             </Box>
           </Stack>
+
           {action ? <Stack direction="row" spacing={1} flexWrap="wrap">{action}</Stack> : null}
         </Stack>
       </Box>
@@ -547,10 +717,14 @@ function selectMenuProps() {
   };
 }
 
-export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
-  const router = useRouter();
-  const theme = useTheme();
-  const { appUser } = useAuthContext();
+export default function ProjectDetailPage() {
+ const router = useRouter();
+const routeParams = useParams<{ projectId: string }>();
+const routeProjectId =
+  typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
+
+const theme = useTheme();
+const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [projectId, setProjectId] = useState("");
@@ -569,9 +743,13 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
   const [profilesError, setProfilesError] = useState("");
 
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const [saveSuccess, setSaveSuccess] = useState("");
+  const [tripsLoading, setTripsLoading] = useState(true);
+  const [tripsError, setTripsError] = useState("");
+  const [projectTrips, setProjectTrips] = useState<TripDoc[]>([]);
+
+  const [activityLoading, setActivityLoading] = useState(true);
+  const [activityError, setActivityError] = useState("");
+  const [activityLogs, setActivityLogs] = useState<ProjectActivityEntry[]>([]);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -584,28 +762,57 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [attachmentsError, setAttachmentsError] = useState("");
   const [attachmentsSuccess, setAttachmentsSuccess] = useState("");
 
-  const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [projectName, setProjectName] = useState("");
-  const [projectTypeValue, setProjectTypeValue] =
-    useState<EditableProjectType>("new_construction");
-  const [description, setDescription] = useState("");
-  const [bidStatus, setBidStatus] =
-    useState<"draft" | "submitted" | "won" | "lost">("draft");
-  const [totalBidAmount, setTotalBidAmount] = useState("0");
-  const [projectActive, setProjectActive] = useState(true);
+  const [tripModal, setTripModal] = useState<TripModalState>(emptyTripModal());
+  const [tripModalBusy, setTripModalBusy] = useState(false);
+  const [tripModalErr, setTripModalErr] = useState("");
+  const [tripModalOk, setTripModalOk] = useState("");
 
-  const [serviceAddressLabel, setServiceAddressLabel] = useState("");
-  const [serviceAddressLine1, setServiceAddressLine1] = useState("");
-  const [serviceAddressLine2, setServiceAddressLine2] = useState("");
-  const [serviceCity, setServiceCity] = useState("");
-  const [serviceState, setServiceState] = useState("TX");
-  const [servicePostalCode, setServicePostalCode] = useState("");
+  const [closeoutModal, setCloseoutModal] = useState<TripCloseoutModalState>(emptyCloseoutModal());
+  const [tripActionBusyId, setTripActionBusyId] = useState<string | null>(null);
+  const [tripNoteDrafts, setTripNoteDrafts] = useState<Record<string, string>>({});
 
-  const [projectPrimaryUid, setProjectPrimaryUid] = useState("");
-  const [projectSecondaryUid, setProjectSecondaryUid] = useState("");
-  const [projectHelperUid, setProjectHelperUid] = useState<string>("");
-  const [projectSecondaryHelperUid, setProjectSecondaryHelperUid] = useState<string>("");
-  const [projectUseDefaultHelper, setProjectUseDefaultHelper] = useState(true);
+  const [editingBasics, setEditingBasics] = useState(false);
+  const [editingAddressBid, setEditingAddressBid] = useState(false);
+  const [editingCrewNotes, setEditingCrewNotes] = useState(false);
+
+  const [basicsDraft, setBasicsDraft] = useState<BasicsDraft>({
+    customerId: "",
+    projectName: "",
+    projectType: "new_construction",
+    description: "",
+    active: true,
+  });
+
+  const [addressBidDraft, setAddressBidDraft] = useState<AddressBidDraft>({
+    serviceAddressLine1: "",
+    serviceAddressLine2: "",
+    serviceCity: "",
+    serviceState: "TX",
+    servicePostalCode: "",
+    bidStatus: "draft",
+    totalBidAmount: "0",
+  });
+
+  const [crewNotesDraft, setCrewNotesDraft] = useState<CrewNotesDraft>({
+    primaryUid: "",
+    secondaryUid: "",
+    helperUid: "",
+    secondaryHelperUid: "",
+    useDefaultHelper: true,
+    internalNotes: "",
+  });
+
+  const [basicsSaveBusy, setBasicsSaveBusy] = useState(false);
+  const [basicsSaveError, setBasicsSaveError] = useState("");
+  const [basicsSaveSuccess, setBasicsSaveSuccess] = useState("");
+
+  const [addressBidSaveBusy, setAddressBidSaveBusy] = useState(false);
+  const [addressBidSaveError, setAddressBidSaveError] = useState("");
+  const [addressBidSaveSuccess, setAddressBidSaveSuccess] = useState("");
+
+  const [crewNotesSaveBusy, setCrewNotesSaveBusy] = useState(false);
+  const [crewNotesSaveError, setCrewNotesSaveError] = useState("");
+  const [crewNotesSaveSuccess, setCrewNotesSaveSuccess] = useState("");
 
   const [roughInAssign, setRoughInAssign] = useState<StageAssignmentState>(emptyStageAssignment());
   const [topOutAssign, setTopOutAssign] = useState<StageAssignmentState>(emptyStageAssignment());
@@ -632,20 +839,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   const [trimFinishScheduledEndDate, setTrimFinishScheduledEndDate] = useState("");
   const [trimFinishCompletedDate, setTrimFinishCompletedDate] = useState("");
 
-  const [internalNotes, setInternalNotes] = useState("");
+  const [stageSaveBusy, setStageSaveBusy] = useState(false);
+  const [stageSaveError, setStageSaveError] = useState("");
+  const [stageSaveSuccess, setStageSaveSuccess] = useState("");
 
   const [activeStageTab, setActiveStageTab] = useState<StageKey>("roughIn");
 
-  const [tripsLoading, setTripsLoading] = useState(true);
-  const [tripsError, setTripsError] = useState("");
-  const [projectTrips, setProjectTrips] = useState<TripDoc[]>([]);
-
-  const [tripModal, setTripModal] = useState<TripModalState>(emptyTripModal());
-  const [tripModalBusy, setTripModalBusy] = useState(false);
-  const [tripModalErr, setTripModalErr] = useState("");
-  const [tripModalOk, setTripModalOk] = useState("");
-
   const myUid = String(appUser?.uid || "").trim();
+  const actorDisplayName =
+    ((appUser as any)?.displayName as string | undefined) ||
+    ((appUser as any)?.email as string | undefined) ||
+    "Unknown User";
 
   const canEditProject =
     appUser?.role === "admin" ||
@@ -688,15 +892,70 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     return candidates;
   }, [employeeProfiles]);
 
-  const selectedCustomer = useMemo(() => {
-    return customers.find((customer) => customer.id === selectedCustomerId) ?? null;
-  }, [customers, selectedCustomerId]);
+  const selectedCustomerFromProject = useMemo(() => {
+    return customers.find((customer) => customer.id === (project?.customerId || "")) ?? null;
+  }, [customers, project?.customerId]);
 
-  const totalBidNumber = useMemo(() => Number(totalBidAmount) || 0, [totalBidAmount]);
+  const selectedCustomerFromDraft = useMemo(() => {
+    return customers.find((customer) => customer.id === basicsDraft.customerId) ?? null;
+  }, [customers, basicsDraft.customerId]);
 
-  const stageAmountPreview = useMemo(() => {
-    return buildStageBilledAmounts(projectTypeValue, totalBidNumber);
-  }, [projectTypeValue, totalBidNumber]);
+  const enabledStages = useMemo(() => {
+    if (!project) return ["roughIn", "topOutVent", "trimFinish"] as StageKey[];
+    return getEnabledStages(project.projectType);
+  }, [project]);
+
+  const hasStages = enabledStages.length > 0;
+
+  const tripsByStage = useMemo(() => {
+    const map: Record<StageKey, TripDoc[]> = {
+      roughIn: [],
+      topOutVent: [],
+      trimFinish: [],
+    };
+
+    for (const t of projectTrips) {
+      const stageKey = String(t.link?.projectStageKey || "").trim() as StageKey;
+      if (stageKey === "roughIn" || stageKey === "topOutVent" || stageKey === "trimFinish") {
+        map[stageKey].push(t);
+      }
+    }
+
+    for (const k of Object.keys(map) as StageKey[]) {
+      map[k].sort((a, b) =>
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+      );
+    }
+
+    return map;
+  }, [projectTrips]);
+
+  const nonStageProjectTrips = useMemo(() => {
+    return projectTrips
+      .filter((t) => !String(t.link?.projectStageKey || "").trim())
+      .sort((a, b) =>
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+      );
+  }, [projectTrips]);
+
+  const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
+
+  const previewStageAmounts = useMemo(() => {
+    return buildStageBilledAmounts(
+      editingAddressBid ? addressBidDraft.bidStatus && basicsDraft.projectType ? basicsDraft.projectType : (project?.projectType as EditableProjectType) || "new_construction" : (project?.projectType as EditableProjectType) || "new_construction",
+      Number(editingAddressBid ? addressBidDraft.totalBidAmount : project?.totalBidAmount || 0),
+    );
+  }, [
+    editingAddressBid,
+    addressBidDraft.totalBidAmount,
+    basicsDraft.projectType,
+    project?.projectType,
+    project?.totalBidAmount,
+  ]);
+
+  function mergeProjectState(patch: any) {
+    setProject((prev) => (prev ? ({ ...prev, ...patch } as any) : prev));
+  }
 
   function computeDefaultHelperForTech(techUid: string) {
     const uid = techUid.trim();
@@ -715,6 +974,22 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   function findHelperName(uid: string) {
     const h = helperCandidates.find((x) => x.uid === uid);
     return h?.name || "";
+  }
+
+  function getSavedProjectCrew() {
+    const primaryUid =
+      safeTrim((project as any)?.primaryTechnicianId || (project as any)?.assignedTechnicianId || "");
+    const secondaryUid = safeTrim((project as any)?.secondaryTechnicianId || "");
+    const helperIds = Array.isArray((project as any)?.helperIds)
+      ? ((project as any).helperIds as string[]).filter(Boolean)
+      : [];
+
+    return {
+      primaryUid,
+      secondaryUid,
+      helperUid: helperIds[0] || "",
+      secondaryHelperUid: helperIds[1] || "",
+    };
   }
 
   function getEffectiveCrewForStage(stageKey: StageKey): {
@@ -739,178 +1014,255 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       };
     }
 
+    const savedProjectCrew = getSavedProjectCrew();
     return {
-      primary: projectPrimaryUid,
-      helper: projectHelperUid,
-      secondary: projectSecondaryUid,
-      secondaryHelper: projectSecondaryHelperUid,
+      primary: savedProjectCrew.primaryUid,
+      helper: savedProjectCrew.helperUid,
+      secondary: savedProjectCrew.secondaryUid,
+      secondaryHelper: savedProjectCrew.secondaryHelperUid,
     };
   }
 
-  useEffect(() => {
-    async function loadProject() {
-      try {
-        const resolvedParams = await params;
-        const id = resolvedParams.projectId;
-        setProjectId(id);
+  function buildCrewActivityDetails(input: {
+    primaryName: string;
+    helperName?: string | null;
+    secondaryName?: string | null;
+    secondaryHelperName?: string | null;
+  }) {
+    const details: string[] = [];
+    details.push(`Primary Tech: ${input.primaryName}`);
+    if (input.helperName) details.push(`Helper: ${input.helperName}`);
+    if (input.secondaryName) details.push(`Secondary Tech: ${input.secondaryName}`);
+    if (input.secondaryHelperName) details.push(`Secondary Helper: ${input.secondaryHelperName}`);
+    return details;
+  }
 
-        const projectRef = doc(db, "projects", id);
-        const snap = await getDoc(projectRef);
+  function canCurrentUserEditTrip(t: TripDoc) {
+    if (canEditProject) return true;
+    if (!isFieldRole) return false;
+    return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
+  }
 
-        if (!snap.exists()) {
-          setError("Project not found.");
-          setLoading(false);
-          return;
-        }
+  function canCurrentUserOperateTrip(t: TripDoc) {
+    return canCurrentUserEditTrip(t);
+  }
 
-        const data = snap.data() as any;
+  function resetBasicsDraftFromProject(source?: Project | null) {
+    const p = source ?? project;
+    if (!p) return;
 
-        const item: Project = {
-          id: snap.id,
-          customerId: data.customerId ?? "",
-          customerDisplayName: data.customerDisplayName ?? "",
-          serviceAddressId: data.serviceAddressId ?? undefined,
-          serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-          serviceAddressLine1: data.serviceAddressLine1 ?? "",
-          serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-          serviceCity: data.serviceCity ?? "",
-          serviceState: data.serviceState ?? "",
-          servicePostalCode: data.servicePostalCode ?? "",
-          projectName: data.projectName ?? "",
-          projectType: data.projectType ?? "other",
-          description: data.description ?? undefined,
-          bidStatus: data.bidStatus ?? "draft",
-          totalBidAmount: data.totalBidAmount ?? 0,
-          roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
-          topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
-          trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
-          assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-          assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-          primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-          primaryTechnicianName: data.primaryTechnicianName ?? undefined,
-          secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-          secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-          helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-          helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-          internalNotes: data.internalNotes ?? undefined,
-          active: data.active ?? true,
-          createdAt: data.createdAt ?? undefined,
-          updatedAt: data.updatedAt ?? undefined,
-        } as any;
+    setBasicsDraft({
+      customerId: p.customerId || "",
+      projectName: p.projectName || "",
+      projectType: ((p.projectType as EditableProjectType) || "new_construction"),
+      description: p.description || "",
+      active: Boolean(p.active),
+    });
+  }
 
-        const planFiles: PlanFileMeta[] = Array.isArray(data.planFiles)
-          ? data.planFiles.map((file: any) => ({
-              name: file?.name ?? "Unnamed file",
-              url: file?.url ?? "",
-              path: file?.path ?? "",
-              size: Number(file?.size ?? 0),
-              contentType: file?.contentType ?? "application/octet-stream",
-              uploadedAt: file?.uploadedAt ?? "",
-              uploadedByUid: file?.uploadedByUid ?? null,
-            }))
-          : [];
+  function resetAddressBidDraftFromProject(source?: Project | null) {
+    const p = source ?? project;
+    if (!p) return;
 
-        setProject(item);
-        setExistingPlanFiles(planFiles);
+    setAddressBidDraft({
+      serviceAddressLine1: p.serviceAddressLine1 || "",
+      serviceAddressLine2: p.serviceAddressLine2 || "",
+      serviceCity: p.serviceCity || "",
+      serviceState: p.serviceState || "TX",
+      servicePostalCode: p.servicePostalCode || "",
+      bidStatus: p.bidStatus || "draft",
+      totalBidAmount: String(Number(p.totalBidAmount ?? 0)),
+    });
+  }
 
-        setSelectedCustomerId(item.customerId || "");
-        setProjectName(item.projectName || "");
-        setProjectTypeValue(
-          (item.projectType as EditableProjectType) || "new_construction",
-        );
-        setDescription(item.description || "");
-        setBidStatus(item.bidStatus);
-        setTotalBidAmount(String(Number(item.totalBidAmount ?? 0)));
-        setProjectActive(Boolean(item.active));
+  function resetCrewNotesDraftFromProject(source?: Project | null) {
+    const p = source ?? project;
+    if (!p) return;
 
-        setServiceAddressLabel(item.serviceAddressLabel || "Job Site");
-        setServiceAddressLine1(item.serviceAddressLine1 || "");
-        setServiceAddressLine2(item.serviceAddressLine2 || "");
-        setServiceCity(item.serviceCity || "");
-        setServiceState(item.serviceState || "TX");
-        setServicePostalCode(item.servicePostalCode || "");
+    const helperIds = Array.isArray((p as any).helperIds)
+      ? ((p as any).helperIds as string[]).filter(Boolean)
+      : [];
 
-        const seededProjectPrimary =
-          (data.primaryTechnicianId as string | undefined) ||
-          item.assignedTechnicianId ||
-          "";
-        setProjectPrimaryUid(seededProjectPrimary);
-        setProjectSecondaryUid((data.secondaryTechnicianId as string | undefined) || "");
+    setCrewNotesDraft({
+      primaryUid: safeTrim((p as any).primaryTechnicianId || (p as any).assignedTechnicianId || ""),
+      secondaryUid: safeTrim((p as any).secondaryTechnicianId || ""),
+      helperUid: helperIds[0] || "",
+      secondaryHelperUid: helperIds[1] || "",
+      useDefaultHelper: true,
+      internalNotes: p.internalNotes || "",
+    });
+  }
 
-        const helperIds: string[] = Array.isArray(data.helperIds)
-          ? data.helperIds.filter(Boolean)
-          : [];
-        setProjectHelperUid(helperIds[0] || "");
-        setProjectSecondaryHelperUid(helperIds[1] || "");
+  async function recordProjectActivity(input: {
+    type: ProjectActivityType;
+    title: string;
+    description?: string;
+    details?: string[];
+  }) {
+    if (!projectId) return;
 
-        const stageStaffing = (stage: any): StageStaffing | undefined => {
-          return stage?.staffing ? stage.staffing : undefined;
-        };
+    const payload = {
+      type: input.type,
+      title: input.title,
+      description: input.description || null,
+      details: (input.details || []).filter(Boolean).slice(0, 20),
+      createdAt: nowIso(),
+      createdByUid: myUid || null,
+      createdByName: actorDisplayName || null,
+      createdByRole: appUser?.role || null,
+    };
 
-        const roughStaff = stageStaffing(item.roughIn);
-        const topStaff = stageStaffing(item.topOutVent);
-        const trimStaff = stageStaffing(item.trimFinish);
+    try {
+      const ref = await addDoc(collection(db, "projects", projectId, "activity"), payload as any);
+      setActivityLogs((prev) => [{ id: ref.id, ...(payload as any) }, ...prev]);
+    } catch (err) {
+      console.error("Failed to record project activity", err);
+    }
+  }
 
-        const pickHelper1 = (staff?: StageStaffing) =>
-          Array.isArray(staff?.helperIds) ? staff.helperIds[0] || "" : "";
-        const pickHelper2 = (staff?: StageStaffing) =>
-          Array.isArray(staff?.helperIds) ? staff.helperIds[1] || "" : "";
-
-        setRoughInAssign({
-          primaryUid: roughStaff?.primaryTechnicianId || "",
-          secondaryUid: roughStaff?.secondaryTechnicianId || "",
-          helperUid: pickHelper1(roughStaff),
-          secondaryHelperUid: pickHelper2(roughStaff),
-          useDefaultHelper: true,
-          overrideEnabled: Boolean(roughStaff),
-        });
-
-        setTopOutAssign({
-          primaryUid: topStaff?.primaryTechnicianId || "",
-          secondaryUid: topStaff?.secondaryTechnicianId || "",
-          helperUid: pickHelper1(topStaff),
-          secondaryHelperUid: pickHelper2(topStaff),
-          useDefaultHelper: true,
-          overrideEnabled: Boolean(topStaff),
-        });
-
-        setTrimAssign({
-          primaryUid: trimStaff?.primaryTechnicianId || "",
-          secondaryUid: trimStaff?.secondaryTechnicianId || "",
-          helperUid: pickHelper1(trimStaff),
-          secondaryHelperUid: pickHelper2(trimStaff),
-          useDefaultHelper: true,
-          overrideEnabled: Boolean(trimStaff),
-        });
-
-        setRoughInStatus(item.roughIn.status);
-        setRoughInScheduledDate(item.roughIn.scheduledDate ?? "");
-        setRoughInScheduledEndDate((item.roughIn as any).scheduledEndDate ?? "");
-        setRoughInCompletedDate(item.roughIn.completedDate ?? "");
-
-        setTopOutVentStatus(item.topOutVent.status);
-        setTopOutVentScheduledDate(item.topOutVent.scheduledDate ?? "");
-        setTopOutVentScheduledEndDate((item.topOutVent as any).scheduledEndDate ?? "");
-        setTopOutVentCompletedDate(item.topOutVent.completedDate ?? "");
-
-        setTrimFinishStatus(item.trimFinish.status);
-        setTrimFinishScheduledDate(item.trimFinish.scheduledDate ?? "");
-        setTrimFinishScheduledEndDate((item.trimFinish as any).scheduledEndDate ?? "");
-        setTrimFinishCompletedDate(item.trimFinish.completedDate ?? "");
-
-        setInternalNotes(item.internalNotes ?? "");
-
-        const enabled = getEnabledStages(item.projectType);
-        if (enabled.length > 0) setActiveStageTab(enabled[0]);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load project.");
-      } finally {
-        setLoading(false);
-      }
+useEffect(() => {
+  async function loadProject() {
+    if (!routeProjectId) {
+      setLoading(false);
+      setError("Project not found.");
+      return;
     }
 
-    loadProject();
-  }, [params]);
+    try {
+      setLoading(true);
+      setError("");
+      setProjectId(routeProjectId);
+
+      const projectRef = doc(db, "projects", routeProjectId);
+      const snap = await getDoc(projectRef);
+
+      if (!snap.exists()) {
+        setError("Project not found.");
+        setLoading(false);
+        return;
+      }
+
+      const data = snap.data() as any;
+
+      const item: Project = {
+        id: snap.id,
+        customerId: data.customerId ?? "",
+        customerDisplayName: data.customerDisplayName ?? "",
+        serviceAddressId: data.serviceAddressId ?? undefined,
+        serviceAddressLabel: data.serviceAddressLabel ?? undefined,
+        serviceAddressLine1: data.serviceAddressLine1 ?? "",
+        serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
+        serviceCity: data.serviceCity ?? "",
+        serviceState: data.serviceState ?? "",
+        servicePostalCode: data.servicePostalCode ?? "",
+        projectName: data.projectName ?? "",
+        projectType: data.projectType ?? "other",
+        description: data.description ?? undefined,
+        bidStatus: data.bidStatus ?? "draft",
+        totalBidAmount: data.totalBidAmount ?? 0,
+        roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
+        topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
+        trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
+        assignedTechnicianId: data.assignedTechnicianId ?? undefined,
+        assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+        primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+        primaryTechnicianName: data.primaryTechnicianName ?? undefined,
+        secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+        secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+        helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
+        helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
+        internalNotes: data.internalNotes ?? undefined,
+        active: data.active ?? true,
+        createdAt: data.createdAt ?? undefined,
+        updatedAt: data.updatedAt ?? undefined,
+      } as any;
+
+      const planFiles: PlanFileMeta[] = Array.isArray(data.planFiles)
+        ? data.planFiles.map((file: any) => ({
+            name: file?.name ?? "Unnamed file",
+            url: file?.url ?? "",
+            path: file?.path ?? "",
+            size: Number(file?.size ?? 0),
+            contentType: file?.contentType ?? "application/octet-stream",
+            uploadedAt: file?.uploadedAt ?? "",
+            uploadedByUid: file?.uploadedByUid ?? null,
+          }))
+        : [];
+
+      setProject(item);
+      setExistingPlanFiles(planFiles);
+
+      resetBasicsDraftFromProject(item);
+      resetAddressBidDraftFromProject(item);
+      resetCrewNotesDraftFromProject(item);
+
+      const stageStaffing = (stage: any): StageStaffing | undefined => {
+        return stage?.staffing ? stage.staffing : undefined;
+      };
+
+      const roughStaff = stageStaffing(item.roughIn);
+      const topStaff = stageStaffing(item.topOutVent);
+      const trimStaff = stageStaffing(item.trimFinish);
+
+      const pickHelper1 = (staff?: StageStaffing) =>
+        Array.isArray(staff?.helperIds) ? staff.helperIds[0] || "" : "";
+      const pickHelper2 = (staff?: StageStaffing) =>
+        Array.isArray(staff?.helperIds) ? staff.helperIds[1] || "" : "";
+
+      setRoughInAssign({
+        primaryUid: roughStaff?.primaryTechnicianId || "",
+        secondaryUid: roughStaff?.secondaryTechnicianId || "",
+        helperUid: pickHelper1(roughStaff),
+        secondaryHelperUid: pickHelper2(roughStaff),
+        useDefaultHelper: true,
+        overrideEnabled: Boolean(roughStaff),
+      });
+
+      setTopOutAssign({
+        primaryUid: topStaff?.primaryTechnicianId || "",
+        secondaryUid: topStaff?.secondaryTechnicianId || "",
+        helperUid: pickHelper1(topStaff),
+        secondaryHelperUid: pickHelper2(topStaff),
+        useDefaultHelper: true,
+        overrideEnabled: Boolean(topStaff),
+      });
+
+      setTrimAssign({
+        primaryUid: trimStaff?.primaryTechnicianId || "",
+        secondaryUid: trimStaff?.secondaryTechnicianId || "",
+        helperUid: pickHelper1(trimStaff),
+        secondaryHelperUid: pickHelper2(trimStaff),
+        useDefaultHelper: true,
+        overrideEnabled: Boolean(trimStaff),
+      });
+
+      setRoughInStatus(item.roughIn.status);
+      setRoughInScheduledDate(item.roughIn.scheduledDate ?? "");
+      setRoughInScheduledEndDate((item.roughIn as any).scheduledEndDate ?? "");
+      setRoughInCompletedDate(item.roughIn.completedDate ?? "");
+
+      setTopOutVentStatus(item.topOutVent.status);
+      setTopOutVentScheduledDate(item.topOutVent.scheduledDate ?? "");
+      setTopOutVentScheduledEndDate((item.topOutVent as any).scheduledEndDate ?? "");
+      setTopOutVentCompletedDate(item.topOutVent.completedDate ?? "");
+
+      setTrimFinishStatus(item.trimFinish.status);
+      setTrimFinishScheduledDate(item.trimFinish.scheduledDate ?? "");
+      setTrimFinishScheduledEndDate((item.trimFinish as any).scheduledEndDate ?? "");
+      setTrimFinishCompletedDate(item.trimFinish.completedDate ?? "");
+
+      const enabled = getEnabledStages(item.projectType);
+      if (enabled.length > 0) setActiveStageTab(enabled[0]);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load project.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  loadProject();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [routeProjectId]);
 
   useEffect(() => {
     async function loadCustomers() {
@@ -1002,19 +1354,118 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   }, []);
 
   useEffect(() => {
-    if (!projectUseDefaultHelper) return;
+    if (!projectId) return;
 
-    const techUid = projectPrimaryUid.trim();
+    async function loadProjectTrips() {
+      setTripsLoading(true);
+      setTripsError("");
+
+      try {
+        const qTrips = query(
+          collection(db, "trips"),
+          where("link.projectId", "==", projectId),
+          orderBy("date", "asc"),
+          orderBy("startTime", "asc"),
+        );
+
+        const snap = await getDocs(qTrips);
+        const items: TripDoc[] = snap.docs.map((ds) => {
+          const d = ds.data() as any;
+          return {
+            id: ds.id,
+            active: typeof d.active === "boolean" ? d.active : true,
+            type: d.type ?? "project",
+            status: d.status ?? "planned",
+            date: d.date ?? "",
+            timeWindow: d.timeWindow ?? "all_day",
+            startTime: d.startTime ?? "08:00",
+            endTime: d.endTime ?? "17:00",
+            crew: d.crew ?? null,
+            link: d.link ?? null,
+            notes: d.notes ?? null,
+            cancelReason: d.cancelReason ?? null,
+            timerState: d.timerState ?? "idle",
+            startedAt: d.startedAt ?? null,
+            pausedAt: d.pausedAt ?? null,
+            completedAt: d.completedAt ?? null,
+            closeout: d.closeout ?? null,
+            materialsUsedToday: d.materialsUsedToday ?? null,
+            createdAt: d.createdAt ?? undefined,
+            createdByUid: d.createdByUid ?? null,
+            updatedAt: d.updatedAt ?? undefined,
+            updatedByUid: d.updatedByUid ?? null,
+          };
+        });
+
+        setProjectTrips(items);
+      } catch (e: any) {
+        setTripsError(e?.message || "Failed to load project trips.");
+      } finally {
+        setTripsLoading(false);
+      }
+    }
+
+    loadProjectTrips();
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+
+    async function loadActivity() {
+      setActivityLoading(true);
+      setActivityError("");
+
+      try {
+        const snap = await getDocs(
+          query(collection(db, "projects", projectId, "activity"), orderBy("createdAt", "desc")),
+        );
+
+        const items: ProjectActivityEntry[] = snap.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            id: docSnap.id,
+            type: data.type ?? "project_updated",
+            title: data.title ?? "Activity",
+            description: data.description ?? null,
+            details: Array.isArray(data.details) ? data.details.filter(Boolean) : [],
+            createdAt: data.createdAt ?? "",
+            createdByUid: data.createdByUid ?? null,
+            createdByName: data.createdByName ?? null,
+            createdByRole: data.createdByRole ?? null,
+          };
+        });
+
+        setActivityLogs(items);
+      } catch (err: unknown) {
+        setActivityError(
+          err instanceof Error ? err.message : "Failed to load project activity.",
+        );
+      } finally {
+        setActivityLoading(false);
+      }
+    }
+
+    loadActivity();
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!crewNotesDraft.useDefaultHelper) return;
+    const techUid = crewNotesDraft.primaryUid.trim();
     if (!techUid) {
-      setProjectHelperUid("");
-      setProjectSecondaryHelperUid("");
+      setCrewNotesDraft((prev) => ({
+        ...prev,
+        helperUid: "",
+        secondaryHelperUid: prev.secondaryHelperUid || "",
+      }));
       return;
     }
 
     const defaultHelper = computeDefaultHelperForTech(techUid);
-    setProjectHelperUid(defaultHelper || "");
-    setProjectSecondaryHelperUid((prev) => (prev ? prev : ""));
-  }, [projectPrimaryUid, projectUseDefaultHelper, helperCandidates.length]);
+    setCrewNotesDraft((prev) => ({
+      ...prev,
+      helperUid: defaultHelper || "",
+    }));
+  }, [crewNotesDraft.primaryUid, crewNotesDraft.useDefaultHelper, helperCandidates.length]);
 
   useEffect(() => {
     if (!roughInAssign.overrideEnabled || !roughInAssign.useDefaultHelper) return;
@@ -1065,102 +1516,476 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
   ]);
 
   useEffect(() => {
-    async function loadProjectTrips() {
-      if (!projectId) return;
-      setTripsLoading(true);
-      setTripsError("");
-
-      try {
-        const qTrips = query(
-          collection(db, "trips"),
-          where("link.projectId", "==", projectId),
-          orderBy("date", "asc"),
-          orderBy("startTime", "asc"),
-        );
-
-        const snap = await getDocs(qTrips);
-        const items: TripDoc[] = snap.docs.map((ds) => {
-          const d = ds.data() as any;
-          return {
-            id: ds.id,
-            active: typeof d.active === "boolean" ? d.active : true,
-            type: d.type ?? "project",
-            status: d.status ?? "planned",
-            date: d.date ?? "",
-            timeWindow: d.timeWindow ?? "all_day",
-            startTime: d.startTime ?? "08:00",
-            endTime: d.endTime ?? "17:00",
-            crew: d.crew ?? null,
-            link: d.link ?? null,
-            notes: d.notes ?? null,
-            cancelReason: d.cancelReason ?? null,
-            createdAt: d.createdAt ?? undefined,
-            createdByUid: d.createdByUid ?? null,
-            updatedAt: d.updatedAt ?? undefined,
-            updatedByUid: d.updatedByUid ?? null,
-          };
-        });
-
-        setProjectTrips(items);
-      } catch (e: any) {
-        setTripsError(e?.message || "Failed to load project trips.");
-      } finally {
-        setTripsLoading(false);
-      }
-    }
-
-    loadProjectTrips();
-  }, [projectId]);
-
-  const enabledStages = useMemo(() => {
-    if (!project) return ["roughIn", "topOutVent", "trimFinish"] as StageKey[];
-    return getEnabledStages(project.projectType);
-  }, [project]);
-
-  useEffect(() => {
     if (enabledStages.length === 0) return;
     if (!enabledStages.includes(activeStageTab)) {
       setActiveStageTab(enabledStages[0]);
     }
   }, [enabledStages, activeStageTab]);
 
-  const hasStages = enabledStages.length > 0;
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const trip of projectTrips) {
+      next[trip.id] = trip.notes || "";
+    }
+    setTripNoteDrafts(next);
+  }, [projectTrips]);
 
-  const tripsByStage = useMemo(() => {
-    const map: Record<StageKey, TripDoc[]> = {
-      roughIn: [],
-      topOutVent: [],
-      trimFinish: [],
+  function stageStateForKey(stageKey: StageKey) {
+    if (stageKey === "roughIn") {
+      return {
+        status: roughInStatus,
+        setStatus: setRoughInStatus,
+        start: roughInScheduledDate,
+        setStart: setRoughInScheduledDate,
+        end: roughInScheduledEndDate,
+        setEnd: setRoughInScheduledEndDate,
+        done: roughInCompletedDate,
+        setDone: setRoughInCompletedDate,
+        assign: roughInAssign,
+        setAssign: setRoughInAssign,
+      };
+    }
+
+    if (stageKey === "topOutVent") {
+      return {
+        status: topOutVentStatus,
+        setStatus: setTopOutVentStatus,
+        start: topOutVentScheduledDate,
+        setStart: setTopOutVentScheduledDate,
+        end: topOutVentScheduledEndDate,
+        setEnd: setTopOutVentScheduledEndDate,
+        done: topOutVentCompletedDate,
+        setDone: setTopOutVentCompletedDate,
+        assign: topOutAssign,
+        setAssign: setTopOutAssign,
+      };
+    }
+
+    return {
+      status: trimFinishStatus,
+      setStatus: setTrimFinishStatus,
+      start: trimFinishScheduledDate,
+      setStart: setTrimFinishScheduledDate,
+      end: trimFinishScheduledEndDate,
+      setEnd: setTrimFinishScheduledEndDate,
+      done: trimFinishCompletedDate,
+      setDone: setTrimFinishCompletedDate,
+      assign: trimAssign,
+      setAssign: setTrimAssign,
     };
+  }
 
-    for (const t of projectTrips) {
-      const stageKey = String(t.link?.projectStageKey || "").trim() as StageKey;
-      if (stageKey === "roughIn" || stageKey === "topOutVent" || stageKey === "trimFinish") {
-        map[stageKey].push(t);
+  async function handleSaveBasicsSection() {
+    if (!project) return;
+
+    if (!basicsDraft.customerId.trim()) {
+      setBasicsSaveError("Please select a customer / contractor.");
+      return;
+    }
+
+    if (!basicsDraft.projectName.trim()) {
+      setBasicsSaveError("Project name is required.");
+      return;
+    }
+
+    setBasicsSaveBusy(true);
+    setBasicsSaveError("");
+    setBasicsSaveSuccess("");
+
+    try {
+      const now = nowIso();
+      const selectedCustomerRecord =
+        customers.find((customer) => customer.id === basicsDraft.customerId.trim()) ?? null;
+
+      const details: string[] = [];
+
+      if ((project.customerId || "") !== basicsDraft.customerId.trim()) {
+        details.push(
+          `Customer: ${project.customerDisplayName || "—"} → ${selectedCustomerRecord?.displayName || "—"}`,
+        );
       }
+      if ((project.projectName || "") !== basicsDraft.projectName.trim()) {
+        details.push("Project name updated");
+      }
+      if (String(project.projectType || "") !== basicsDraft.projectType) {
+        details.push(
+          `Project type: ${formatProjectType(project.projectType)} → ${formatProjectType(basicsDraft.projectType)}`,
+        );
+      }
+      if ((project.description || "") !== basicsDraft.description.trim()) {
+        details.push("Description updated");
+      }
+      if (Boolean(project.active) !== basicsDraft.active) {
+        details.push(`Project marked ${basicsDraft.active ? "active" : "inactive"}`);
+      }
+
+      await updateDoc(doc(db, "projects", project.id), {
+        customerId: basicsDraft.customerId.trim(),
+        customerDisplayName:
+          selectedCustomerRecord?.displayName || project.customerDisplayName || null,
+        projectName: basicsDraft.projectName.trim(),
+        projectType: basicsDraft.projectType,
+        description: basicsDraft.description.trim() || null,
+        active: basicsDraft.active,
+        updatedAt: now,
+      });
+
+      mergeProjectState({
+        customerId: basicsDraft.customerId.trim(),
+        customerDisplayName:
+          selectedCustomerRecord?.displayName || project.customerDisplayName,
+        projectName: basicsDraft.projectName.trim(),
+        projectType: basicsDraft.projectType,
+        description: basicsDraft.description.trim() || undefined,
+        active: basicsDraft.active,
+        updatedAt: now,
+      });
+
+      if (details.length > 0) {
+        void recordProjectActivity({
+          type: "project_updated",
+          title: "Project basics updated",
+          description: `${details.length} change${details.length === 1 ? "" : "s"} saved.`,
+          details,
+        });
+      }
+
+      setEditingBasics(false);
+      setBasicsSaveSuccess("✅ Project basics saved.");
+    } catch (err: unknown) {
+      setBasicsSaveError(
+        err instanceof Error ? err.message : "Failed to save project basics.",
+      );
+    } finally {
+      setBasicsSaveBusy(false);
+    }
+  }
+
+  async function handleSaveAddressBidSection() {
+    if (!project) return;
+
+    if (
+      !addressBidDraft.serviceAddressLine1.trim() ||
+      !addressBidDraft.serviceCity.trim() ||
+      !addressBidDraft.serviceState.trim() ||
+      !addressBidDraft.servicePostalCode.trim()
+    ) {
+      setAddressBidSaveError("Complete the job site address before saving.");
+      return;
     }
 
-    for (const k of Object.keys(map) as StageKey[]) {
-      map[k].sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+    setAddressBidSaveBusy(true);
+    setAddressBidSaveError("");
+    setAddressBidSaveSuccess("");
+
+    try {
+      const now = nowIso();
+      const totalBid = Number(addressBidDraft.totalBidAmount) || 0;
+      const stageAmounts = buildStageBilledAmounts(
+        (project?.projectType as EditableProjectType) || "new_construction",
+        totalBid,
       );
+
+      const details: string[] = [];
+
+      if (
+        (project.serviceAddressLine1 || "") !== addressBidDraft.serviceAddressLine1.trim() ||
+        (project.serviceAddressLine2 || "") !== (addressBidDraft.serviceAddressLine2.trim() || "") ||
+        (project.serviceCity || "") !== addressBidDraft.serviceCity.trim() ||
+        (project.serviceState || "") !== addressBidDraft.serviceState.trim().toUpperCase() ||
+        (project.servicePostalCode || "") !== addressBidDraft.servicePostalCode.trim()
+      ) {
+        details.push("Job site address updated");
+      }
+
+      if (project.bidStatus !== addressBidDraft.bidStatus) {
+        details.push(
+          `Bid status: ${formatBidStatus(project.bidStatus)} → ${formatBidStatus(addressBidDraft.bidStatus)}`,
+        );
+      }
+
+      if (Number(project.totalBidAmount || 0) !== totalBid) {
+        details.push(
+          `Total bid: ${formatCurrency(project.totalBidAmount)} → ${formatCurrency(totalBid)}`,
+        );
+      }
+
+      const nextRoughIn = {
+        ...(project.roughIn as any),
+        billedAmount: stageAmounts.roughIn,
+      };
+      const nextTopOutVent = {
+        ...(project.topOutVent as any),
+        billedAmount: stageAmounts.topOutVent,
+      };
+      const nextTrimFinish = {
+        ...(project.trimFinish as any),
+        billedAmount: stageAmounts.trimFinish,
+      };
+
+      await updateDoc(doc(db, "projects", project.id), {
+        serviceAddressLabel: null,
+        serviceAddressLine1: addressBidDraft.serviceAddressLine1.trim(),
+        serviceAddressLine2: addressBidDraft.serviceAddressLine2.trim() || null,
+        serviceCity: addressBidDraft.serviceCity.trim(),
+        serviceState: addressBidDraft.serviceState.trim().toUpperCase(),
+        servicePostalCode: addressBidDraft.servicePostalCode.trim(),
+        bidStatus: addressBidDraft.bidStatus,
+        totalBidAmount: totalBid,
+        roughIn: nextRoughIn,
+        topOutVent: nextTopOutVent,
+        trimFinish: nextTrimFinish,
+        updatedAt: now,
+      });
+
+      mergeProjectState({
+        serviceAddressLabel: undefined,
+        serviceAddressLine1: addressBidDraft.serviceAddressLine1.trim(),
+        serviceAddressLine2: addressBidDraft.serviceAddressLine2.trim() || undefined,
+        serviceCity: addressBidDraft.serviceCity.trim(),
+        serviceState: addressBidDraft.serviceState.trim().toUpperCase(),
+        servicePostalCode: addressBidDraft.servicePostalCode.trim(),
+        bidStatus: addressBidDraft.bidStatus,
+        totalBidAmount: totalBid,
+        roughIn: nextRoughIn,
+        topOutVent: nextTopOutVent,
+        trimFinish: nextTrimFinish,
+        updatedAt: now,
+      });
+
+      if (details.length > 0) {
+        void recordProjectActivity({
+          type: "project_updated",
+          title: "Address / bid updated",
+          description: `${details.length} change${details.length === 1 ? "" : "s"} saved.`,
+          details,
+        });
+      }
+
+      setEditingAddressBid(false);
+      setAddressBidSaveSuccess("✅ Address / bid saved.");
+    } catch (err: unknown) {
+      setAddressBidSaveError(
+        err instanceof Error ? err.message : "Failed to save address / bid.",
+      );
+    } finally {
+      setAddressBidSaveBusy(false);
     }
+  }
 
-    return map;
-  }, [projectTrips]);
+  async function handleSaveCrewNotesSection() {
+    if (!project) return;
 
-  const nonStageProjectTrips = useMemo(() => {
-    return projectTrips
-      .filter((t) => !String(t.link?.projectStageKey || "").trim())
-      .sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+    setCrewNotesSaveBusy(true);
+    setCrewNotesSaveError("");
+    setCrewNotesSaveSuccess("");
+
+    try {
+      const now = nowIso();
+
+      const projPrimary = crewNotesDraft.primaryUid.trim() || null;
+      const projSecondary = crewNotesDraft.secondaryUid.trim() || null;
+
+      const helpers: string[] = [];
+      if (crewNotesDraft.helperUid.trim()) helpers.push(crewNotesDraft.helperUid.trim());
+      if (
+        crewNotesDraft.secondaryHelperUid.trim() &&
+        crewNotesDraft.secondaryHelperUid.trim() !== crewNotesDraft.helperUid.trim()
+      ) {
+        helpers.push(crewNotesDraft.secondaryHelperUid.trim());
+      }
+
+      const helperNames = helpers.map((uid) => findHelperName(uid) || uid);
+
+      const details: string[] = [];
+
+      if ((project.primaryTechnicianId || project.assignedTechnicianId || "") !== (projPrimary || "")) {
+        details.push(
+          `Primary Tech: ${project.primaryTechnicianName || "Unassigned"} → ${projPrimary ? findTechName(projPrimary) : "Unassigned"}`,
+        );
+      }
+
+      if ((project.secondaryTechnicianId || "") !== (projSecondary || "")) {
+        details.push(
+          `Secondary Tech updated to ${projSecondary ? findTechName(projSecondary) : "None"}`,
+        );
+      }
+
+      const oldHelpers = Array.isArray(project.helperNames) ? project.helperNames.join(", ") : "";
+      const newHelpers = helperNames.join(", ");
+      if (oldHelpers !== newHelpers) {
+        details.push("Helper assignments updated");
+      }
+
+      if ((project.internalNotes || "") !== (crewNotesDraft.internalNotes.trim() || "")) {
+        details.push("Internal notes updated");
+      }
+
+      await updateDoc(doc(db, "projects", project.id), {
+        primaryTechnicianId: projPrimary,
+        primaryTechnicianName: projPrimary ? findTechName(projPrimary) || null : null,
+        secondaryTechnicianId: projSecondary,
+        secondaryTechnicianName: projSecondary ? findTechName(projSecondary) || null : null,
+        helperIds: helpers.length ? helpers : null,
+        helperNames: helperNames.length ? helperNames : null,
+        assignedTechnicianId: projPrimary,
+        assignedTechnicianName: projPrimary ? findTechName(projPrimary) || null : null,
+        internalNotes: crewNotesDraft.internalNotes.trim() || null,
+        updatedAt: now,
+      });
+
+      mergeProjectState({
+        primaryTechnicianId: projPrimary || undefined,
+        primaryTechnicianName: projPrimary ? findTechName(projPrimary) || undefined : undefined,
+        secondaryTechnicianId: projSecondary || undefined,
+        secondaryTechnicianName: projSecondary
+          ? findTechName(projSecondary) || undefined
+          : undefined,
+        helperIds: helpers.length ? helpers : undefined,
+        helperNames: helperNames.length ? helperNames : undefined,
+        assignedTechnicianId: projPrimary || undefined,
+        assignedTechnicianName: projPrimary ? findTechName(projPrimary) || undefined : undefined,
+        internalNotes: crewNotesDraft.internalNotes.trim() || undefined,
+        updatedAt: now,
+      });
+
+      if (details.length > 0) {
+        void recordProjectActivity({
+          type: "project_updated",
+          title: "Crew / notes updated",
+          description: `${details.length} change${details.length === 1 ? "" : "s"} saved.`,
+          details,
+        });
+      }
+
+      setEditingCrewNotes(false);
+      setCrewNotesSaveSuccess("✅ Crew / notes saved.");
+    } catch (err: unknown) {
+      setCrewNotesSaveError(
+        err instanceof Error ? err.message : "Failed to save crew / notes.",
       );
-  }, [projectTrips]);
+    } finally {
+      setCrewNotesSaveBusy(false);
+    }
+  }
 
-  function canCurrentUserEditTrip(t: TripDoc) {
-    if (canEditProject) return true;
-    if (!isFieldRole) return false;
-    return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
+  async function handleSaveStageSection(stageKey: StageKey) {
+    if (!project) return;
+
+    setStageSaveBusy(true);
+    setStageSaveError("");
+    setStageSaveSuccess("");
+
+    try {
+      const now = nowIso();
+
+      function buildStageStaffingPayload(stage: StageAssignmentState): StageStaffing | null {
+        if (!stage.overrideEnabled) return null;
+
+        const primaryUid = stage.primaryUid.trim();
+        const secondaryUid = stage.secondaryUid.trim();
+        const h1 = stage.helperUid.trim();
+        const h2 = stage.secondaryHelperUid.trim();
+
+        const helperIds: string[] = [];
+        if (h1) helperIds.push(h1);
+        if (h2 && h2 !== h1) helperIds.push(h2);
+
+        return {
+          primaryTechnicianId: primaryUid || undefined,
+          primaryTechnicianName: primaryUid ? findTechName(primaryUid) || undefined : undefined,
+          secondaryTechnicianId: secondaryUid || undefined,
+          secondaryTechnicianName: secondaryUid
+            ? findTechName(secondaryUid) || undefined
+            : undefined,
+          helperIds: helperIds.length ? helperIds : undefined,
+          helperNames: helperIds.length
+            ? helperIds.map((uid) => findHelperName(uid) || uid)
+            : undefined,
+        };
+      }
+
+      function staffingToFirestore(staff: StageStaffing | null) {
+        if (!staff) return null;
+        return {
+          primaryTechnicianId: staff.primaryTechnicianId || null,
+          primaryTechnicianName: staff.primaryTechnicianName || null,
+          secondaryTechnicianId: staff.secondaryTechnicianId || null,
+          secondaryTechnicianName: staff.secondaryTechnicianName || null,
+          helperIds: staff.helperIds && staff.helperIds.length ? staff.helperIds : null,
+          helperNames: staff.helperNames && staff.helperNames.length ? staff.helperNames : null,
+        };
+      }
+
+      const stageState = stageStateForKey(stageKey);
+
+      const originalStage =
+        stageKey === "roughIn"
+          ? project.roughIn
+          : stageKey === "topOutVent"
+            ? project.topOutVent
+            : project.trimFinish;
+
+      const nextStaff = buildStageStaffingPayload(stageState.assign);
+      const nextStage = {
+        ...(originalStage as any),
+        status: stageState.status,
+        scheduledDate: stageState.start || null,
+        scheduledEndDate: stageState.end || null,
+        completedDate: stageState.done || null,
+        staffing: staffingToFirestore(nextStaff),
+      };
+
+      const details: string[] = [];
+
+      if ((originalStage.status || "") !== stageState.status) {
+        details.push(
+          `${stageLabel(stageKey)} status: ${formatStageStatus(originalStage.status)} → ${formatStageStatus(stageState.status)}`,
+        );
+      }
+      if ((originalStage.scheduledDate || "") !== (stageState.start || "")) {
+        details.push(`${stageLabel(stageKey)} scheduled start updated`);
+      }
+      if (((originalStage as any).scheduledEndDate || "") !== (stageState.end || "")) {
+        details.push(`${stageLabel(stageKey)} scheduled end updated`);
+      }
+      if ((originalStage.completedDate || "") !== (stageState.done || "")) {
+        details.push(`${stageLabel(stageKey)} completed date updated`);
+      }
+      if (
+        JSON.stringify((originalStage as any).staffing ?? null) !==
+        JSON.stringify(nextStage.staffing ?? null)
+      ) {
+        details.push(`${stageLabel(stageKey)} crew override updated`);
+      }
+
+      await updateDoc(doc(db, "projects", project.id), {
+        [stageKey]: nextStage,
+        updatedAt: now,
+      } as any);
+
+      mergeProjectState({
+        [stageKey]: nextStage,
+        updatedAt: now,
+      });
+
+      if (details.length > 0) {
+        void recordProjectActivity({
+          type: "project_updated",
+          title: `${stageLabel(stageKey)} updated`,
+          description: `${details.length} change${details.length === 1 ? "" : "s"} saved.`,
+          details,
+        });
+      }
+
+      setStageSaveSuccess(`✅ ${stageLabel(stageKey)} saved.`);
+    } catch (err: unknown) {
+      setStageSaveError(
+        err instanceof Error ? err.message : "Failed to save stage updates.",
+      );
+    } finally {
+      setStageSaveBusy(false);
+    }
   }
 
   function onPickPlanFiles(files: FileList | null) {
@@ -1224,7 +2049,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       setPendingPlanFiles([]);
       setAttachmentsStatus("");
       setAttachmentsSuccess("✅ Attachments uploaded.");
-      setProject((prev) => (prev ? ({ ...prev, updatedAt } as any) : prev));
+      mergeProjectState({ updatedAt });
+
+      void recordProjectActivity({
+        type: "attachment_added",
+        title: uploadedMeta.length === 1 ? "Attachment uploaded" : "Attachments uploaded",
+        description: `${uploadedMeta.length} attachment${uploadedMeta.length === 1 ? "" : "s"} added to the project.`,
+        details: uploadedMeta.map((file) => file.name),
+      });
     } catch (err: unknown) {
       setAttachmentsError(
         err instanceof Error ? err.message : "Failed to upload attachments.",
@@ -1262,7 +2094,14 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       setExistingPlanFiles(nextPlanFiles);
       setAttachmentsStatus("");
       setAttachmentsSuccess("✅ Attachment removed.");
-      setProject((prev) => (prev ? ({ ...prev, updatedAt } as any) : prev));
+      mergeProjectState({ updatedAt });
+
+      void recordProjectActivity({
+        type: "attachment_removed",
+        title: "Attachment removed",
+        description: file.name,
+        details: [`Removed by ${actorDisplayName}`],
+      });
     } catch (err: unknown) {
       setAttachmentsError(
         err instanceof Error ? err.message : "Failed to remove attachment.",
@@ -1274,7 +2113,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
   async function cancelTrip(t: TripDoc) {
     if (!project) return;
-
     if (!canEditProject) {
       alert("Only Admin/Dispatcher/Manager can cancel project trips.");
       return;
@@ -1295,6 +2133,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         status: "cancelled",
         active: false,
         cancelReason: trimmed,
+        timerState: "stopped",
         updatedAt: now,
         updatedByUid: myUid || null,
       });
@@ -1307,12 +2146,23 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 status: "cancelled",
                 active: false,
                 cancelReason: trimmed,
+                timerState: "stopped",
                 updatedAt: now,
                 updatedByUid: myUid || null,
               }
             : x,
         ),
       );
+
+      void recordProjectActivity({
+        type: "trip_cancelled",
+        title: "Trip cancelled",
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        details: [
+          t.link?.projectStageKey ? `Stage: ${stageLabel(t.link.projectStageKey as StageKey)}` : "Project Trip",
+          `Reason: ${trimmed}`,
+        ],
+      });
     } catch (e: any) {
       alert(e?.message || "Failed to cancel trip.");
     }
@@ -1320,7 +2170,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
   async function removeTrip(t: TripDoc) {
     if (!project) return;
-
     if (!canEditProject) {
       alert("Only Admin/Dispatcher/Manager can delete trips.");
       return;
@@ -1337,6 +2186,15 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       await deleteDoc(doc(db, "trips", t.id));
       setProjectTrips((prev) => prev.filter((x) => x.id !== t.id));
       setTripModal((m) => (m.open && m.tripId === t.id ? emptyTripModal() : m));
+
+      void recordProjectActivity({
+        type: "trip_deleted",
+        title: "Trip deleted",
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        details: [
+          t.link?.projectStageKey ? `Stage: ${stageLabel(t.link.projectStageKey as StageKey)}` : "Project Trip",
+        ],
+      });
     } catch (e: any) {
       alert(e?.message || "Failed to delete trip.");
     }
@@ -1374,7 +2232,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
 
     const crew = getEffectiveCrewForStage(stageKey);
-
     const primaryUid = crew.primary.trim();
     if (!primaryUid) {
       alert(
@@ -1397,7 +2254,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const batchMax = 450;
     let batch = writeBatch(db);
     let batchCount = 0;
-
     let created = 0;
     let skipped = 0;
 
@@ -1422,6 +2278,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         timeWindow: "all_day",
         startTime: "08:00",
         endTime: "17:00",
+        timerState: "idle",
+        startedAt: null,
+        pausedAt: null,
+        completedAt: null,
         crew: {
           primaryTechUid: primaryUid,
           primaryTechName: primaryName,
@@ -1486,6 +2346,12 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           link: d.link ?? null,
           notes: d.notes ?? null,
           cancelReason: d.cancelReason ?? null,
+          timerState: d.timerState ?? "idle",
+          startedAt: d.startedAt ?? null,
+          pausedAt: d.pausedAt ?? null,
+          completedAt: d.completedAt ?? null,
+          closeout: d.closeout ?? null,
+          materialsUsedToday: d.materialsUsedToday ?? null,
           createdAt: d.createdAt ?? undefined,
           createdByUid: d.createdByUid ?? null,
           updatedAt: d.updatedAt ?? undefined,
@@ -1498,6 +2364,17 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     } finally {
       setTripsLoading(false);
     }
+
+    void recordProjectActivity({
+      type: "trip_created",
+      title: "Stage trips synced",
+      description: `${stageLabel(stageKey)} • Created: ${created} • Skipped: ${skipped}`,
+      details: [
+        `Date range: ${start}${end && end !== start ? ` → ${end}` : ""}`,
+        `Primary Tech: ${primaryName}`,
+        ...(helperName ? [`Helper: ${helperName}`] : []),
+      ],
+    });
   }
 
   async function addStageTrip(stageKey: StageKey) {
@@ -1542,6 +2419,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       timeWindow: "all_day",
       startTime: "08:00",
       endTime: "17:00",
+      timerState: "idle",
+      startedAt: null,
+      pausedAt: null,
+      completedAt: null,
       crew: {
         primaryTechUid: primaryUid,
         primaryTechName: primaryName,
@@ -1573,6 +2454,18 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
         ),
       );
+
+      void recordProjectActivity({
+        type: "trip_created",
+        title: "Stage trip added",
+        description: `${dateIso} • All Day • ${stageLabel(stageKey)}`,
+        details: buildCrewActivityDetails({
+          primaryName,
+          helperName,
+          secondaryName,
+          secondaryHelperName,
+        }),
+      });
     } catch (e: any) {
       alert(e?.message || "Failed to add trip.");
     }
@@ -1593,7 +2486,8 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     if (!st || !et) throw new Error("Start and end times are required.");
     if (et <= st) throw new Error("End time must be after start time.");
 
-    const primaryUid = safeTrim(values.primaryTechUid || projectPrimaryUid);
+    const savedProjectCrew = getSavedProjectCrew();
+    const primaryUid = safeTrim(values.primaryTechUid || savedProjectCrew.primaryUid);
     if (!primaryUid) throw new Error("Primary Tech is required.");
 
     const helperUid = safeTrim(values.helperUid || "");
@@ -1617,6 +2511,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       timeWindow: values.timeWindow,
       startTime: st,
       endTime: et,
+      timerState: "idle",
+      startedAt: null,
+      pausedAt: null,
+      completedAt: null,
       crew: {
         primaryTechUid: primaryUid,
         primaryTechName: primaryName,
@@ -1646,6 +2544,18 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
       ),
     );
+
+    void recordProjectActivity({
+      type: "trip_created",
+      title: "Project trip scheduled",
+      description: `${date} • ${formatTripWindow(values.timeWindow)} • ${st}-${et}`,
+      details: buildCrewActivityDetails({
+        primaryName,
+        helperName,
+        secondaryName,
+        secondaryHelperName,
+      }),
+    });
   }
 
   function openCreateTrip(stageKey: StageKey | null) {
@@ -1654,12 +2564,15 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     const defaults =
       stageKey && hasStages
         ? getEffectiveCrewForStage(stageKey)
-        : {
-            primary: projectPrimaryUid,
-            helper: projectHelperUid,
-            secondary: projectSecondaryUid,
-            secondaryHelper: projectSecondaryHelperUid,
-          };
+        : (() => {
+            const savedProjectCrew = getSavedProjectCrew();
+            return {
+              primary: savedProjectCrew.primaryUid,
+              helper: savedProjectCrew.helperUid,
+              secondary: savedProjectCrew.secondaryUid,
+              secondaryHelper: savedProjectCrew.secondaryHelperUid,
+            };
+          })();
 
     const tw: "all_day" = "all_day";
     const times = windowToTimes(tw);
@@ -1795,6 +2708,10 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
             timeWindow: tripModal.timeWindow,
             startTime: st,
             endTime: et,
+            timerState: "idle",
+            startedAt: null,
+            pausedAt: null,
+            completedAt: null,
             crew: {
               primaryTechUid: primaryUid,
               primaryTechName: primaryName,
@@ -1826,6 +2743,21 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
             ),
           );
+
+          void recordProjectActivity({
+            type: "trip_created",
+            title: "Stage trip scheduled",
+            description: `${date} • ${formatTripWindow(tripModal.timeWindow)} • ${st}-${et}`,
+            details: [
+              `Stage: ${stageLabel(stageKey)}`,
+              ...buildCrewActivityDetails({
+                primaryName,
+                helperName,
+                secondaryName,
+                secondaryHelperName,
+              }),
+            ],
+          });
 
           setTripModalOk("✅ Trip scheduled.");
           setTimeout(() => closeTripModal(), 450);
@@ -1888,6 +2820,24 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         ),
       );
 
+      const existingTrip = projectTrips.find((x) => x.id === tripId);
+      void recordProjectActivity({
+        type: "trip_updated",
+        title: "Trip updated",
+        description: `${date} • ${formatTripWindow(tripModal.timeWindow)} • ${st}-${et}`,
+        details: [
+          existingTrip?.link?.projectStageKey
+            ? `Stage: ${stageLabel(existingTrip.link.projectStageKey as StageKey)}`
+            : "Project Trip",
+          ...buildCrewActivityDetails({
+            primaryName,
+            helperName,
+            secondaryName,
+            secondaryHelperName,
+          }),
+        ],
+      });
+
       setTripModalOk("✅ Trip updated.");
       setTimeout(() => closeTripModal(), 450);
     } catch (e: any) {
@@ -1897,204 +2847,357 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
   }
 
-  async function handleSaveUpdates(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!project) return;
+  async function saveTripNotes(t: TripDoc) {
+    if (!canCurrentUserOperateTrip(t)) return;
 
-    if (!selectedCustomerId.trim()) {
-      setSaveError("Please select a linked customer.");
-      return;
-    }
-
-    if (!projectName.trim()) {
-      setSaveError("Project name is required.");
-      return;
-    }
-
-    if (
-      !serviceAddressLine1.trim() ||
-      !serviceCity.trim() ||
-      !serviceState.trim() ||
-      !servicePostalCode.trim()
-    ) {
-      setSaveError("Complete the job site address before saving.");
-      return;
-    }
-
-    setSaveError("");
-    setSaveSuccess("");
-    setSaving(true);
+    const noteValue = safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? "");
+    setTripActionBusyId(t.id);
 
     try {
       const now = nowIso();
-      const selectedCustomerRecord =
-        customers.find((customer) => customer.id === selectedCustomerId.trim()) ?? null;
-      const totalBid = Number(totalBidAmount) || 0;
-      const stageAmounts = buildStageBilledAmounts(projectTypeValue, totalBid);
 
-      const projPrimary = projectPrimaryUid.trim() || null;
-      const projSecondary = projectSecondaryUid.trim() || null;
-
-      const helpers: string[] = [];
-      if (projectHelperUid.trim()) helpers.push(projectHelperUid.trim());
-      if (
-        projectSecondaryHelperUid.trim() &&
-        projectSecondaryHelperUid.trim() !== projectHelperUid.trim()
-      ) {
-        helpers.push(projectSecondaryHelperUid.trim());
-      }
-
-      const helperNames = helpers.map((uid) => findHelperName(uid) || uid);
-
-      function buildStageStaffingPayload(stage: StageAssignmentState): StageStaffing | null {
-        if (!stage.overrideEnabled) return null;
-
-        const primaryUid = stage.primaryUid.trim();
-        const secondaryUid = stage.secondaryUid.trim();
-        const h1 = stage.helperUid.trim();
-        const h2 = stage.secondaryHelperUid.trim();
-
-        const helperIds: string[] = [];
-        if (h1) helperIds.push(h1);
-        if (h2 && h2 !== h1) helperIds.push(h2);
-
-        const staffing: StageStaffing = {
-          primaryTechnicianId: primaryUid || undefined,
-          primaryTechnicianName: primaryUid ? findTechName(primaryUid) || undefined : undefined,
-          secondaryTechnicianId: secondaryUid || undefined,
-          secondaryTechnicianName: secondaryUid
-            ? findTechName(secondaryUid) || undefined
-            : undefined,
-          helperIds: helperIds.length ? helperIds : undefined,
-          helperNames: helperIds.length
-            ? helperIds.map((uid) => findHelperName(uid) || uid)
-            : undefined,
-        };
-
-        return staffing;
-      }
-
-      const roughStaff = buildStageStaffingPayload(roughInAssign);
-      const topStaff = buildStageStaffingPayload(topOutAssign);
-      const trimStaff = buildStageStaffingPayload(trimAssign);
-
-      function staffingToFirestore(staff: StageStaffing | null) {
-        if (!staff) return null;
-        return {
-          primaryTechnicianId: staff.primaryTechnicianId || null,
-          primaryTechnicianName: staff.primaryTechnicianName || null,
-          secondaryTechnicianId: staff.secondaryTechnicianId || null,
-          secondaryTechnicianName: staff.secondaryTechnicianName || null,
-          helperIds: staff.helperIds && staff.helperIds.length ? staff.helperIds : null,
-          helperNames: staff.helperNames && staff.helperNames.length ? staff.helperNames : null,
-        };
-      }
-
-      const nextRoughIn: any = {
-        ...project.roughIn,
-        status: roughInStatus,
-        scheduledDate: roughInScheduledDate || null,
-        scheduledEndDate: roughInScheduledEndDate || null,
-        completedDate: roughInCompletedDate || null,
-        billedAmount: stageAmounts.roughIn,
-        staffing: staffingToFirestore(roughStaff),
-      };
-
-      const nextTopOut: any = {
-        ...project.topOutVent,
-        status: topOutVentStatus,
-        scheduledDate: topOutVentScheduledDate || null,
-        scheduledEndDate: topOutVentScheduledEndDate || null,
-        completedDate: topOutVentCompletedDate || null,
-        billedAmount: stageAmounts.topOutVent,
-        staffing: staffingToFirestore(topStaff),
-      };
-
-      const nextTrim: any = {
-        ...project.trimFinish,
-        status: trimFinishStatus,
-        scheduledDate: trimFinishScheduledDate || null,
-        scheduledEndDate: trimFinishScheduledEndDate || null,
-        completedDate: trimFinishCompletedDate || null,
-        billedAmount: stageAmounts.trimFinish,
-        staffing: staffingToFirestore(trimStaff),
-      };
-
-      await updateDoc(doc(db, "projects", project.id), {
-        customerId: selectedCustomerId.trim(),
-        customerDisplayName:
-          selectedCustomerRecord?.displayName || project.customerDisplayName || null,
-
-        projectName: projectName.trim(),
-        projectType: projectTypeValue,
-        description: description.trim() || null,
-
-        serviceAddressLabel: serviceAddressLabel.trim() || "Job Site",
-        serviceAddressLine1: serviceAddressLine1.trim(),
-        serviceAddressLine2: serviceAddressLine2.trim() || null,
-        serviceCity: serviceCity.trim(),
-        serviceState: serviceState.trim().toUpperCase(),
-        servicePostalCode: servicePostalCode.trim(),
-
-        bidStatus,
-        totalBidAmount: totalBid,
-        active: projectActive,
-
-        primaryTechnicianId: projPrimary,
-        primaryTechnicianName: projPrimary ? findTechName(projPrimary) || null : null,
-        secondaryTechnicianId: projSecondary,
-        secondaryTechnicianName: projSecondary
-          ? findTechName(projSecondary) || null
-          : null,
-
-        helperIds: helpers.length ? helpers : null,
-        helperNames: helperNames.length ? helperNames : null,
-
-        assignedTechnicianId: projPrimary,
-        assignedTechnicianName: projPrimary ? findTechName(projPrimary) || null : null,
-
-        roughIn: nextRoughIn,
-        topOutVent: nextTopOut,
-        trimFinish: nextTrim,
-
-        internalNotes: internalNotes.trim() || null,
+      await updateDoc(doc(db, "trips", t.id), {
+        notes: noteValue || null,
         updatedAt: now,
+        updatedByUid: myUid || null,
+      } as any);
+
+      setProjectTrips((prev) =>
+        prev.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                notes: noteValue || null,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : x,
+        ),
+      );
+
+      void recordProjectActivity({
+        type: "trip_notes_saved",
+        title: "Trip notes saved",
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        details: noteValue ? [noteValue] : ["Notes cleared"],
+      });
+    } catch (err: any) {
+      alert(err?.message || "Failed to save trip notes.");
+    } finally {
+      setTripActionBusyId(null);
+    }
+  }
+
+  async function applyTripLifecycleAction(
+    t: TripDoc,
+    action: "start" | "pause" | "resume" | "reopen",
+  ) {
+    if (!canCurrentUserOperateTrip(t)) return;
+
+    setTripActionBusyId(t.id);
+
+    try {
+      const now = nowIso();
+      let patch: Record<string, any> = {
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      };
+
+      let activityType: ProjectActivityType = "trip_updated";
+      let activityTitle = "Trip updated";
+
+      if (action === "start") {
+        patch = {
+          ...patch,
+          status: "in_progress",
+          timerState: "running",
+          startedAt: t.startedAt || now,
+          pausedAt: null,
+          active: true,
+        };
+        activityType = "trip_started";
+        activityTitle = "Trip started";
+      }
+
+      if (action === "pause") {
+        patch = {
+          ...patch,
+          status: "in_progress",
+          timerState: "paused",
+          pausedAt: now,
+        };
+        activityType = "trip_paused";
+        activityTitle = "Trip paused";
+      }
+
+      if (action === "resume") {
+        patch = {
+          ...patch,
+          status: "in_progress",
+          timerState: "running",
+          pausedAt: null,
+          active: true,
+        };
+        activityType = "trip_resumed";
+        activityTitle = "Trip resumed";
+      }
+
+      if (action === "reopen") {
+        patch = {
+          ...patch,
+          status: "planned",
+          timerState: "idle",
+          completedAt: null,
+          pausedAt: null,
+          active: true,
+          closeout: null,
+        };
+        activityType = "trip_reopened";
+        activityTitle = "Trip reopened";
+      }
+
+      await updateDoc(doc(db, "trips", t.id), patch as any);
+
+      setProjectTrips((prev) =>
+        prev.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                ...patch,
+              }
+            : x,
+        ),
+      );
+
+      const details: string[] = [];
+      if (t.link?.projectStageKey) {
+        details.push(`Stage: ${stageLabel(t.link.projectStageKey as StageKey)}`);
+      } else {
+        details.push("Project Trip");
+      }
+      details.push(`Primary Tech: ${t.crew?.primaryTechName || "Unassigned"}`);
+
+      void recordProjectActivity({
+        type: activityType,
+        title: activityTitle,
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        details,
+      });
+    } catch (err: any) {
+      alert(err?.message || "Failed to update trip.");
+    } finally {
+      setTripActionBusyId(null);
+    }
+  }
+
+  function estimateTripHours(t: TripDoc) {
+    const start = safeTrim(t.startTime);
+    const end = safeTrim(t.endTime);
+
+    if (start && end && end > start) {
+      const [sh, sm] = start.split(":").map(Number);
+      const [eh, em] = end.split(":").map(Number);
+      const diff = (eh * 60 + em) - (sh * 60 + sm);
+      if (diff > 0) {
+        return (diff / 60).toFixed(2);
+      }
+    }
+
+    return "1.00";
+  }
+
+  function openCloseoutModal(t: TripDoc) {
+    const hasStage = Boolean(safeTrim(t.link?.projectStageKey || ""));
+    setCloseoutModal({
+      open: true,
+      tripId: t.id,
+      outcome: hasStage ? "done_today" : "complete_project",
+      needsMoreWork: "no",
+      hoursWorkedToday: estimateTripHours(t),
+      workNotes: safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? ""),
+      materialsUsedToday: safeTrim(t.materialsUsedToday || ""),
+      saving: false,
+      error: "",
+    });
+  }
+
+  function closeCloseoutDialog() {
+    setCloseoutModal(emptyCloseoutModal());
+  }
+
+  async function saveProjectTripCloseout() {
+    if (!project || !closeoutModal.tripId) return;
+
+    const t = projectTrips.find((trip) => trip.id === closeoutModal.tripId);
+    if (!t) {
+      setCloseoutModal((prev) => ({ ...prev, error: "Trip not found." }));
+      return;
+    }
+
+    if (!canCurrentUserOperateTrip(t)) {
+      setCloseoutModal((prev) => ({ ...prev, error: "You do not have permission to close out this trip." }));
+      return;
+    }
+
+    const hoursWorked = Number(closeoutModal.hoursWorkedToday || 0);
+    if (Number.isNaN(hoursWorked) || hoursWorked < 0) {
+      setCloseoutModal((prev) => ({ ...prev, error: "Enter a valid hours value." }));
+      return;
+    }
+
+    setCloseoutModal((prev) => ({ ...prev, saving: true, error: "" }));
+    setTripActionBusyId(t.id);
+
+    try {
+      const now = nowIso();
+      const workNotes = safeTrim(closeoutModal.workNotes);
+      const materials = safeTrim(closeoutModal.materialsUsedToday);
+
+      const tripPatch: Record<string, any> = {
+        status: "complete",
+        timerState: "stopped",
+        completedAt: now,
+        pausedAt: null,
+        active: true,
+        notes: workNotes || null,
+        materialsUsedToday: materials || null,
+        closeout: {
+          outcome: closeoutModal.outcome,
+          needsMoreWork: closeoutModal.needsMoreWork,
+          hoursWorkedToday: hoursWorked,
+          workNotes: workNotes || null,
+          materialsUsedToday: materials || null,
+          savedAt: now,
+          savedByUid: myUid || null,
+          savedByName: actorDisplayName || null,
+        },
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      };
+
+      await updateDoc(doc(db, "trips", t.id), tripPatch as any);
+
+      setProjectTrips((prev) =>
+        prev.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                ...tripPatch,
+              }
+            : x,
+        ),
+      );
+
+      const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
+      const enabled = getEnabledStages(project.projectType);
+      const projectPatch: Record<string, any> = {
+        updatedAt: now,
+      };
+
+      if (stageKey) {
+        const currentStage =
+          stageKey === "roughIn"
+            ? project.roughIn
+            : stageKey === "topOutVent"
+              ? project.topOutVent
+              : project.trimFinish;
+
+        if (closeoutModal.outcome === "done_today") {
+          if (currentStage.status === "not_started" || currentStage.status === "scheduled") {
+            const nextStage = {
+              ...(currentStage as any),
+              status: "in_progress",
+            };
+            projectPatch[stageKey] = nextStage;
+
+            if (stageKey === "roughIn") setRoughInStatus("in_progress");
+            if (stageKey === "topOutVent") setTopOutVentStatus("in_progress");
+            if (stageKey === "trimFinish") setTrimFinishStatus("in_progress");
+          }
+        }
+
+        if (closeoutModal.outcome === "complete_stage") {
+          const completeDate = t.date || toIsoDate(new Date());
+          const nextStage = {
+            ...(currentStage as any),
+            status: "complete",
+            completedDate: completeDate,
+          };
+          projectPatch[stageKey] = nextStage;
+
+          if (stageKey === "roughIn") {
+            setRoughInStatus("complete");
+            setRoughInCompletedDate(completeDate);
+          }
+          if (stageKey === "topOutVent") {
+            setTopOutVentStatus("complete");
+            setTopOutVentCompletedDate(completeDate);
+          }
+          if (stageKey === "trimFinish") {
+            setTrimFinishStatus("complete");
+            setTrimFinishCompletedDate(completeDate);
+          }
+        }
+      }
+
+      if (closeoutModal.outcome === "complete_project") {
+        const completeDate = t.date || toIsoDate(new Date());
+
+        for (const key of enabled) {
+          const baseStage =
+            key === "roughIn"
+              ? projectPatch.roughIn || project.roughIn
+              : key === "topOutVent"
+                ? projectPatch.topOutVent || project.topOutVent
+                : projectPatch.trimFinish || project.trimFinish;
+
+          projectPatch[key] = {
+            ...(baseStage as any),
+            status: "complete",
+            completedDate: completeDate,
+          };
+        }
+
+        setRoughInStatus(enabled.includes("roughIn") ? "complete" : roughInStatus);
+        setTopOutVentStatus(enabled.includes("topOutVent") ? "complete" : topOutVentStatus);
+        setTrimFinishStatus(enabled.includes("trimFinish") ? "complete" : trimFinishStatus);
+
+        if (enabled.includes("roughIn")) setRoughInCompletedDate(completeDate);
+        if (enabled.includes("topOutVent")) setTopOutVentCompletedDate(completeDate);
+        if (enabled.includes("trimFinish")) setTrimFinishCompletedDate(completeDate);
+      }
+
+      if (Object.keys(projectPatch).length > 1) {
+        await updateDoc(doc(db, "projects", project.id), projectPatch as any);
+        mergeProjectState(projectPatch);
+      } else {
+        mergeProjectState({ updatedAt: now });
+      }
+
+      const details: string[] = [];
+      details.push(`Outcome: ${closeoutModal.outcome.replaceAll("_", " ")}`);
+      details.push(`More work needed after today: ${closeoutModal.needsMoreWork === "yes" ? "Yes" : "No"}`);
+      details.push(`Hours worked today: ${hoursWorked}`);
+      if (stageKey) details.push(`Stage: ${stageLabel(stageKey)}`);
+      if (workNotes) details.push(`Work notes: ${workNotes}`);
+      if (materials) details.push(`Materials: ${materials}`);
+
+      void recordProjectActivity({
+        type: "trip_closeout_saved",
+        title: "Project trip closeout saved",
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        details,
       });
 
-      setProject((prev) =>
-        prev
-          ? ({
-              ...prev,
-              customerId: selectedCustomerId.trim(),
-              customerDisplayName:
-                selectedCustomerRecord?.displayName || prev.customerDisplayName,
-              projectName: projectName.trim(),
-              projectType: projectTypeValue,
-              description: description.trim() || undefined,
-              serviceAddressLabel: serviceAddressLabel.trim() || "Job Site",
-              serviceAddressLine1: serviceAddressLine1.trim(),
-              serviceAddressLine2: serviceAddressLine2.trim() || undefined,
-              serviceCity: serviceCity.trim(),
-              serviceState: serviceState.trim().toUpperCase(),
-              servicePostalCode: servicePostalCode.trim(),
-              bidStatus,
-              totalBidAmount: totalBid,
-              active: projectActive,
-              roughIn: nextRoughIn,
-              topOutVent: nextTopOut,
-              trimFinish: nextTrim,
-              updatedAt: now,
-            } as any)
-          : prev,
-      );
-
-      setSaveSuccess("✅ Project updates saved.");
-    } catch (err: unknown) {
-      setSaveError(
-        err instanceof Error ? err.message : "Failed to save project updates.",
-      );
+      setCloseoutModal(emptyCloseoutModal());
+    } catch (err: any) {
+      setCloseoutModal((prev) => ({
+        ...prev,
+        saving: false,
+        error: err?.message || "Failed to save closeout.",
+      }));
     } finally {
-      setSaving(false);
+      setTripActionBusyId(null);
     }
   }
 
@@ -2129,6 +3232,25 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         await batch.commit();
       }
 
+      const activitySnap = await getDocs(collection(db, "projects", project.id, "activity"));
+      let activityBatch = writeBatch(db);
+      let activityCount = 0;
+
+      for (const activityDoc of activitySnap.docs) {
+        activityBatch.delete(activityDoc.ref);
+        activityCount += 1;
+
+        if (activityCount >= batchMax) {
+          await activityBatch.commit();
+          activityBatch = writeBatch(db);
+          activityCount = 0;
+        }
+      }
+
+      if (activityCount > 0) {
+        await activityBatch.commit();
+      }
+
       await deleteDoc(doc(db, "projects", project.id));
 
       setDeleteDialogOpen(false);
@@ -2142,73 +3264,111 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
     }
   }
 
-  const displayCustomerName =
-    selectedCustomer?.displayName || project?.customerDisplayName || "—";
-
-  const projectPrimaryName = projectPrimaryUid ? findTechName(projectPrimaryUid) : "";
-  const projectSecondaryName = projectSecondaryUid ? findTechName(projectSecondaryUid) : "";
-  const projectHelperName = projectHelperUid ? findHelperName(projectHelperUid) : "";
-  const projectSecondaryHelperName = projectSecondaryHelperUid
-    ? findHelperName(projectSecondaryHelperUid)
-    : "";
-
-  const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
-
-  function stageStateForKey(stageKey: StageKey) {
-    if (stageKey === "roughIn") {
-      return {
-        status: roughInStatus,
-        setStatus: setRoughInStatus,
-        start: roughInScheduledDate,
-        setStart: setRoughInScheduledDate,
-        end: roughInScheduledEndDate,
-        setEnd: setRoughInScheduledEndDate,
-        done: roughInCompletedDate,
-        setDone: setRoughInCompletedDate,
-        assign: roughInAssign,
-        setAssign: setRoughInAssign,
-      };
-    }
-    if (stageKey === "topOutVent") {
-      return {
-        status: topOutVentStatus,
-        setStatus: setTopOutVentStatus,
-        start: topOutVentScheduledDate,
-        setStart: setTopOutVentScheduledDate,
-        end: topOutVentScheduledEndDate,
-        setEnd: setTopOutVentScheduledEndDate,
-        done: topOutVentCompletedDate,
-        setDone: setTopOutVentCompletedDate,
-        assign: topOutAssign,
-        setAssign: setTopOutAssign,
-      };
-    }
-    return {
-      status: trimFinishStatus,
-      setStatus: setTrimFinishStatus,
-      start: trimFinishScheduledDate,
-      setStart: setTrimFinishScheduledDate,
-      end: trimFinishScheduledEndDate,
-      setEnd: setTrimFinishScheduledEndDate,
-      done: trimFinishCompletedDate,
-      setDone: setTrimFinishCompletedDate,
-      assign: trimAssign,
-      setAssign: setTrimAssign,
-    };
+  function timerChipLabel(timerState?: string | null) {
+    const state = String(timerState || "idle").toLowerCase();
+    if (state === "running") return "Timer: running";
+    if (state === "paused") return "Timer: paused";
+    if (state === "stopped") return "Timer: stopped";
+    return "Timer: idle";
   }
 
-  function statusChipColor(status: string): "default" | "primary" | "success" | "warning" | "error" {
-    const s = String(status || "").toLowerCase();
-    if (s === "complete" || s === "won") return "success";
-    if (s === "in_progress" || s === "draft") return "warning";
-    if (s === "scheduled" || s === "submitted") return "primary";
-    if (s === "cancelled" || s === "lost") return "error";
-    return "default";
+  function TripActionRow({ t }: { t: TripDoc }) {
+    const canOperate = canCurrentUserOperateTrip(t);
+    const busy = tripActionBusyId === t.id || closeoutModal.saving;
+    const timerState = String(t.timerState || "idle").toLowerCase();
+    const status = String(t.status || "").toLowerCase();
+    const cancelled = status === "cancelled" || t.active === false;
+
+    if (cancelled) return null;
+
+    return (
+      <Stack spacing={1.25}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {status === "complete" ? (
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              onClick={() => applyTripLifecycleAction(t, "reopen")}
+              disabled={!canOperate || busy}
+              sx={{ borderRadius: 99 }}
+            >
+              Reopen
+            </Button>
+          ) : null}
+
+          {status !== "complete" && timerState === "idle" ? (
+            <Button
+              variant="outlined"
+              startIcon={<PlayArrowRoundedIcon />}
+              onClick={() => applyTripLifecycleAction(t, "start")}
+              disabled={!canOperate || busy}
+              sx={{ borderRadius: 99 }}
+            >
+              Start Trip
+            </Button>
+          ) : null}
+
+          {status !== "complete" && timerState === "running" ? (
+            <Button
+              variant="outlined"
+              color="warning"
+              startIcon={<PauseRoundedIcon />}
+              onClick={() => applyTripLifecycleAction(t, "pause")}
+              disabled={!canOperate || busy}
+              sx={{ borderRadius: 99 }}
+            >
+              Pause
+            </Button>
+          ) : null}
+
+          {status !== "complete" && timerState === "paused" ? (
+            <Button
+              variant="outlined"
+              startIcon={<PlayArrowRoundedIcon />}
+              onClick={() => applyTripLifecycleAction(t, "resume")}
+              disabled={!canOperate || busy}
+              sx={{ borderRadius: 99 }}
+            >
+              Resume
+            </Button>
+          ) : null}
+
+          {status !== "complete" ? (
+            <Button
+              variant="contained"
+              color="warning"
+              startIcon={<StopRoundedIcon />}
+              onClick={() => openCloseoutModal(t)}
+              disabled={!canOperate || busy}
+              sx={{
+                borderRadius: 99,
+                boxShadow: "none",
+              }}
+            >
+              Finish Day
+            </Button>
+          ) : null}
+        </Stack>
+
+        <Button
+          variant="outlined"
+          startIcon={<OpenInNewRoundedIcon />}
+          onClick={() => openEditTrip(t)}
+          disabled={!canCurrentUserEditTrip(t) || busy}
+          sx={{ borderRadius: 99, alignSelf: "flex-start" }}
+        >
+          Open Trip
+        </Button>
+      </Stack>
+    );
   }
 
   function TripRow({ t }: { t: TripDoc }) {
     const canEditThis = canCurrentUserEditTrip(t);
+    const canOperateThis = canCurrentUserOperateTrip(t);
     const cancelled = t.status === "cancelled" || t.active === false;
+    const busy = tripActionBusyId === t.id || closeoutModal.saving;
+    const noteValue = tripNoteDrafts[t.id] ?? t.notes ?? "";
 
     const crew = t.crew || {};
     const tech = crew.primaryTechName || "Unassigned";
@@ -2218,17 +3378,26 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
       ? ` • 2nd Helper: ${crew.secondaryHelperName}`
       : "";
 
+    const isActiveTrip =
+      String(t.status || "").toLowerCase() === "in_progress" ||
+      String(t.timerState || "").toLowerCase() === "running" ||
+      String(t.timerState || "").toLowerCase() === "paused";
+
     return (
       <Card
         sx={{
           borderRadius: 4,
           boxShadow: "none",
           border: `1px solid ${theme.palette.divider}`,
-          bgcolor: cancelled ? alpha(theme.palette.error.main, 0.04) : "background.paper",
+          bgcolor: cancelled
+            ? alpha(theme.palette.error.main, 0.04)
+            : isActiveTrip
+              ? alpha(theme.palette.success.main, 0.04)
+              : "background.paper",
         }}
       >
         <CardContent sx={{ p: 2 }}>
-          <Stack spacing={1.5}>
+          <Stack spacing={1.75}>
             <Stack
               direction={{ xs: "column", sm: "row" }}
               spacing={1.25}
@@ -2248,22 +3417,31 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                 </Typography>
               </Box>
 
-              <Chip
-                label={
-                  cancelled
-                    ? "Cancelled"
-                    : (t.status || "planned").replaceAll("_", " ").toUpperCase()
-                }
-                color={statusChipColor(cancelled ? "cancelled" : t.status)}
-                variant={cancelled ? "filled" : "outlined"}
-                size="small"
-              />
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip
+                  label={
+                    cancelled
+                      ? "Cancelled"
+                      : (t.status || "planned").replaceAll("_", " ").toUpperCase()
+                  }
+                  color={statusChipColor(cancelled ? "cancelled" : t.status)}
+                  variant={cancelled ? "filled" : "outlined"}
+                  size="small"
+                />
+                <Chip
+                  label={timerChipLabel(t.timerState)}
+                  variant="outlined"
+                  size="small"
+                />
+              </Stack>
             </Stack>
 
-            {t.notes ? (
-              <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
-                {t.notes}
-              </Typography>
+            <TripActionRow t={t} />
+
+            {t.closeout ? (
+              <Alert severity="info" variant="outlined">
+                Last closeout saved: {String(t.closeout.outcome || "").replaceAll("_", " ")}
+              </Alert>
             ) : null}
 
             {t.cancelReason ? (
@@ -2272,14 +3450,30 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               </Typography>
             ) : null}
 
+            <TextField
+              label="Work Notes"
+              value={noteValue}
+              onChange={(e) =>
+                setTripNoteDrafts((prev) => ({
+                  ...prev,
+                  [t.id]: e.target.value,
+                }))
+              }
+              multiline
+              minRows={3}
+              disabled={!canOperateThis || busy}
+              fullWidth
+            />
+
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Button
                 variant="outlined"
-                onClick={() => openEditTrip(t)}
-                disabled={!canEditThis}
+                startIcon={<SaveRoundedIcon />}
+                onClick={() => saveTripNotes(t)}
+                disabled={!canOperateThis || busy}
                 sx={{ borderRadius: 99 }}
               >
-                Edit
+                Save Notes
               </Button>
 
               {canEditProject ? (
@@ -2288,11 +3482,16 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     variant="text"
                     color="warning"
                     onClick={() => cancelTrip(t)}
-                    disabled={cancelled}
+                    disabled={cancelled || busy}
                   >
                     Cancel
                   </Button>
-                  <Button variant="text" color="error" onClick={() => removeTrip(t)}>
+                  <Button
+                    variant="text"
+                    color="error"
+                    onClick={() => removeTrip(t)}
+                    disabled={busy}
+                  >
                     Delete
                   </Button>
                 </>
@@ -2301,8 +3500,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
             {!canEditThis ? (
               <Typography variant="caption" color="text.secondary">
-                Techs can edit trips they are assigned to. Admin / Dispatcher / Manager can
-                edit any trip.
+                Techs can operate trips they are assigned to. Admin / Dispatcher / Manager can act on any project trip from this desktop card.
               </Typography>
             ) : null}
           </Stack>
@@ -2514,11 +3712,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                       </Select>
                     </FormControl>
                   </Box>
-
-                  <Typography variant="caption" color="text.secondary">
-                    Adjusting crew here ensures trips show correctly on <strong>My Day</strong>{" "}
-                    and on the schedule.
-                  </Typography>
                 </Stack>
               </Paper>
 
@@ -2569,6 +3762,187 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
         </Dialog>
 
         <Dialog
+          open={closeoutModal.open}
+          onClose={closeoutModal.saving ? undefined : closeCloseoutDialog}
+          fullWidth
+          maxWidth="md"
+          PaperProps={{
+            sx: { borderRadius: 4 },
+          }}
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            <Typography variant="h5" sx={{ fontWeight: 800 }}>
+              Finish Project Day
+            </Typography>
+          </DialogTitle>
+
+          <DialogContent dividers>
+            {(() => {
+              const t = projectTrips.find((trip) => trip.id === closeoutModal.tripId) || null;
+              const stageKey = safeTrim(t?.link?.projectStageKey || "") as StageKey | "";
+              const hasStageOption = Boolean(stageKey);
+
+              return (
+                <Stack spacing={2.25}>
+                  <Alert severity="info" variant="outlined">
+                    This saves the project closeout from desktop and updates the trip / project state in one step.
+                  </Alert>
+
+                  {t ? (
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 4,
+                      }}
+                    >
+                      <Stack spacing={0.5}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          {project?.projectName || "Project"}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {stageKey ? stageLabel(stageKey) : "Project Trip"}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
+                        </Typography>
+                      </Stack>
+                    </Paper>
+                  ) : null}
+
+                  <Box>
+                    <FormLabel sx={{ mb: 1, display: "block", fontWeight: 700 }}>
+                      What are you saving for today?
+                    </FormLabel>
+                    <RadioGroup
+                      value={closeoutModal.outcome}
+                      onChange={(e) =>
+                        setCloseoutModal((prev) => ({
+                          ...prev,
+                          outcome: e.target.value as CloseoutOutcome,
+                        }))
+                      }
+                    >
+                      <FormControlLabel
+                        value="done_today"
+                        control={<Radio />}
+                        label="Done for today"
+                      />
+                      {hasStageOption ? (
+                        <FormControlLabel
+                          value="complete_stage"
+                          control={<Radio />}
+label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}                        />
+                      ) : null}
+                      <FormControlLabel
+                        value="complete_project"
+                        control={<Radio />}
+                        label="Complete entire project"
+                      />
+                    </RadioGroup>
+                  </Box>
+
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      borderRadius: 4,
+                    }}
+                  >
+                    <Stack spacing={1.5}>
+                      <FormLabel sx={{ fontWeight: 700 }}>
+                        Is more work still needed after today?
+                      </FormLabel>
+                      <RadioGroup
+                        value={closeoutModal.needsMoreWork}
+                        onChange={(e) =>
+                          setCloseoutModal((prev) => ({
+                            ...prev,
+                            needsMoreWork: e.target.value as CloseoutNeedsWork,
+                          }))
+                        }
+                      >
+                        <FormControlLabel value="no" control={<Radio />} label="No" />
+                        <FormControlLabel value="yes" control={<Radio />} label="Yes" />
+                      </RadioGroup>
+                    </Stack>
+                  </Paper>
+
+                  <TextField
+                    label="Hours Worked Today"
+                    type="number"
+                    inputProps={{ min: 0, step: "0.25" }}
+                    value={closeoutModal.hoursWorkedToday}
+                    onChange={(e) =>
+                      setCloseoutModal((prev) => ({
+                        ...prev,
+                        hoursWorkedToday: e.target.value,
+                      }))
+                    }
+                    fullWidth
+                  />
+
+                  <Typography variant="body2" color="text.secondary">
+                    These hours are saved with the trip closeout on desktop.
+                  </Typography>
+
+                  <TextField
+                    label="Work Notes"
+                    value={closeoutModal.workNotes}
+                    onChange={(e) =>
+                      setCloseoutModal((prev) => ({
+                        ...prev,
+                        workNotes: e.target.value,
+                      }))
+                    }
+                    multiline
+                    minRows={4}
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="Materials Used Today"
+                    value={closeoutModal.materialsUsedToday}
+                    onChange={(e) =>
+                      setCloseoutModal((prev) => ({
+                        ...prev,
+                        materialsUsedToday: e.target.value,
+                      }))
+                    }
+                    multiline
+                    minRows={4}
+                    fullWidth
+                  />
+
+                  <Typography variant="body2" color="text.secondary">
+                    Keep materials simple and natural-language. No line items required.
+                  </Typography>
+
+                  {closeoutModal.error ? (
+                    <Alert severity="error">{closeoutModal.error}</Alert>
+                  ) : null}
+                </Stack>
+              );
+            })()}
+          </DialogContent>
+
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={closeCloseoutDialog} disabled={closeoutModal.saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              color="warning"
+              onClick={saveProjectTripCloseout}
+              disabled={closeoutModal.saving}
+              sx={{ borderRadius: 99, boxShadow: "none" }}
+            >
+              {closeoutModal.saving ? "Saving..." : "Save Closeout"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
           open={deleteDialogOpen}
           onClose={deleteBusy ? undefined : () => setDeleteDialogOpen(false)}
           fullWidth
@@ -2581,19 +3955,19 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
           <DialogContent dividers>
             <Stack spacing={2}>
               <Alert severity="warning">
-                This will permanently delete this project and all linked project trips.
+                This will permanently delete this project, all linked project trips, and its activity log.
                 This action cannot be undone.
               </Alert>
 
               <Box>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                  {projectName || project?.projectName || "Untitled Project"}
+                  {project?.projectName || "Untitled Project"}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  {displayCustomerName}
+                  {project?.customerDisplayName || "—"}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {serviceAddressLine1 || project?.serviceAddressLine1 || "No address"}
+                  {project?.serviceAddressLine1 || "No address"}
                 </Typography>
               </Box>
 
@@ -2654,28 +4028,28 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                       <Chip
                         icon={<WorkRoundedIcon />}
-                        label={formatProjectType(projectTypeValue)}
+                        label={formatProjectType(project.projectType)}
                         variant="filled"
                         color="primary"
                         size="small"
                       />
                       <Chip
                         icon={<PaidRoundedIcon />}
-                        label={formatBidStatus(bidStatus)}
-                        color={statusChipColor(bidStatus)}
+                        label={formatBidStatus(project.bidStatus)}
+                        color={statusChipColor(project.bidStatus)}
                         variant="filled"
                         size="small"
                       />
                       <Chip
-                        label={projectActive ? "Active" : "Inactive"}
-                        color={projectActive ? "success" : "default"}
-                        variant={projectActive ? "filled" : "outlined"}
+                        label={project.active ? "Active" : "Inactive"}
+                        color={project.active ? "success" : "default"}
+                        variant={project.active ? "filled" : "outlined"}
                         size="small"
                       />
                     </Stack>
 
                     <Typography variant="h4" sx={{ fontWeight: 900, letterSpacing: -0.4 }}>
-                      {projectName || "Untitled Project"}
+                      {project.projectName || "Untitled Project"}
                     </Typography>
 
                     <Typography variant="body2" color="text.secondary">
@@ -2726,88 +4100,346 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                   },
                 }}
               >
-                <MetricCard label="Customer" value={displayCustomerName} />
-                <MetricCard label="Project Type" value={formatProjectType(projectTypeValue)} />
-                <MetricCard label="Bid Status" value={formatBidStatus(bidStatus)} />
-                <MetricCard label="Total Bid" value={formatCurrency(totalBidNumber)} />
-              </Box>
-
-              <Box
-                sx={{
-                  display: "grid",
-                  gap: 2,
-                  gridTemplateColumns: {
-                    xs: "1fr",
-                    md: "repeat(2, minmax(0, 1fr))",
-                  },
-                }}
-              >
-                <SectionCard
-                  title="Customer"
-                  subtitle="Current linked customer"
-                  icon={<GroupRoundedIcon color="primary" />}
-                >
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 2,
-                      gridTemplateColumns: {
-                        xs: "1fr",
-                        sm: "repeat(2, minmax(0, 1fr))",
-                      },
-                    }}
-                  >
-                    <InfoField label="Customer" value={displayCustomerName} />
-                    <InfoField
-                      label="Customer ID"
-                      value={selectedCustomerId || project.customerId || "—"}
-                    />
-                  </Box>
-                </SectionCard>
-
-                <SectionCard
-                  title="Project Address"
-                  subtitle="Current job site"
-                  icon={<HomeWorkRoundedIcon color="primary" />}
-                >
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 2,
-                      gridTemplateColumns: {
-                        xs: "1fr",
-                        sm: "repeat(2, minmax(0, 1fr))",
-                      },
-                    }}
-                  >
-                    <InfoField label="Label" value={serviceAddressLabel || "—"} />
-                    <InfoField label="Address 1" value={serviceAddressLine1 || "—"} />
-                    <InfoField label="Address 2" value={serviceAddressLine2 || "—"} />
-                    <InfoField
-                      label="City / State / ZIP"
-                      value={`${serviceCity || "—"}, ${serviceState || "—"} ${servicePostalCode || ""}`}
-                    />
-                  </Box>
-                </SectionCard>
+                <MetricCard label="Customer" value={project.customerDisplayName || "—"} />
+                <MetricCard label="Project Type" value={formatProjectType(project.projectType)} />
+                <MetricCard label="Bid Status" value={formatBidStatus(project.bidStatus)} />
+                <MetricCard label="Total Bid" value={formatCurrency(project.totalBidAmount)} />
               </Box>
 
               <SectionCard
-                title="Project Overview"
-                subtitle="Project defaults act as the fallback crew for stages and trips unless you override them."
+                title="Project Basics"
+                subtitle="Customer, project name, type, description, and active status."
                 icon={<InfoRoundedIcon color="primary" />}
+                action={
+                  canEditProject ? (
+                    editingBasics ? (
+                      <>
+                        <Button
+                          variant="text"
+                          onClick={() => {
+                            resetBasicsDraftFromProject();
+                            setBasicsSaveError("");
+                            setBasicsSaveSuccess("");
+                            setEditingBasics(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="contained"
+                          onClick={handleSaveBasicsSection}
+                          disabled={basicsSaveBusy}
+                          sx={{ borderRadius: 99, boxShadow: "none" }}
+                        >
+                          {basicsSaveBusy ? "Saving..." : "Save"}
+                        </Button>
+                      </>
+                    ) : (
+                      <IconButton
+                        onClick={() => {
+                          resetBasicsDraftFromProject();
+                          setBasicsSaveError("");
+                          setBasicsSaveSuccess("");
+                          setEditingBasics(true);
+                        }}
+                      >
+                        <EditRoundedIcon />
+                      </IconButton>
+                    )
+                  ) : null
+                }
               >
                 <Stack spacing={2}>
-                  <Paper
-                    variant="outlined"
-                    sx={{
-                      p: 2,
-                      borderRadius: 4,
-                    }}
-                  >
-                    <Stack spacing={1.25}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                        Default Crew
-                      </Typography>
+                  {customersError ? <Alert severity="error">{customersError}</Alert> : null}
+                  {basicsSaveError ? <Alert severity="error">{basicsSaveError}</Alert> : null}
+                  {basicsSaveSuccess ? <Alert severity="success">{basicsSaveSuccess}</Alert> : null}
+
+                  {editingBasics ? (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          md: "repeat(2, minmax(0, 1fr))",
+                        },
+                      }}
+                    >
+                      <Autocomplete
+                        options={customers}
+                        loading={customersLoading}
+                        value={selectedCustomerFromDraft}
+                        onChange={(_, value) =>
+                          setBasicsDraft((prev) => ({
+                            ...prev,
+                            customerId: value?.id || "",
+                          }))
+                        }
+                        filterOptions={(options, state) => {
+                          const q = state.inputValue.trim().toLowerCase();
+                          if (!q) return options.slice(0, 25);
+                          return options
+                            .filter((opt) =>
+                              `${opt.displayName} ${opt.phonePrimary || ""}`
+                                .toLowerCase()
+                                .includes(q),
+                            )
+                            .slice(0, 25);
+                        }}
+                        getOptionLabel={(option) => option.displayName || ""}
+                        isOptionEqualToValue={(option, value) => option.id === value.id}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Customer / Contractor"
+                            placeholder="Search customer by name or phone..."
+                          />
+                        )}
+                      />
+
+                      <TextField
+                        label="Project Name"
+                        value={basicsDraft.projectName}
+                        onChange={(e) =>
+                          setBasicsDraft((prev) => ({
+                            ...prev,
+                            projectName: e.target.value,
+                          }))
+                        }
+                        fullWidth
+                      />
+
+                      <TextField
+                        select
+                        label="Project Type"
+                        value={basicsDraft.projectType}
+                        onChange={(e) =>
+                          setBasicsDraft((prev) => ({
+                            ...prev,
+                            projectType: e.target.value as EditableProjectType,
+                          }))
+                        }
+                        fullWidth
+                      >
+                        <MenuItem value="new_construction">New Construction</MenuItem>
+                        <MenuItem value="remodel">Remodel</MenuItem>
+                        <MenuItem value="time_materials">Time + Materials</MenuItem>
+                        <MenuItem value="other">Other</MenuItem>
+                      </TextField>
+
+                      <Box sx={{ display: "flex", alignItems: "center" }}>
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              checked={basicsDraft.active}
+                              onChange={(e) =>
+                                setBasicsDraft((prev) => ({
+                                  ...prev,
+                                  active: e.target.checked,
+                                }))
+                              }
+                            />
+                          }
+                          label={basicsDraft.active ? "Project is active" : "Project is inactive"}
+                        />
+                      </Box>
+
+                      <Box sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}>
+                        <TextField
+                          label="Description"
+                          value={basicsDraft.description}
+                          onChange={(e) =>
+                            setBasicsDraft((prev) => ({
+                              ...prev,
+                              description: e.target.value,
+                            }))
+                          }
+                          multiline
+                          minRows={4}
+                          fullWidth
+                        />
+                      </Box>
+                    </Box>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          sm: "repeat(2, minmax(0, 1fr))",
+                        },
+                      }}
+                    >
+                      <InfoField label="Customer / Contractor" value={project.customerDisplayName || "—"} />
+                      <InfoField label="Project Name" value={project.projectName || "—"} />
+                      <InfoField label="Project Type" value={formatProjectType(project.projectType)} />
+                      <InfoField label="Status" value={project.active ? "Active" : "Inactive"} />
+                      <Box sx={{ gridColumn: { xs: "1 / -1", sm: "1 / -1" } }}>
+                        <InfoField label="Description" value={project.description || "—"} />
+                      </Box>
+                    </Box>
+                  )}
+                </Stack>
+              </SectionCard>
+
+              <SectionCard
+                title="Job Site & Bid"
+                subtitle="Address, bid status, and total bid."
+                icon={<HomeWorkRoundedIcon color="primary" />}
+                action={
+                  canEditProject ? (
+                    editingAddressBid ? (
+                      <>
+                        <Button
+                          variant="text"
+                          onClick={() => {
+                            resetAddressBidDraftFromProject();
+                            setAddressBidSaveError("");
+                            setAddressBidSaveSuccess("");
+                            setEditingAddressBid(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="contained"
+                          onClick={handleSaveAddressBidSection}
+                          disabled={addressBidSaveBusy}
+                          sx={{ borderRadius: 99, boxShadow: "none" }}
+                        >
+                          {addressBidSaveBusy ? "Saving..." : "Save"}
+                        </Button>
+                      </>
+                    ) : (
+                      <IconButton
+                        onClick={() => {
+                          resetAddressBidDraftFromProject();
+                          setAddressBidSaveError("");
+                          setAddressBidSaveSuccess("");
+                          setEditingAddressBid(true);
+                        }}
+                      >
+                        <EditRoundedIcon />
+                      </IconButton>
+                    )
+                  ) : null
+                }
+              >
+                <Stack spacing={2}>
+                  {addressBidSaveError ? (
+                    <Alert severity="error">{addressBidSaveError}</Alert>
+                  ) : null}
+                  {addressBidSaveSuccess ? (
+                    <Alert severity="success">{addressBidSaveSuccess}</Alert>
+                  ) : null}
+
+                  {editingAddressBid ? (
+                    <>
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            md: "repeat(2, minmax(0, 1fr))",
+                          },
+                        }}
+                      >
+                        <TextField
+                          label="Street Address"
+                          value={addressBidDraft.serviceAddressLine1}
+                          onChange={(e) =>
+                            setAddressBidDraft((prev) => ({
+                              ...prev,
+                              serviceAddressLine1: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+
+                        <TextField
+                          label="Address Line 2"
+                          value={addressBidDraft.serviceAddressLine2}
+                          onChange={(e) =>
+                            setAddressBidDraft((prev) => ({
+                              ...prev,
+                              serviceAddressLine2: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+
+                        <TextField
+                          label="City"
+                          value={addressBidDraft.serviceCity}
+                          onChange={(e) =>
+                            setAddressBidDraft((prev) => ({
+                              ...prev,
+                              serviceCity: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+
+                        <TextField
+                          label="State"
+                          value={addressBidDraft.serviceState}
+                          onChange={(e) =>
+                            setAddressBidDraft((prev) => ({
+                              ...prev,
+                              serviceState: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+
+                        <TextField
+                          label="ZIP"
+                          value={addressBidDraft.servicePostalCode}
+                          onChange={(e) =>
+                            setAddressBidDraft((prev) => ({
+                              ...prev,
+                              servicePostalCode: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+
+                        <FormControl fullWidth>
+                          <InputLabel>Bid Status</InputLabel>
+                          <Select
+                            label="Bid Status"
+                            value={addressBidDraft.bidStatus}
+                            onChange={(e) =>
+                              setAddressBidDraft((prev) => ({
+                                ...prev,
+                                bidStatus: e.target.value as any,
+                              }))
+                            }
+                            {...selectMenuProps()}
+                          >
+                            <MenuItem value="draft">Draft</MenuItem>
+                            <MenuItem value="submitted">Submitted</MenuItem>
+                            <MenuItem value="won">Won</MenuItem>
+                            <MenuItem value="lost">Lost</MenuItem>
+                          </Select>
+                        </FormControl>
+
+                        <TextField
+                          label="Total Bid Amount"
+                          type="number"
+                          inputProps={{ min: 0, step: "0.01" }}
+                          value={addressBidDraft.totalBidAmount}
+                          onChange={(e) =>
+                            setAddressBidDraft((prev) => ({
+                              ...prev,
+                              totalBidAmount: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+                      </Box>
 
                       <Box
                         sx={{
@@ -2815,50 +4447,285 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                           gap: 1.5,
                           gridTemplateColumns: {
                             xs: "1fr",
-                            sm: "repeat(2, minmax(0, 1fr))",
+                            md:
+                              project.projectType === "time_materials"
+                                ? "1fr"
+                                : "repeat(3, minmax(0, 1fr))",
                           },
                         }}
                       >
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Primary Tech:</strong> {projectPrimaryName || "Unassigned"}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Helper:</strong> {projectHelperName || "—"}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Secondary Tech:</strong> {projectSecondaryName || "—"}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          <strong>Secondary Helper:</strong> {projectSecondaryHelperName || "—"}
-                        </Typography>
+                        {project.projectType !== "time_materials" ? (
+                          <>
+                            <InfoField
+                              label="Rough-In Preview"
+                              value={formatCurrency(previewStageAmounts.roughIn)}
+                            />
+                            <InfoField
+                              label="Top-Out / Vent Preview"
+                              value={formatCurrency(previewStageAmounts.topOutVent)}
+                            />
+                            <InfoField
+                              label="Trim / Finish Preview"
+                              value={formatCurrency(previewStageAmounts.trimFinish)}
+                            />
+                          </>
+                        ) : (
+                          <Alert severity="info" variant="outlined">
+                            Time + Materials does not use stage billing splits.
+                          </Alert>
+                        )}
+                      </Box>
+                    </>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          sm: "repeat(2, minmax(0, 1fr))",
+                        },
+                      }}
+                    >
+                      <InfoField label="Address 1" value={project.serviceAddressLine1 || "—"} />
+                      <InfoField label="Address 2" value={project.serviceAddressLine2 || "—"} />
+                      <InfoField
+                        label="City / State / ZIP"
+                        value={`${project.serviceCity || "—"}, ${project.serviceState || "—"} ${project.servicePostalCode || ""}`}
+                      />
+                      <InfoField label="Bid Status" value={formatBidStatus(project.bidStatus)} />
+                      <InfoField label="Total Bid" value={formatCurrency(project.totalBidAmount)} />
+                    </Box>
+                  )}
+                </Stack>
+              </SectionCard>
+
+              <SectionCard
+                title="Default Crew & Notes"
+                subtitle="Project-level crew defaults and internal notes."
+                icon={<GroupRoundedIcon color="primary" />}
+                action={
+                  canEditProject ? (
+                    editingCrewNotes ? (
+                      <>
+                        <Button
+                          variant="text"
+                          onClick={() => {
+                            resetCrewNotesDraftFromProject();
+                            setCrewNotesSaveError("");
+                            setCrewNotesSaveSuccess("");
+                            setEditingCrewNotes(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="contained"
+                          onClick={handleSaveCrewNotesSection}
+                          disabled={crewNotesSaveBusy}
+                          sx={{ borderRadius: 99, boxShadow: "none" }}
+                        >
+                          {crewNotesSaveBusy ? "Saving..." : "Save"}
+                        </Button>
+                      </>
+                    ) : (
+                      <IconButton
+                        onClick={() => {
+                          resetCrewNotesDraftFromProject();
+                          setCrewNotesSaveError("");
+                          setCrewNotesSaveSuccess("");
+                          setEditingCrewNotes(true);
+                        }}
+                      >
+                        <EditRoundedIcon />
+                      </IconButton>
+                    )
+                  ) : null
+                }
+              >
+                <Stack spacing={2}>
+                  {techError ? <Alert severity="error">{techError}</Alert> : null}
+                  {profilesError ? <Alert severity="error">{profilesError}</Alert> : null}
+                  {crewNotesSaveError ? <Alert severity="error">{crewNotesSaveError}</Alert> : null}
+                  {crewNotesSaveSuccess ? <Alert severity="success">{crewNotesSaveSuccess}</Alert> : null}
+
+                  {editingCrewNotes ? (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          sm: "repeat(2, minmax(0, 1fr))",
+                        },
+                      }}
+                    >
+                      <FormControl fullWidth>
+                        <InputLabel>Primary Technician</InputLabel>
+                        <Select
+                          label="Primary Technician"
+                          value={crewNotesDraft.primaryUid}
+                          onChange={(e) =>
+                            setCrewNotesDraft((prev) => ({
+                              ...prev,
+                              primaryUid: e.target.value,
+                            }))
+                          }
+                          {...selectMenuProps()}
+                        >
+                          <MenuItem value="">Unassigned</MenuItem>
+                          {technicians.map((t) => (
+                            <MenuItem key={t.uid} value={t.uid}>
+                              {t.displayName}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <Box>
+                        <FormControl fullWidth>
+                          <InputLabel>Helper</InputLabel>
+                          <Select
+                            label="Helper"
+                            value={crewNotesDraft.helperUid}
+                            onChange={(e) =>
+                              setCrewNotesDraft((prev) => ({
+                                ...prev,
+                                helperUid: e.target.value,
+                                useDefaultHelper: false,
+                              }))
+                            }
+                            {...selectMenuProps()}
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {helperCandidates.map((h) => (
+                              <MenuItem key={h.uid} value={h.uid}>
+                                {h.name} ({h.laborRole})
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+
+                        <FormControlLabel
+                          sx={{ mt: 1 }}
+                          control={
+                            <Switch
+                              checked={crewNotesDraft.useDefaultHelper}
+                              onChange={(e) =>
+                                setCrewNotesDraft((prev) => ({
+                                  ...prev,
+                                  useDefaultHelper: e.target.checked,
+                                }))
+                              }
+                            />
+                          }
+                          label="Use default helper pairing (recommended)"
+                        />
                       </Box>
 
-                      <Typography variant="caption" color="text.secondary">
-                        Stage overrides are optional. Trip-level edits still take precedence for that trip.
-                      </Typography>
-                    </Stack>
-                  </Paper>
+                      <FormControl fullWidth>
+                        <InputLabel>Secondary Technician</InputLabel>
+                        <Select
+                          label="Secondary Technician"
+                          value={crewNotesDraft.secondaryUid}
+                          onChange={(e) =>
+                            setCrewNotesDraft((prev) => ({
+                              ...prev,
+                              secondaryUid: e.target.value,
+                            }))
+                          }
+                          disabled={!crewNotesDraft.primaryUid}
+                          {...selectMenuProps()}
+                        >
+                          <MenuItem value="">— None —</MenuItem>
+                          {technicians
+                            .filter((t) => t.uid !== crewNotesDraft.primaryUid)
+                            .map((t) => (
+                              <MenuItem key={t.uid} value={t.uid}>
+                                {t.displayName}
+                              </MenuItem>
+                            ))}
+                        </Select>
+                      </FormControl>
 
-                  {description ? (
-                    <>
-                      <Divider />
-                      <Stack spacing={1}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                          Description
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {description}
-                        </Typography>
-                      </Stack>
-                    </>
-                  ) : null}
+                      <FormControl fullWidth>
+                        <InputLabel>Secondary Helper</InputLabel>
+                        <Select
+                          label="Secondary Helper"
+                          value={crewNotesDraft.secondaryHelperUid}
+                          onChange={(e) =>
+                            setCrewNotesDraft((prev) => ({
+                              ...prev,
+                              secondaryHelperUid: e.target.value,
+                            }))
+                          }
+                          {...selectMenuProps()}
+                        >
+                          <MenuItem value="">— None —</MenuItem>
+                          {helperCandidates.map((h) => (
+                            <MenuItem key={h.uid} value={h.uid}>
+                              {h.name} ({h.laborRole})
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <Box sx={{ gridColumn: { xs: "1 / -1", sm: "1 / -1" } }}>
+                        <TextField
+                          label="Internal Notes"
+                          value={crewNotesDraft.internalNotes}
+                          onChange={(e) =>
+                            setCrewNotesDraft((prev) => ({
+                              ...prev,
+                              internalNotes: e.target.value,
+                            }))
+                          }
+                          multiline
+                          minRows={4}
+                          placeholder="Internal notes for dispatch / admins..."
+                          fullWidth
+                        />
+                      </Box>
+                    </Box>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          sm: "repeat(2, minmax(0, 1fr))",
+                        },
+                      }}
+                    >
+                      <InfoField
+                        label="Primary Tech"
+                        value={project.primaryTechnicianName || project.assignedTechnicianName || "Unassigned"}
+                      />
+                      <InfoField
+                        label="Helper"
+                        value={(Array.isArray(project.helperNames) ? project.helperNames[0] : "") || "—"}
+                      />
+                      <InfoField
+                        label="Secondary Tech"
+                        value={project.secondaryTechnicianName || "—"}
+                      />
+                      <InfoField
+                        label="Secondary Helper"
+                        value={(Array.isArray(project.helperNames) ? project.helperNames[1] : "") || "—"}
+                      />
+                      <Box sx={{ gridColumn: { xs: "1 / -1", sm: "1 / -1" } }}>
+                        <InfoField label="Internal Notes" value={project.internalNotes || "—"} />
+                      </Box>
+                    </Box>
+                  )}
                 </Stack>
               </SectionCard>
 
               {hasStages ? (
                 <SectionCard
                   title="Stages"
-                  subtitle="Stage schedule, crew, and trips are managed together here."
+                  subtitle="Stage details and stage trips are managed together."
                   icon={<ConstructionRoundedIcon color="primary" />}
                   action={
                     canEditProject ? (
@@ -2930,15 +4797,27 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                               alignItems={{ xs: "flex-start", sm: "center" }}
                             >
                               <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                                Stage Details
+                                {stageLabel(activeStageTab)}
                               </Typography>
-                              <Chip
-                                label={formatStageStatus(st.status)}
-                                color={statusChipColor(st.status)}
-                                variant="filled"
-                                size="small"
-                              />
+
+                              {canEditProject ? (
+                                <Button
+                                  variant="contained"
+                                  onClick={() => handleSaveStageSection(activeStageTab)}
+                                  disabled={stageSaveBusy}
+                                  sx={{ borderRadius: 99, boxShadow: "none" }}
+                                >
+                                  {stageSaveBusy ? "Saving..." : "Save Stage"}
+                                </Button>
+                              ) : null}
                             </Stack>
+
+                            {stageSaveError ? (
+                              <Alert severity="error">{stageSaveError}</Alert>
+                            ) : null}
+                            {stageSaveSuccess ? (
+                              <Alert severity="success">{stageSaveSuccess}</Alert>
+                            ) : null}
 
                             <Box
                               sx={{
@@ -3186,12 +5065,6 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                                 )}
                               </Stack>
                             </Paper>
-
-                            {!canEditProject ? (
-                              <Typography variant="caption" color="text.secondary">
-                                Stage details are read-only for your role.
-                              </Typography>
-                            ) : null}
                           </Stack>
                         </Paper>
 
@@ -3246,8 +5119,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
 
                             {!tripsLoading && !tripsError && activeStageTrips.length === 0 ? (
                               <Alert severity="info" variant="outlined">
-                                No trips created for this stage yet. Use{" "}
-                                <strong>Sync Stage Trips</strong> to generate daily schedule blocks.
+                                No trips created for this stage yet.
                               </Alert>
                             ) : null}
 
@@ -3267,7 +5139,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               ) : (
                 <SectionCard
                   title="Project Trips"
-                  subtitle="This project type does not use stages. Trips here are the scheduling blocks for the project."
+                  subtitle="This project type does not use stages. Trips are managed directly here."
                   icon={<RouteRoundedIcon color="primary" />}
                   action={
                     canEditProject ? (
@@ -3444,7 +5316,7 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
                                       {file.contentType || "file"}
                                     </Typography>
                                     <Typography variant="caption" color="text.secondary">
-                                      Uploaded {formatUploadedAt(file.uploadedAt)}
+                                      Uploaded {formatDateTime(file.uploadedAt)}
                                     </Typography>
                                   </Box>
                                 </Stack>
@@ -3486,456 +5358,140 @@ export default function ProjectDetailPage({ params }: ProjectDetailPageProps) {
               </SectionCard>
 
               <SectionCard
-                title="Edit Project"
-                subtitle="Update the linked customer, basics, address, financial details, defaults, stage data, and internal notes."
-                icon={<NoteAltRoundedIcon color="primary" />}
-              >
-                <Stack spacing={1.5} sx={{ mb: 2 }}>
-                  {customersLoading ? <Typography>Loading customers...</Typography> : null}
-                  {customersError ? <Alert severity="error">{customersError}</Alert> : null}
-                  {techLoading ? <Typography>Loading technicians...</Typography> : null}
-                  {techError ? <Alert severity="error">{techError}</Alert> : null}
-                  {profilesLoading ? <Typography>Loading employee profiles...</Typography> : null}
-                  {profilesError ? <Alert severity="error">{profilesError}</Alert> : null}
-                </Stack>
-
-                <Box component="form" onSubmit={handleSaveUpdates}>
-                  <Stack spacing={2.5}>
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        p: 2,
-                        borderRadius: 4,
-                      }}
-                    >
-                      <Stack spacing={2}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                          Project Basics
-                        </Typography>
-
-                        <Box
-                          sx={{
-                            display: "grid",
-                            gap: 2,
-                            gridTemplateColumns: {
-                              xs: "1fr",
-                              md: "repeat(2, minmax(0, 1fr))",
-                            },
-                          }}
-                        >
-                          <FormControl fullWidth>
-                            <InputLabel>Linked Customer</InputLabel>
-                            <Select
-                              label="Linked Customer"
-                              value={selectedCustomerId}
-                              onChange={(e) => setSelectedCustomerId(e.target.value)}
-                              disabled={!canEditProject || customersLoading}
-                              {...selectMenuProps()}
-                            >
-                              <MenuItem value="">Select customer...</MenuItem>
-                              {customers.map((customer) => (
-                                <MenuItem key={customer.id} value={customer.id}>
-                                  {customer.displayName}
-                                </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-
-                          <TextField
-                            label="Project Name"
-                            value={projectName}
-                            onChange={(e) => setProjectName(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-
-                          <TextField
-                            select
-                            label="Project Type"
-                            value={projectTypeValue}
-                            onChange={(e) =>
-                              setProjectTypeValue(e.target.value as EditableProjectType)
-                            }
-                            disabled={!canEditProject}
-                            fullWidth
-                          >
-                            <MenuItem value="new_construction">New Construction</MenuItem>
-                            <MenuItem value="remodel">Remodel</MenuItem>
-                            <MenuItem value="time_materials">Time + Materials</MenuItem>
-                            <MenuItem value="other">Other</MenuItem>
-                          </TextField>
-
-                          <Box sx={{ display: "flex", alignItems: "center" }}>
-                            <FormControlLabel
-                              control={
-                                <Switch
-                                  checked={projectActive}
-                                  onChange={(e) => setProjectActive(e.target.checked)}
-                                  disabled={!canEditProject}
-                                />
-                              }
-                              label={projectActive ? "Project is active" : "Project is inactive"}
-                            />
-                          </Box>
-
-                          <Box sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}>
-                            <TextField
-                              label="Description"
-                              value={description}
-                              onChange={(e) => setDescription(e.target.value)}
-                              multiline
-                              minRows={4}
-                              disabled={!canEditProject}
-                              fullWidth
-                            />
-                          </Box>
-                        </Box>
-
-                        {projectTypeValue !== project.projectType ? (
-                          <Alert severity="info" variant="outlined">
-                            Project type changes will update the stage layout after you save.
-                          </Alert>
-                        ) : null}
-                      </Stack>
-                    </Paper>
-
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        p: 2,
-                        borderRadius: 4,
-                      }}
-                    >
-                      <Stack spacing={2}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                          Job Site Address
-                        </Typography>
-
-                        <Box
-                          sx={{
-                            display: "grid",
-                            gap: 2,
-                            gridTemplateColumns: {
-                              xs: "1fr",
-                              md: "repeat(2, minmax(0, 1fr))",
-                            },
-                          }}
-                        >
-                          <TextField
-                            label="Address Label"
-                            value={serviceAddressLabel}
-                            onChange={(e) => setServiceAddressLabel(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-
-                          <TextField
-                            label="Street Address"
-                            value={serviceAddressLine1}
-                            onChange={(e) => setServiceAddressLine1(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-
-                          <TextField
-                            label="Address Line 2"
-                            value={serviceAddressLine2}
-                            onChange={(e) => setServiceAddressLine2(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-
-                          <TextField
-                            label="City"
-                            value={serviceCity}
-                            onChange={(e) => setServiceCity(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-
-                          <TextField
-                            label="State"
-                            value={serviceState}
-                            onChange={(e) => setServiceState(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-
-                          <TextField
-                            label="ZIP"
-                            value={servicePostalCode}
-                            onChange={(e) => setServicePostalCode(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-                        </Box>
-                      </Stack>
-                    </Paper>
-
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        p: 2,
-                        borderRadius: 4,
-                        bgcolor: alpha(theme.palette.primary.main, 0.03),
-                      }}
-                    >
-                      <Stack spacing={2}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                          Financial / Bid
-                        </Typography>
-
-                        <Box
-                          sx={{
-                            display: "grid",
-                            gap: 2,
-                            gridTemplateColumns: {
-                              xs: "1fr",
-                              sm: "repeat(2, minmax(0, 1fr))",
-                            },
-                          }}
-                        >
-                          <FormControl fullWidth>
-                            <InputLabel>Bid Status</InputLabel>
-                            <Select
-                              label="Bid Status"
-                              value={bidStatus}
-                              onChange={(e) => setBidStatus(e.target.value as any)}
-                              disabled={!canEditProject}
-                              {...selectMenuProps()}
-                            >
-                              <MenuItem value="draft">Draft</MenuItem>
-                              <MenuItem value="submitted">Submitted</MenuItem>
-                              <MenuItem value="won">Won</MenuItem>
-                              <MenuItem value="lost">Lost</MenuItem>
-                            </Select>
-                          </FormControl>
-
-                          <TextField
-                            label="Total Bid Amount"
-                            type="number"
-                            inputProps={{ min: 0, step: "0.01" }}
-                            value={totalBidAmount}
-                            onChange={(e) => setTotalBidAmount(e.target.value)}
-                            disabled={!canEditProject}
-                            fullWidth
-                          />
-                        </Box>
-
-                        <Box
-                          sx={{
-                            display: "grid",
-                            gap: 1.5,
-                            gridTemplateColumns: {
-                              xs: "1fr",
-                              md:
-                                projectTypeValue === "time_materials"
-                                  ? "1fr"
-                                  : "repeat(3, minmax(0, 1fr))",
-                            },
-                          }}
-                        >
-                          {projectTypeValue !== "time_materials" ? (
-                            <>
-                              <InfoField
-                                label="Rough-In Preview"
-                                value={formatCurrency(stageAmountPreview.roughIn)}
-                              />
-                              {projectTypeValue === "new_construction" ? (
-                                <InfoField
-                                  label="Top-Out / Vent Preview"
-                                  value={formatCurrency(stageAmountPreview.topOutVent)}
-                                />
-                              ) : (
-                                <InfoField label="Top-Out / Vent Preview" value={formatCurrency(0)} />
-                              )}
-                              <InfoField
-                                label="Trim / Finish Preview"
-                                value={formatCurrency(stageAmountPreview.trimFinish)}
-                              />
-                            </>
-                          ) : (
-                            <Alert severity="info" variant="outlined">
-                              Time + Materials does not use stage billing splits. Billing will be driven by trip labor, materials, and later billing review.
-                            </Alert>
-                          )}
-                        </Box>
-                      </Stack>
-                    </Paper>
-
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        p: 2,
-                        borderRadius: 4,
-                        bgcolor: alpha(theme.palette.primary.main, 0.03),
-                      }}
-                    >
-                      <Stack spacing={2}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                          Default Crew (Project-level)
-                        </Typography>
-
-                        <Box
-                          sx={{
-                            display: "grid",
-                            gap: 2,
-                            gridTemplateColumns: {
-                              xs: "1fr",
-                              sm: "repeat(2, minmax(0, 1fr))",
-                            },
-                          }}
-                        >
-                          <FormControl fullWidth>
-                            <InputLabel>Primary Technician</InputLabel>
-                            <Select
-                              label="Primary Technician"
-                              value={projectPrimaryUid}
-                              onChange={(e) => setProjectPrimaryUid(e.target.value)}
-                              disabled={!canEditProject}
-                              {...selectMenuProps()}
-                            >
-                              <MenuItem value="">Unassigned</MenuItem>
-                              {technicians.map((t) => (
-                                <MenuItem key={t.uid} value={t.uid}>
-                                  {t.displayName}
-                                </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-
-                          <Box>
-                            <FormControl fullWidth>
-                              <InputLabel>Helper</InputLabel>
-                              <Select
-                                label="Helper"
-                                value={projectHelperUid}
-                                onChange={(e) => {
-                                  setProjectUseDefaultHelper(false);
-                                  setProjectHelperUid(e.target.value);
-                                }}
-                                disabled={!canEditProject}
-                                {...selectMenuProps()}
-                              >
-                                <MenuItem value="">— None —</MenuItem>
-                                {helperCandidates.map((h) => (
-                                  <MenuItem key={h.uid} value={h.uid}>
-                                    {h.name} ({h.laborRole})
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-
-                            <FormControlLabel
-                              sx={{ mt: 1 }}
-                              control={
-                                <Switch
-                                  checked={projectUseDefaultHelper}
-                                  onChange={(e) => setProjectUseDefaultHelper(e.target.checked)}
-                                  disabled={!canEditProject}
-                                />
-                              }
-                              label="Use default helper pairing (recommended)"
-                            />
-                          </Box>
-
-                          <FormControl fullWidth>
-                            <InputLabel>Secondary Technician</InputLabel>
-                            <Select
-                              label="Secondary Technician"
-                              value={projectSecondaryUid}
-                              onChange={(e) => setProjectSecondaryUid(e.target.value)}
-                              disabled={!canEditProject || !projectPrimaryUid}
-                              {...selectMenuProps()}
-                            >
-                              <MenuItem value="">— None —</MenuItem>
-                              {technicians
-                                .filter((t) => t.uid !== projectPrimaryUid)
-                                .map((t) => (
-                                  <MenuItem key={t.uid} value={t.uid}>
-                                    {t.displayName}
-                                  </MenuItem>
-                                ))}
-                            </Select>
-                          </FormControl>
-
-                          <FormControl fullWidth>
-                            <InputLabel>Secondary Helper</InputLabel>
-                            <Select
-                              label="Secondary Helper"
-                              value={projectSecondaryHelperUid}
-                              onChange={(e) => setProjectSecondaryHelperUid(e.target.value)}
-                              disabled={!canEditProject}
-                              {...selectMenuProps()}
-                            >
-                              <MenuItem value="">— None —</MenuItem>
-                              {helperCandidates.map((h) => (
-                                <MenuItem key={h.uid} value={h.uid}>
-                                  {h.name} ({h.laborRole})
-                                </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-                        </Box>
-                      </Stack>
-                    </Paper>
-
-                    <TextField
-                      label="Internal Notes"
-                      value={internalNotes}
-                      onChange={(e) => setInternalNotes(e.target.value)}
-                      multiline
-                      minRows={4}
-                      disabled={!canEditProject}
-                      placeholder="Internal notes for dispatch / admins..."
-                      fullWidth
-                    />
-
-                    {saveError ? <Alert severity="error">{saveError}</Alert> : null}
-                    {saveSuccess ? <Alert severity="success">{saveSuccess}</Alert> : null}
-
-                    <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
-                      <Button
-                        type="submit"
-                        variant="contained"
-                        disabled={saving || !canEditProject}
-                        sx={{ borderRadius: 99, boxShadow: "none" }}
-                      >
-                        {saving
-                          ? "Saving..."
-                          : canEditProject
-                            ? "Save Project Updates"
-                            : "Read Only"}
-                      </Button>
-
-                      {!canEditProject ? (
-                        <Typography variant="body2" color="text.secondary">
-                          Only Admin / Dispatcher / Manager can edit projects.
-                        </Typography>
-                      ) : null}
-                    </Stack>
-                  </Stack>
-                </Box>
-              </SectionCard>
-
-              <SectionCard
-                title="System"
-                subtitle="Project metadata"
-                icon={<CalendarMonthRoundedIcon color="primary" />}
+                title="Activity & System"
+                subtitle="Project history and metadata live at the bottom of the page."
+                icon={<HistoryRoundedIcon color="primary" />}
               >
                 <Box
                   sx={{
                     display: "grid",
-                    gap: 2,
+                    gap: 3,
                     gridTemplateColumns: {
                       xs: "1fr",
-                      sm: "repeat(3, minmax(0, 1fr))",
+                      lg: "minmax(0, 2fr) minmax(300px, 1fr)",
                     },
                   }}
                 >
-                  <InfoField label="Active" value={String(projectActive)} />
-                  <InfoField label="Created At" value={project.createdAt || "—"} />
-                  <InfoField label="Updated At" value={project.updatedAt || "—"} />
+                  <Box>
+                    <Stack spacing={2}>
+                      {activityLoading ? <Typography>Loading activity...</Typography> : null}
+                      {activityError ? <Alert severity="error">{activityError}</Alert> : null}
+
+                      {!activityLoading && !activityError && activityLogs.length === 0 ? (
+                        <Alert severity="info" variant="outlined">
+                          No activity recorded yet for this project.
+                        </Alert>
+                      ) : null}
+
+                      {!activityLoading && !activityError && activityLogs.length > 0 ? (
+                        <Box
+                          sx={{
+                            position: "relative",
+                            pl: 3.5,
+                            "&::before": {
+                              content: '""',
+                              position: "absolute",
+                              left: 13,
+                              top: 8,
+                              bottom: 8,
+                              width: "2px",
+                              bgcolor: "divider",
+                            },
+                          }}
+                        >
+                          <Stack spacing={2}>
+                            {activityLogs.map((entry) => (
+                              <Box key={entry.id} sx={{ position: "relative" }}>
+                                <Box
+                                  sx={{
+                                    position: "absolute",
+                                    left: -22,
+                                    top: 10,
+                                    width: 12,
+                                    height: 12,
+                                    borderRadius: "50%",
+                                    bgcolor: (theme) => {
+                                      const color = activityTypeColor(entry.type);
+                                      if (color === "primary") return theme.palette.primary.main;
+                                      if (color === "success") return theme.palette.success.main;
+                                      if (color === "warning") return theme.palette.warning.main;
+                                      if (color === "error") return theme.palette.error.main;
+                                      return theme.palette.text.disabled;
+                                    },
+                                    boxShadow: `0 0 0 4px ${alpha(theme.palette.background.paper, 1)}`,
+                                  }}
+                                />
+
+                                <Card
+                                  sx={{
+                                    borderRadius: 4,
+                                    boxShadow: "none",
+                                    border: `1px solid ${theme.palette.divider}`,
+                                  }}
+                                >
+                                  <CardContent sx={{ p: 2 }}>
+                                    <Stack spacing={1.25}>
+                                      <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1}
+                                        justifyContent="space-between"
+                                        alignItems={{ xs: "flex-start", sm: "center" }}
+                                      >
+                                        <Box>
+                                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                            {entry.title}
+                                          </Typography>
+                                          <Typography variant="body2" color="text.secondary">
+                                            {entry.createdByName || "Unknown user"} •{" "}
+                                            {formatDateTime(entry.createdAt)}
+                                          </Typography>
+                                        </Box>
+
+                                        <Chip
+                                          label={activityTypeLabel(entry.type)}
+                                          color={activityTypeColor(entry.type)}
+                                          variant="outlined"
+                                          size="small"
+                                        />
+                                      </Stack>
+
+                                      {entry.description ? (
+                                        <Typography variant="body2" color="text.secondary">
+                                          {entry.description}
+                                        </Typography>
+                                      ) : null}
+
+                                      {entry.details && entry.details.length > 0 ? (
+                                        <Stack spacing={0.75}>
+                                          {entry.details.map((detail, index) => (
+                                            <Typography
+                                              key={`${entry.id}-${index}`}
+                                              variant="body2"
+                                              color="text.secondary"
+                                            >
+                                              • {detail}
+                                            </Typography>
+                                          ))}
+                                        </Stack>
+                                      ) : null}
+                                    </Stack>
+                                  </CardContent>
+                                </Card>
+                              </Box>
+                            ))}
+                          </Stack>
+                        </Box>
+                      ) : null}
+                    </Stack>
+                  </Box>
+
+                  <Stack spacing={2}>
+                    <InfoField label="Project ID" value={projectId} />
+                    <InfoField label="Active" value={String(project.active)} />
+                    <InfoField label="Created At" value={project.createdAt || "—"} />
+                    <InfoField label="Updated At" value={project.updatedAt || "—"} />
+                    <InfoField label="Customer ID" value={project.customerId || "—"} />
+                  </Stack>
                 </Box>
               </SectionCard>
             </Stack>
