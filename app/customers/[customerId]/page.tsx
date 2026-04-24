@@ -40,21 +40,22 @@ import {
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import AddHomeRoundedIcon from "@mui/icons-material/AddHomeRounded";
-import AddIcCallRoundedIcon from "@mui/icons-material/AddIcCallRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import BusinessRoundedIcon from "@mui/icons-material/BusinessRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import DirectionsRoundedIcon from "@mui/icons-material/DirectionsRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import EmailRoundedIcon from "@mui/icons-material/EmailRounded";
-import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PhoneRoundedIcon from "@mui/icons-material/PhoneRounded";
 import PlaceRoundedIcon from "@mui/icons-material/PlaceRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
+import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
@@ -66,29 +67,6 @@ type CustomerDetailPageProps = {
   params: Promise<{
     customerId: string;
   }>;
-};
-
-type CallLogItem = {
-  id: string;
-  customerId: string;
-  ticketId?: string;
-  callType:
-    | "new_information"
-    | "status_check"
-    | "reschedule"
-    | "billing"
-    | "general";
-  direction: "inbound" | "outbound";
-  summary: string;
-  details?: string;
-  visibleToTech: boolean;
-  updatesTicketNotes: boolean;
-  followUpNeeded: boolean;
-  followUpNote?: string;
-  status: "logged";
-  callOccurredAt?: string;
-  createdAt?: string;
-  updatedAt?: string;
 };
 
 type AddressChoice = {
@@ -115,6 +93,43 @@ type GoogleAddressSelectionLike = {
   postalCode: string;
   source?: string;
 };
+
+type RelatedServiceTicket = {
+  id: string;
+  status: string;
+  issueSummary: string;
+  issueDetails?: string;
+  serviceAddressLabel?: string;
+  serviceAddressLine1?: string;
+  assignedTechnicianName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  active?: boolean;
+};
+
+type RelatedProject = {
+  id: string;
+  projectName: string;
+  projectType?: string;
+  status: string;
+  locationLabel?: string;
+  assignedLeadName?: string;
+  description?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  active?: boolean;
+};
+
+type RelatedPreviewModalState =
+  | {
+      kind: "ticket";
+      item: RelatedServiceTicket;
+    }
+  | {
+      kind: "project";
+      item: RelatedProject;
+    }
+  | null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -165,6 +180,44 @@ function formatDateTime(value?: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(d);
+}
+
+function normalizeStatus(value?: string) {
+  return safeStr(value).toLowerCase().replace(/\s+/g, "_");
+}
+
+function formatStatusLabel(value?: string) {
+  const raw = safeStr(value);
+  if (!raw) return "Unknown";
+  return raw.replace(/_/g, " ");
+}
+
+function isHistoricalTicketStatus(status?: string) {
+  const s = normalizeStatus(status);
+  return new Set([
+    "completed",
+    "cancelled",
+    "canceled",
+    "closed",
+    "invoiced",
+    "resolved",
+    "done",
+  ]).has(s);
+}
+
+function isHistoricalProjectStatus(status?: string) {
+  const s = normalizeStatus(status);
+  return new Set([
+    "completed",
+    "cancelled",
+    "canceled",
+    "closed",
+    "invoiced",
+    "fully_invoiced",
+    "billed",
+    "done",
+    "archived",
+  ]).has(s);
 }
 
 function getLinkedQboId(rawCustomer: any, customer: Customer | null) {
@@ -265,6 +318,46 @@ function SectionCard(props: {
   );
 }
 
+function EmptyMiniState(props: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        borderRadius: 4,
+        p: 3,
+        border: (theme) => `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
+        textAlign: "center",
+      }}
+    >
+      <Stack spacing={1.25} alignItems="center">
+        <Box
+          sx={{
+            width: 52,
+            height: 52,
+            borderRadius: 4,
+            display: "grid",
+            placeItems: "center",
+            bgcolor: "action.hover",
+            color: "text.secondary",
+          }}
+        >
+          {props.icon}
+        </Box>
+        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+          {props.title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
+          {props.description}
+        </Typography>
+      </Stack>
+    </Paper>
+  );
+}
+
 export default function CustomerDetailPage({ params }: CustomerDetailPageProps) {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -291,7 +384,6 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
   const [showCreateTicket, setShowCreateTicket] = useState(false);
   const [showAddServiceAddress, setShowAddServiceAddress] = useState(false);
-  const [showAddCallLog, setShowAddCallLog] = useState(false);
 
   const [editSaving, setEditSaving] = useState(false);
   const [editErr, setEditErr] = useState("");
@@ -326,23 +418,16 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [serviceIsPrimary, setServiceIsPrimary] = useState(false);
   const [serviceAddressSource, setServiceAddressSource] = useState<string>("manual");
 
-  const [callLogsLoading, setCallLogsLoading] = useState(true);
-  const [callLogs, setCallLogs] = useState<CallLogItem[]>([]);
-  const [callLogError, setCallLogError] = useState("");
+  const [deleteAddressTargetId, setDeleteAddressTargetId] = useState<string | null>(null);
+  const [deleteAddressError, setDeleteAddressError] = useState("");
+  const [deleteAddressSaving, setDeleteAddressSaving] = useState(false);
 
-  const [savingCallLog, setSavingCallLog] = useState(false);
-  const [newCallLogError, setNewCallLogError] = useState("");
-
-  const [callType, setCallType] = useState<
-    "new_information" | "status_check" | "reschedule" | "billing" | "general"
-  >("new_information");
-  const [direction, setDirection] = useState<"inbound" | "outbound">("inbound");
-  const [callSummary, setCallSummary] = useState("");
-  const [callDetails, setCallDetails] = useState("");
-  const [visibleToTech, setVisibleToTech] = useState(false);
-  const [updatesTicketNotes, setUpdatesTicketNotes] = useState(false);
-  const [followUpNeeded, setFollowUpNeeded] = useState(false);
-  const [followUpNote, setFollowUpNote] = useState("");
+  const [relatedLoading, setRelatedLoading] = useState(true);
+  const [relatedError, setRelatedError] = useState("");
+  const [relatedTickets, setRelatedTickets] = useState<RelatedServiceTicket[]>([]);
+  const [relatedProjects, setRelatedProjects] = useState<RelatedProject[]>([]);
+  const [relatedPreviewModal, setRelatedPreviewModal] =
+    useState<RelatedPreviewModalState>(null);
 
   const [ticketSaving, setTicketSaving] = useState(false);
   const [ticketError, setTicketError] = useState("");
@@ -480,46 +565,109 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   }, [params]);
 
   useEffect(() => {
-    async function loadCallLogs() {
+    async function loadRelatedWork() {
       try {
         const resolvedParams = await params;
         const id = resolvedParams.customerId;
 
-        const q = query(collection(db, "callLogs"), orderBy("createdAt", "desc"));
-        const snap = await getDocs(q);
+        const ticketQuery = query(collection(db, "serviceTickets"), orderBy("createdAt", "desc"));
+        const ticketSnap = await getDocs(ticketQuery);
 
-        const items: CallLogItem[] = snap.docs
+        const ticketItems: RelatedServiceTicket[] = ticketSnap.docs
           .map((docSnap) => {
-            const data = docSnap.data();
+            const data = docSnap.data() as any;
+
             return {
               id: docSnap.id,
-              customerId: data.customerId ?? "",
-              ticketId: data.ticketId ?? undefined,
-              callType: data.callType ?? "general",
-              direction: data.direction ?? "inbound",
-              summary: data.summary ?? "",
-              details: data.details ?? undefined,
-              visibleToTech: data.visibleToTech ?? false,
-              updatesTicketNotes: data.updatesTicketNotes ?? false,
-              followUpNeeded: data.followUpNeeded ?? false,
-              followUpNote: data.followUpNote ?? undefined,
-              status: "logged" as const,
-              callOccurredAt: data.callOccurredAt ?? undefined,
-              createdAt: data.createdAt ?? undefined,
-              updatedAt: data.updatedAt ?? undefined,
+              status: safeStr(data.status) || "unknown",
+              issueSummary: safeStr(data.issueSummary) || "Untitled ticket",
+              issueDetails: safeStr(data.issueDetails) || undefined,
+              serviceAddressLabel: safeStr(data.serviceAddressLabel) || undefined,
+              serviceAddressLine1: safeStr(data.serviceAddressLine1) || undefined,
+              assignedTechnicianName:
+                safeStr(data.assignedTechnicianName) ||
+                safeStr(data.primaryTechnicianName) ||
+                undefined,
+              createdAt: safeStr(data.createdAt) || undefined,
+              updatedAt: safeStr(data.updatedAt) || undefined,
+              active: data.active ?? true,
+              customerId: safeStr(data.customerId),
             };
           })
-          .filter((item) => item.customerId === id);
+          .filter((item: any) => item.customerId === id)
+          .map(({ customerId: _customerId, ...rest }: any) => rest);
 
-        setCallLogs(items);
+        const projectQuery = query(collection(db, "projects"), orderBy("createdAt", "desc"));
+        const projectSnap = await getDocs(projectQuery);
+
+        const projectItems: RelatedProject[] = projectSnap.docs
+          .map((docSnap) => {
+            const data = docSnap.data() as any;
+
+            const locationLabel = buildInlineAddress(
+              safeStr(data.serviceAddressLine1) ||
+                safeStr(data.addressLine1) ||
+                safeStr(data.siteAddressLine1),
+              safeStr(data.serviceAddressLine2) ||
+                safeStr(data.addressLine2) ||
+                safeStr(data.siteAddressLine2),
+              safeStr(data.serviceCity) || safeStr(data.city) || safeStr(data.siteCity),
+              safeStr(data.serviceState) || safeStr(data.state) || safeStr(data.siteState),
+              safeStr(data.servicePostalCode) ||
+                safeStr(data.postalCode) ||
+                safeStr(data.sitePostalCode)
+            );
+
+            return {
+              id: docSnap.id,
+              projectName:
+                safeStr(data.projectName) ||
+                safeStr(data.title) ||
+                safeStr(data.displayName) ||
+                safeStr(data.name) ||
+                `Project ${docSnap.id}`,
+              projectType:
+                safeStr(data.projectType) ||
+                safeStr(data.type) ||
+                safeStr(data.projectKind) ||
+                undefined,
+              status:
+                safeStr(data.status) ||
+                safeStr(data.projectStatus) ||
+                safeStr(data.workflowStatus) ||
+                "unknown",
+              locationLabel: locationLabel || undefined,
+              assignedLeadName:
+                safeStr(data.projectManagerName) ||
+                safeStr(data.assignedLeadName) ||
+                safeStr(data.primaryTechName) ||
+                undefined,
+              description:
+                safeStr(data.projectDescription) ||
+                safeStr(data.description) ||
+                safeStr(data.scopeSummary) ||
+                safeStr(data.notes) ||
+                undefined,
+              createdAt: safeStr(data.createdAt) || undefined,
+              updatedAt: safeStr(data.updatedAt) || undefined,
+              active: data.active ?? true,
+              customerId: safeStr(data.customerId),
+            };
+          })
+          .filter((item: any) => item.customerId === id)
+          .map(({ customerId: _customerId, ...rest }: any) => rest);
+
+        setRelatedTickets(ticketItems);
+        setRelatedProjects(projectItems);
+        setRelatedError("");
       } catch (err: unknown) {
-        setCallLogError(err instanceof Error ? err.message : "Failed to load call logs.");
+        setRelatedError(err instanceof Error ? err.message : "Failed to load related work.");
       } finally {
-        setCallLogsLoading(false);
+        setRelatedLoading(false);
       }
     }
 
-    loadCallLogs();
+    loadRelatedWork();
   }, [params]);
 
   const addressChoices = useMemo((): AddressChoice[] => {
@@ -625,6 +773,24 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     setServiceState(selection.state || "");
     setServicePostalCode(selection.postalCode || "");
     setServiceAddressSource("google_places");
+  }
+
+  function handleRelatedTicketClick(ticket: RelatedServiceTicket) {
+    if (isHistoricalTicketStatus(ticket.status)) {
+      setRelatedPreviewModal({ kind: "ticket", item: ticket });
+      return;
+    }
+
+    router.push(`/service-tickets/${ticket.id}`);
+  }
+
+  function handleRelatedProjectClick(project: RelatedProject) {
+    if (isHistoricalProjectStatus(project.status)) {
+      setRelatedPreviewModal({ kind: "project", item: project });
+      return;
+    }
+
+    router.push(`/projects/${project.id}`);
   }
 
   async function handleCreateQboCustomer() {
@@ -923,66 +1089,85 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     }
   }
 
-  async function handleAddCallLog(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!customer) return;
+  async function handleDeleteServiceAddress() {
+    if (!customer || !deleteAddressTargetId) return;
 
-    setNewCallLogError("");
-    setSavingCallLog(true);
+    setDeleteAddressError("");
+    setDeleteAddressSaving(true);
 
     try {
-      const now = nowIso();
+      const timestamp = nowIso();
+      const currentAddresses = customer.serviceAddresses ?? [];
+      const target = currentAddresses.find((addr) => addr.id === deleteAddressTargetId);
 
-      const docRef = await addDoc(collection(db, "callLogs"), {
-        customerId: customer.id,
-        ticketId: null,
-        callType,
-        direction,
-        summary: callSummary.trim(),
-        details: callDetails.trim() || null,
-        visibleToTech,
-        updatesTicketNotes,
-        followUpNeeded,
-        followUpNote: followUpNote.trim() || null,
-        status: "logged",
-        callOccurredAt: now,
-        createdAt: now,
-        updatedAt: now,
+      if (!target) {
+        setDeleteAddressError("Service address not found.");
+        return;
+      }
+
+      let updatedAddresses = currentAddresses.map((addr) =>
+        addr.id === deleteAddressTargetId
+          ? {
+              ...addr,
+              active: false,
+              isPrimary: false,
+              updatedAt: timestamp,
+            }
+          : addr
+      );
+
+      const remainingActive = updatedAddresses.filter(
+        (addr) => addr.active !== false && addr.id !== deleteAddressTargetId
+      );
+
+      if (target.isPrimary && remainingActive.length > 0) {
+        const nextPrimary = [...remainingActive].sort((a, b) =>
+          safeStr(a.label).localeCompare(safeStr(b.label))
+        )[0];
+
+        updatedAddresses = updatedAddresses.map((addr) =>
+          addr.id === nextPrimary.id
+            ? {
+                ...addr,
+                isPrimary: true,
+                updatedAt: timestamp,
+              }
+            : addr
+        );
+      }
+
+      const updatedAddressesForFirestore = updatedAddresses.map((addr) => ({
+        ...addr,
+        label: addr.label ?? null,
+        addressLine2: addr.addressLine2 ?? null,
+        notes: addr.notes ?? null,
+        source: addr.source ?? null,
+      }));
+
+      await updateDoc(doc(db, "customers", customer.id), {
+        serviceAddresses: updatedAddressesForFirestore,
+        updatedAt: timestamp,
       });
 
-      const newItem: CallLogItem = {
-        id: docRef.id,
-        customerId: customer.id,
-        ticketId: undefined,
-        callType,
-        direction,
-        summary: callSummary.trim(),
-        details: callDetails.trim() || undefined,
-        visibleToTech,
-        updatesTicketNotes,
-        followUpNeeded,
-        followUpNote: followUpNote.trim() || undefined,
-        status: "logged",
-        callOccurredAt: now,
-        createdAt: now,
-        updatedAt: now,
-      };
+      setCustomer({
+        ...customer,
+        serviceAddresses: updatedAddresses,
+        updatedAt: timestamp,
+      });
 
-      setCallLogs((prev) => [newItem, ...prev]);
+      setRawCustomer((prev: any) => ({
+        ...(prev || {}),
+        serviceAddresses: updatedAddressesForFirestore,
+        updatedAt: timestamp,
+      }));
 
-      setCallType("new_information");
-      setDirection("inbound");
-      setCallSummary("");
-      setCallDetails("");
-      setVisibleToTech(false);
-      setUpdatesTicketNotes(false);
-      setFollowUpNeeded(false);
-      setFollowUpNote("");
-      setShowAddCallLog(false);
+      setDeleteAddressTargetId(null);
     } catch (err: unknown) {
-      setNewCallLogError(err instanceof Error ? err.message : "Failed to save call log.");
+      setDeleteAddressError(
+        err instanceof Error ? err.message : "Failed to delete service address."
+      );
     } finally {
-      setSavingCallLog(false);
+      setDeleteAddressSaving(false);
     }
   }
 
@@ -1059,6 +1244,22 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       setEstimatedDurationMinutes("60");
       setShowCreateTicket(false);
 
+      setRelatedTickets((prev) => [
+        {
+          id: created.id,
+          status: "new",
+          issueSummary: sum,
+          issueDetails: issueDetails.trim() || undefined,
+          serviceAddressLabel: addr.source === "service" ? addr.label : "Billing Address",
+          serviceAddressLine1: addr.addressLine1 || undefined,
+          assignedTechnicianName: undefined,
+          createdAt: now,
+          updatedAt: now,
+          active: true,
+        },
+        ...prev,
+      ]);
+
       router.push(`/service-tickets/${created.id}`);
     } catch (err: unknown) {
       setTicketError(err instanceof Error ? err.message : "Failed to create service ticket.");
@@ -1114,6 +1315,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       .filter((a) => a.active !== false)
       .sort((a, b) => Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)));
   }, [customer]);
+
+  const deleteAddressTarget = useMemo(() => {
+    return activeServiceAddresses.find((addr) => addr.id === deleteAddressTargetId) ?? null;
+  }, [activeServiceAddresses, deleteAddressTargetId]);
 
   if (loading) {
     return (
@@ -1751,38 +1956,11 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 }
               >
                 {activeServiceAddresses.length === 0 ? (
-                  <Paper
-                    elevation={0}
-                    sx={{
-                      borderRadius: 4,
-                      p: 3,
-                      border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
-                      textAlign: "center",
-                    }}
-                  >
-                    <Stack spacing={1.25} alignItems="center">
-                      <Box
-                        sx={{
-                          width: 56,
-                          height: 56,
-                          borderRadius: 4,
-                          display: "grid",
-                          placeItems: "center",
-                          bgcolor: alpha(theme.palette.primary.main, 0.1),
-                          color: theme.palette.primary.main,
-                        }}
-                      >
-                        <HomeWorkRoundedIcon sx={{ fontSize: 28 }} />
-                      </Box>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                        No service locations yet
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
-                        Add a service location for the home, rental property, shop, or other
-                        physical address where work is performed.
-                      </Typography>
-                    </Stack>
-                  </Paper>
+                  <EmptyMiniState
+                    icon={<HomeWorkRoundedIcon sx={{ fontSize: 28 }} />}
+                    title="No service locations yet"
+                    description="Add a service location for the home, rental property, shop, or other physical address where work is performed."
+                  />
                 ) : (
                   <Box
                     sx={{
@@ -1842,20 +2020,36 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                                   ) : null}
                                 </Stack>
 
-                                {maps ? (
+                                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                  {maps ? (
+                                    <Button
+                                      component="a"
+                                      href={maps}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      variant="outlined"
+                                      size="small"
+                                      startIcon={<DirectionsRoundedIcon />}
+                                      sx={{ borderRadius: 99, fontWeight: 700 }}
+                                    >
+                                      Maps
+                                    </Button>
+                                  ) : null}
+
                                   <Button
-                                    component="a"
-                                    href={maps}
-                                    target="_blank"
-                                    rel="noreferrer"
                                     variant="outlined"
+                                    color="error"
                                     size="small"
-                                    startIcon={<DirectionsRoundedIcon />}
+                                    startIcon={<DeleteOutlineRoundedIcon />}
+                                    onClick={() => {
+                                      setDeleteAddressError("");
+                                      setDeleteAddressTargetId(addr.id);
+                                    }}
                                     sx={{ borderRadius: 99, fontWeight: 700 }}
                                   >
-                                    Maps
+                                    Delete
                                   </Button>
-                                ) : null}
+                                </Stack>
                               </Stack>
 
                               <Divider />
@@ -1876,137 +2070,301 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
               </SectionCard>
 
               <SectionCard
-                title="Call logs"
-                subtitle="Track important customer calls, follow-ups, and office context."
-                action={
-                  <Button
-                    variant="contained"
-                    startIcon={<AddIcCallRoundedIcon />}
-                    onClick={() => {
-                      setNewCallLogError("");
-                      setShowAddCallLog(true);
-                    }}
-                    sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
-                  >
-                    Add Call Log
-                  </Button>
-                }
+                title="Related work"
+                subtitle="All service tickets and projects related to this customer."
               >
-                {callLogsLoading ? (
-                  <Stack spacing={1.5}>
-                    <Skeleton variant="rounded" height={120} sx={{ borderRadius: 4 }} />
-                    <Skeleton variant="rounded" height={120} sx={{ borderRadius: 4 }} />
-                    <Skeleton variant="rounded" height={120} sx={{ borderRadius: 4 }} />
-                  </Stack>
-                ) : callLogError ? (
+                {relatedError ? (
                   <Alert severity="error" sx={{ borderRadius: 4 }}>
-                    {callLogError}
+                    {relatedError}
                   </Alert>
-                ) : callLogs.length === 0 ? (
-                  <Paper
+                ) : null}
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", xl: "repeat(2, minmax(0, 1fr))" },
+                    gap: 2,
+                  }}
+                >
+                  <Card
                     elevation={0}
                     sx={{
                       borderRadius: 4,
-                      p: 3,
-                      border: `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
-                      textAlign: "center",
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                     }}
                   >
-                    <Stack spacing={1.25} alignItems="center">
-                      <Box
-                        sx={{
-                          width: 56,
-                          height: 56,
-                          borderRadius: 4,
-                          display: "grid",
-                          placeItems: "center",
-                          bgcolor: alpha(theme.palette.primary.main, 0.1),
-                          color: theme.palette.primary.main,
-                        }}
-                      >
-                        <EventNoteRoundedIcon sx={{ fontSize: 28 }} />
-                      </Box>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                        No call logs yet
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520 }}>
-                        Log the next inbound or outbound call so dispatch and office staff can
-                        track customer context.
-                      </Typography>
-                    </Stack>
-                  </Paper>
-                ) : (
-                  <Stack spacing={1.5}>
-                    {callLogs.map((log) => (
-                      <Card
-                        key={log.id}
-                        elevation={0}
-                        sx={{
-                          borderRadius: 4,
-                          border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-                        }}
-                      >
-                        <CardContent sx={{ p: 2 }}>
+                    <CardContent sx={{ p: 2 }}>
+                      <Stack spacing={2}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Service Tickets
+                          </Typography>
+                          <Chip
+                            label={relatedLoading ? "…" : `${relatedTickets.length}`}
+                            variant="outlined"
+                            sx={{ borderRadius: 99, fontWeight: 700 }}
+                          />
+                        </Stack>
+
+                        {relatedLoading ? (
                           <Stack spacing={1.25}>
-                            <Stack
-                              direction={{ xs: "column", md: "row" }}
-                              spacing={1}
-                              justifyContent="space-between"
-                              alignItems={{ xs: "flex-start", md: "center" }}
-                            >
-                              <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                                {log.summary}
-                              </Typography>
-
-                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                <Chip
-                                  label={log.callType.replaceAll("_", " ")}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 99 }}
-                                />
-                                <Chip
-                                  label={log.direction}
-                                  variant="outlined"
-                                  sx={{ borderRadius: 99 }}
-                                />
-                                {log.visibleToTech ? (
-                                  <Chip
-                                    label="Visible to tech"
-                                    color="primary"
-                                    variant="outlined"
-                                    sx={{ borderRadius: 99 }}
-                                  />
-                                ) : null}
-                                {log.followUpNeeded ? (
-                                  <Chip
-                                    label="Follow-up needed"
-                                    color="warning"
-                                    variant="filled"
-                                    sx={{ borderRadius: 99 }}
-                                  />
-                                ) : null}
-                              </Stack>
-                            </Stack>
-
-                            <Typography variant="body2" color="text.secondary">
-                              {log.details || "No additional details."}
-                            </Typography>
-
-                            {log.followUpNote ? (
-                              <Typography variant="body2" color="text.secondary">
-                                Follow-up note: {log.followUpNote}
-                              </Typography>
-                            ) : null}
-
-                            <Typography variant="caption" color="text.secondary">
-                              Logged: {formatDateTime(log.createdAt || log.callOccurredAt)}
-                            </Typography>
+                            <Skeleton variant="rounded" height={96} sx={{ borderRadius: 3 }} />
+                            <Skeleton variant="rounded" height={96} sx={{ borderRadius: 3 }} />
+                            <Skeleton variant="rounded" height={96} sx={{ borderRadius: 3 }} />
                           </Stack>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </Stack>
-                )}
+                        ) : relatedTickets.length === 0 ? (
+                          <EmptyMiniState
+                            icon={<DescriptionRoundedIcon sx={{ fontSize: 26 }} />}
+                            title="No service tickets yet"
+                            description="Service tickets created for this customer will appear here."
+                          />
+                        ) : (
+                          <Stack spacing={1.5}>
+                            {relatedTickets.map((ticket) => {
+                              const opensModal = isHistoricalTicketStatus(ticket.status);
+
+                              return (
+                                <Card
+                                  key={ticket.id}
+                                  elevation={0}
+                                  onClick={() => handleRelatedTicketClick(ticket)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      handleRelatedTicketClick(ticket);
+                                    }
+                                  }}
+                                  role="button"
+                                  tabIndex={0}
+                                  sx={{
+                                    borderRadius: 4,
+                                    border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                                    cursor: "pointer",
+                                    transition: "border-color 160ms ease, transform 160ms ease",
+                                    "&:hover": {
+                                      borderColor: alpha(theme.palette.primary.main, 0.28),
+                                      transform: "translateY(-1px)",
+                                    },
+                                  }}
+                                >
+                                  <CardContent sx={{ p: 2 }}>
+                                    <Stack spacing={1.25}>
+                                      <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1}
+                                        justifyContent="space-between"
+                                        alignItems={{ xs: "flex-start", sm: "center" }}
+                                      >
+                                        <Box sx={{ minWidth: 0 }}>
+                                          <Typography
+                                            variant="subtitle2"
+                                            sx={{ fontWeight: 800, wordBreak: "break-word" }}
+                                          >
+                                            {ticket.issueSummary || "Untitled ticket"}
+                                          </Typography>
+                                          <Typography variant="caption" color="text.secondary">
+                                            Ticket ID: {ticket.id}
+                                          </Typography>
+                                        </Box>
+
+                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                          <Chip
+                                            label={formatStatusLabel(ticket.status)}
+                                            color="primary"
+                                            variant="outlined"
+                                            sx={{ borderRadius: 99 }}
+                                          />
+                                          <Chip
+                                            icon={
+                                              opensModal ? (
+                                                <VisibilityRoundedIcon sx={{ fontSize: 16 }} />
+                                              ) : (
+                                                <OpenInNewRoundedIcon sx={{ fontSize: 16 }} />
+                                              )
+                                            }
+                                            label={opensModal ? "Quick view" : "Open ticket"}
+                                            variant="outlined"
+                                            sx={{ borderRadius: 99 }}
+                                          />
+                                        </Stack>
+                                      </Stack>
+
+                                      <Typography variant="body2" color="text.secondary">
+                                        {ticket.serviceAddressLabel || ticket.serviceAddressLine1
+                                          ? `${ticket.serviceAddressLabel || "Address"}${
+                                              ticket.serviceAddressLine1
+                                                ? ` — ${ticket.serviceAddressLine1}`
+                                                : ""
+                                            }`
+                                          : "No address label"}
+                                      </Typography>
+
+                                      {ticket.assignedTechnicianName ? (
+                                        <Typography variant="body2" color="text.secondary">
+                                          Assigned: {ticket.assignedTechnicianName}
+                                        </Typography>
+                                      ) : null}
+
+                                      <Typography variant="caption" color="text.secondary">
+                                        Created: {formatDateTime(ticket.createdAt)}
+                                      </Typography>
+                                    </Stack>
+                                  </CardContent>
+                                </Card>
+                              );
+                            })}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 4,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                    }}
+                  >
+                    <CardContent sx={{ p: 2 }}>
+                      <Stack spacing={2}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Projects
+                          </Typography>
+                          <Chip
+                            label={relatedLoading ? "…" : `${relatedProjects.length}`}
+                            variant="outlined"
+                            sx={{ borderRadius: 99, fontWeight: 700 }}
+                          />
+                        </Stack>
+
+                        {relatedLoading ? (
+                          <Stack spacing={1.25}>
+                            <Skeleton variant="rounded" height={96} sx={{ borderRadius: 3 }} />
+                            <Skeleton variant="rounded" height={96} sx={{ borderRadius: 3 }} />
+                            <Skeleton variant="rounded" height={96} sx={{ borderRadius: 3 }} />
+                          </Stack>
+                        ) : relatedProjects.length === 0 ? (
+                          <EmptyMiniState
+                            icon={<HomeWorkRoundedIcon sx={{ fontSize: 26 }} />}
+                            title="No projects yet"
+                            description="Projects created for this customer will appear here."
+                          />
+                        ) : (
+                          <Stack spacing={1.5}>
+                            {relatedProjects.map((project) => {
+                              const opensModal = isHistoricalProjectStatus(project.status);
+
+                              return (
+                                <Card
+                                  key={project.id}
+                                  elevation={0}
+                                  onClick={() => handleRelatedProjectClick(project)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      handleRelatedProjectClick(project);
+                                    }
+                                  }}
+                                  role="button"
+                                  tabIndex={0}
+                                  sx={{
+                                    borderRadius: 4,
+                                    border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                                    cursor: "pointer",
+                                    transition: "border-color 160ms ease, transform 160ms ease",
+                                    "&:hover": {
+                                      borderColor: alpha(theme.palette.primary.main, 0.28),
+                                      transform: "translateY(-1px)",
+                                    },
+                                  }}
+                                >
+                                  <CardContent sx={{ p: 2 }}>
+                                    <Stack spacing={1.25}>
+                                      <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1}
+                                        justifyContent="space-between"
+                                        alignItems={{ xs: "flex-start", sm: "center" }}
+                                      >
+                                        <Box sx={{ minWidth: 0 }}>
+                                          <Typography
+                                            variant="subtitle2"
+                                            sx={{ fontWeight: 800, wordBreak: "break-word" }}
+                                          >
+                                            {project.projectName}
+                                          </Typography>
+                                          <Typography variant="caption" color="text.secondary">
+                                            Project ID: {project.id}
+                                          </Typography>
+                                        </Box>
+
+                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                          <Chip
+                                            label={formatStatusLabel(project.status)}
+                                            color="primary"
+                                            variant="outlined"
+                                            sx={{ borderRadius: 99 }}
+                                          />
+                                          {project.projectType ? (
+                                            <Chip
+                                              label={formatStatusLabel(project.projectType)}
+                                              variant="outlined"
+                                              sx={{ borderRadius: 99 }}
+                                            />
+                                          ) : null}
+                                          <Chip
+                                            icon={
+                                              opensModal ? (
+                                                <VisibilityRoundedIcon sx={{ fontSize: 16 }} />
+                                              ) : (
+                                                <OpenInNewRoundedIcon sx={{ fontSize: 16 }} />
+                                              )
+                                            }
+                                            label={opensModal ? "Quick view" : "Open project"}
+                                            variant="outlined"
+                                            sx={{ borderRadius: 99 }}
+                                          />
+                                        </Stack>
+                                      </Stack>
+
+                                      {project.locationLabel ? (
+                                        <Typography variant="body2" color="text.secondary">
+                                          {project.locationLabel}
+                                        </Typography>
+                                      ) : null}
+
+                                      {project.assignedLeadName ? (
+                                        <Typography variant="body2" color="text.secondary">
+                                          Lead: {project.assignedLeadName}
+                                        </Typography>
+                                      ) : null}
+
+                                      <Typography variant="caption" color="text.secondary">
+                                        Created: {formatDateTime(project.createdAt)}
+                                      </Typography>
+                                    </Stack>
+                                  </CardContent>
+                                </Card>
+                              );
+                            })}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Box>
               </SectionCard>
             </Stack>
           ) : null}
@@ -2313,146 +2671,336 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         </Dialog>
 
         <Dialog
-          open={showAddCallLog}
-          onClose={() => !savingCallLog && setShowAddCallLog(false)}
+          open={Boolean(deleteAddressTargetId)}
+          onClose={() => {
+            if (!deleteAddressSaving) {
+              setDeleteAddressTargetId(null);
+              setDeleteAddressError("");
+            }
+          }}
           fullWidth
-          maxWidth="md"
+          maxWidth="sm"
         >
-          <DialogTitle>Add Call Log</DialogTitle>
+          <DialogTitle>Delete Service Location</DialogTitle>
           <DialogContent dividers>
-            <Box
-              component="form"
-              id="add-call-log-form"
-              onSubmit={handleAddCallLog}
-              sx={{ display: "grid", gap: 2, pt: 0.5 }}
-            >
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
-                  gap: 2,
-                }}
-              >
-                <FormControl fullWidth>
-                  <InputLabel id="call-type-label">Call type</InputLabel>
-                  <Select
-                    labelId="call-type-label"
-                    value={callType}
-                    label="Call type"
-                    onChange={(e) =>
-                      setCallType(
-                        e.target.value as
-                          | "new_information"
-                          | "status_check"
-                          | "reschedule"
-                          | "billing"
-                          | "general"
-                      )
-                    }
-                  >
-                    <MenuItem value="new_information">New Information</MenuItem>
-                    <MenuItem value="status_check">Status Check</MenuItem>
-                    <MenuItem value="reschedule">Reschedule</MenuItem>
-                    <MenuItem value="billing">Billing</MenuItem>
-                    <MenuItem value="general">General</MenuItem>
-                  </Select>
-                </FormControl>
+            <Stack spacing={2}>
+              <Typography variant="body1">
+                Remove this service location from active use?
+              </Typography>
 
-                <FormControl fullWidth>
-                  <InputLabel id="call-direction-label">Direction</InputLabel>
-                  <Select
-                    labelId="call-direction-label"
-                    value={direction}
-                    label="Direction"
-                    onChange={(e) => setDirection(e.target.value as "inbound" | "outbound")}
-                  >
-                    <MenuItem value="inbound">Inbound</MenuItem>
-                    <MenuItem value="outbound">Outbound</MenuItem>
-                  </Select>
-                </FormControl>
-              </Box>
-
-              <TextField
-                label="Summary"
-                value={callSummary}
-                onChange={(e) => setCallSummary(e.target.value)}
-                required
-                fullWidth
-              />
-
-              <TextField
-                label="Details"
-                value={callDetails}
-                onChange={(e) => setCallDetails(e.target.value)}
-                multiline
-                minRows={3}
-                fullWidth
-              />
-
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={visibleToTech}
-                    onChange={(e) => setVisibleToTech(e.target.checked)}
-                  />
-                }
-                label="Visible to technician"
-              />
-
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={updatesTicketNotes}
-                    onChange={(e) => setUpdatesTicketNotes(e.target.checked)}
-                  />
-                }
-                label="Updates ticket notes"
-              />
-
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={followUpNeeded}
-                    onChange={(e) => setFollowUpNeeded(e.target.checked)}
-                  />
-                }
-                label="Follow-up needed"
-              />
-
-              {followUpNeeded ? (
-                <TextField
-                  label="Follow-up note"
-                  value={followUpNote}
-                  onChange={(e) => setFollowUpNote(e.target.value)}
-                  fullWidth
-                />
+              {deleteAddressTarget ? (
+                <Paper
+                  elevation={0}
+                  sx={{
+                    borderRadius: 3,
+                    p: 2,
+                    bgcolor: "action.hover",
+                    border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                    {deleteAddressTarget.label || "Service Address"}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    {buildInlineAddress(
+                      deleteAddressTarget.addressLine1,
+                      deleteAddressTarget.addressLine2,
+                      deleteAddressTarget.city,
+                      deleteAddressTarget.state,
+                      deleteAddressTarget.postalCode
+                    )}
+                  </Typography>
+                  {deleteAddressTarget.isPrimary ? (
+                    <Chip
+                      label="Primary"
+                      color="success"
+                      size="small"
+                      sx={{ mt: 1, borderRadius: 99 }}
+                    />
+                  ) : null}
+                </Paper>
               ) : null}
 
-              {newCallLogError ? (
+              <Typography variant="body2" color="text.secondary">
+                This will soft-delete the address by marking it inactive so old records can still
+                retain their historical reference.
+              </Typography>
+
+              {deleteAddressError ? (
                 <Alert severity="error" sx={{ borderRadius: 3 }}>
-                  {newCallLogError}
+                  {deleteAddressError}
                 </Alert>
               ) : null}
-            </Box>
+            </Stack>
           </DialogContent>
           <DialogActions sx={{ px: 3, py: 2 }}>
             <Button
-              onClick={() => setShowAddCallLog(false)}
-              disabled={savingCallLog}
+              onClick={() => {
+                setDeleteAddressTargetId(null);
+                setDeleteAddressError("");
+              }}
+              disabled={deleteAddressSaving}
               sx={{ borderRadius: 99, fontWeight: 700 }}
             >
               Cancel
             </Button>
             <Button
-              type="submit"
-              form="add-call-log-form"
               variant="contained"
-              startIcon={<AddIcCallRoundedIcon />}
-              disabled={savingCallLog}
+              color="error"
+              startIcon={<DeleteOutlineRoundedIcon />}
+              onClick={handleDeleteServiceAddress}
+              disabled={deleteAddressSaving}
               sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
             >
-              {savingCallLog ? "Saving..." : "Add Call Log"}
+              {deleteAddressSaving ? "Deleting..." : "Delete Service Location"}
             </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(relatedPreviewModal)}
+          onClose={() => setRelatedPreviewModal(null)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>
+            {relatedPreviewModal?.kind === "ticket"
+              ? "Service Ticket Details"
+              : relatedPreviewModal?.kind === "project"
+              ? "Project Details"
+              : "Details"}
+          </DialogTitle>
+          <DialogContent dividers>
+            {relatedPreviewModal?.kind === "ticket" ? (
+              <Stack spacing={2.25}>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    borderRadius: 3,
+                    p: 2,
+                    bgcolor: "action.hover",
+                    border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                  }}
+                >
+                  <Stack spacing={1}>
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                      {relatedPreviewModal.item.issueSummary || "Untitled ticket"}
+                    </Typography>
+
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip
+                        label={`Ticket ID: ${relatedPreviewModal.item.id}`}
+                        variant="outlined"
+                        sx={{ borderRadius: 99 }}
+                      />
+                      <Chip
+                        label={formatStatusLabel(relatedPreviewModal.item.status)}
+                        color="primary"
+                        variant="outlined"
+                        sx={{ borderRadius: 99 }}
+                      />
+                    </Stack>
+                  </Stack>
+                </Paper>
+
+                <InfoRow
+                  icon={<LocationOnRoundedIcon color="action" />}
+                  label="Address"
+                  primary={
+                    relatedPreviewModal.item.serviceAddressLabel ||
+                    relatedPreviewModal.item.serviceAddressLine1 ||
+                    "—"
+                  }
+                  secondary={
+                    relatedPreviewModal.item.serviceAddressLabel &&
+                    relatedPreviewModal.item.serviceAddressLine1
+                      ? relatedPreviewModal.item.serviceAddressLine1
+                      : undefined
+                  }
+                />
+
+                <InfoRow
+                  icon={<TaskAltRoundedIcon color="action" />}
+                  label="Assigned technician"
+                  primary={relatedPreviewModal.item.assignedTechnicianName || "—"}
+                />
+
+                <InfoRow
+                  icon={<DescriptionRoundedIcon color="action" />}
+                  label="Details"
+                  primary={relatedPreviewModal.item.issueDetails || "No additional details."}
+                />
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                    gap: 2,
+                  }}
+                >
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      p: 2,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      Created
+                    </Typography>
+                    <Typography variant="body1" sx={{ fontWeight: 700, mt: 0.5 }}>
+                      {formatDateTime(relatedPreviewModal.item.createdAt)}
+                    </Typography>
+                  </Paper>
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      p: 2,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      Last updated
+                    </Typography>
+                    <Typography variant="body1" sx={{ fontWeight: 700, mt: 0.5 }}>
+                      {formatDateTime(relatedPreviewModal.item.updatedAt)}
+                    </Typography>
+                  </Paper>
+                </Box>
+              </Stack>
+            ) : relatedPreviewModal?.kind === "project" ? (
+              <Stack spacing={2.25}>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    borderRadius: 3,
+                    p: 2,
+                    bgcolor: "action.hover",
+                    border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
+                  }}
+                >
+                  <Stack spacing={1}>
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                      {relatedPreviewModal.item.projectName || "Untitled project"}
+                    </Typography>
+
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip
+                        label={`Project ID: ${relatedPreviewModal.item.id}`}
+                        variant="outlined"
+                        sx={{ borderRadius: 99 }}
+                      />
+                      <Chip
+                        label={formatStatusLabel(relatedPreviewModal.item.status)}
+                        color="primary"
+                        variant="outlined"
+                        sx={{ borderRadius: 99 }}
+                      />
+                      {relatedPreviewModal.item.projectType ? (
+                        <Chip
+                          label={formatStatusLabel(relatedPreviewModal.item.projectType)}
+                          variant="outlined"
+                          sx={{ borderRadius: 99 }}
+                        />
+                      ) : null}
+                    </Stack>
+                  </Stack>
+                </Paper>
+
+                <InfoRow
+                  icon={<LocationOnRoundedIcon color="action" />}
+                  label="Project location"
+                  primary={relatedPreviewModal.item.locationLabel || "—"}
+                />
+
+                <InfoRow
+                  icon={<TaskAltRoundedIcon color="action" />}
+                  label="Lead / assigned"
+                  primary={relatedPreviewModal.item.assignedLeadName || "—"}
+                />
+
+                <InfoRow
+                  icon={<DescriptionRoundedIcon color="action" />}
+                  label="Description"
+                  primary={relatedPreviewModal.item.description || "No additional details."}
+                />
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                    gap: 2,
+                  }}
+                >
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      p: 2,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      Created
+                    </Typography>
+                    <Typography variant="body1" sx={{ fontWeight: 700, mt: 0.5 }}>
+                      {formatDateTime(relatedPreviewModal.item.createdAt)}
+                    </Typography>
+                  </Paper>
+
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      borderRadius: 3,
+                      p: 2,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      Last updated
+                    </Typography>
+                    <Typography variant="body1" sx={{ fontWeight: 700, mt: 0.5 }}>
+                      {formatDateTime(relatedPreviewModal.item.updatedAt)}
+                    </Typography>
+                  </Paper>
+                </Box>
+              </Stack>
+            ) : null}
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button
+              onClick={() => setRelatedPreviewModal(null)}
+              sx={{ borderRadius: 99, fontWeight: 700 }}
+            >
+              Close
+            </Button>
+
+            {relatedPreviewModal?.kind === "ticket" ? (
+              <Button
+                component={Link}
+                href={`/service-tickets/${relatedPreviewModal.item.id}`}
+                variant="outlined"
+                startIcon={<OpenInNewRoundedIcon />}
+                sx={{ borderRadius: 99, fontWeight: 700 }}
+              >
+                Open Ticket Page
+              </Button>
+            ) : null}
+
+            {relatedPreviewModal?.kind === "project" ? (
+              <Button
+                component={Link}
+                href={`/projects/${relatedPreviewModal.item.id}`}
+                variant="outlined"
+                startIcon={<OpenInNewRoundedIcon />}
+                sx={{ borderRadius: 99, fontWeight: 700 }}
+              >
+                Open Project Page
+              </Button>
+            ) : null}
           </DialogActions>
         </Dialog>
       </AppShell>
