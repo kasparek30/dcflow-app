@@ -1,7 +1,12 @@
 // src/types/customer.ts
 export type CustomerSource = "dcflow" | "quickbooks";
 
-export type AddressSource = "manual" | "qbo_ship" | "qbo_bill" | "legacy";
+export type AddressSource =
+  | "manual"
+  | "google_places"
+  | "qbo_ship"
+  | "qbo_bill"
+  | "legacy";
 
 export type QuickbooksSyncStatus = "not_linked" | "synced" | "pending" | "error";
 
