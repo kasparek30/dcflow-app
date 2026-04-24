@@ -57,6 +57,7 @@ import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
+import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { Customer } from "../../../src/types/customer";
@@ -103,6 +104,17 @@ type AddressChoice = {
 };
 
 type NormalizedServiceAddress = NonNullable<Customer["serviceAddresses"]>[number];
+
+type GoogleAddressSelectionLike = {
+  placeId?: string;
+  formattedAddress: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  source?: string;
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -304,6 +316,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [serviceAddressError, setServiceAddressError] = useState("");
 
   const [serviceLabel, setServiceLabel] = useState("");
+  const [serviceAddressSearch, setServiceAddressSearch] = useState("");
   const [serviceAddressLine1, setServiceAddressLine1] = useState("");
   const [serviceAddressLine2, setServiceAddressLine2] = useState("");
   const [serviceCity, setServiceCity] = useState("");
@@ -311,6 +324,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [servicePostalCode, setServicePostalCode] = useState("");
   const [serviceNotes, setServiceNotes] = useState("");
   const [serviceIsPrimary, setServiceIsPrimary] = useState(false);
+  const [serviceAddressSource, setServiceAddressSource] = useState<string>("manual");
 
   const [callLogsLoading, setCallLogsLoading] = useState(true);
   const [callLogs, setCallLogs] = useState<CallLogItem[]>([]);
@@ -557,6 +571,20 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     return addressChoices.find((a) => a.key === key) || null;
   }
 
+  function resetServiceAddressForm() {
+    setServiceLabel("");
+    setServiceAddressSearch("");
+    setServiceAddressLine1("");
+    setServiceAddressLine2("");
+    setServiceCity("");
+    setServiceState("");
+    setServicePostalCode("");
+    setServiceNotes("");
+    setServiceIsPrimary(false);
+    setServiceAddressSource("manual");
+    setServiceAddressError("");
+  }
+
   function enterEditMode() {
     if (!customer) return;
 
@@ -583,6 +611,20 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     setQboSyncErr("");
     setQboSyncOk("");
     setIsEditMode(false);
+  }
+
+  function markServiceAddressManual() {
+    setServiceAddressSource((current) => (current === "google_places" ? "manual" : current));
+  }
+
+  function handleServiceGoogleAddressSelected(selection: GoogleAddressSelectionLike) {
+    setServiceAddressSearch(selection.formattedAddress || "");
+    setServiceAddressLine1(selection.addressLine1 || "");
+    setServiceAddressLine2(selection.addressLine2 || "");
+    setServiceCity(selection.city || "");
+    setServiceState(selection.state || "");
+    setServicePostalCode(selection.postalCode || "");
+    setServiceAddressSource("google_places");
   }
 
   async function handleCreateQboCustomer() {
@@ -820,7 +862,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     try {
       const timestamp = nowIso();
 
-      const nextAddressForState: NormalizedServiceAddress = {
+      const nextAddressForState = {
         id: createId(),
         label: serviceLabel.trim() || undefined,
         addressLine1: serviceAddressLine1.trim(),
@@ -831,10 +873,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         notes: serviceNotes.trim() || undefined,
         active: true,
         isPrimary: serviceIsPrimary,
-        source: "manual",
+        source: serviceAddressSource || "manual",
         createdAt: timestamp,
         updatedAt: timestamp,
-      };
+      } as NormalizedServiceAddress;
 
       let existingAddressesForState = customer.serviceAddresses ?? [];
 
@@ -872,14 +914,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         updatedAt: timestamp,
       }));
 
-      setServiceLabel("");
-      setServiceAddressLine1("");
-      setServiceAddressLine2("");
-      setServiceCity("");
-      setServiceState("");
-      setServicePostalCode("");
-      setServiceNotes("");
-      setServiceIsPrimary(false);
+      resetServiceAddressForm();
       setShowAddServiceAddress(false);
     } catch (err: unknown) {
       setServiceAddressError(err instanceof Error ? err.message : "Failed to add service address.");
@@ -1706,7 +1741,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     variant="contained"
                     startIcon={<AddHomeRoundedIcon />}
                     onClick={() => {
-                      setServiceAddressError("");
+                      resetServiceAddressForm();
                       setShowAddServiceAddress(true);
                     }}
                     sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
@@ -2115,7 +2150,12 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
         <Dialog
           open={showAddServiceAddress}
-          onClose={() => !savingAddress && setShowAddServiceAddress(false)}
+          onClose={() => {
+            if (!savingAddress) {
+              setShowAddServiceAddress(false);
+              resetServiceAddressForm();
+            }
+          }}
           fullWidth
           maxWidth="md"
         >
@@ -2135,10 +2175,38 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 placeholder="Home, Rental House, Shop, Weekend House..."
               />
 
+              <AddressAutocompleteField
+                label="Search address"
+                value={serviceAddressSearch}
+                onChange={(value) => {
+                  setServiceAddressSearch(value);
+                  markServiceAddressManual();
+                }}
+                onSelectAddress={handleServiceGoogleAddressSelected}
+                helperText="Start typing to search for a real address, or keep entering it manually below."
+                placeholder="Start typing a service address..."
+                disabled={savingAddress}
+              />
+
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip
+                  size="small"
+                  label={
+                    serviceAddressSource === "google_places" ? "Google suggested" : "Manual entry"
+                  }
+                  color={serviceAddressSource === "google_places" ? "primary" : "default"}
+                  variant={serviceAddressSource === "google_places" ? "filled" : "outlined"}
+                  sx={{ borderRadius: 99, fontWeight: 700 }}
+                />
+              </Stack>
+
               <TextField
                 label="Address line 1"
                 value={serviceAddressLine1}
-                onChange={(e) => setServiceAddressLine1(e.target.value)}
+                onChange={(e) => {
+                  setServiceAddressLine1(e.target.value);
+                  markServiceAddressManual();
+                }}
                 required
                 fullWidth
               />
@@ -2146,7 +2214,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
               <TextField
                 label="Address line 2"
                 value={serviceAddressLine2}
-                onChange={(e) => setServiceAddressLine2(e.target.value)}
+                onChange={(e) => {
+                  setServiceAddressLine2(e.target.value);
+                  markServiceAddressManual();
+                }}
                 fullWidth
               />
 
@@ -2160,7 +2231,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 <TextField
                   label="City"
                   value={serviceCity}
-                  onChange={(e) => setServiceCity(e.target.value)}
+                  onChange={(e) => {
+                    setServiceCity(e.target.value);
+                    markServiceAddressManual();
+                  }}
                   required
                   fullWidth
                 />
@@ -2168,7 +2242,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 <TextField
                   label="State"
                   value={serviceState}
-                  onChange={(e) => setServiceState(e.target.value)}
+                  onChange={(e) => {
+                    setServiceState(e.target.value);
+                    markServiceAddressManual();
+                  }}
                   required
                   fullWidth
                 />
@@ -2176,7 +2253,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 <TextField
                   label="Postal code"
                   value={servicePostalCode}
-                  onChange={(e) => setServicePostalCode(e.target.value)}
+                  onChange={(e) => {
+                    setServicePostalCode(e.target.value);
+                    markServiceAddressManual();
+                  }}
                   required
                   fullWidth
                 />
@@ -2210,7 +2290,10 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
           </DialogContent>
           <DialogActions sx={{ px: 3, py: 2 }}>
             <Button
-              onClick={() => setShowAddServiceAddress(false)}
+              onClick={() => {
+                setShowAddServiceAddress(false);
+                resetServiceAddressForm();
+              }}
               disabled={savingAddress}
               sx={{ borderRadius: 99, fontWeight: 700 }}
             >
