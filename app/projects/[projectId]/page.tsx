@@ -48,10 +48,10 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
+import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
-import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import DeleteForeverRoundedIcon from "@mui/icons-material/DeleteForeverRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
@@ -62,7 +62,6 @@ import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
 import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
-import NoteAltRoundedIcon from "@mui/icons-material/NoteAltRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
@@ -72,13 +71,16 @@ import RouteRoundedIcon from "@mui/icons-material/RouteRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
-import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
 
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import {
+  queueProjectTripTimeEntryWrites,
+  upsertProjectTripTimeEntriesForCrew,
+} from "../../../src/lib/project-trip-time-entries";
 import type { AppUser } from "../../../src/types/app-user";
 import type { Project, StageStaffing } from "../../../src/types/project";
 import {
@@ -200,6 +202,7 @@ type TripDoc = {
   pausedAt?: string | null;
   completedAt?: string | null;
   closeout?: any;
+  closeoutHours?: number | null;
   materialsUsedToday?: string | null;
   createdAt?: string;
   createdByUid?: string | null;
@@ -718,13 +721,13 @@ function selectMenuProps() {
 }
 
 export default function ProjectDetailPage() {
- const router = useRouter();
-const routeParams = useParams<{ projectId: string }>();
-const routeProjectId =
-  typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
+  const router = useRouter();
+  const routeParams = useParams<{ projectId: string }>();
+  const routeProjectId =
+    typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
 
-const theme = useTheme();
-const { appUser } = useAuthContext();
+  const theme = useTheme();
+  const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [projectId, setProjectId] = useState("");
@@ -942,7 +945,11 @@ const { appUser } = useAuthContext();
 
   const previewStageAmounts = useMemo(() => {
     return buildStageBilledAmounts(
-      editingAddressBid ? addressBidDraft.bidStatus && basicsDraft.projectType ? basicsDraft.projectType : (project?.projectType as EditableProjectType) || "new_construction" : (project?.projectType as EditableProjectType) || "new_construction",
+      editingAddressBid
+        ? addressBidDraft.bidStatus && basicsDraft.projectType
+          ? basicsDraft.projectType
+          : (project?.projectType as EditableProjectType) || "new_construction"
+        : (project?.projectType as EditableProjectType) || "new_construction",
       Number(editingAddressBid ? addressBidDraft.totalBidAmount : project?.totalBidAmount || 0),
     );
   }, [
@@ -1120,149 +1127,149 @@ const { appUser } = useAuthContext();
     }
   }
 
-useEffect(() => {
-  async function loadProject() {
-    if (!routeProjectId) {
-      setLoading(false);
-      setError("Project not found.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError("");
-      setProjectId(routeProjectId);
-
-      const projectRef = doc(db, "projects", routeProjectId);
-      const snap = await getDoc(projectRef);
-
-      if (!snap.exists()) {
-        setError("Project not found.");
+  useEffect(() => {
+    async function loadProject() {
+      if (!routeProjectId) {
         setLoading(false);
+        setError("Project not found.");
         return;
       }
 
-      const data = snap.data() as any;
+      try {
+        setLoading(true);
+        setError("");
+        setProjectId(routeProjectId);
 
-      const item: Project = {
-        id: snap.id,
-        customerId: data.customerId ?? "",
-        customerDisplayName: data.customerDisplayName ?? "",
-        serviceAddressId: data.serviceAddressId ?? undefined,
-        serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-        serviceAddressLine1: data.serviceAddressLine1 ?? "",
-        serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-        serviceCity: data.serviceCity ?? "",
-        serviceState: data.serviceState ?? "",
-        servicePostalCode: data.servicePostalCode ?? "",
-        projectName: data.projectName ?? "",
-        projectType: data.projectType ?? "other",
-        description: data.description ?? undefined,
-        bidStatus: data.bidStatus ?? "draft",
-        totalBidAmount: data.totalBidAmount ?? 0,
-        roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
-        topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
-        trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
-        assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-        assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-        primaryTechnicianId: data.primaryTechnicianId ?? undefined,
-        primaryTechnicianName: data.primaryTechnicianName ?? undefined,
-        secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
-        secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
-        helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
-        helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
-        internalNotes: data.internalNotes ?? undefined,
-        active: data.active ?? true,
-        createdAt: data.createdAt ?? undefined,
-        updatedAt: data.updatedAt ?? undefined,
-      } as any;
+        const projectRef = doc(db, "projects", routeProjectId);
+        const snap = await getDoc(projectRef);
 
-      const planFiles: PlanFileMeta[] = Array.isArray(data.planFiles)
-        ? data.planFiles.map((file: any) => ({
-            name: file?.name ?? "Unnamed file",
-            url: file?.url ?? "",
-            path: file?.path ?? "",
-            size: Number(file?.size ?? 0),
-            contentType: file?.contentType ?? "application/octet-stream",
-            uploadedAt: file?.uploadedAt ?? "",
-            uploadedByUid: file?.uploadedByUid ?? null,
-          }))
-        : [];
+        if (!snap.exists()) {
+          setError("Project not found.");
+          setLoading(false);
+          return;
+        }
 
-      setProject(item);
-      setExistingPlanFiles(planFiles);
+        const data = snap.data() as any;
 
-      resetBasicsDraftFromProject(item);
-      resetAddressBidDraftFromProject(item);
-      resetCrewNotesDraftFromProject(item);
+        const item: Project = {
+          id: snap.id,
+          customerId: data.customerId ?? "",
+          customerDisplayName: data.customerDisplayName ?? "",
+          serviceAddressId: data.serviceAddressId ?? undefined,
+          serviceAddressLabel: data.serviceAddressLabel ?? undefined,
+          serviceAddressLine1: data.serviceAddressLine1 ?? "",
+          serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
+          serviceCity: data.serviceCity ?? "",
+          serviceState: data.serviceState ?? "",
+          servicePostalCode: data.servicePostalCode ?? "",
+          projectName: data.projectName ?? "",
+          projectType: data.projectType ?? "other",
+          description: data.description ?? undefined,
+          bidStatus: data.bidStatus ?? "draft",
+          totalBidAmount: data.totalBidAmount ?? 0,
+          roughIn: data.roughIn ?? { status: "not_started", billed: false, billedAmount: 0 },
+          topOutVent: data.topOutVent ?? { status: "not_started", billed: false, billedAmount: 0 },
+          trimFinish: data.trimFinish ?? { status: "not_started", billed: false, billedAmount: 0 },
+          assignedTechnicianId: data.assignedTechnicianId ?? undefined,
+          assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+          primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+          primaryTechnicianName: data.primaryTechnicianName ?? undefined,
+          secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+          secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+          helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
+          helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
+          internalNotes: data.internalNotes ?? undefined,
+          active: data.active ?? true,
+          createdAt: data.createdAt ?? undefined,
+          updatedAt: data.updatedAt ?? undefined,
+        } as any;
 
-      const stageStaffing = (stage: any): StageStaffing | undefined => {
-        return stage?.staffing ? stage.staffing : undefined;
-      };
+        const planFiles: PlanFileMeta[] = Array.isArray(data.planFiles)
+          ? data.planFiles.map((file: any) => ({
+              name: file?.name ?? "Unnamed file",
+              url: file?.url ?? "",
+              path: file?.path ?? "",
+              size: Number(file?.size ?? 0),
+              contentType: file?.contentType ?? "application/octet-stream",
+              uploadedAt: file?.uploadedAt ?? "",
+              uploadedByUid: file?.uploadedByUid ?? null,
+            }))
+          : [];
 
-      const roughStaff = stageStaffing(item.roughIn);
-      const topStaff = stageStaffing(item.topOutVent);
-      const trimStaff = stageStaffing(item.trimFinish);
+        setProject(item);
+        setExistingPlanFiles(planFiles);
 
-      const pickHelper1 = (staff?: StageStaffing) =>
-        Array.isArray(staff?.helperIds) ? staff.helperIds[0] || "" : "";
-      const pickHelper2 = (staff?: StageStaffing) =>
-        Array.isArray(staff?.helperIds) ? staff.helperIds[1] || "" : "";
+        resetBasicsDraftFromProject(item);
+        resetAddressBidDraftFromProject(item);
+        resetCrewNotesDraftFromProject(item);
 
-      setRoughInAssign({
-        primaryUid: roughStaff?.primaryTechnicianId || "",
-        secondaryUid: roughStaff?.secondaryTechnicianId || "",
-        helperUid: pickHelper1(roughStaff),
-        secondaryHelperUid: pickHelper2(roughStaff),
-        useDefaultHelper: true,
-        overrideEnabled: Boolean(roughStaff),
-      });
+        const stageStaffing = (stage: any): StageStaffing | undefined => {
+          return stage?.staffing ? stage.staffing : undefined;
+        };
 
-      setTopOutAssign({
-        primaryUid: topStaff?.primaryTechnicianId || "",
-        secondaryUid: topStaff?.secondaryTechnicianId || "",
-        helperUid: pickHelper1(topStaff),
-        secondaryHelperUid: pickHelper2(topStaff),
-        useDefaultHelper: true,
-        overrideEnabled: Boolean(topStaff),
-      });
+        const roughStaff = stageStaffing(item.roughIn);
+        const topStaff = stageStaffing(item.topOutVent);
+        const trimStaff = stageStaffing(item.trimFinish);
 
-      setTrimAssign({
-        primaryUid: trimStaff?.primaryTechnicianId || "",
-        secondaryUid: trimStaff?.secondaryTechnicianId || "",
-        helperUid: pickHelper1(trimStaff),
-        secondaryHelperUid: pickHelper2(trimStaff),
-        useDefaultHelper: true,
-        overrideEnabled: Boolean(trimStaff),
-      });
+        const pickHelper1 = (staff?: StageStaffing) =>
+          Array.isArray(staff?.helperIds) ? staff.helperIds[0] || "" : "";
+        const pickHelper2 = (staff?: StageStaffing) =>
+          Array.isArray(staff?.helperIds) ? staff.helperIds[1] || "" : "";
 
-      setRoughInStatus(item.roughIn.status);
-      setRoughInScheduledDate(item.roughIn.scheduledDate ?? "");
-      setRoughInScheduledEndDate((item.roughIn as any).scheduledEndDate ?? "");
-      setRoughInCompletedDate(item.roughIn.completedDate ?? "");
+        setRoughInAssign({
+          primaryUid: roughStaff?.primaryTechnicianId || "",
+          secondaryUid: roughStaff?.secondaryTechnicianId || "",
+          helperUid: pickHelper1(roughStaff),
+          secondaryHelperUid: pickHelper2(roughStaff),
+          useDefaultHelper: true,
+          overrideEnabled: Boolean(roughStaff),
+        });
 
-      setTopOutVentStatus(item.topOutVent.status);
-      setTopOutVentScheduledDate(item.topOutVent.scheduledDate ?? "");
-      setTopOutVentScheduledEndDate((item.topOutVent as any).scheduledEndDate ?? "");
-      setTopOutVentCompletedDate(item.topOutVent.completedDate ?? "");
+        setTopOutAssign({
+          primaryUid: topStaff?.primaryTechnicianId || "",
+          secondaryUid: topStaff?.secondaryTechnicianId || "",
+          helperUid: pickHelper1(topStaff),
+          secondaryHelperUid: pickHelper2(topStaff),
+          useDefaultHelper: true,
+          overrideEnabled: Boolean(topStaff),
+        });
 
-      setTrimFinishStatus(item.trimFinish.status);
-      setTrimFinishScheduledDate(item.trimFinish.scheduledDate ?? "");
-      setTrimFinishScheduledEndDate((item.trimFinish as any).scheduledEndDate ?? "");
-      setTrimFinishCompletedDate(item.trimFinish.completedDate ?? "");
+        setTrimAssign({
+          primaryUid: trimStaff?.primaryTechnicianId || "",
+          secondaryUid: trimStaff?.secondaryTechnicianId || "",
+          helperUid: pickHelper1(trimStaff),
+          secondaryHelperUid: pickHelper2(trimStaff),
+          useDefaultHelper: true,
+          overrideEnabled: Boolean(trimStaff),
+        });
 
-      const enabled = getEnabledStages(item.projectType);
-      if (enabled.length > 0) setActiveStageTab(enabled[0]);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load project.");
-    } finally {
-      setLoading(false);
+        setRoughInStatus(item.roughIn.status);
+        setRoughInScheduledDate(item.roughIn.scheduledDate ?? "");
+        setRoughInScheduledEndDate((item.roughIn as any).scheduledEndDate ?? "");
+        setRoughInCompletedDate(item.roughIn.completedDate ?? "");
+
+        setTopOutVentStatus(item.topOutVent.status);
+        setTopOutVentScheduledDate(item.topOutVent.scheduledDate ?? "");
+        setTopOutVentScheduledEndDate((item.topOutVent as any).scheduledEndDate ?? "");
+        setTopOutVentCompletedDate(item.topOutVent.completedDate ?? "");
+
+        setTrimFinishStatus(item.trimFinish.status);
+        setTrimFinishScheduledDate(item.trimFinish.scheduledDate ?? "");
+        setTrimFinishScheduledEndDate((item.trimFinish as any).scheduledEndDate ?? "");
+        setTrimFinishCompletedDate(item.trimFinish.completedDate ?? "");
+
+        const enabled = getEnabledStages(item.projectType);
+        if (enabled.length > 0) setActiveStageTab(enabled[0]);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Failed to load project.");
+      } finally {
+        setLoading(false);
+      }
     }
-  }
 
-  loadProject();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [routeProjectId]);
+    loadProject();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeProjectId]);
 
   useEffect(() => {
     async function loadCustomers() {
@@ -1385,11 +1392,12 @@ useEffect(() => {
             notes: d.notes ?? null,
             cancelReason: d.cancelReason ?? null,
             timerState: d.timerState ?? "idle",
-            startedAt: d.startedAt ?? null,
+            startedAt: d.startedAt ?? d.actualStartAt ?? null,
             pausedAt: d.pausedAt ?? null,
             completedAt: d.completedAt ?? null,
             closeout: d.closeout ?? null,
-            materialsUsedToday: d.materialsUsedToday ?? null,
+            closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
+            materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
             createdAt: d.createdAt ?? undefined,
             createdByUid: d.createdByUid ?? null,
             updatedAt: d.updatedAt ?? undefined,
@@ -2347,11 +2355,12 @@ useEffect(() => {
           notes: d.notes ?? null,
           cancelReason: d.cancelReason ?? null,
           timerState: d.timerState ?? "idle",
-          startedAt: d.startedAt ?? null,
+          startedAt: d.startedAt ?? d.actualStartAt ?? null,
           pausedAt: d.pausedAt ?? null,
           completedAt: d.completedAt ?? null,
           closeout: d.closeout ?? null,
-          materialsUsedToday: d.materialsUsedToday ?? null,
+          closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
+          materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
           createdAt: d.createdAt ?? undefined,
           createdByUid: d.createdByUid ?? null,
           updatedAt: d.updatedAt ?? undefined,
@@ -2997,7 +3006,7 @@ useEffect(() => {
     if (start && end && end > start) {
       const [sh, sm] = start.split(":").map(Number);
       const [eh, em] = end.split(":").map(Number);
-      const diff = (eh * 60 + em) - (sh * 60 + sm);
+      const diff = eh * 60 + em - (sh * 60 + sm);
       if (diff > 0) {
         return (diff / 60).toFixed(2);
       }
@@ -3035,13 +3044,19 @@ useEffect(() => {
     }
 
     if (!canCurrentUserOperateTrip(t)) {
-      setCloseoutModal((prev) => ({ ...prev, error: "You do not have permission to close out this trip." }));
+      setCloseoutModal((prev) => ({
+        ...prev,
+        error: "You do not have permission to close out this trip.",
+      }));
       return;
     }
 
     const hoursWorked = Number(closeoutModal.hoursWorkedToday || 0);
-    if (Number.isNaN(hoursWorked) || hoursWorked < 0) {
-      setCloseoutModal((prev) => ({ ...prev, error: "Enter a valid hours value." }));
+    if (Number.isNaN(hoursWorked) || hoursWorked <= 0) {
+      setCloseoutModal((prev) => ({
+        ...prev,
+        error: "Enter a valid hours value greater than 0.",
+      }));
       return;
     }
 
@@ -3061,6 +3076,7 @@ useEffect(() => {
         active: true,
         notes: workNotes || null,
         materialsUsedToday: materials || null,
+        closeoutHours: hoursWorked,
         closeout: {
           outcome: closeoutModal.outcome,
           needsMoreWork: closeoutModal.needsMoreWork,
@@ -3074,19 +3090,6 @@ useEffect(() => {
         updatedAt: now,
         updatedByUid: myUid || null,
       };
-
-      await updateDoc(doc(db, "trips", t.id), tripPatch as any);
-
-      setProjectTrips((prev) =>
-        prev.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                ...tripPatch,
-              }
-            : x,
-        ),
-      );
 
       const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
       const enabled = getEnabledStages(project.projectType);
@@ -3167,8 +3170,42 @@ useEffect(() => {
         if (enabled.includes("trimFinish")) setTrimFinishCompletedDate(completeDate);
       }
 
+      const batch = writeBatch(db);
+
+      const synced = await queueProjectTripTimeEntryWrites(batch, {
+        trip: {
+          ...t,
+          ...tripPatch,
+        },
+        projectId: project.id,
+        projectStageKey: stageKey || null,
+        hours: hoursWorked,
+        notes: workNotes || null,
+        actorUid: myUid || null,
+        actorName: actorDisplayName || null,
+        source: "project_trip_closeout",
+      });
+
+      batch.update(doc(db, "trips", t.id), tripPatch as any);
+
       if (Object.keys(projectPatch).length > 1) {
-        await updateDoc(doc(db, "projects", project.id), projectPatch as any);
+        batch.update(doc(db, "projects", project.id), projectPatch as any);
+      }
+
+      await batch.commit();
+
+      setProjectTrips((prev) =>
+        prev.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                ...tripPatch,
+              }
+            : x,
+        ),
+      );
+
+      if (Object.keys(projectPatch).length > 1) {
         mergeProjectState(projectPatch);
       } else {
         mergeProjectState({ updatedAt: now });
@@ -3176,8 +3213,13 @@ useEffect(() => {
 
       const details: string[] = [];
       details.push(`Outcome: ${closeoutModal.outcome.replaceAll("_", " ")}`);
-      details.push(`More work needed after today: ${closeoutModal.needsMoreWork === "yes" ? "Yes" : "No"}`);
+      details.push(
+        `More work needed after today: ${
+          closeoutModal.needsMoreWork === "yes" ? "Yes" : "No"
+        }`,
+      );
       details.push(`Hours worked today: ${hoursWorked}`);
+      details.push(`Time entries synced: ${synced.memberCount}`);
       if (stageKey) details.push(`Stage: ${stageLabel(stageKey)}`);
       if (workNotes) details.push(`Work notes: ${workNotes}`);
       if (materials) details.push(`Materials: ${materials}`);
@@ -3196,6 +3238,85 @@ useEffect(() => {
         saving: false,
         error: err?.message || "Failed to save closeout.",
       }));
+    } finally {
+      setTripActionBusyId(null);
+    }
+  }
+
+  async function syncProjectTripTimeEntries(t: TripDoc) {
+    if (!project) return;
+
+    if (!canCurrentUserOperateTrip(t)) {
+      alert("You do not have permission to sync time entries for this trip.");
+      return;
+    }
+
+    const status = String(t.status || "").toLowerCase();
+    if (status !== "complete") {
+      alert("Only completed project trips can sync time entries.");
+      return;
+    }
+
+    const closeoutHours = Number(
+      (t.closeout as any)?.hoursWorkedToday ??
+        (t.closeout as any)?.closeoutHours ??
+        t.closeoutHours ??
+        0,
+    );
+
+    const estimatedHours = Number(estimateTripHours(t));
+    const hours =
+      Number.isFinite(closeoutHours) && closeoutHours > 0 ? closeoutHours : estimatedHours;
+
+    if (!Number.isFinite(hours) || hours <= 0) {
+      alert("This trip does not have valid hours to sync.");
+      return;
+    }
+
+    const ok = window.confirm(
+      `Sync time entries for all assigned crew on this completed project trip?\n\nHours: ${hours.toFixed(
+        2,
+      )}\n\nThis will update existing entries and create missing ones. It will not duplicate entries.`,
+    );
+
+    if (!ok) return;
+
+    setTripActionBusyId(t.id);
+
+    try {
+      const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
+      const notes =
+        safeTrim((t.closeout as any)?.workNotes) ||
+        safeTrim(t.notes) ||
+        "";
+
+      const synced = await upsertProjectTripTimeEntriesForCrew({
+        trip: t,
+        projectId: project.id,
+        projectStageKey: stageKey || null,
+        hours,
+        notes: notes || null,
+        actorUid: myUid || null,
+        actorName: actorDisplayName || null,
+        source: "project_trip_manual_sync",
+      });
+
+      void recordProjectActivity({
+        type: "trip_closeout_saved",
+        title: "Project trip time entries synced",
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        details: [
+          `Time entries synced: ${synced.memberCount}`,
+          `Hours: ${hours.toFixed(2)}`,
+          stageKey ? `Stage: ${stageLabel(stageKey)}` : "Project Trip",
+        ],
+      });
+
+      alert(
+        `✅ Time entries synced.\n\nCrew entries updated/created: ${synced.memberCount}`,
+      );
+    } catch (err: any) {
+      alert(err?.message || "Failed to sync time entries.");
     } finally {
       setTripActionBusyId(null);
     }
@@ -3285,15 +3406,27 @@ useEffect(() => {
       <Stack spacing={1.25}>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           {status === "complete" ? (
-            <Button
-              variant="outlined"
-              startIcon={<RefreshRoundedIcon />}
-              onClick={() => applyTripLifecycleAction(t, "reopen")}
-              disabled={!canOperate || busy}
-              sx={{ borderRadius: 99 }}
-            >
-              Reopen
-            </Button>
+            <>
+              <Button
+                variant="outlined"
+                startIcon={<AccessTimeFilledRoundedIcon />}
+                onClick={() => syncProjectTripTimeEntries(t)}
+                disabled={!canOperate || busy}
+                sx={{ borderRadius: 99 }}
+              >
+                Sync Time Entries
+              </Button>
+
+              <Button
+                variant="outlined"
+                startIcon={<RefreshRoundedIcon />}
+                onClick={() => applyTripLifecycleAction(t, "reopen")}
+                disabled={!canOperate || busy}
+                sx={{ borderRadius: 99 }}
+              >
+                Reopen
+              </Button>
+            </>
           ) : null}
 
           {status !== "complete" && timerState === "idle" ? (
@@ -3441,6 +3574,15 @@ useEffect(() => {
             {t.closeout ? (
               <Alert severity="info" variant="outlined">
                 Last closeout saved: {String(t.closeout.outcome || "").replaceAll("_", " ")}
+                {typeof t.closeout.hoursWorkedToday === "number"
+                  ? ` • ${Number(t.closeout.hoursWorkedToday).toFixed(2)}h`
+                  : ""}
+              </Alert>
+            ) : null}
+
+            {!t.closeout && typeof t.closeoutHours === "number" && t.closeoutHours > 0 ? (
+              <Alert severity="info" variant="outlined">
+                Last closeout saved: {Number(t.closeoutHours).toFixed(2)}h
               </Alert>
             ) : null}
 
@@ -3785,7 +3927,7 @@ useEffect(() => {
               return (
                 <Stack spacing={2.25}>
                   <Alert severity="info" variant="outlined">
-                    This saves the project closeout from desktop and updates the trip / project state in one step.
+                    This saves the project closeout from desktop and creates/updates time entries for all assigned crew.
                   </Alert>
 
                   {t ? (
@@ -3832,7 +3974,8 @@ useEffect(() => {
                         <FormControlLabel
                           value="complete_stage"
                           control={<Radio />}
-label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}                        />
+                          label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}
+                        />
                       ) : null}
                       <FormControlLabel
                         value="complete_project"
@@ -3871,7 +4014,7 @@ label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}                 
                   <TextField
                     label="Hours Worked Today"
                     type="number"
-                    inputProps={{ min: 0, step: "0.25" }}
+                    inputProps={{ min: 0.25, step: "0.25" }}
                     value={closeoutModal.hoursWorkedToday}
                     onChange={(e) =>
                       setCloseoutModal((prev) => ({
@@ -3883,7 +4026,7 @@ label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}                 
                   />
 
                   <Typography variant="body2" color="text.secondary">
-                    These hours are saved with the trip closeout on desktop.
+                    These hours are saved for all assigned project-trip crew.
                   </Typography>
 
                   <TextField

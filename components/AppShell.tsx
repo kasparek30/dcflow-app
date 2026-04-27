@@ -1,4 +1,3 @@
-// components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
@@ -80,6 +79,7 @@ import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import { queueProjectTripTimeEntryWrites } from "../src/lib/project-trip-time-entries";
 
 type PauseBlock = {
   startAt: string;
@@ -582,6 +582,7 @@ function useRealtimeActiveTrip(uid: string) {
 
 async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
   const serviceTicketId = safeTrim(trip.link?.serviceTicketId);
+  const projectId = safeTrim(trip.link?.projectId);
   const tripId = trip.id;
 
   let href = `/trips/${tripId}`;
@@ -606,6 +607,10 @@ async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
       primaryLine = "Service Ticket";
       secondaryLine = "Tap to return";
     }
+  } else if (safeTrim(trip.type).toLowerCase() === "project" && projectId) {
+    href = `/projects/${projectId}`;
+    primaryLine = "Project Trip";
+    secondaryLine = "Tap to return";
   } else {
     const type = safeTrim(trip.type).toLowerCase();
     primaryLine = type === "project" ? "Project Trip" : "Active Trip";
@@ -986,7 +991,7 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId]);
+  }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId, activeTrip?.link?.projectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1317,14 +1322,6 @@ export default function AppShell({
       const tripRef = doc(db, "trips", activeTrip.id);
       const projectRef = doc(db, "projects", projectId);
 
-      const { weekStartDate, weekEndDate } = getPayrollWeekBounds(
-        safeTrim(activeTrip.date) || todayKeyLocal()
-      );
-      const timesheetId = buildWeeklyTimesheetId(myUid, weekStartDate);
-      const timeEntryId = `trip_${activeTrip.id}_${myUid}`;
-      const timesheetRef = doc(db, "weeklyTimesheets", timesheetId);
-      const timeEntryRef = doc(db, "timeEntries", timeEntryId);
-
       const pauseBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
         ? [...activeTrip.pauseBlocks]
         : [];
@@ -1524,54 +1521,23 @@ export default function AppShell({
       tripUpdates.completedEarly = cancelledFutureTripCount > 0;
       tripUpdates.cancelledFutureTripCount = cancelledFutureTripCount;
 
-      batch.set(
-        timesheetRef,
-        {
-          employeeId: myUid,
-          employeeName: myDisplayName || "Employee",
-          employeeRole: role || "technician",
-          weekStartDate,
-          weekEndDate,
-          status: "draft",
-          submittedAt: null,
-          submittedByUid: null,
-          createdAt: stamp,
-          createdByUid: myUid,
-          updatedAt: stamp,
-          updatedByUid: myUid,
-        },
-        { merge: true }
-      );
-
-      batch.set(
-        timeEntryRef,
-        {
-          employeeId: myUid,
-          employeeName: myDisplayName || "Employee",
-          employeeRole: role || "technician",
-          entryDate: safeTrim(activeTrip.date) || todayKeyLocal(),
-          weekStartDate,
-          weekEndDate,
-          timesheetId,
-          category: "project",
-          payType: "regular",
-          billable: true,
-          source: "project_trip_closeout",
-          hours: hoursNumber,
-          hoursSource: hoursNumber,
-          hoursLocked: true,
-          tripId: activeTrip.id,
-          projectId,
-          projectStageKey: projectIdStageKey || null,
-          entryStatus: "draft",
-          notes: closeoutNotes || null,
-          createdAt: stamp,
-          createdByUid: myUid,
-          updatedAt: stamp,
-          updatedByUid: myUid,
-        },
-        { merge: true }
-      );
+      await queueProjectTripTimeEntryWrites(batch, {
+        trip: {
+          ...activeTrip,
+          status: "complete",
+          timerState: "complete",
+          actualEndAt: stamp,
+          completedAt: stamp,
+          pauseBlocks,
+        } as any,
+        projectId,
+        projectStageKey: projectIdStageKey || null,
+        hours: hoursNumber,
+        notes: closeoutNotes || null,
+        actorUid: myUid || null,
+        actorName: myDisplayName || null,
+        source: "project_trip_closeout",
+      });
 
       batch.update(tripRef, tripUpdates);
       batch.update(projectRef, projectUpdates);
@@ -1583,22 +1549,22 @@ export default function AppShell({
       if (projectTodayResult === "done_today") {
         if (projectMoreWorkNeeded === "yes" && nextFutureProjectTrip) {
           setProjectDockNotice(
-            `Saved. ${hoursNumber.toFixed(2)}h logged. Next scheduled trip: ${nextFutureProjectTripSummary}.`
+            `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. Next scheduled trip: ${nextFutureProjectTripSummary}.`
           );
         } else if (projectMoreWorkNeeded === "yes" && !nextFutureProjectTrip) {
           setProjectDockNotice(
-            `Saved. ${hoursNumber.toFixed(2)}h logged. Return requested for ${formatDisplayDate(requestedReturnDate)}.`
+            `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. Return requested for ${formatDisplayDate(requestedReturnDate)}.`
           );
         } else {
-          setProjectDockNotice(`Saved. ${hoursNumber.toFixed(2)}h logged.`);
+          setProjectDockNotice(`Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew.`);
         }
       } else if (projectTodayResult === "stage_complete") {
         setProjectDockNotice(
-          `Saved. ${hoursNumber.toFixed(2)}h logged. Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
         );
       } else {
         setProjectDockNotice(
-          `Saved. ${hoursNumber.toFixed(2)}h logged. ${isTmProject ? "Work" : "Project"} marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. ${isTmProject ? "Work" : "Project"} marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
         );
       }
     } catch (err: unknown) {
@@ -3016,7 +2982,7 @@ export default function AppShell({
             />
 
             <Typography variant="caption" color="text.secondary">
-              These hours are saved now as the project time entry, so no extra confirmation step is required.
+              These hours are saved now as project time entries for all assigned crew, so no extra confirmation step is required.
             </Typography>
 
             <TextField
