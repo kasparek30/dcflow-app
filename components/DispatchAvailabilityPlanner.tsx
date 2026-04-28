@@ -35,7 +35,7 @@ export type PlannerSlotTooltipItem = {
   tripType: "service" | "project" | "trip";
   title: string;
   subtitle?: string;
-  estimatedDurationLabel?: string;
+  estimatedDurationLabel: string;
 };
 
 export type PlannerSlotStatus = {
@@ -116,7 +116,7 @@ function slotButtonSubcopy(status: PlannerSlotStatus) {
   if (status.kind === "pending_pto") return "Tap to assign";
   if (status.kind === "overlap") return "Hover details • Tap to override";
   if (status.kind === "holiday") return "Blocked";
-  if (status.kind === "approved_pto") return "Blocked";
+  if (status.kind === "approved_pto") return "Hover details";
   return "";
 }
 
@@ -199,78 +199,133 @@ function slotButtonStyles(args: {
   };
 }
 
-function getTooltipIcon(type: PlannerSlotTooltipItem["tripType"]) {
-  if (type === "service") {
-    return <BuildRoundedIcon fontSize="small" sx={{ color: "primary.main" }} />;
+function getInlineStatusIcon(status: PlannerSlotStatus) {
+  if (status.kind === "approved_pto") {
+    return <EventBusyRoundedIcon sx={{ fontSize: 16 }} />;
   }
+  if (status.kind === "pending_pto") {
+    return <WarningAmberRoundedIcon sx={{ fontSize: 16 }} />;
+  }
+  if (status.kind === "overlap") {
+    return <ErrorOutlineRoundedIcon sx={{ fontSize: 16 }} />;
+  }
+  if (status.kind === "holiday") {
+    return <WarningAmberRoundedIcon sx={{ fontSize: 16 }} />;
+  }
+  return null;
+}
 
-  if (type === "project") {
+function getTooltipTripIcon(item: PlannerSlotTooltipItem) {
+  if (item.tripType === "service") {
+    return <BuildRoundedIcon sx={{ fontSize: 15, color: "primary.main" }} />;
+  }
+  if (item.tripType === "project") {
     return (
-      <ConstructionRoundedIcon fontSize="small" sx={{ color: "secondary.main" }} />
+      <ConstructionRoundedIcon sx={{ fontSize: 15, color: "secondary.main" }} />
     );
   }
-
-  return <ScheduleRoundedIcon fontSize="small" sx={{ color: "text.secondary" }} />;
+  return <ScheduleRoundedIcon sx={{ fontSize: 15, color: "text.secondary" }} />;
 }
 
 function renderTooltipContent(status: PlannerSlotStatus) {
-  if (status.tooltipItems && status.tooltipItems.length > 0) {
+  if (status.kind === "overlap" && status.tooltipItems && status.tooltipItems.length > 0) {
     return (
-      <Stack spacing={0.75} sx={{ py: 0.25 }}>
+      <Stack spacing={0.75} sx={{ py: 0.2, minWidth: 220 }}>
         {status.tooltipItems.map((item) => (
-          <Box
+          <Stack
             key={item.tripId}
-            sx={{
-              px: 0.5,
-              py: 0.25,
-              minWidth: 220,
-            }}
+            direction="row"
+            spacing={0.75}
+            alignItems="flex-start"
           >
-            <Stack direction="row" spacing={0.75} alignItems="center">
-              {getTooltipIcon(item.tripType)}
-              <Typography variant="caption" fontWeight={700}>
+            <Box
+              sx={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                lineHeight: 0,
+                mt: "2px",
+              }}
+            >
+              {getTooltipTripIcon(item)}
+            </Box>
+
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="caption" fontWeight={800} sx={{ lineHeight: 1.1 }}>
                 {item.title}
               </Typography>
-            </Stack>
 
-            {item.subtitle ? (
+              {item.subtitle ? (
+                <Typography
+                  variant="caption"
+                  sx={{ lineHeight: 1.1, opacity: 0.9, display: "block" }}
+                >
+                  {item.subtitle}
+                </Typography>
+              ) : null}
+
               <Typography
                 variant="caption"
-                sx={{
-                  display: "block",
-                  mt: 0.35,
-                  color: "text.secondary",
-                  lineHeight: 1.25,
-                }}
-              >
-                {item.subtitle}
-              </Typography>
-            ) : null}
-
-            {item.estimatedDurationLabel ? (
-              <Typography
-                variant="caption"
-                sx={{
-                  display: "block",
-                  mt: 0.35,
-                  color: "text.secondary",
-                  lineHeight: 1.2,
-                }}
+                sx={{ lineHeight: 1.1, opacity: 0.85, display: "block" }}
               >
                 Est. {item.estimatedDurationLabel}
               </Typography>
-            ) : null}
-          </Box>
+            </Box>
+          </Stack>
         ))}
+
+        <Typography variant="caption" sx={{ lineHeight: 1.1, opacity: 0.9, pt: 0.25 }}>
+          Tap to override
+        </Typography>
       </Stack>
     );
   }
 
-  if (status.detail) {
+  if (status.kind === "approved_pto") {
     return (
-      <Typography variant="caption" sx={{ px: 0.5, py: 0.25, display: "block" }}>
-        {status.detail}
-      </Typography>
+      <Stack spacing={0.35} sx={{ py: 0.2 }}>
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          <EventBusyRoundedIcon sx={{ fontSize: 15 }} />
+          <Typography variant="caption" fontWeight={800} sx={{ lineHeight: 1.1 }}>
+            {status.detail ? `PTO • ${status.detail}` : "PTO"}
+          </Typography>
+        </Stack>
+        <Typography variant="caption" sx={{ lineHeight: 1.1, opacity: 0.9 }}>
+          Paid Time Off
+        </Typography>
+      </Stack>
+    );
+  }
+
+  if (status.kind === "pending_pto") {
+    return (
+      <Stack spacing={0.35} sx={{ py: 0.2 }}>
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          <WarningAmberRoundedIcon sx={{ fontSize: 15 }} />
+          <Typography variant="caption" fontWeight={800} sx={{ lineHeight: 1.1 }}>
+            {status.detail ? `Pending PTO • ${status.detail}` : "Pending PTO"}
+          </Typography>
+        </Stack>
+        <Typography variant="caption" sx={{ lineHeight: 1.1, opacity: 0.9 }}>
+          Tap to assign
+        </Typography>
+      </Stack>
+    );
+  }
+
+  if (status.kind === "holiday") {
+    return (
+      <Stack spacing={0.35} sx={{ py: 0.2 }}>
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          <WarningAmberRoundedIcon sx={{ fontSize: 15 }} />
+          <Typography variant="caption" fontWeight={800} sx={{ lineHeight: 1.1 }}>
+            {status.detail ? `Holiday • ${status.detail}` : "Holiday"}
+          </Typography>
+        </Stack>
+        <Typography variant="caption" sx={{ lineHeight: 1.1, opacity: 0.9 }}>
+          Company holiday
+        </Typography>
+      </Stack>
     );
   }
 
@@ -301,8 +356,8 @@ export default function DispatchAvailabilityPlanner(props: Props) {
         </Box>
 
         <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
-          Red booked slots are selectable for override. Hover them to see trip details.
-          Approved PTO and holiday conflicts stay blocked.
+          Red booked slots are selectable for override. PTO blocks now show a PTO icon
+          and explicit hover detail.
         </Alert>
 
         {props.holidayNames.length > 0 ? (
@@ -382,10 +437,11 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                         props.selectedPrimaryUid === tech.uid &&
                         props.selectedWindow === slot.key;
                       const isAllDay = slot.key === "all_day";
-                      const pickable = Boolean(props.date) && canPickSlot(status);
+                      const pickable =
+                        Boolean(props.date) && canPickSlot(status) && !status.disabled;
                       const tooltipContent = renderTooltipContent(status);
 
-                      const button = (
+                      const buttonNode = (
                         <Button
                           variant="outlined"
                           disabled={!pickable}
@@ -399,7 +455,6 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                             justifyContent: "flex-start",
                             px: isAllDay ? 2 : 1.5,
                             py: isAllDay ? 1.35 : 1.1,
-                            width: "100%",
                             ...slotButtonStyles({
                               selected,
                               status,
@@ -421,13 +476,28 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                               {slot.label} • {slot.timeLabel}
                             </Typography>
 
-                            <Typography
-                              variant="caption"
-                              fontWeight={700}
-                              sx={{ lineHeight: 1.1 }}
-                            >
-                              {slotButtonCopy(status)}
-                            </Typography>
+                            <Stack direction="row" spacing={0.6} alignItems="center">
+                              {getInlineStatusIcon(status) ? (
+                                <Box
+                                  sx={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    lineHeight: 0,
+                                  }}
+                                >
+                                  {getInlineStatusIcon(status)}
+                                </Box>
+                              ) : null}
+
+                              <Typography
+                                variant="caption"
+                                fontWeight={700}
+                                sx={{ lineHeight: 1.1 }}
+                              >
+                                {slotButtonCopy(status)}
+                              </Typography>
+                            </Stack>
 
                             {slotButtonSubcopy(status) ? (
                               <Typography
@@ -444,23 +514,18 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                         </Button>
                       );
 
-                      if (!tooltipContent) {
-                        return (
-                          <Box key={`${tech.uid}_${slot.key}`} sx={{ width: "100%" }}>
-                            {button}
-                          </Box>
-                        );
-                      }
-
-                      return (
+                      return tooltipContent ? (
                         <Tooltip
                           key={`${tech.uid}_${slot.key}`}
-                          title={<Box sx={{ py: 0.25 }}>{tooltipContent}</Box>}
+                          title={tooltipContent}
                           arrow
                           placement="top"
+                          enterDelay={120}
                         >
-                          <Box sx={{ width: "100%" }}>{button}</Box>
+                          <Box>{buttonNode}</Box>
                         </Tooltip>
+                      ) : (
+                        <Box key={`${tech.uid}_${slot.key}`}>{buttonNode}</Box>
                       );
                     })}
                   </Box>
@@ -507,7 +572,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                   if (approved) {
                     severity = "error";
                     icon = <EventBusyRoundedIcon />;
-                    body = `Approved PTO • ${approved.detail}`;
+                    body = `Paid Time Off • ${approved.detail}`;
                   } else if (overlap) {
                     severity = "warning";
                     icon = <WarningAmberRoundedIcon />;
@@ -518,7 +583,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                     body = `${holiday.label} • ${holiday.detail}`;
                   } else if (pending) {
                     severity = "warning";
-                    icon = <ErrorOutlineRoundedIcon />;
+                    icon = <WarningAmberRoundedIcon />;
                     body = `Pending PTO request • ${pending.detail}`;
                   }
 
@@ -540,10 +605,30 @@ export default function DispatchAvailabilityPlanner(props: Props) {
         </Paper>
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Chip label="Approved PTO = blocked" color="error" variant="outlined" />
-          <Chip label="Overlap = selectable override" color="warning" variant="outlined" />
-          <Chip label="Holiday = explicit override" color="warning" variant="outlined" />
-          <Chip label="Pending PTO = note only" color="warning" variant="outlined" />
+          <Chip
+            icon={<EventBusyRoundedIcon />}
+            label="Approved PTO = blocked"
+            color="error"
+            variant="outlined"
+          />
+          <Chip
+            icon={<ErrorOutlineRoundedIcon />}
+            label="Overlap = selectable override"
+            color="warning"
+            variant="outlined"
+          />
+          <Chip
+            icon={<WarningAmberRoundedIcon />}
+            label="Holiday = explicit override"
+            color="warning"
+            variant="outlined"
+          />
+          <Chip
+            icon={<WarningAmberRoundedIcon />}
+            label="Pending PTO = note only"
+            color="warning"
+            variant="outlined"
+          />
         </Stack>
       </Stack>
     </Paper>

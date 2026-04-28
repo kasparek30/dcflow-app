@@ -48,7 +48,6 @@ import DispatchAvailabilityPlanner, {
   type PlannerCrewSummaryReason,
   type PlannerSlotStatus,
   type PlannerSlotStatusKind,
-  type PlannerSlotTooltipItem,
   type TripTimeWindow,
 } from "../../../../components/DispatchAvailabilityPlanner";
 import { useAuthContext } from "../../../../src/context/auth-context";
@@ -418,7 +417,7 @@ function getPtoRangeForRequest(request: PtoRequestLite) {
     return {
       start: times.start,
       end: times.end,
-      label: "AM",
+      label: `${formatTime12h(times.start)}–${formatTime12h(times.end)}`,
     };
   }
 
@@ -427,7 +426,7 @@ function getPtoRangeForRequest(request: PtoRequestLite) {
     return {
       start: times.start,
       end: times.end,
-      label: "PM",
+      label: `${formatTime12h(times.start)}–${formatTime12h(times.end)}`,
     };
   }
 
@@ -477,10 +476,6 @@ function ptoBlocksSelection(args: {
 }
 
 function buildPtoDetailLabel(request: PtoRequestLite) {
-  const requestDayType = normalizeRequestDayType(request.requestDayType);
-  if (requestDayType !== "partial_day") {
-    return "Full Day";
-  }
   return getPtoRangeForRequest(request).label;
 }
 
@@ -618,24 +613,6 @@ async function hydrateTripPreviewData(items: TripDocLite[]) {
   );
 }
 
-function buildOverlapTooltipItems(trips: TripDocLite[]): PlannerSlotTooltipItem[] {
-  return trips.map((trip) => ({
-    tripId: trip.id,
-    tripType: normalizeTripType(trip.type),
-    title:
-      String(trip.previewTitle || "").trim() ||
-      (normalizeTripType(trip.type) === "project"
-        ? "Project Trip"
-        : normalizeTripType(trip.type) === "service"
-          ? "Service Trip"
-          : "Trip"),
-    subtitle: String(trip.previewSubtitle || "").trim() || undefined,
-    estimatedDurationLabel: formatEstimatedDurationLabel(
-      getTripEstimatedDurationMinutes(trip)
-    ),
-  }));
-}
-
 function analyzeMemberAvailability(args: {
   uid: string;
   name: string;
@@ -770,7 +747,21 @@ function analyzeMemberAvailability(args: {
       label: "Booked",
       detail: overlapReason.detail,
       disabled: false,
-      tooltipItems: buildOverlapTooltipItems(overlappingTrips),
+      tooltipItems: overlappingTrips.map((trip) => ({
+        tripId: trip.id,
+        tripType: normalizeTripType(trip.type),
+        title:
+          String(trip.previewTitle || "").trim() ||
+          (normalizeTripType(trip.type) === "project"
+            ? "Project Trip"
+            : normalizeTripType(trip.type) === "service"
+              ? "Service Trip"
+              : "Trip"),
+        subtitle: String(trip.previewSubtitle || "").trim() || undefined,
+        estimatedDurationLabel: formatEstimatedDurationLabel(
+          getTripEstimatedDurationMinutes(trip)
+        ),
+      })),
     };
   } else if (holidayReason) {
     status = {
@@ -1241,7 +1232,6 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         if (!overlaps) continue;
 
         const tripType = normalizeTripType(trip.type);
-
         const key = `${member.uid}_${trip.id}`;
 
         dedup.set(key, {
@@ -1621,7 +1611,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                     onClick={handleScheduleTrip}
                     disabled={saving || loading || availabilityLoading || !ticket}
                     startIcon={
-                      saving ? <CircularProgress size={16} color="inherit" /> : <CheckCircleRoundedIcon />
+                      saving ? (
+                        <CircularProgress size={16} color="inherit" />
+                      ) : (
+                        <CheckCircleRoundedIcon />
+                      )
                     }
                   >
                     {saving ? "Scheduling..." : "Schedule Trip"}
@@ -2004,7 +1998,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                     </Typography>
                                   ) : null}
 
-                                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{ display: "block" }}
+                                  >
                                     Est. {conflict.estimatedDurationLabel}
                                   </Typography>
                                 </Box>
