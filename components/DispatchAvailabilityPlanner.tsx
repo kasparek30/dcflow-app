@@ -447,6 +447,8 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                           disabled={!pickable}
                           onClick={() => props.onPickSlot(tech.uid, slot.key)}
                           sx={{
+                            width: "100%",
+                            minWidth: 0,
                             minHeight: isAllDay ? 72 : 58,
                             gridColumn: isAllDay ? { xs: "1 / -1", sm: "1 / -1" } : "auto",
                             borderRadius: isAllDay ? 4 : 999,
@@ -522,10 +524,15 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                           placement="top"
                           enterDelay={120}
                         >
-                          <Box>{buttonNode}</Box>
+                          <Box sx={{ width: "100%", display: "block" }}>{buttonNode}</Box>
                         </Tooltip>
                       ) : (
-                        <Box key={`${tech.uid}_${slot.key}`}>{buttonNode}</Box>
+                        <Box
+                          key={`${tech.uid}_${slot.key}`}
+                          sx={{ width: "100%", display: "block" }}
+                        >
+                          {buttonNode}
+                        </Box>
                       );
                     })}
                   </Box>
