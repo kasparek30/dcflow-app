@@ -21,9 +21,16 @@ export type DispatchOverrideInfo = {
   conflictTripIds?: string[];
 };
 
+export type TripLinkLite = {
+  serviceTicketId?: string | null;
+  projectId?: string | null;
+  projectStageKey?: string | null;
+};
+
 export type TripDocLite = {
   id: string;
   active?: boolean | null;
+  type?: string | null;
   status?: string | null;
   date?: string;
   timeWindow?: TripTimeWindow | string;
@@ -32,6 +39,10 @@ export type TripDocLite = {
   crew?: TripCrew | null;
   timerState?: string | null;
   dispatchOverride?: DispatchOverrideInfo | null;
+  link?: TripLinkLite | null;
+  previewTitle?: string | null;
+  previewSubtitle?: string | null;
+  estimatedDurationMinutes?: number | null;
 };
 
 export type PtoRequestLite = {
@@ -41,6 +52,11 @@ export type PtoRequestLite = {
   startDate: string;
   endDate: string;
   status: string;
+  hoursPerDay?: number;
+  requestDayType?: "full_day" | "partial_day";
+  partialDayType?: "am" | "pm" | "custom" | null;
+  partialStartTime?: string | null;
+  partialEndTime?: string | null;
   notes?: string | null;
 };
 
@@ -294,6 +310,104 @@ function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
   );
 }
 
+function normalizeRequestDayType(value?: string | null): "full_day" | "partial_day" {
+  return String(value || "").trim().toLowerCase() === "partial_day"
+    ? "partial_day"
+    : "full_day";
+}
+
+function normalizePartialDayType(
+  value?: string | null
+): "am" | "pm" | "custom" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "am" || normalized === "pm" || normalized === "custom") {
+    return normalized;
+  }
+  return "custom";
+}
+
+function getPtoRangeForRequest(request: PtoRequestLite) {
+  const requestDayType = normalizeRequestDayType(request.requestDayType);
+
+  if (requestDayType !== "partial_day") {
+    return {
+      startMinutes: 0,
+      endMinutes: 24 * 60,
+      label: "All Day",
+    };
+  }
+
+  const partialDayType = normalizePartialDayType(request.partialDayType);
+
+  if (partialDayType === "am") {
+    const am = windowToTimes("am");
+    return {
+      startMinutes: toMinutes(am.start) ?? 480,
+      endMinutes: toMinutes(am.end) ?? 720,
+      label: "AM",
+    };
+  }
+
+  if (partialDayType === "pm") {
+    const pm = windowToTimes("pm");
+    return {
+      startMinutes: toMinutes(pm.start) ?? 780,
+      endMinutes: toMinutes(pm.end) ?? 1020,
+      label: "PM",
+    };
+  }
+
+  const start = String(request.partialStartTime || "").trim();
+  const end = String(request.partialEndTime || "").trim();
+  const startMinutes = toMinutes(start);
+  const endMinutes = toMinutes(end);
+
+  if (
+    startMinutes !== null &&
+    endMinutes !== null &&
+    endMinutes > startMinutes
+  ) {
+    return {
+      startMinutes,
+      endMinutes,
+      label: `${formatTime12h(start)}–${formatTime12h(end)}`,
+    };
+  }
+
+  return {
+    startMinutes: 0,
+    endMinutes: 24 * 60,
+    label: "All Day",
+  };
+}
+
+function ptoRequestOverlapsSlot(args: {
+  request: PtoRequestLite;
+  date: string;
+  slotRange: { startMinutes: number; endMinutes: number } | null;
+}) {
+  if (!isIsoDateInRange(args.date, args.request.startDate, args.request.endDate)) {
+    return false;
+  }
+
+  const requestDayType = normalizeRequestDayType(args.request.requestDayType);
+
+  if (requestDayType !== "partial_day") {
+    return true;
+  }
+
+  if (!args.slotRange) {
+    return true;
+  }
+
+  const ptoRange = getPtoRangeForRequest(args.request);
+
+  return rangesOverlap(args.slotRange, {
+    startMinutes: ptoRange.startMinutes,
+    endMinutes: ptoRange.endMinutes,
+  });
+}
+
 export function getHolidayNamesForDate(
   holidays: CompanyHolidayLite[],
   date: string
@@ -327,7 +441,12 @@ export function getMemberAvailability(args: {
   const approvedMatches = ptoRequests.filter((pto) => {
     if (String(pto.employeeId || "").trim() !== member.uid) return false;
     if (String(pto.status || "").trim().toLowerCase() !== "approved") return false;
-    return isIsoDateInRange(safeDate, pto.startDate, pto.endDate);
+
+    return ptoRequestOverlapsSlot({
+      request: pto,
+      date: safeDate,
+      slotRange,
+    });
   });
 
   if (approvedMatches.length > 0) {
@@ -336,14 +455,19 @@ export function getMemberAvailability(args: {
       kind: "approved_pto",
       blocking: true,
       label: "Approved PTO",
-      detail: `${normalizeDateValue(first.startDate)} → ${normalizeDateValue(first.endDate)}`,
+      detail: getPtoRangeForRequest(first).label,
     });
   }
 
   const pendingMatches = ptoRequests.filter((pto) => {
     if (String(pto.employeeId || "").trim() !== member.uid) return false;
     if (String(pto.status || "").trim().toLowerCase() !== "pending") return false;
-    return isIsoDateInRange(safeDate, pto.startDate, pto.endDate);
+
+    return ptoRequestOverlapsSlot({
+      request: pto,
+      date: safeDate,
+      slotRange,
+    });
   });
 
   if (pendingMatches.length > 0) {
@@ -352,7 +476,7 @@ export function getMemberAvailability(args: {
       kind: "pending_pto",
       blocking: false,
       label: "Pending PTO",
-      detail: `${normalizeDateValue(first.startDate)} → ${normalizeDateValue(first.endDate)}`,
+      detail: getPtoRangeForRequest(first).label,
     });
   }
 
@@ -386,7 +510,7 @@ export function getMemberAvailability(args: {
         blocking: true,
         label: "Overlapping Trip",
         detail: tripRange
-          ? `${formatTime12h(tripRange.startLabel)}–${formatTime12h(tripRange.endLabel)} • Trip ${first.id}`
+          ? `${formatTime12h(tripRange.startLabel)}–${formatTime12h(tripRange.endLabel)}`
           : `Trip ${first.id}`,
       });
     }

@@ -1,4 +1,3 @@
-// app/pto-requests/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -26,19 +25,24 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
+import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
+import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import EventAvailableRoundedIcon from "@mui/icons-material/EventAvailableRounded";
 import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
-import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
-import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
-import type { PTORequest } from "../../src/types/pto-request";
+import type {
+  PTORequest,
+  PTORequestDayType,
+  PTORequestPartialDayType,
+} from "../../src/types/pto-request";
 import type { AppUser } from "../../src/types/app-user";
 
 function toIsoDate(date: Date): string {
@@ -95,6 +99,75 @@ function getStatusChipColor(
   }
 }
 
+function formatTime12h(hhmm?: string | null) {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return "—";
+  const [hhRaw, mmRaw] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(hhRaw) || !Number.isFinite(mmRaw)) return "—";
+
+  const suffix = hhRaw >= 12 ? "PM" : "AM";
+  let hh = hhRaw % 12;
+  if (hh === 0) hh = 12;
+
+  if (mmRaw === 0) return `${hh}${suffix}`;
+  return `${hh}:${String(mmRaw).padStart(2, "0")}${suffix}`;
+}
+
+function diffHours(startTime?: string | null, endTime?: string | null) {
+  if (!startTime || !endTime) return 0;
+  if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) return 0;
+
+  const [startHour, startMinute] = startTime.split(":").map(Number);
+  const [endHour, endMinute] = endTime.split(":").map(Number);
+
+  const start = startHour * 60 + startMinute;
+  const end = endHour * 60 + endMinute;
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  return Math.round(((end - start) / 60) * 100) / 100;
+}
+
+function normalizeRequestDayType(value?: string | null): PTORequestDayType {
+  return String(value || "").trim().toLowerCase() === "partial_day"
+    ? "partial_day"
+    : "full_day";
+}
+
+function normalizePartialDayType(value?: string | null): PTORequestPartialDayType {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "am" || normalized === "pm" || normalized === "custom") {
+    return normalized;
+  }
+  return "custom";
+}
+
+function getPartialWindowTimes(partialDayType: PTORequestPartialDayType) {
+  if (partialDayType === "am") return { start: "08:00", end: "12:00" };
+  if (partialDayType === "pm") return { start: "13:00", end: "17:00" };
+  return { start: "08:00", end: "09:00" };
+}
+
+function buildTimingLabel(args: {
+  requestDayType?: PTORequestDayType;
+  partialDayType?: PTORequestPartialDayType | null;
+  partialStartTime?: string | null;
+  partialEndTime?: string | null;
+}) {
+  const requestDayType = normalizeRequestDayType(args.requestDayType);
+
+  if (requestDayType !== "partial_day") {
+    return "Full Day";
+  }
+
+  const partialDayType = normalizePartialDayType(args.partialDayType || "custom");
+
+  if (partialDayType === "am") return "Partial Day • AM";
+  if (partialDayType === "pm") return "Partial Day • PM";
+
+  return `Partial Day • ${formatTime12h(args.partialStartTime)}–${formatTime12h(
+    args.partialEndTime
+  )}`;
+}
+
 export default function PTORequestsPage() {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -110,6 +183,11 @@ export default function PTORequestsPage() {
   const [startDate, setStartDate] = useState(todayIso);
   const [endDate, setEndDate] = useState(todayIso);
   const [hoursPerDay, setHoursPerDay] = useState(8);
+  const [requestDayType, setRequestDayType] = useState<PTORequestDayType>("full_day");
+  const [partialDayType, setPartialDayType] =
+    useState<PTORequestPartialDayType>("custom");
+  const [partialStartTime, setPartialStartTime] = useState("08:00");
+  const [partialEndTime, setPartialEndTime] = useState("09:00");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -129,6 +207,15 @@ export default function PTORequestsPage() {
   }, [appUser?.uid, selectedEmployeeId]);
 
   useEffect(() => {
+    if (requestDayType !== "partial_day") return;
+    if (partialDayType === "custom") return;
+
+    const times = getPartialWindowTimes(partialDayType);
+    setPartialStartTime(times.start);
+    setPartialEndTime(times.end);
+  }, [requestDayType, partialDayType]);
+
+  useEffect(() => {
     async function loadData() {
       try {
         const [ptoSnap, usersSnap] = await Promise.all([
@@ -138,6 +225,18 @@ export default function PTORequestsPage() {
 
         const ptoItems: PTORequest[] = ptoSnap.docs.map((docSnap) => {
           const data: any = docSnap.data();
+
+          const nextRequestDayType = normalizeRequestDayType(
+            data.requestDayType ??
+              (data.partialDayType || data.partialStartTime || data.partialEndTime
+                ? "partial_day"
+                : "full_day")
+          );
+
+          const nextPartialDayType =
+            nextRequestDayType === "partial_day"
+              ? normalizePartialDayType(data.partialDayType)
+              : undefined;
 
           return {
             id: docSnap.id,
@@ -152,6 +251,10 @@ export default function PTORequestsPage() {
                 ? data.totalRequestedHours
                 : 0,
             status: data.status ?? "pending",
+            requestDayType: nextRequestDayType,
+            partialDayType: nextPartialDayType,
+            partialStartTime: data.partialStartTime ?? undefined,
+            partialEndTime: data.partialEndTime ?? undefined,
             notes: data.notes ?? undefined,
             managerNote: data.managerNote ?? undefined,
             rejectionReason: data.rejectionReason ?? undefined,
@@ -204,9 +307,29 @@ export default function PTORequestsPage() {
     return countWeekdays(startDate, endDate);
   }, [startDate, endDate]);
 
+  const effectiveHoursPerDay = useMemo(() => {
+    if (requestDayType !== "partial_day") {
+      return hoursPerDay;
+    }
+
+    if (partialDayType === "am") return 4;
+    if (partialDayType === "pm") return 4;
+
+    return diffHours(partialStartTime, partialEndTime);
+  }, [hoursPerDay, requestDayType, partialDayType, partialStartTime, partialEndTime]);
+
   const totalRequestedHours = useMemo(() => {
-    return weekdayCount * hoursPerDay;
-  }, [weekdayCount, hoursPerDay]);
+    return weekdayCount * effectiveHoursPerDay;
+  }, [weekdayCount, effectiveHoursPerDay]);
+
+  const timingLabel = useMemo(() => {
+    return buildTimingLabel({
+      requestDayType,
+      partialDayType,
+      partialStartTime,
+      partialEndTime,
+    });
+  }, [requestDayType, partialDayType, partialStartTime, partialEndTime]);
 
   const visibleRequests = useMemo(() => {
     if (canReviewAll) return requests;
@@ -251,11 +374,6 @@ export default function PTORequestsPage() {
       return;
     }
 
-    if (hoursPerDay <= 0) {
-      setError("Hours per day must be greater than 0.");
-      return;
-    }
-
     if (weekdayCount <= 0) {
       setError("This request must include at least one weekday.");
       return;
@@ -266,6 +384,25 @@ export default function PTORequestsPage() {
       return;
     }
 
+    if (requestDayType === "full_day" && hoursPerDay <= 0) {
+      setError("Hours per day must be greater than 0.");
+      return;
+    }
+
+    if (requestDayType === "partial_day") {
+      if (partialDayType === "custom") {
+        if (!partialStartTime || !partialEndTime || effectiveHoursPerDay <= 0) {
+          setError("Enter a valid custom partial-day time range.");
+          return;
+        }
+      }
+
+      if (effectiveHoursPerDay <= 0) {
+        setError("Partial-day PTO must have a valid hour amount.");
+        return;
+      }
+    }
+
     setSaving(true);
     setError("");
     setSaveMsg("");
@@ -273,15 +410,29 @@ export default function PTORequestsPage() {
     try {
       const nowIso = new Date().toISOString();
 
-      const docRef = await addDoc(collection(db, "ptoRequests"), {
+      const payload = {
         employeeId: targetEmployeeId,
         employeeName,
         employeeRole,
         startDate,
         endDate,
-        hoursPerDay,
+        hoursPerDay: effectiveHoursPerDay,
         totalRequestedHours,
         status: "pending",
+        requestDayType,
+        partialDayType: requestDayType === "partial_day" ? partialDayType : null,
+        partialStartTime:
+          requestDayType === "partial_day" && partialDayType === "custom"
+            ? partialStartTime
+            : requestDayType === "partial_day" && partialDayType !== "custom"
+              ? getPartialWindowTimes(partialDayType).start
+              : null,
+        partialEndTime:
+          requestDayType === "partial_day" && partialDayType === "custom"
+            ? partialEndTime
+            : requestDayType === "partial_day" && partialDayType !== "custom"
+              ? getPartialWindowTimes(partialDayType).end
+              : null,
         notes: notes.trim() || null,
         managerNote: null,
         rejectionReason: null,
@@ -294,7 +445,9 @@ export default function PTORequestsPage() {
         createdByName: appUser.displayName || "Unknown",
         createdAt: nowIso,
         updatedAt: nowIso,
-      } as any);
+      };
+
+      const docRef = await addDoc(collection(db, "ptoRequests"), payload as any);
 
       const newItem: PTORequest = {
         id: docRef.id,
@@ -303,9 +456,19 @@ export default function PTORequestsPage() {
         employeeRole,
         startDate,
         endDate,
-        hoursPerDay,
+        hoursPerDay: effectiveHoursPerDay,
         totalRequestedHours,
         status: "pending",
+        requestDayType,
+        partialDayType: requestDayType === "partial_day" ? partialDayType : undefined,
+        partialStartTime:
+          requestDayType === "partial_day"
+            ? payload.partialStartTime ?? undefined
+            : undefined,
+        partialEndTime:
+          requestDayType === "partial_day"
+            ? payload.partialEndTime ?? undefined
+            : undefined,
         notes: notes.trim() || undefined,
         createdAt: nowIso,
         updatedAt: nowIso,
@@ -317,6 +480,10 @@ export default function PTORequestsPage() {
       setStartDate(todayIso);
       setEndDate(todayIso);
       setHoursPerDay(8);
+      setRequestDayType("full_day");
+      setPartialDayType("custom");
+      setPartialStartTime("08:00");
+      setPartialEndTime("09:00");
       setNotes("");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create PTO request.");
@@ -354,8 +521,8 @@ export default function PTORequestsPage() {
                     color="text.secondary"
                     sx={{ mt: 0.75, maxWidth: 760 }}
                   >
-                    Submit paid time off requests, review upcoming time away, and track
-                    approval status in one place.
+                    Submit paid time off requests, including partial-day requests, and
+                    track approval status in one place.
                   </Typography>
                 </Box>
 
@@ -398,7 +565,7 @@ export default function PTORequestsPage() {
                       New PTO Request
                     </Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      Choose dates, working hours per day, and any supporting notes.
+                      Choose dates, full day or partial day, and any supporting notes.
                     </Typography>
                   </Box>
 
@@ -463,7 +630,22 @@ export default function PTORequestsPage() {
                       fullWidth
                       InputLabelProps={{ shrink: true }}
                     />
+                  </Stack>
 
+                  <TextField
+                    select
+                    label="Request Type"
+                    value={requestDayType}
+                    onChange={(e) =>
+                      setRequestDayType(e.target.value as PTORequestDayType)
+                    }
+                    fullWidth
+                  >
+                    <MenuItem value="full_day">Full Day</MenuItem>
+                    <MenuItem value="partial_day">Partial Day</MenuItem>
+                  </TextField>
+
+                  {requestDayType === "full_day" ? (
                     <TextField
                       label="Hours Per Day"
                       type="number"
@@ -472,7 +654,67 @@ export default function PTORequestsPage() {
                       inputProps={{ min: 0.25, step: 0.25 }}
                       fullWidth
                     />
-                  </Stack>
+                  ) : (
+                    <Stack spacing={2}>
+                      <TextField
+                        select
+                        label="Partial Day Block"
+                        value={partialDayType}
+                        onChange={(e) =>
+                          setPartialDayType(e.target.value as PTORequestPartialDayType)
+                        }
+                        fullWidth
+                      >
+                        <MenuItem value="am">AM (8:00–12:00)</MenuItem>
+                        <MenuItem value="pm">PM (1:00–5:00)</MenuItem>
+                        <MenuItem value="custom">Custom Time</MenuItem>
+                      </TextField>
+
+                      {partialDayType === "custom" ? (
+                        <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                          <TextField
+                            label="Start Time"
+                            type="time"
+                            value={partialStartTime}
+                            onChange={(e) => setPartialStartTime(e.target.value)}
+                            fullWidth
+                            InputLabelProps={{ shrink: true }}
+                          />
+                          <TextField
+                            label="End Time"
+                            type="time"
+                            value={partialEndTime}
+                            onChange={(e) => setPartialEndTime(e.target.value)}
+                            fullWidth
+                            InputLabelProps={{ shrink: true }}
+                          />
+                        </Stack>
+                      ) : null}
+
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 3,
+                          border: `1px solid ${theme.palette.divider}`,
+                          backgroundColor: alpha(theme.palette.warning.main, 0.05),
+                        }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <AccessTimeRoundedIcon
+                            fontSize="small"
+                            sx={{ color: "warning.main" }}
+                          />
+                          <Typography variant="body2" color="text.secondary">
+                            Partial-day hours will be calculated automatically:{" "}
+                            <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                              {effectiveHoursPerDay.toFixed(2)} hrs/day
+                            </Box>
+                          </Typography>
+                        </Stack>
+                      </Paper>
+                    </Stack>
+                  )}
 
                   <TextField
                     label="Employee Note"
@@ -518,7 +760,7 @@ export default function PTORequestsPage() {
                         />
                         <Chip
                           icon={<EventNoteRoundedIcon />}
-                          label={`${hoursPerDay.toFixed(2)} hrs/day`}
+                          label={timingLabel}
                           variant="outlined"
                           sx={{ borderRadius: 999 }}
                         />
@@ -664,6 +906,13 @@ export default function PTORequestsPage() {
                                   <Chip
                                     icon={<EventAvailableRoundedIcon />}
                                     label={`${request.totalRequestedHours.toFixed(2)} total hrs`}
+                                    variant="outlined"
+                                    size="small"
+                                    sx={{ borderRadius: 999 }}
+                                  />
+                                  <Chip
+                                    icon={<AccessTimeRoundedIcon />}
+                                    label={buildTimingLabel(request)}
                                     variant="outlined"
                                     size="small"
                                     sx={{ borderRadius: 999 }}

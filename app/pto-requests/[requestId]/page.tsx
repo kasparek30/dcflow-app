@@ -1,4 +1,3 @@
-// app/pto-requests/[requestId]/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -24,6 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
+import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
@@ -41,14 +41,19 @@ import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
-import type { PTORequest } from "../../../src/types/pto-request";
+import { normalizeCompanyHoliday } from "../../../src/lib/trip-availability";
+import type {
+  PTORequest,
+  PTORequestDayType,
+  PTORequestPartialDayType,
+} from "../../../src/types/pto-request";
 
 type Props = {
   params: Promise<{ requestId: string }>;
 };
 
 type HolidayLite = {
-  holidayDate: string;
+  date: string;
   active: boolean;
 };
 
@@ -137,6 +142,50 @@ function getWeekdayDates(startDate: string, endDate: string) {
   return dates;
 }
 
+function formatTime12h(hhmm?: string | null) {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return "—";
+  const [hhRaw, mmRaw] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(hhRaw) || !Number.isFinite(mmRaw)) return "—";
+
+  const suffix = hhRaw >= 12 ? "PM" : "AM";
+  let hh = hhRaw % 12;
+  if (hh === 0) hh = 12;
+
+  if (mmRaw === 0) return `${hh}${suffix}`;
+  return `${hh}:${String(mmRaw).padStart(2, "0")}${suffix}`;
+}
+
+function normalizeRequestDayType(value?: string | null): PTORequestDayType {
+  return String(value || "").trim().toLowerCase() === "partial_day"
+    ? "partial_day"
+    : "full_day";
+}
+
+function normalizePartialDayType(value?: string | null): PTORequestPartialDayType {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "am" || normalized === "pm" || normalized === "custom") {
+    return normalized;
+  }
+  return "custom";
+}
+
+function buildTimingLabel(request: PTORequest) {
+  const requestDayType = normalizeRequestDayType(request.requestDayType);
+
+  if (requestDayType !== "partial_day") {
+    return "Full Day";
+  }
+
+  const partialDayType = normalizePartialDayType(request.partialDayType);
+
+  if (partialDayType === "am") return "Partial Day • AM";
+  if (partialDayType === "pm") return "Partial Day • PM";
+
+  return `Partial Day • ${formatTime12h(request.partialStartTime)}–${formatTime12h(
+    request.partialEndTime
+  )}`;
+}
+
 export default function PTORequestDetailPage({ params }: Props) {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -173,7 +222,14 @@ export default function PTORequestDetailPage({ params }: Props) {
           return;
         }
 
-        const data = snap.data();
+        const data: any = snap.data();
+
+        const nextRequestDayType = normalizeRequestDayType(
+          data.requestDayType ??
+            (data.partialDayType || data.partialStartTime || data.partialEndTime
+              ? "partial_day"
+              : "full_day")
+        );
 
         const item: PTORequest = {
           id: snap.id,
@@ -188,6 +244,13 @@ export default function PTORequestDetailPage({ params }: Props) {
               ? data.totalRequestedHours
               : 0,
           status: data.status ?? "pending",
+          requestDayType: nextRequestDayType,
+          partialDayType:
+            nextRequestDayType === "partial_day"
+              ? normalizePartialDayType(data.partialDayType)
+              : undefined,
+          partialStartTime: data.partialStartTime ?? undefined,
+          partialEndTime: data.partialEndTime ?? undefined,
           notes: data.notes ?? undefined,
           managerNote: data.managerNote ?? undefined,
           rejectionReason: data.rejectionReason ?? undefined,
@@ -218,6 +281,11 @@ export default function PTORequestDetailPage({ params }: Props) {
     return getWeekdayDates(requestItem.startDate, requestItem.endDate);
   }, [requestItem]);
 
+  const timingLabel = useMemo(() => {
+    if (!requestItem) return "—";
+    return buildTimingLabel(requestItem);
+  }, [requestItem]);
+
   const canTakeAction = useMemo(() => {
     if (!requestItem) return false;
     return canReview && requestItem.status === "pending";
@@ -239,20 +307,20 @@ export default function PTORequestDetailPage({ params }: Props) {
         getDocs(query(collection(db, "employeeUnavailability"))),
       ]);
 
-      const holidays: HolidayLite[] = holidaySnap.docs.map((docSnap) => {
-        const data = docSnap.data();
-        return {
-          holidayDate: data.holidayDate ?? "",
-          active: data.active ?? true,
-        };
-      });
+      const holidays: HolidayLite[] = holidaySnap.docs
+        .map((docSnap) => normalizeCompanyHoliday(docSnap.data(), docSnap.id))
+        .filter((item): item is { id: string; date: string; name: string; active: boolean } => Boolean(item))
+        .map((item) => ({
+          date: item.date,
+          active: item.active,
+        }));
 
       const activeHolidayDates = new Set(
-        holidays.filter((h) => h.active).map((h) => h.holidayDate)
+        holidays.filter((h) => h.active).map((h) => h.date)
       );
 
       const allTimeEntries: TimeEntryLite[] = timeEntriesSnap.docs.map((docSnap) => {
-        const data = docSnap.data();
+        const data: any = docSnap.data();
         return {
           id: docSnap.id,
           employeeId: data.employeeId ?? "",
@@ -264,7 +332,7 @@ export default function PTORequestDetailPage({ params }: Props) {
       });
 
       const allUnavailability: UnavailabilityLite[] = unavailSnap.docs.map((docSnap) => {
-        const data = docSnap.data();
+        const data: any = docSnap.data();
         return {
           id: docSnap.id,
           uid: data.uid ?? "",
@@ -318,14 +386,14 @@ export default function PTORequestDetailPage({ params }: Props) {
             linkedTechnicianId: null,
             linkedTechnicianName: null,
 
-            notes: `${notesPrefix} • Approved PTO request`,
+            notes: `${notesPrefix} • Approved PTO request • ${timingLabel}`,
             timesheetId: null,
 
             entryStatus: "draft",
 
             createdAt: nowIso,
             updatedAt: nowIso,
-          });
+          } as any);
 
           allTimeEntries.push({
             id: newDoc.id,
@@ -333,7 +401,7 @@ export default function PTORequestDetailPage({ params }: Props) {
             entryDate,
             category: "pto",
             source: "system_generated_pto",
-            notes: `${notesPrefix} • Approved PTO request`,
+            notes: `${notesPrefix} • Approved PTO request • ${timingLabel}`,
           });
 
           createdTimeEntryCount += 1;
@@ -368,6 +436,22 @@ export default function PTORequestDetailPage({ params }: Props) {
             type: "pto",
             reason: (managerNote.trim() || requestItem.notes || "").trim() || null,
 
+            requestDayType:
+              normalizeRequestDayType(requestItem.requestDayType) || "full_day",
+            partialDayType:
+              normalizeRequestDayType(requestItem.requestDayType) === "partial_day"
+                ? normalizePartialDayType(requestItem.partialDayType)
+                : null,
+            startTime:
+              normalizeRequestDayType(requestItem.requestDayType) === "partial_day"
+                ? requestItem.partialStartTime || null
+                : null,
+            endTime:
+              normalizeRequestDayType(requestItem.requestDayType) === "partial_day"
+                ? requestItem.partialEndTime || null
+                : null,
+            hours: requestItem.hoursPerDay,
+
             source: "pto_request_approved",
             ptoRequestId: requestItem.id,
 
@@ -379,7 +463,7 @@ export default function PTORequestDetailPage({ params }: Props) {
             updatedAt: nowIso,
             updatedByUid: appUser.uid,
             updatedByName: approverName,
-          });
+          } as any);
 
           allUnavailability.push({
             id: unavailDoc.id,
@@ -714,6 +798,12 @@ export default function PTORequestDetailPage({ params }: Props) {
                               variant="outlined"
                               sx={{ borderRadius: 999 }}
                             />
+                            <Chip
+                              icon={<AccessTimeRoundedIcon />}
+                              label={timingLabel}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
                           </Stack>
 
                           <Typography variant="body2" color="text.secondary">
@@ -787,7 +877,9 @@ export default function PTORequestDetailPage({ params }: Props) {
                               <Chip
                                 key={date}
                                 icon={<CalendarMonthRoundedIcon />}
-                                label={`${date} • ${requestItem.hoursPerDay.toFixed(2)} hr`}
+                                label={`${date} • ${requestItem.hoursPerDay.toFixed(
+                                  2
+                                )} hr • ${timingLabel}`}
                                 variant="outlined"
                                 sx={{ borderRadius: 999 }}
                               />

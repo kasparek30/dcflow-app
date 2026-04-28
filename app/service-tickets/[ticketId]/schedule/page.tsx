@@ -1,4 +1,3 @@
-// app/service-tickets/[ticketId]/schedule/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -35,8 +34,10 @@ import {
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
+import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 
@@ -47,6 +48,7 @@ import DispatchAvailabilityPlanner, {
   type PlannerCrewSummaryReason,
   type PlannerSlotStatus,
   type PlannerSlotStatusKind,
+  type PlannerSlotTooltipItem,
   type TripTimeWindow,
 } from "../../../../components/DispatchAvailabilityPlanner";
 import { useAuthContext } from "../../../../src/context/auth-context";
@@ -77,6 +79,12 @@ type TripCrew = {
   secondaryHelperName?: string | null;
 };
 
+type TripLinkLite = {
+  serviceTicketId?: string | null;
+  projectId?: string | null;
+  projectStageKey?: string | null;
+};
+
 type TicketLite = {
   id: string;
   status: TicketStatus;
@@ -105,6 +113,11 @@ type PtoRequestLite = {
   startDate: string;
   endDate: string;
   status: "pending" | "approved" | "rejected" | "cancelled";
+  hoursPerDay?: number;
+  requestDayType?: "full_day" | "partial_day";
+  partialDayType?: "am" | "pm" | "custom" | null;
+  partialStartTime?: string | null;
+  partialEndTime?: string | null;
 };
 
 type CompanyHolidayLite = {
@@ -136,6 +149,10 @@ type TripDocLite = {
   crew?: TripCrew | null;
   timerState?: string | null;
   dispatchOverride?: DispatchOverrideInfo | null;
+  link?: TripLinkLite | null;
+  previewTitle?: string | null;
+  previewSubtitle?: string | null;
+  estimatedDurationMinutes?: number | null;
 };
 
 type SelectedOverlapConflict = {
@@ -143,7 +160,9 @@ type SelectedOverlapConflict = {
   memberName: string;
   tripId: string;
   tripType: "service" | "project" | "trip";
-  rangeLabel: string;
+  previewTitle: string;
+  previewSubtitle?: string;
+  estimatedDurationLabel: string;
 };
 
 function nowIso() {
@@ -216,6 +235,27 @@ function normalizeStatus(value?: string | null) {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizeTripType(value?: string | null): "service" | "project" | "trip" {
+  const normalized = normalizeStatus(value);
+  if (normalized === "project") return "project";
+  if (normalized === "service") return "service";
+  return "trip";
+}
+
+function normalizeRequestDayType(value?: string | null): "full_day" | "partial_day" {
+  return String(value || "").trim().toLowerCase() === "partial_day"
+    ? "partial_day"
+    : "full_day";
+}
+
+function normalizePartialDayType(value?: string | null): "am" | "pm" | "custom" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "am" || normalized === "pm" || normalized === "custom") {
+    return normalized;
+  }
+  return "custom";
+}
+
 function formatTicketStatus(value?: string) {
   switch (String(value || "").toLowerCase()) {
     case "new":
@@ -253,6 +293,44 @@ function formatTime12h(hhmm?: string | null) {
   if (hh === 0) hh = 12;
   if (mmRaw === 0) return `${hh}${ampm}`;
   return `${hh}:${String(mmRaw).padStart(2, "0")}${ampm}`;
+}
+
+function toMinutes(hhmm?: string | null) {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  const [hh, mm] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  return hh * 60 + mm;
+}
+
+function formatEstimatedDurationLabel(minutes?: number | null) {
+  const safeMinutes = Number(minutes || 0);
+  if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) return "—";
+
+  if (safeMinutes < 60) {
+    return `${safeMinutes} min`;
+  }
+
+  const hours = safeMinutes / 60;
+  if (Number.isInteger(hours)) {
+    return `${hours} hr${hours === 1 ? "" : "s"}`;
+  }
+
+  return `${hours.toFixed(1)} hrs`;
+}
+
+function getMinutesBetween(startTime?: string | null, endTime?: string | null) {
+  const start = toMinutes(startTime);
+  const end = toMinutes(endTime);
+  if (start === null || end === null || end <= start) return 0;
+  return end - start;
+}
+
+function formatStageKey(value?: string | null) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function isTicketTerminal(status?: string) {
@@ -322,6 +400,242 @@ function buildReason(
   return { kind, label, detail };
 }
 
+function getPtoRangeForRequest(request: PtoRequestLite) {
+  const requestDayType = normalizeRequestDayType(request.requestDayType);
+
+  if (requestDayType !== "partial_day") {
+    return {
+      start: "00:00",
+      end: "23:59",
+      label: "All Day",
+    };
+  }
+
+  const partialDayType = normalizePartialDayType(request.partialDayType);
+
+  if (partialDayType === "am") {
+    const times = windowToTimes("am");
+    return {
+      start: times.start,
+      end: times.end,
+      label: "AM",
+    };
+  }
+
+  if (partialDayType === "pm") {
+    const times = windowToTimes("pm");
+    return {
+      start: times.start,
+      end: times.end,
+      label: "PM",
+    };
+  }
+
+  const start = String(request.partialStartTime || "").trim();
+  const end = String(request.partialEndTime || "").trim();
+
+  if (getMinutesBetween(start, end) > 0) {
+    return {
+      start,
+      end,
+      label: `${formatTime12h(start)}–${formatTime12h(end)}`,
+    };
+  }
+
+  return {
+    start: "00:00",
+    end: "23:59",
+    label: "All Day",
+  };
+}
+
+function ptoBlocksSelection(args: {
+  request: PtoRequestLite;
+  date: string;
+  timeWindow: TripTimeWindow;
+  startTime: string;
+  endTime: string;
+}) {
+  if (!dateFallsWithinPto(args.date, args.request)) return false;
+
+  const requestDayType = normalizeRequestDayType(args.request.requestDayType);
+  if (requestDayType !== "partial_day") return true;
+
+  const requestRange = getPtoRangeForRequest(args.request);
+  const selectedRange = getRangeForWindow({
+    timeWindow: args.timeWindow,
+    startTime: args.startTime,
+    endTime: args.endTime,
+  });
+
+  return rangesOverlap(
+    selectedRange.start,
+    selectedRange.end,
+    requestRange.start,
+    requestRange.end
+  );
+}
+
+function buildPtoDetailLabel(request: PtoRequestLite) {
+  const requestDayType = normalizeRequestDayType(request.requestDayType);
+  if (requestDayType !== "partial_day") {
+    return "Full Day";
+  }
+  return getPtoRangeForRequest(request).label;
+}
+
+function getTripEstimatedDurationMinutes(trip: TripDocLite) {
+  const stored = Number(trip.estimatedDurationMinutes);
+  if (Number.isFinite(stored) && stored > 0) {
+    return stored;
+  }
+
+  const range = getTripRange(trip);
+  return getMinutesBetween(range.start, range.end);
+}
+
+function mapTripDocLite(id: string, trip: any): TripDocLite {
+  return {
+    id,
+    active: trip.active ?? true,
+    type: String(trip.type || ""),
+    status: String(trip.status || ""),
+    date: String(trip.date || ""),
+    timeWindow: String(trip.timeWindow || "custom"),
+    startTime: String(trip.startTime || ""),
+    endTime: String(trip.endTime || ""),
+    crew: (trip.crew || null) as TripCrew | null,
+    timerState: trip.timerState ?? null,
+    dispatchOverride: (trip.dispatchOverride || null) as DispatchOverrideInfo | null,
+    link: (trip.link || null) as TripLinkLite | null,
+    previewTitle: trip.previewTitle ?? null,
+    previewSubtitle: trip.previewSubtitle ?? null,
+    estimatedDurationMinutes:
+      typeof trip.estimatedDurationMinutes === "number"
+        ? trip.estimatedDurationMinutes
+        : null,
+  };
+}
+
+async function hydrateTripPreviewData(items: TripDocLite[]) {
+  const serviceCache = new Map<string, { title?: string | null; subtitle?: string | null }>();
+  const projectCache = new Map<string, { title?: string | null; subtitle?: string | null }>();
+
+  return Promise.all(
+    items.map(async (item) => {
+      let previewTitle = String(item.previewTitle || "").trim();
+      let previewSubtitle = String(item.previewSubtitle || "").trim();
+
+      if (!previewTitle && item.link?.serviceTicketId) {
+        const serviceTicketId = String(item.link.serviceTicketId).trim();
+
+        if (serviceTicketId) {
+          if (!serviceCache.has(serviceTicketId)) {
+            try {
+              const snap = await getDoc(doc(db, "serviceTickets", serviceTicketId));
+              if (snap.exists()) {
+                const data: any = snap.data();
+                serviceCache.set(serviceTicketId, {
+                  title: String(data.customerDisplayName || "Service Trip").trim(),
+                  subtitle: String(data.issueSummary || "").trim() || null,
+                });
+              } else {
+                serviceCache.set(serviceTicketId, {});
+              }
+            } catch {
+              serviceCache.set(serviceTicketId, {});
+            }
+          }
+
+          const cached = serviceCache.get(serviceTicketId);
+          previewTitle = String(cached?.title || "").trim();
+          previewSubtitle = String(cached?.subtitle || "").trim();
+        }
+      }
+
+      if (!previewTitle && item.link?.projectId) {
+        const projectId = String(item.link.projectId).trim();
+
+        if (projectId) {
+          if (!projectCache.has(projectId)) {
+            try {
+              const snap = await getDoc(doc(db, "projects", projectId));
+              if (snap.exists()) {
+                const data: any = snap.data();
+                projectCache.set(projectId, {
+                  title: String(
+                    data.projectName ||
+                      data.name ||
+                      data.title ||
+                      data.customerDisplayName ||
+                      "Project"
+                  ).trim(),
+                  subtitle:
+                    String(
+                      data.description ||
+                        data.projectType ||
+                        formatStageKey(item.link?.projectStageKey) ||
+                        ""
+                    ).trim() || null,
+                });
+              } else {
+                projectCache.set(projectId, {});
+              }
+            } catch {
+              projectCache.set(projectId, {});
+            }
+          }
+
+          const cached = projectCache.get(projectId);
+          previewTitle = String(cached?.title || "").trim();
+          previewSubtitle = String(cached?.subtitle || "").trim();
+        }
+      }
+
+      const tripType = normalizeTripType(item.type);
+
+      if (!previewTitle) {
+        previewTitle =
+          tripType === "project"
+            ? "Project Trip"
+            : tripType === "service"
+              ? "Service Trip"
+              : "Trip";
+      }
+
+      if (!previewSubtitle && tripType === "project" && item.link?.projectStageKey) {
+        previewSubtitle = formatStageKey(item.link.projectStageKey);
+      }
+
+      return {
+        ...item,
+        previewTitle,
+        previewSubtitle: previewSubtitle || null,
+        estimatedDurationMinutes:
+          item.estimatedDurationMinutes ?? getTripEstimatedDurationMinutes(item),
+      };
+    })
+  );
+}
+
+function buildOverlapTooltipItems(trips: TripDocLite[]): PlannerSlotTooltipItem[] {
+  return trips.map((trip) => ({
+    tripId: trip.id,
+    tripType: normalizeTripType(trip.type),
+    title:
+      String(trip.previewTitle || "").trim() ||
+      (normalizeTripType(trip.type) === "project"
+        ? "Project Trip"
+        : normalizeTripType(trip.type) === "service"
+          ? "Service Trip"
+          : "Trip"),
+    subtitle: String(trip.previewSubtitle || "").trim() || undefined,
+    estimatedDurationLabel: formatEstimatedDurationLabel(
+      getTripEstimatedDurationMinutes(trip)
+    ),
+  }));
+}
+
 function analyzeMemberAvailability(args: {
   uid: string;
   name: string;
@@ -340,7 +654,13 @@ function analyzeMemberAvailability(args: {
     (request) =>
       request.employeeId === args.uid &&
       request.status === "approved" &&
-      dateFallsWithinPto(args.date, request)
+      ptoBlocksSelection({
+        request,
+        date: args.date,
+        timeWindow: args.timeWindow,
+        startTime: args.startTime,
+        endTime: args.endTime,
+      })
   );
 
   if (approvedPto) {
@@ -348,7 +668,7 @@ function analyzeMemberAvailability(args: {
       buildReason(
         "approved_pto",
         "Approved PTO",
-        `${approvedPto.startDate} to ${approvedPto.endDate}`
+        buildPtoDetailLabel(approvedPto)
       )
     );
   }
@@ -359,7 +679,7 @@ function analyzeMemberAvailability(args: {
     endTime: args.endTime,
   });
 
-  const blockingTrip = args.dayTrips.find((trip) => {
+  const overlappingTrips = args.dayTrips.filter((trip) => {
     if (trip.active === false) return false;
     if (!isOpenTripStatus(trip.status)) return false;
     if (!tripHasCrewUid(trip, args.uid)) return false;
@@ -373,12 +693,12 @@ function analyzeMemberAvailability(args: {
     );
   });
 
-  if (blockingTrip) {
-    const tripRange = getTripRange(blockingTrip);
-    const typeLabel =
-      normalizeStatus(blockingTrip.type) === "project"
+  if (overlappingTrips.length > 0) {
+    const first = overlappingTrips[0];
+    const tripType =
+      normalizeTripType(first.type) === "project"
         ? "Project"
-        : normalizeStatus(blockingTrip.type) === "service"
+        : normalizeTripType(first.type) === "service"
           ? "Service"
           : "Trip";
 
@@ -386,7 +706,9 @@ function analyzeMemberAvailability(args: {
       buildReason(
         "overlap",
         "Overlapping Trip",
-        `${typeLabel} • ${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`
+        `${tripType} • ${
+          String(first.previewTitle || "").trim() || "Scheduled Trip"
+        } • Est. ${formatEstimatedDurationLabel(getTripEstimatedDurationMinutes(first))}`
       )
     );
   }
@@ -405,7 +727,13 @@ function analyzeMemberAvailability(args: {
     (request) =>
       request.employeeId === args.uid &&
       request.status === "pending" &&
-      dateFallsWithinPto(args.date, request)
+      ptoBlocksSelection({
+        request,
+        date: args.date,
+        timeWindow: args.timeWindow,
+        startTime: args.startTime,
+        endTime: args.endTime,
+      })
   );
 
   if (pendingPto) {
@@ -413,7 +741,7 @@ function analyzeMemberAvailability(args: {
       buildReason(
         "pending_pto",
         "Pending PTO",
-        `${pendingPto.startDate} to ${pendingPto.endDate}`
+        buildPtoDetailLabel(pendingPto)
       )
     );
   }
@@ -441,7 +769,8 @@ function analyzeMemberAvailability(args: {
       kind: "overlap",
       label: "Booked",
       detail: overlapReason.detail,
-      disabled: true,
+      disabled: false,
+      tooltipItems: buildOverlapTooltipItems(overlappingTrips),
     };
   } else if (holidayReason) {
     status = {
@@ -493,19 +822,7 @@ async function findOpenTripsForTicketId(serviceTicketId: string) {
     if (!snap) continue;
 
     for (const docSnap of snap.docs) {
-      const data = docSnap.data() as any;
-      const candidate: TripDocLite = {
-        id: docSnap.id,
-        active: data.active ?? true,
-        type: String(data.type || ""),
-        status: String(data.status || ""),
-        date: String(data.date || ""),
-        timeWindow: String(data.timeWindow || "custom"),
-        startTime: String(data.startTime || ""),
-        endTime: String(data.endTime || ""),
-        crew: (data.crew || null) as TripCrew | null,
-        dispatchOverride: (data.dispatchOverride || null) as DispatchOverrideInfo | null,
-      };
+      const candidate = mapTripDocLite(docSnap.id, docSnap.data());
 
       if (!isOpenTripStatus(candidate.status) || candidate.active === false) continue;
       byId.set(candidate.id, candidate);
@@ -637,24 +954,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           )
           .sort((a, b) => a.name.localeCompare(b.name));
 
-        const nextTicketTrips = tripsSnap.docs.map((ds) => {
-          const trip = ds.data() as any;
-          return {
-            id: ds.id,
-            active: trip.active ?? true,
-            type: String(trip.type || ""),
-            status: String(trip.status || ""),
-            date: String(trip.date || ""),
-            timeWindow: String(trip.timeWindow || "custom"),
-            startTime: String(trip.startTime || ""),
-            endTime: String(trip.endTime || ""),
-            crew: (trip.crew || null) as TripCrew | null,
-            dispatchOverride: (trip.dispatchOverride || null) as DispatchOverrideInfo | null,
-          } satisfies TripDocLite;
-        });
+        const rawTicketTrips = tripsSnap.docs.map((ds) => mapTripDocLite(ds.id, ds.data()));
+        const nextTicketTrips = await hydrateTripPreviewData(rawTicketTrips);
 
         const nextPto = ptoSnap.docs.map((ds) => {
-          const item = ds.data() as any;
+          const item: any = ds.data();
           return {
             id: ds.id,
             employeeId: String(item.employeeId || ""),
@@ -662,6 +966,20 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
             startDate: String(item.startDate || ""),
             endDate: String(item.endDate || ""),
             status: (item.status || "pending") as PtoRequestLite["status"],
+            hoursPerDay:
+              typeof item.hoursPerDay === "number" ? item.hoursPerDay : undefined,
+            requestDayType: normalizeRequestDayType(
+              item.requestDayType ??
+                (item.partialDayType || item.partialStartTime || item.partialEndTime
+                  ? "partial_day"
+                  : "full_day")
+            ),
+            partialDayType:
+              item.partialDayType != null
+                ? normalizePartialDayType(item.partialDayType)
+                : null,
+            partialStartTime: item.partialStartTime ?? null,
+            partialEndTime: item.partialEndTime ?? null,
           } satisfies PtoRequestLite;
         });
 
@@ -735,21 +1053,8 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           query(collection(db, "trips"), where("date", "==", selectedDate))
         );
 
-        const items = snap.docs.map((ds) => {
-          const trip = ds.data() as any;
-          return {
-            id: ds.id,
-            active: trip.active ?? true,
-            type: String(trip.type || ""),
-            status: String(trip.status || ""),
-            date: String(trip.date || ""),
-            timeWindow: String(trip.timeWindow || "custom"),
-            startTime: String(trip.startTime || ""),
-            endTime: String(trip.endTime || ""),
-            crew: (trip.crew || null) as TripCrew | null,
-            dispatchOverride: (trip.dispatchOverride || null) as DispatchOverrideInfo | null,
-          } satisfies TripDocLite;
-        });
+        const rawItems = snap.docs.map((ds) => mapTripDocLite(ds.id, ds.data()));
+        const items = await hydrateTripPreviewData(rawItems);
 
         setDayTrips(items);
       } catch (err: unknown) {
@@ -935,12 +1240,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
 
         if (!overlaps) continue;
 
-        const tripType =
-          normalizeStatus(trip.type) === "project"
-            ? "project"
-            : normalizeStatus(trip.type) === "service"
-              ? "service"
-              : "trip";
+        const tripType = normalizeTripType(trip.type);
 
         const key = `${member.uid}_${trip.id}`;
 
@@ -949,7 +1249,17 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           memberName: member.name,
           tripId: trip.id,
           tripType,
-          rangeLabel: `${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`,
+          previewTitle:
+            String(trip.previewTitle || "").trim() ||
+            (tripType === "project"
+              ? "Project Trip"
+              : tripType === "service"
+                ? "Service Trip"
+                : "Trip"),
+          previewSubtitle: String(trip.previewSubtitle || "").trim() || undefined,
+          estimatedDurationLabel: formatEstimatedDurationLabel(
+            getTripEstimatedDurationMinutes(trip)
+          ),
         });
       }
     }
@@ -1053,10 +1363,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
       return;
     }
 
-    if (
-      selectedOverlapConflicts.length > 0 &&
-      !dispatchOverrideEnabled
-    ) {
+    if (selectedOverlapConflicts.length > 0 && !dispatchOverrideEnabled) {
       setSaveError(
         "One or more selected crew members already have an overlapping trip. Enable Dispatch Override to continue."
       );
@@ -1127,6 +1434,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
             }
           : null;
 
+      const estimatedDurationMinutes = getMinutesBetween(
+        selectedStartTime,
+        selectedEndTime
+      );
+
       const payload = {
         active: true,
         type: "service",
@@ -1153,6 +1465,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           projectId: null,
           projectStageKey: null,
         },
+        previewTitle: ticket.customerDisplayName || "Customer",
+        previewSubtitle: ticket.issueSummary || "Service Ticket",
+        estimatedDurationMinutes,
         notes: notes.trim() || null,
         dispatchOverride: dispatchOverridePayload,
         cancelReason: null,
@@ -1654,19 +1969,46 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
 
                           <Stack spacing={0.75}>
                             {selectedOverlapConflicts.map((conflict) => (
-                              <Typography
+                              <Stack
                                 key={`${conflict.memberUid}_${conflict.tripId}`}
-                                variant="body2"
-                                color="text.secondary"
+                                direction="row"
+                                spacing={1}
+                                alignItems="flex-start"
                               >
-                                • {conflict.memberName} already assigned to{" "}
-                                {conflict.tripType === "project"
-                                  ? "a project trip"
-                                  : conflict.tripType === "service"
-                                    ? "a service trip"
-                                    : "another trip"}{" "}
-                                during {conflict.rangeLabel}
-                              </Typography>
+                                {conflict.tripType === "service" ? (
+                                  <BuildRoundedIcon
+                                    fontSize="small"
+                                    sx={{ mt: "2px", color: "primary.main" }}
+                                  />
+                                ) : conflict.tripType === "project" ? (
+                                  <ConstructionRoundedIcon
+                                    fontSize="small"
+                                    sx={{ mt: "2px", color: "secondary.main" }}
+                                  />
+                                ) : (
+                                  <ScheduleRoundedIcon
+                                    fontSize="small"
+                                    sx={{ mt: "2px", color: "text.secondary" }}
+                                  />
+                                )}
+
+                                <Box>
+                                  <Typography variant="body2" color="text.secondary">
+                                    <strong>{conflict.memberName}</strong> already assigned to{" "}
+                                    <strong>{conflict.previewTitle}</strong>
+                                  </Typography>
+
+                                  {conflict.previewSubtitle ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      {conflict.previewSubtitle}
+                                    </Typography>
+                                  ) : null}
+
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                    Est. {conflict.estimatedDurationLabel}
+                                  </Typography>
+                                </Box>
+                              </Stack>
                             ))}
                           </Stack>
 
