@@ -1,3 +1,4 @@
+// app/service-tickets/[ticketId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -3339,18 +3340,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       return;
     }
 
-    const role = String(appUser?.role || "");
-    const canSelfDispatch = [
-      "technician",
-      "helper",
-      "apprentice",
-      "admin",
-      "dispatcher",
-      "manager",
-    ].includes(role);
+    const role = String(appUser?.role || "").trim().toLowerCase();
+    const isTechnicianClaimer = role === "technician";
+    const isHelperClaimer = role === "helper" || role === "apprentice";
 
-    if (!canSelfDispatch) {
-      alert("You do not have permission to claim tickets.");
+    if (!isTechnicianClaimer && !isHelperClaimer) {
+      alert("Quick Claim & Start is only available to technicians, helpers, and apprentices.");
       return;
     }
 
@@ -3380,16 +3375,65 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     const now = new Date();
     const nowString = now.toISOString();
 
-    const helperUid =
-      helperCandidates.find(
-        (h) => String(h.defaultPairedTechUid || "").trim() === myUid
-      )?.uid || "";
-    const helperName = helperUid
-      ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
-      : null;
+    let primaryTechUid = "";
+    let primaryTechName = "";
+    let helperUid = "";
+    let helperName: string | null = null;
+
+    if (isTechnicianClaimer) {
+      primaryTechUid = myUid;
+      primaryTechName = appUser?.displayName || "Technician";
+
+      helperUid =
+        helperCandidates.find(
+          (h) => String(h.defaultPairedTechUid || "").trim() === myUid
+        )?.uid || "";
+
+      helperName = helperUid
+        ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
+        : null;
+    } else {
+      const claimantProfile = helperCandidates.find((h) => h.uid === myUid);
+      const pairedTechUid = String(claimantProfile?.defaultPairedTechUid || "").trim();
+
+      if (!pairedTechUid) {
+        alert(
+          "No default paired technician is set for your profile. Ask the office to set one before using Claim & Start."
+        );
+        return;
+      }
+
+      if (pairedTechUid === myUid) {
+        alert(
+          "Your default paired technician setup is invalid. Ask the office to update your pairing."
+        );
+        return;
+      }
+
+      const pairedTech = technicians.find(
+        (tech) => tech.uid === pairedTechUid && tech.active
+      );
+
+      if (!pairedTech) {
+        alert(
+          "Your default paired technician could not be found as an active technician. Ask the office to update your pairing."
+        );
+        return;
+      }
+
+      primaryTechUid = pairedTech.uid;
+      primaryTechName = pairedTech.displayName || "Technician";
+      helperUid = myUid;
+      helperName = appUser?.displayName || claimantProfile?.name || "Helper";
+    }
+
+    if (!primaryTechUid.trim()) {
+      alert("Unable to determine the primary technician for this trip.");
+      return;
+    }
 
     const runningConflicts = await findRunningTripsForCrewUids({
-      crewUids: [myUid, ...(helperUid ? [helperUid] : [])],
+      crewUids: Array.from(new Set([primaryTechUid, helperUid].filter(Boolean))),
     });
 
     if (runningConflicts.length > 0) {
@@ -3424,8 +3468,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           noMaterialsUsed: false,
           dispatchOverride: null,
           crew: {
-            primaryTechUid: myUid,
-            primaryTechName: appUser?.displayName || "Technician",
+            primaryTechUid,
+            primaryTechName,
             helperUid: helperUid || null,
             helperName,
             secondaryTechUid: null,
@@ -3434,8 +3478,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             secondaryHelperName: null,
           },
           crewConfirmed: {
-            primaryTechUid: myUid,
-            primaryTechName: appUser?.displayName || "Technician",
+            primaryTechUid,
+            primaryTechName,
             helperUid: helperUid || null,
             helperName,
             secondaryTechUid: null,
@@ -3471,14 +3515,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
         tx.update(ticketRef, {
           status: "in_progress",
-          assignedTechnicianId: myUid,
-          assignedTechnicianName: appUser?.displayName || "Technician",
-          primaryTechnicianId: myUid,
+          assignedTechnicianId: primaryTechUid,
+          assignedTechnicianName: primaryTechName,
+          primaryTechnicianId: primaryTechUid,
           secondaryTechnicianId: null,
           secondaryTechnicianName: null,
           helperIds: helperUid ? [helperUid] : null,
           helperNames: helperName ? [helperName] : null,
-          assignedTechnicianIds: helperUid ? [myUid, helperUid] : [myUid],
+          assignedTechnicianIds: helperUid ? [primaryTechUid, helperUid] : [primaryTechUid],
           updatedAt: nowString,
         });
       });
@@ -4000,7 +4044,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               </Stack>
 
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                {!ticket.assignedTechnicianId && !hasOpenTrips(trips) ? (
+                {isFieldUser && !ticket.assignedTechnicianId && !hasOpenTrips(trips) ? (
                   <Button
                     variant="contained"
                     color="primary"
