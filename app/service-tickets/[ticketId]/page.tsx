@@ -239,12 +239,6 @@ type DispatchConflictSummary = {
   softTripIds: string[];
 };
 
-type TripFieldErrors = {
-  resolutionNotes?: string;
-  followUpNotes?: string;
-  materialsText?: string;
-};
-
 function nowIso() {
   return new Date().toISOString();
 }
@@ -340,45 +334,76 @@ function getBillingTone(
   return "default";
 }
 
+function formatSingleMaterialLine(material?: TripMaterial | null) {
+  const name = String(material?.name || "").trim();
+  if (!name) return "";
+
+  const qty = Number(material?.qty ?? 0);
+  const unit = String(material?.unit || "").trim();
+  const notes = String(material?.notes || "").trim();
+
+  let line = name;
+
+  if ((Number.isFinite(qty) && qty > 1) || unit) {
+    const qtyPrefix = Number.isFinite(qty) && qty > 0 ? `${qty} of ` : "";
+    line = `${qtyPrefix}${name}${unit ? ` (${unit})` : ""}`;
+  }
+
+  if (notes) {
+    line = `${line} — ${notes}`;
+  }
+
+  return line;
+}
+
 function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
-  return items
-    .map((m) => {
-      const name = String(m?.name || "").trim();
-      if (!name) return "";
+  return items.map((m) => formatSingleMaterialLine(m)).filter(Boolean).join(", ");
+}
 
-      const qty = Number(m.qty || 0);
-      const unit = String(m.unit || "").trim();
-      const notes = String(m.notes || "").trim();
+function materialLinesToText(materials?: TripMaterial[] | null) {
+  const items = Array.isArray(materials) ? materials : [];
+  return items.map((m) => formatSingleMaterialLine(m)).filter(Boolean).join("\n");
+}
 
-      let label = name;
-
-      if (qty > 1) {
-        label = `${qty}${unit ? ` ${unit}` : ""} ${name}`;
-      } else if (qty > 0 && unit) {
-        label = `${qty} ${unit} ${name}`;
-      } else if (unit) {
-        label = `${unit} ${name}`;
-      }
-
-      if (notes) {
-        label = `${label} (${notes})`;
-      }
-
-      return label;
-    })
+function parseMaterialsText(value?: string) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
     .filter(Boolean)
-    .join(", ");
+    .map((line) => ({
+      name: line,
+      qty: 1,
+    } satisfies TripMaterial));
 }
 
-function buildMaterialsTextFromLines(materials?: TripMaterial[] | null) {
-  return buildMaterialsSummaryFromLines(materials);
+function getPreviewText(value?: string | null, maxLength = 220) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength).trimEnd()}…`;
 }
 
-function buildMaterialsLinesFromText(text?: string | null) {
-  const cleaned = String(text || "").trim();
-  if (!cleaned) return [];
-  return [{ name: cleaned, qty: 1 }] satisfies TripMaterial[];
+function getHelperPayrollSummary(trip: Pick<TripDoc, "crew" | "crewConfirmed">) {
+  const assignedHelpers = [
+    String(trip.crew?.helperName || "").trim(),
+    String(trip.crew?.secondaryHelperName || "").trim(),
+  ].filter(Boolean);
+
+  const confirmedHelpers = [
+    String(trip.crewConfirmed?.helperName || "").trim(),
+    String(trip.crewConfirmed?.secondaryHelperName || "").trim(),
+  ].filter(Boolean);
+
+  if (assignedHelpers.length === 0) {
+    return "No helper assigned";
+  }
+
+  if (confirmedHelpers.length === 0) {
+    return "No";
+  }
+
+  return `Yes — ${confirmedHelpers.join(", ")}`;
 }
 
 function mergeTripMaterials(trips: TripDoc[]) {
@@ -474,6 +499,38 @@ function buildBillingPacketFromResolvedTrips(args: {
     invoiceError: null,
     updatedAt: args.fallbackUpdatedAt,
   };
+}
+
+function validateTripMaterialsCapture(args: {
+  materials: TripMaterial[];
+  noMaterialsUsed: boolean;
+}) {
+  const cleaned = (args.materials || [])
+    .map((m) => ({
+      name: String(m.name || "").trim(),
+      qty: Number(m.qty),
+      unit: String(m.unit || "").trim(),
+      notes: String(m.notes || "").trim(),
+    }))
+    .filter((m) => m.name);
+
+  for (const m of cleaned) {
+    if (!Number.isFinite(m.qty) || m.qty <= 0) {
+      return {
+        ok: false as const,
+        message: `Material "${m.name}" must have qty > 0.`,
+      };
+    }
+  }
+
+  if (!args.noMaterialsUsed && cleaned.length < 1) {
+    return {
+      ok: false as const,
+      message: "Enter materials used or check No materials used.",
+    };
+  }
+
+  return { ok: true as const, cleaned };
 }
 
 function formatTripWindow(value?: string) {
@@ -1236,14 +1293,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>(
     {}
   );
+  const [tripMaterials, setTripMaterials] = useState<Record<string, TripMaterial[]>>(
+    {}
+  );
   const [tripMaterialsText, setTripMaterialsText] = useState<Record<string, string>>(
     {}
   );
   const [tripNoMaterialsUsed, setTripNoMaterialsUsed] = useState<
     Record<string, boolean>
-  >({});
-  const [tripFieldErrors, setTripFieldErrors] = useState<
-    Record<string, TripFieldErrors>
   >({});
   const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>(
     {}
@@ -1297,16 +1354,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [billingOk, setBillingOk] = useState("");
   const [billingMaterialsSummaryEdit, setBillingMaterialsSummaryEdit] = useState("");
   const [billingMaterialsAmountEdit, setBillingMaterialsAmountEdit] = useState("");
-
-  const resolutionNotesRefs = React.useRef<
-    Record<string, HTMLInputElement | HTMLTextAreaElement | null>
-  >({});
-  const followUpNotesRefs = React.useRef<
-    Record<string, HTMLInputElement | HTMLTextAreaElement | null>
-  >({});
-  const materialsTextRefs = React.useRef<
-    Record<string, HTMLInputElement | HTMLTextAreaElement | null>
-  >({});
 
   const helperCandidates = useMemo(() => {
     const items = employeeProfiles
@@ -1514,18 +1561,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         const nextWork: Record<string, string> = {};
         const nextResolution: Record<string, string> = {};
         const nextFollow: Record<string, string> = {};
+        const nextMaterials: Record<string, TripMaterial[]> = {};
         const nextMaterialsText: Record<string, string> = {};
         const nextNoMaterials: Record<string, boolean> = {};
         const nextFinish: Record<string, FinishMode> = {};
         const nextHelperConfirmed: Record<string, boolean> = {};
 
         for (const trip of nextTrips) {
+          const loadedMaterials = Array.isArray(trip.materials) ? trip.materials : [];
           nextWork[trip.id] = String(trip.workNotes || "");
           nextResolution[trip.id] = String(trip.resolutionNotes || "");
           nextFollow[trip.id] = String(trip.followUpNotes || "");
-          nextMaterialsText[trip.id] = buildMaterialsTextFromLines(
-            Array.isArray(trip.materials) ? trip.materials : []
-          );
+          nextMaterials[trip.id] = loadedMaterials;
+          nextMaterialsText[trip.id] = materialLinesToText(loadedMaterials);
           nextNoMaterials[trip.id] = Boolean(trip.noMaterialsUsed);
           nextFinish[trip.id] = "none";
           nextHelperConfirmed[trip.id] = true;
@@ -1534,6 +1582,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTripWorkNotes(nextWork);
         setTripResolutionNotes(nextResolution);
         setTripFollowUpNotes(nextFollow);
+        setTripMaterials(nextMaterials);
         setTripMaterialsText(nextMaterialsText);
         setTripNoMaterialsUsed(nextNoMaterials);
         setFinishModeByTrip(nextFinish);
@@ -1618,67 +1667,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       cancelled = true;
     };
   }, [tripDate, editTripDate, availabilityTripsByDate]);
-
-  function setTripFieldError(
-    tripId: string,
-    field: keyof TripFieldErrors,
-    message: string
-  ) {
-    setTripFieldErrors((prev) => ({
-      ...prev,
-      [tripId]: {
-        ...(prev[tripId] || {}),
-        [field]: message,
-      },
-    }));
-  }
-
-  function clearTripFieldError(
-    tripId: string,
-    field?: keyof TripFieldErrors
-  ) {
-    setTripFieldErrors((prev) => {
-      if (!prev[tripId]) return prev;
-
-      if (!field) {
-        const next = { ...prev };
-        delete next[tripId];
-        return next;
-      }
-
-      const nextTripErrors = { ...(prev[tripId] || {}) };
-      delete nextTripErrors[field];
-
-      const next = { ...prev };
-      if (Object.keys(nextTripErrors).length === 0) {
-        delete next[tripId];
-      } else {
-        next[tripId] = nextTripErrors;
-      }
-
-      return next;
-    });
-  }
-
-  function focusTripField(
-    tripId: string,
-    field: keyof TripFieldErrors
-  ) {
-    const refMap =
-      field === "resolutionNotes"
-        ? resolutionNotesRefs.current
-        : field === "followUpNotes"
-          ? followUpNotesRefs.current
-          : materialsTextRefs.current;
-
-    const el = refMap[tripId];
-    if (!el) return;
-
-    window.setTimeout(() => {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.focus();
-    }, 0);
-  }
 
   function findTechName(uid: string) {
     return technicians.find((t) => t.uid === uid)?.displayName || "";
@@ -2130,6 +2118,28 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     [trips]
   );
 
+  const mobileResolutionNoteMissing =
+    Boolean(mobileFinishTrip) &&
+    mobileFinishMode === "resolved" &&
+    !String(
+      mobileFinishTrip ? tripResolutionNotes[mobileFinishTrip.id] || "" : ""
+    ).trim();
+
+  const mobileFollowUpNoteMissing =
+    Boolean(mobileFinishTrip) &&
+    mobileFinishMode === "follow_up" &&
+    !String(
+      mobileFinishTrip ? tripFollowUpNotes[mobileFinishTrip.id] || "" : ""
+    ).trim();
+
+  const mobileCompleteDisabled =
+    !mobileFinishTrip ||
+    mobileFinishMode === "none" ||
+    mobileResolutionNoteMissing ||
+    mobileFollowUpNoteMissing ||
+    Boolean(mobileFinishTrip && tripActionSaving[mobileFinishTrip.id]) ||
+    isInvoicedTicket;
+
   useEffect(() => {
     if (!inProgressTrip) return;
     const id = window.setInterval(() => setLiveNowMs(Date.now()), 1000);
@@ -2191,12 +2201,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }
 
   function renderTripMaterialsEditor(tripId: string) {
+    const materialsText =
+      tripMaterialsText[tripId] ?? materialLinesToText(tripMaterials[tripId]);
     const noMaterialsUsed = Boolean(tripNoMaterialsUsed[tripId]);
-    const materialsError = tripFieldErrors[tripId]?.materialsText || "";
 
     return (
       <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 1 }}>
-        <Stack spacing={1.25}>
+        <Stack spacing={1}>
           <Typography variant="subtitle1" fontWeight={700}>
             Materials Used
           </Typography>
@@ -2207,18 +2218,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 checked={noMaterialsUsed}
                 onChange={(e) => {
                   const checked = e.target.checked;
-
                   setTripNoMaterialsUsed((prev) => ({
                     ...prev,
                     [tripId]: checked,
                   }));
 
                   if (checked) {
+                    setTripMaterials((prev) => ({
+                      ...prev,
+                      [tripId]: [],
+                    }));
                     setTripMaterialsText((prev) => ({
                       ...prev,
                       [tripId]: "",
                     }));
-                    clearTripFieldError(tripId, "materialsText");
                   }
                 }}
               />
@@ -2232,25 +2245,22 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             </Alert>
           ) : (
             <TextField
-              label="Materials Used"
+              label="Materials / Parts Used"
               multiline
               minRows={5}
-              value={tripMaterialsText[tripId] ?? ""}
-              onChange={(e) => {
+              value={materialsText}
+              onChange={(e) =>
                 setTripMaterialsText((prev) => ({
                   ...prev,
                   [tripId]: e.target.value,
-                }));
-                clearTripFieldError(tripId, "materialsText");
-              }}
-              error={Boolean(materialsError)}
-              helperText={
-                materialsError ||
-                `Enter materials as one free-form list. Example: 2 angle stops, 1 supply line, 1 wax ring, 3/4" ball valve`
+                }))
               }
-              inputRef={(el) => {
-                materialsTextRefs.current[tripId] = el;
-              }}
+              placeholder={`Example:
+Angle stop
+Wax ring
+PVC fittings for drain reset
+Supply line`}
+              helperText="Use a simple freeform list. One line per item works best."
             />
           )}
         </Stack>
@@ -2562,9 +2572,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       setTripWorkNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripResolutionNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripFollowUpNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
+      setTripMaterials((prev) => ({ ...prev, [createdTrip.id]: [] }));
       setTripMaterialsText((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripNoMaterialsUsed((prev) => ({ ...prev, [createdTrip.id]: false }));
-      setTripFieldErrors((prev) => ({ ...prev, [createdTrip.id]: {} }));
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
       setTripSaveSuccess(
@@ -2854,35 +2864,25 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const now = nowIso();
       const followNotes = String(tripFollowUpNotes[trip.id] || "").trim();
       const resolutionNotes = String(tripResolutionNotes[trip.id] || "").trim();
-      const materialsText = String(tripMaterialsText[trip.id] || "").trim();
-      const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
-
-      clearTripFieldError(trip.id);
 
       if (mode === "follow_up" && !followNotes) {
-        const message = "Follow-up notes are required before completing this trip as follow-up.";
-        setTripFieldError(trip.id, "followUpNotes", message);
-        focusTripField(trip.id, "followUpNotes");
-        throw new Error(message);
+        throw new Error("Follow Up requires follow-up notes.");
       }
-
       if (mode === "resolved" && !resolutionNotes) {
-        const message = "Resolution notes are required before completing this trip as resolved.";
-        setTripFieldError(trip.id, "resolutionNotes", message);
-        focusTripField(trip.id, "resolutionNotes");
-        throw new Error(message);
+        throw new Error("Resolved requires resolution notes.");
       }
 
-      if (!noMaterialsUsed && !materialsText) {
-        const message = "Enter materials used or check No materials used.";
-        setTripFieldError(trip.id, "materialsText", message);
-        focusTripField(trip.id, "materialsText");
-        throw new Error(message);
-      }
+      const materialsText = String(tripMaterialsText[trip.id] || "").trim();
+      const mats = parseMaterialsText(materialsText);
+      const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
+      const materialCheck = validateTripMaterialsCapture({
+        materials: mats,
+        noMaterialsUsed,
+      });
 
-      const cleanedMaterials = noMaterialsUsed
-        ? []
-        : buildMaterialsLinesFromText(materialsText);
+      if (!materialCheck.ok) {
+        throw new Error(materialCheck.message);
+      }
 
       const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
       for (let i = pauseBlocks.length - 1; i >= 0; i--) {
@@ -2941,7 +2941,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           followUpNotes: mode === "follow_up" ? followNotes : null,
           outcome: mode,
           readyToBillAt: mode === "resolved" ? now : null,
-          materials: cleanedMaterials,
+          materials: materialCheck.cleaned,
           noMaterialsUsed,
           crewConfirmed: finalCrew,
           updatedAt: now,
@@ -3000,7 +3000,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               followUpNotes: mode === "follow_up" ? followNotes : null,
               outcome: mode,
               readyToBillAt: mode === "resolved" ? now : null,
-              materials: cleanedMaterials,
+              materials: materialCheck.cleaned,
               noMaterialsUsed,
               crewConfirmed: finalCrew,
             }
@@ -3008,6 +3008,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       );
 
       setTrips(nextTrips);
+      setTripMaterials((prev) => ({
+        ...prev,
+        [trip.id]: materialCheck.cleaned,
+      }));
+      setTripMaterialsText((prev) => ({
+        ...prev,
+        [trip.id]: materialLinesToText(materialCheck.cleaned),
+      }));
       setAvailabilityTripsByDate((prev) => ({
         ...prev,
         [trip.date]: nextTrips.filter((t) => t.date === trip.date),
@@ -3990,24 +3998,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                           label="Follow-Up Notes"
                           multiline
                           minRows={5}
+                          autoFocus
                           value={tripFollowUpNotes[mobileFinishTrip.id] ?? ""}
-                          onChange={(e) => {
+                          onChange={(e) =>
                             setTripFollowUpNotes((prev) => ({
                               ...prev,
                               [mobileFinishTrip.id]: e.target.value,
-                            }));
-                            clearTripFieldError(mobileFinishTrip.id, "followUpNotes");
-                          }}
-                          error={Boolean(
-                            tripFieldErrors[mobileFinishTrip.id]?.followUpNotes
-                          )}
-                          helperText={
-                            tripFieldErrors[mobileFinishTrip.id]?.followUpNotes ||
-                            "Explain what follow-up is needed before this trip can be closed."
+                            }))
                           }
-                          inputRef={(el) => {
-                            followUpNotesRefs.current[mobileFinishTrip.id] = el;
-                          }}
+                          error={mobileFollowUpNoteMissing}
+                          helperText={
+                            mobileFollowUpNoteMissing
+                              ? "Follow-up notes are required to complete as Follow-Up."
+                              : undefined
+                          }
                         />
 
                         {renderTripMaterialsEditor(mobileFinishTrip.id)}
@@ -4020,24 +4024,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                           label="Resolution Notes"
                           multiline
                           minRows={5}
+                          autoFocus
                           value={tripResolutionNotes[mobileFinishTrip.id] ?? ""}
-                          onChange={(e) => {
+                          onChange={(e) =>
                             setTripResolutionNotes((prev) => ({
                               ...prev,
                               [mobileFinishTrip.id]: e.target.value,
-                            }));
-                            clearTripFieldError(mobileFinishTrip.id, "resolutionNotes");
-                          }}
-                          error={Boolean(
-                            tripFieldErrors[mobileFinishTrip.id]?.resolutionNotes
-                          )}
-                          helperText={
-                            tripFieldErrors[mobileFinishTrip.id]?.resolutionNotes ||
-                            "Describe clearly what was fixed before completing this trip as resolved."
+                            }))
                           }
-                          inputRef={(el) => {
-                            resolutionNotesRefs.current[mobileFinishTrip.id] = el;
-                          }}
+                          error={mobileResolutionNoteMissing}
+                          helperText={
+                            mobileResolutionNoteMissing
+                              ? "Resolution notes are required to complete as Resolved."
+                              : undefined
+                          }
                         />
 
                         {renderTripMaterialsEditor(mobileFinishTrip.id)}
@@ -4062,6 +4062,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                         mobileFinishMode as "resolved" | "follow_up"
                       )
                     }
+                    disabled={mobileCompleteDisabled}
                   >
                     {mobileFinishMode === "resolved"
                       ? "Complete as Resolved"
@@ -4362,6 +4363,24 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                         uid: myUid,
                         canStartTripRole,
                       });
+                      const followUpNoteMissing =
+                        finishMode === "follow_up" &&
+                        !String(tripFollowUpNotes[trip.id] || "").trim();
+                      const resolutionNoteMissing =
+                        finishMode === "resolved" &&
+                        !String(tripResolutionNotes[trip.id] || "").trim();
+                      const completedResolutionPreview = getPreviewText(
+                        trip.resolutionNotes,
+                        280
+                      );
+                      const completedFollowUpPreview = getPreviewText(
+                        trip.followUpNotes,
+                        280
+                      );
+                      const completedMaterialsPreview = trip.noMaterialsUsed
+                        ? "No materials used"
+                        : getPreviewText(materialLinesToText(trip.materials), 280);
+                      const helperPayrollSummary = getHelperPayrollSummary(trip);
 
                       return (
                         <Paper
@@ -4591,12 +4610,84 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                             ) : null}
 
                             {normalizeTripStatus(trip.status) === "complete" ? (
-                              <Typography variant="body2" color="text.secondary">
-                                Billable Hours:{" "}
-                                <strong>
-                                  {getStoredOrComputedBillableHours(trip).toFixed(2)}
-                                </strong>
-                              </Typography>
+                              <>
+                                <Typography variant="body2" color="text.secondary">
+                                  Billable Hours:{" "}
+                                  <strong>
+                                    {getStoredOrComputedBillableHours(trip).toFixed(2)}
+                                  </strong>
+                                </Typography>
+
+                                <Paper
+                                  variant="outlined"
+                                  sx={{
+                                    p: 1.25,
+                                    borderRadius: 1,
+                                    backgroundColor: alpha(theme.palette.success.main, 0.04),
+                                  }}
+                                >
+                                  <Stack spacing={0.9}>
+                                    <Typography variant="subtitle2" fontWeight={800}>
+                                      Completed Summary
+                                    </Typography>
+
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>Outcome:</strong>{" "}
+                                      {String(trip.outcome || "").trim().toLowerCase() === "resolved"
+                                        ? "Resolved"
+                                        : String(trip.outcome || "").trim().toLowerCase() === "follow_up"
+                                          ? "Follow-Up"
+                                          : "Completed"}
+                                    </Typography>
+
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>Helper in payroll:</strong> {helperPayrollSummary}
+                                    </Typography>
+
+                                    {completedResolutionPreview ? (
+                                      <Box>
+                                        <Typography variant="caption" color="text.secondary">
+                                          Resolution Notes Preview
+                                        </Typography>
+                                        <Typography
+                                          variant="body2"
+                                          sx={{ whiteSpace: "pre-wrap" }}
+                                        >
+                                          {completedResolutionPreview}
+                                        </Typography>
+                                      </Box>
+                                    ) : null}
+
+                                    {!completedResolutionPreview && completedFollowUpPreview ? (
+                                      <Box>
+                                        <Typography variant="caption" color="text.secondary">
+                                          Follow-Up Notes Preview
+                                        </Typography>
+                                        <Typography
+                                          variant="body2"
+                                          sx={{ whiteSpace: "pre-wrap" }}
+                                        >
+                                          {completedFollowUpPreview}
+                                        </Typography>
+                                      </Box>
+                                    ) : null}
+
+                                    {completedMaterialsPreview ? (
+                                      <Box>
+                                        <Typography variant="caption" color="text.secondary">
+                                          Materials Preview
+                                        </Typography>
+                                        <Typography
+                                          variant="body2"
+                                          sx={{ whiteSpace: "pre-wrap" }}
+                                        >
+                                          {completedMaterialsPreview}
+                                        </Typography>
+                                      </Box>
+                                    ) : null}
+                                  </Stack>
+                                </Paper>
+                              </>
                             ) : null}
 
                             <TextField
@@ -4684,24 +4775,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                         label="Follow-Up Notes"
                                         multiline
                                         minRows={4}
+                                        autoFocus
                                         value={tripFollowUpNotes[trip.id] ?? ""}
-                                        onChange={(e) => {
+                                        onChange={(e) =>
                                           setTripFollowUpNotes((prev) => ({
                                             ...prev,
                                             [trip.id]: e.target.value,
-                                          }));
-                                          clearTripFieldError(trip.id, "followUpNotes");
-                                        }}
-                                        error={Boolean(
-                                          tripFieldErrors[trip.id]?.followUpNotes
-                                        )}
-                                        helperText={
-                                          tripFieldErrors[trip.id]?.followUpNotes ||
-                                          "Explain what follow-up is needed before this trip can be closed."
+                                          }))
                                         }
-                                        inputRef={(el) => {
-                                          followUpNotesRefs.current[trip.id] = el;
-                                        }}
+                                        error={followUpNoteMissing}
+                                        helperText={
+                                          followUpNoteMissing
+                                            ? "Follow-up notes are required to complete as Follow-Up."
+                                            : undefined
+                                        }
                                       />
 
                                       {renderTripMaterialsEditor(trip.id)}
@@ -4709,7 +4796,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                       <Button
                                         variant="contained"
                                         onClick={() => finishTrip(trip, "follow_up")}
-                                        disabled={!canAct || savingThis || isInvoicedTicket}
+                                        disabled={
+                                          !canAct ||
+                                          savingThis ||
+                                          isInvoicedTicket ||
+                                          followUpNoteMissing
+                                        }
                                       >
                                         Complete as Follow-Up
                                       </Button>
@@ -4722,24 +4814,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                         label="Resolution Notes"
                                         multiline
                                         minRows={4}
+                                        autoFocus
                                         value={tripResolutionNotes[trip.id] ?? ""}
-                                        onChange={(e) => {
+                                        onChange={(e) =>
                                           setTripResolutionNotes((prev) => ({
                                             ...prev,
                                             [trip.id]: e.target.value,
-                                          }));
-                                          clearTripFieldError(trip.id, "resolutionNotes");
-                                        }}
-                                        error={Boolean(
-                                          tripFieldErrors[trip.id]?.resolutionNotes
-                                        )}
-                                        helperText={
-                                          tripFieldErrors[trip.id]?.resolutionNotes ||
-                                          "Describe clearly what was fixed before completing this trip as resolved."
+                                          }))
                                         }
-                                        inputRef={(el) => {
-                                          resolutionNotesRefs.current[trip.id] = el;
-                                        }}
+                                        error={resolutionNoteMissing}
+                                        helperText={
+                                          resolutionNoteMissing
+                                            ? "Resolution notes are required to complete as Resolved."
+                                            : undefined
+                                        }
                                       />
 
                                       {renderTripMaterialsEditor(trip.id)}
@@ -4748,7 +4836,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                                         variant="contained"
                                         color="success"
                                         onClick={() => finishTrip(trip, "resolved")}
-                                        disabled={!canAct || savingThis || isInvoicedTicket}
+                                        disabled={
+                                          !canAct ||
+                                          savingThis ||
+                                          isInvoicedTicket ||
+                                          resolutionNoteMissing
+                                        }
                                       >
                                         Complete as Resolved — Ready to Bill
                                       </Button>
@@ -4850,7 +4943,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                             value={billingMaterialsSummaryEdit}
                             onChange={(e) => setBillingMaterialsSummaryEdit(e.target.value)}
                             disabled={!canBill || billingSaving || isInvoicedTicket}
-                            placeholder={`Example: 2 angle stops, 1 supply line, 1 wax ring, 3/4" ball valve`}
+                            placeholder={`Example: Angle stop, wax ring, PVC fittings for drain reset`}
                             helperText="This will become the summarized materials line description for invoicing."
                           />
 
