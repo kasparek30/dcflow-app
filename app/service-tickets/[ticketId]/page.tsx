@@ -548,6 +548,45 @@ function windowToTimes(window: TripTimeWindow) {
   return { start: "09:00", end: "10:00" };
 }
 
+function buildTelHref(phone?: string) {
+  const raw = String(phone || "").trim();
+  if (!raw) return "";
+
+  const normalized = raw.startsWith("+")
+    ? `+${raw.slice(1).replace(/[^\d]/g, "")}`
+    : raw.replace(/[^\d]/g, "");
+
+  return normalized ? `tel:${normalized}` : "";
+}
+
+function buildPreferredMapsHref(address: string, preferAppleMaps: boolean) {
+  const encoded = encodeURIComponent(address);
+  if (!encoded) return "";
+
+  return preferAppleMaps
+    ? `https://maps.apple.com/?q=${encoded}`
+    : `https://www.google.com/maps/search/?api=1&query=${encoded}`;
+}
+
+function buildTopoMapPreviewUrl(lat: number, lon: number) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "";
+
+  const latDelta = 0.018;
+  const lonDelta = Math.max(
+    0.018,
+    latDelta / Math.max(Math.cos((lat * Math.PI) / 180), 0.35)
+  );
+
+  const west = lon - lonDelta;
+  const east = lon + lonDelta;
+  const south = lat - latDelta;
+  const north = lat + latDelta;
+
+  const bbox = `${west},${south},${east},${north}`;
+
+  return `https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=1200,700&format=png32&transparent=false&f=image`;
+}
+
 function minutesBetweenIso(aIso: string, bIso: string) {
   const a = new Date(aIso).getTime();
   const b = new Date(bIso).getTime();
@@ -1259,6 +1298,24 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
+
+  const mapsAddress = [
+    ticket?.serviceAddressLine1 || "",
+    ticket?.serviceAddressLine2 || "",
+    ticket?.serviceCity || "",
+    ticket?.serviceState || "",
+    ticket?.servicePostalCode || "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const [preferAppleMaps, setPreferAppleMaps] = useState(false);
+  const [mapPreviewCoords, setMapPreviewCoords] = useState<{
+    lat: number;
+    lon: number;
+  } | null>(null);
+  const [mapPreviewLoading, setMapPreviewLoading] = useState(false);
+  const [mapPreviewFailed, setMapPreviewFailed] = useState(false);
 
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
@@ -2148,6 +2205,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const liveNowIso = useMemo(() => new Date(liveNowMs).toISOString(), [liveNowMs]);
 
+    const phoneHref = buildTelHref(customerPhone);
+  const mapsHref = buildPreferredMapsHref(mapsAddress, preferAppleMaps);
+  const mapPreviewUrl = useMemo(
+    () =>
+      mapPreviewCoords
+        ? buildTopoMapPreviewUrl(mapPreviewCoords.lat, mapPreviewCoords.lon)
+        : "",
+    [mapPreviewCoords]
+  );
+  const mapsTarget = preferAppleMaps ? undefined : "_blank";
+  const mapsRel = preferAppleMaps ? undefined : "noreferrer";
+  const showMapPreview = Boolean(mapPreviewUrl) && !mapPreviewFailed;
+
   useEffect(() => {
     if (!ticket?.id || trips.length === 0) return;
 
@@ -2194,6 +2264,79 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       window.history.replaceState({}, "", pathname);
     }
   }, [isMobile, pathname, searchParams, ticket?.id, trips]);
+
+    useEffect(() => {
+    if (typeof navigator === "undefined") return;
+    setPreferAppleMaps(/iPhone|iPad|iPod/i.test(navigator.userAgent));
+  }, []);
+
+  useEffect(() => {
+    if (!mapsAddress.trim()) {
+      setMapPreviewCoords(null);
+      setMapPreviewLoading(false);
+      setMapPreviewFailed(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let ignore = false;
+
+    async function geocodeAddress() {
+      try {
+        setMapPreviewLoading(true);
+        setMapPreviewFailed(false);
+
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(
+            mapsAddress
+          )}`,
+          {
+            signal: controller.signal,
+            headers: {
+              Accept: "application/json",
+            },
+          }
+        );
+
+        if (!res.ok) {
+          throw new Error("Unable to geocode address.");
+        }
+
+        const data = (await res.json()) as Array<{
+          lat?: string;
+          lon?: string;
+        }>;
+
+        const first = data?.[0];
+        const lat = Number(first?.lat);
+        const lon = Number(first?.lon);
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          throw new Error("No map coordinates found.");
+        }
+
+        if (!ignore) {
+          setMapPreviewCoords({ lat, lon });
+          setMapPreviewFailed(false);
+        }
+      } catch (err) {
+        if (controller.signal.aborted || ignore) return;
+        setMapPreviewCoords(null);
+        setMapPreviewFailed(true);
+      } finally {
+        if (!ignore) {
+          setMapPreviewLoading(false);
+        }
+      }
+    }
+
+    geocodeAddress();
+
+    return () => {
+      ignore = true;
+      controller.abort();
+    };
+  }, [mapsAddress]);
 
   function closeMobileFinishSheet() {
     setMobileFinishTripId(null);
@@ -3861,16 +4004,6 @@ Supply line`}
     }
   }
 
-  const mapsAddress = [
-    ticket?.serviceAddressLine1 || "",
-    ticket?.serviceAddressLine2 || "",
-    ticket?.serviceCity || "",
-    ticket?.serviceState || "",
-    ticket?.servicePostalCode || "",
-  ]
-    .filter(Boolean)
-    .join(", ");
-
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
       <AppShell appUser={appUser}>
@@ -4138,17 +4271,15 @@ Supply line`}
             >
               <Stack spacing={2.5}>
                 <Section
-                  title="Customer & Address"
+                  title={ticket.customerDisplayName || "Customer"}
                   icon={<PlaceOutlinedIcon color="primary" />}
                   action={
-                    mapsAddress ? (
+                    mapsHref ? (
                       <Button
                         component="a"
-                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                          mapsAddress
-                        )}`}
-                        target="_blank"
-                        rel="noreferrer"
+                        href={mapsHref}
+                        target={mapsTarget}
+                        rel={mapsRel}
                         variant="text"
                       >
                         Open Maps
@@ -4157,9 +4288,133 @@ Supply line`}
                   }
                 >
                   <Stack spacing={1.5}>
-                    <Typography variant="h6" fontWeight={800}>
-                      {ticket.customerDisplayName || "—"}
-                    </Typography>
+                    {mapsAddress ? (
+                      <Box
+                        component="a"
+                        href={mapsHref || undefined}
+                        target={mapsTarget}
+                        rel={mapsRel}
+                        sx={{
+                          position: "relative",
+                          display: "block",
+                          width: "100%",
+                          minHeight: { xs: 180, sm: 220 },
+                          borderRadius: 2,
+                          overflow: "hidden",
+                          border: "1px solid",
+                          borderColor: "divider",
+                          textDecoration: "none",
+                          background: `linear-gradient(180deg, ${alpha(
+                            theme.palette.primary.main,
+                            0.14
+                          )} 0%, ${alpha(
+                            theme.palette.background.paper,
+                            0.96
+                          )} 100%)`,
+                        }}
+                      >
+                        {showMapPreview ? (
+                          <Box
+                            component="img"
+                            src={mapPreviewUrl}
+                            alt={`Map preview of ${mapsAddress}`}
+                            onError={() => setMapPreviewFailed(true)}
+                            sx={{
+                              display: "block",
+                              width: "100%",
+                              height: { xs: 180, sm: 220 },
+                              objectFit: "cover",
+                            }}
+                          />
+                        ) : (
+                          <Box
+                            sx={{
+                              height: { xs: 180, sm: 220 },
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              px: 2,
+                            }}
+                          >
+                            <Stack spacing={1} alignItems="center">
+                              <PlaceOutlinedIcon color="primary" />
+                              <Typography variant="body2" color="text.secondary">
+                                {mapPreviewLoading
+                                  ? "Loading location preview…"
+                                  : "Map preview unavailable"}
+                              </Typography>
+                            </Stack>
+                          </Box>
+                        )}
+
+                        <Box
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            background:
+                              "linear-gradient(180deg, rgba(0,0,0,0.04) 0%, rgba(0,0,0,0.16) 100%)",
+                            pointerEvents: "none",
+                          }}
+                        />
+
+                        {showMapPreview ? (
+                          <Box
+                            sx={{
+                              position: "absolute",
+                              left: "50%",
+                              top: "50%",
+                              transform: "translate(-50%, -100%)",
+                              width: 44,
+                              height: 44,
+                              borderRadius: "50%",
+                              backgroundColor: alpha(
+                                theme.palette.background.paper,
+                                0.92
+                              ),
+                              display: "grid",
+                              placeItems: "center",
+                              boxShadow: theme.shadows[4],
+                              border: "1px solid",
+                              borderColor: "divider",
+                              pointerEvents: "none",
+                            }}
+                          >
+                            <PlaceOutlinedIcon color="primary" />
+                          </Box>
+                        ) : null}
+
+                        <Box
+                          sx={{
+                            position: "absolute",
+                            left: 12,
+                            right: 12,
+                            bottom: 12,
+                            pointerEvents: "none",
+                          }}
+                        >
+                          <Paper
+                            elevation={0}
+                            sx={{
+                              px: 1.25,
+                              py: 1,
+                              borderRadius: 1.5,
+                              backgroundColor: alpha(
+                                theme.palette.background.paper,
+                                0.88
+                              ),
+                              backdropFilter: "blur(8px)",
+                            }}
+                          >
+                            <Typography variant="subtitle2" fontWeight={800} noWrap>
+                              {ticket.customerDisplayName || "Customer"}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" noWrap>
+                              {mapsAddress}
+                            </Typography>
+                          </Paper>
+                        </Box>
+                      </Box>
+                    ) : null}
 
                     <Stack spacing={0.25}>
                       {ticket.serviceAddressLabel ? (
@@ -4185,28 +4440,43 @@ Supply line`}
                       </Typography>
                     </Stack>
 
-                    <Stack spacing={1}>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <PhoneOutlinedIcon fontSize="small" color="action" />
-                        <Typography variant="body1">
-                          {customerPhone ? (
-                            <a href={`tel:${customerPhone}`}>{customerPhone}</a>
-                          ) : (
-                            "—"
-                          )}
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      useFlexGap
+                      flexWrap="wrap"
+                    >
+                      {phoneHref ? (
+                        <Button
+                          component="a"
+                          href={phoneHref}
+                          variant="outlined"
+                          startIcon={<PhoneOutlinedIcon />}
+                          sx={{
+                            alignSelf: "flex-start",
+                            borderRadius: 999,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {customerPhone}
+                        </Button>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          No phone number on file.
                         </Typography>
-                      </Stack>
+                      )}
 
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <AlternateEmailRoundedIcon fontSize="small" color="action" />
-                        <Typography variant="body1">
-                          {customerEmail ? (
-                            <a href={`mailto:${customerEmail}`}>{customerEmail}</a>
-                          ) : (
-                            "—"
-                          )}
-                        </Typography>
-                      </Stack>
+                      {!isFieldUser && customerEmail ? (
+                        <Button
+                          component="a"
+                          href={`mailto:${customerEmail}`}
+                          variant="text"
+                          startIcon={<AlternateEmailRoundedIcon />}
+                          sx={{ alignSelf: "flex-start" }}
+                        >
+                          {customerEmail}
+                        </Button>
+                      ) : null}
                     </Stack>
                   </Stack>
                 </Section>
