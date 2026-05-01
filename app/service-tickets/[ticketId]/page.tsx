@@ -49,12 +49,9 @@ import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
-import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
-import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
-import AlternateEmailRoundedIcon from "@mui/icons-material/AlternateEmailRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import AppShell from "../../../components/AppShell";
@@ -90,6 +87,7 @@ import type {
   ServiceTicket,
   ServiceTicketStatus,
 } from "../../../src/types/service-ticket";
+import ServiceTicketLocationCard from "../../../components/service-tickets/ServiceTicketLocationCard";
 
 type Props = {
   params: Promise<{ ticketId: string }>;
@@ -546,45 +544,6 @@ function windowToTimes(window: TripTimeWindow) {
   if (window === "pm") return { start: "13:00", end: "17:00" };
   if (window === "all_day") return { start: "08:00", end: "17:00" };
   return { start: "09:00", end: "10:00" };
-}
-
-function buildTelHref(phone?: string) {
-  const raw = String(phone || "").trim();
-  if (!raw) return "";
-
-  const normalized = raw.startsWith("+")
-    ? `+${raw.slice(1).replace(/[^\d]/g, "")}`
-    : raw.replace(/[^\d]/g, "");
-
-  return normalized ? `tel:${normalized}` : "";
-}
-
-function buildPreferredMapsHref(address: string, preferAppleMaps: boolean) {
-  const encoded = encodeURIComponent(address);
-  if (!encoded) return "";
-
-  return preferAppleMaps
-    ? `https://maps.apple.com/?q=${encoded}`
-    : `https://www.google.com/maps/search/?api=1&query=${encoded}`;
-}
-
-function buildTopoMapPreviewUrl(lat: number, lon: number) {
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "";
-
-  const latDelta = 0.018;
-  const lonDelta = Math.max(
-    0.018,
-    latDelta / Math.max(Math.cos((lat * Math.PI) / 180), 0.35)
-  );
-
-  const west = lon - lonDelta;
-  const east = lon + lonDelta;
-  const south = lat - latDelta;
-  const north = lat + latDelta;
-
-  const bbox = `${west},${south},${east},${north}`;
-
-  return `https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=1200,700&format=png32&transparent=false&f=image`;
 }
 
 function minutesBetweenIso(aIso: string, bIso: string) {
@@ -1299,24 +1258,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
 
-  const mapsAddress = [
-    ticket?.serviceAddressLine1 || "",
-    ticket?.serviceAddressLine2 || "",
-    ticket?.serviceCity || "",
-    ticket?.serviceState || "",
-    ticket?.servicePostalCode || "",
-  ]
-    .filter(Boolean)
-    .join(", ");
-
-  const [preferAppleMaps, setPreferAppleMaps] = useState(false);
-  const [mapPreviewCoords, setMapPreviewCoords] = useState<{
-    lat: number;
-    lon: number;
-  } | null>(null);
-  const [mapPreviewLoading, setMapPreviewLoading] = useState(false);
-  const [mapPreviewFailed, setMapPreviewFailed] = useState(false);
-
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
   const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
   const [ptoRequests, setPtoRequests] = useState<PtoRequestLite[]>([]);
@@ -1388,9 +1329,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [tripHelperUid, setTripHelperUid] = useState("");
   const [tripSecondaryHelperUid, setTripSecondaryHelperUid] = useState("");
   const [tripNotes, setTripNotes] = useState("");
-  const [tripSaving, setTripSaving] = useState(false);
-  const [tripSaveError, setTripSaveError] = useState("");
-  const [tripSaveSuccess, setTripSaveSuccess] = useState("");
+  const [, setTripSaving] = useState(false);
+  const [, setTripSaveError] = useState("");
+  const [, setTripSaveSuccess] = useState("");
 
   const [editTripId, setEditTripId] = useState<string | null>(null);
   const [editTripDate, setEditTripDate] = useState(isoTodayLocal());
@@ -1821,16 +1762,17 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return selections;
   }
 
-  async function loadAvailabilityTripsForDate(date: string) {
-    if (!date?.trim()) return;
+async function loadAvailabilityTripsForDate(date: string) {
+  if (!date?.trim()) return [] as TripDocLite[];
 
-    const snap = await getDocs(
-      query(collection(db, "trips"), where("date", "==", date.trim()))
-    );
+  const snap = await getDocs(
+    query(collection(db, "trips"), where("date", "==", date.trim()))
+  );
 
-    const items = snap.docs.map((ds) => mapTripLikeFromDoc(ds));
-    setAvailabilityTripsByDate((prev) => ({ ...prev, [date]: items }));
-  }
+  const items = snap.docs.map((ds) => mapTripLikeFromDoc(ds));
+  setAvailabilityTripsByDate((prev) => ({ ...prev, [date]: items }));
+  return items;
+}
 
   function availabilityForOption(args: {
     uid: string;
@@ -2205,19 +2147,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const liveNowIso = useMemo(() => new Date(liveNowMs).toISOString(), [liveNowMs]);
 
-    const phoneHref = buildTelHref(customerPhone);
-  const mapsHref = buildPreferredMapsHref(mapsAddress, preferAppleMaps);
-  const mapPreviewUrl = useMemo(
-    () =>
-      mapPreviewCoords
-        ? buildTopoMapPreviewUrl(mapPreviewCoords.lat, mapPreviewCoords.lon)
-        : "",
-    [mapPreviewCoords]
-  );
-  const mapsTarget = preferAppleMaps ? undefined : "_blank";
-  const mapsRel = preferAppleMaps ? undefined : "noreferrer";
-  const showMapPreview = Boolean(mapPreviewUrl) && !mapPreviewFailed;
-
   useEffect(() => {
     if (!ticket?.id || trips.length === 0) return;
 
@@ -2264,79 +2193,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       window.history.replaceState({}, "", pathname);
     }
   }, [isMobile, pathname, searchParams, ticket?.id, trips]);
-
-    useEffect(() => {
-    if (typeof navigator === "undefined") return;
-    setPreferAppleMaps(/iPhone|iPad|iPod/i.test(navigator.userAgent));
-  }, []);
-
-  useEffect(() => {
-    if (!mapsAddress.trim()) {
-      setMapPreviewCoords(null);
-      setMapPreviewLoading(false);
-      setMapPreviewFailed(false);
-      return;
-    }
-
-    const controller = new AbortController();
-    let ignore = false;
-
-    async function geocodeAddress() {
-      try {
-        setMapPreviewLoading(true);
-        setMapPreviewFailed(false);
-
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(
-            mapsAddress
-          )}`,
-          {
-            signal: controller.signal,
-            headers: {
-              Accept: "application/json",
-            },
-          }
-        );
-
-        if (!res.ok) {
-          throw new Error("Unable to geocode address.");
-        }
-
-        const data = (await res.json()) as Array<{
-          lat?: string;
-          lon?: string;
-        }>;
-
-        const first = data?.[0];
-        const lat = Number(first?.lat);
-        const lon = Number(first?.lon);
-
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-          throw new Error("No map coordinates found.");
-        }
-
-        if (!ignore) {
-          setMapPreviewCoords({ lat, lon });
-          setMapPreviewFailed(false);
-        }
-      } catch (err) {
-        if (controller.signal.aborted || ignore) return;
-        setMapPreviewCoords(null);
-        setMapPreviewFailed(true);
-      } finally {
-        if (!ignore) {
-          setMapPreviewLoading(false);
-        }
-      }
-    }
-
-    geocodeAddress();
-
-    return () => {
-      ignore = true;
-      controller.abort();
-    };
-  }, [mapsAddress]);
 
   function closeMobileFinishSheet() {
     setMobileFinishTripId(null);
@@ -2529,24 +2385,24 @@ Supply line`}
       return;
     }
 
-    await loadAvailabilityTripsForDate(tripDate);
+const freshDayTrips = await loadAvailabilityTripsForDate(tripDate);
 
-    const latestDispatchConflicts = collectDispatchOverrideConflicts({
-      members: buildCrewSelections({
-        primaryTechUid: tripPrimaryTechUid,
-        secondaryTechUid: tripSecondaryTechUid,
-        helperUid: tripHelperUid,
-        secondaryHelperUid: tripSecondaryHelperUid,
-      }),
-      date: tripDate,
-      timeWindow: tripTimeWindow,
-      startTime: tripStartTime,
-      endTime: tripEndTime,
-      dayTrips: availabilityTripsByDate[tripDate] || [],
-      ptoRequests,
-      holidayNames: getHolidayNamesForDate(companyHolidays, tripDate),
-      holidayOverrideEnabled: tripHolidayOverride,
-    });
+const latestDispatchConflicts = collectDispatchOverrideConflicts({
+  members: buildCrewSelections({
+    primaryTechUid: tripPrimaryTechUid,
+    secondaryTechUid: tripSecondaryTechUid,
+    helperUid: tripHelperUid,
+    secondaryHelperUid: tripSecondaryHelperUid,
+  }),
+  date: tripDate,
+  timeWindow: tripTimeWindow,
+  startTime: tripStartTime,
+  endTime: tripEndTime,
+  dayTrips: freshDayTrips,
+  ptoRequests,
+  holidayNames: getHolidayNamesForDate(companyHolidays, tripDate),
+  holidayOverrideEnabled: tripHolidayOverride,
+});
 
     if (latestDispatchConflicts.hardMessages.length > 0) {
       setTripSaveError(latestDispatchConflicts.hardMessages[0]);
@@ -3263,25 +3119,25 @@ Supply line`}
         throw new Error("Enter a valid start and end time.");
       }
 
-      await loadAvailabilityTripsForDate(editTripDate);
+const freshDayTrips = await loadAvailabilityTripsForDate(editTripDate);
 
-      const latestDispatchConflicts = collectDispatchOverrideConflicts({
-        members: buildCrewSelections({
-          primaryTechUid: editTripPrimaryTechUid,
-          secondaryTechUid: editTripSecondaryTechUid,
-          helperUid: editTripHelperUid,
-          secondaryHelperUid: editTripSecondaryHelperUid,
-        }),
-        date: editTripDate,
-        timeWindow: editTripTimeWindow,
-        startTime: editTripStartTime,
-        endTime: editTripEndTime,
-        dayTrips: availabilityTripsByDate[editTripDate] || [],
-        ptoRequests,
-        holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
-        holidayOverrideEnabled: editTripHolidayOverride,
-        excludeTripId: trip.id,
-      });
+const latestDispatchConflicts = collectDispatchOverrideConflicts({
+  members: buildCrewSelections({
+    primaryTechUid: editTripPrimaryTechUid,
+    secondaryTechUid: editTripSecondaryTechUid,
+    helperUid: editTripHelperUid,
+    secondaryHelperUid: editTripSecondaryHelperUid,
+  }),
+  date: editTripDate,
+  timeWindow: editTripTimeWindow,
+  startTime: editTripStartTime,
+  endTime: editTripEndTime,
+  dayTrips: freshDayTrips,
+  ptoRequests,
+  holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
+  holidayOverrideEnabled: editTripHolidayOverride,
+  excludeTripId: trip.id,
+});
 
       if (latestDispatchConflicts.hardMessages.length > 0) {
         throw new Error(latestDispatchConflicts.hardMessages[0]);
@@ -4270,313 +4126,114 @@ Supply line`}
               }}
             >
               <Stack spacing={2.5}>
+                <ServiceTicketLocationCard
+                  customerDisplayName={ticket.customerDisplayName}
+                  serviceAddressLine1={ticket.serviceAddressLine1}
+                  serviceAddressLine2={ticket.serviceAddressLine2}
+                  serviceCity={ticket.serviceCity}
+                  serviceState={ticket.serviceState}
+                  servicePostalCode={ticket.servicePostalCode}
+                  customerPhone={customerPhone}
+                  customerEmail={customerEmail}
+                  showEmail={!isFieldUser}
+                />
                 <Section
-                  title={ticket.customerDisplayName || "Customer"}
-                  icon={<PlaceOutlinedIcon color="primary" />}
-                  action={
-                    mapsHref ? (
-                      <Button
-                        component="a"
-                        href={mapsHref}
-                        target={mapsTarget}
-                        rel={mapsRel}
-                        variant="text"
-                      >
-                        Open Maps
-                      </Button>
-                    ) : null
-                  }
-                >
-                  <Stack spacing={1.5}>
-                    {mapsAddress ? (
-                      <Box
-                        component="a"
-                        href={mapsHref || undefined}
-                        target={mapsTarget}
-                        rel={mapsRel}
-                        sx={{
-                          position: "relative",
-                          display: "block",
-                          width: "100%",
-                          minHeight: { xs: 180, sm: 220 },
-                          borderRadius: 2,
-                          overflow: "hidden",
-                          border: "1px solid",
-                          borderColor: "divider",
-                          textDecoration: "none",
-                          background: `linear-gradient(180deg, ${alpha(
-                            theme.palette.primary.main,
-                            0.14
-                          )} 0%, ${alpha(
-                            theme.palette.background.paper,
-                            0.96
-                          )} 100%)`,
-                        }}
-                      >
-                        {showMapPreview ? (
-                          <Box
-                            component="img"
-                            src={mapPreviewUrl}
-                            alt={`Map preview of ${mapsAddress}`}
-                            onError={() => setMapPreviewFailed(true)}
-                            sx={{
-                              display: "block",
-                              width: "100%",
-                              height: { xs: 180, sm: 220 },
-                              objectFit: "cover",
-                            }}
-                          />
-                        ) : (
-                          <Box
-                            sx={{
-                              height: { xs: 180, sm: 220 },
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              px: 2,
-                            }}
-                          >
-                            <Stack spacing={1} alignItems="center">
-                              <PlaceOutlinedIcon color="primary" />
-                              <Typography variant="body2" color="text.secondary">
-                                {mapPreviewLoading
-                                  ? "Loading location preview…"
-                                  : "Map preview unavailable"}
-                              </Typography>
-                            </Stack>
-                          </Box>
-                        )}
+  title="Ticket Overview"
+  icon={<AssignmentTurnedInRoundedIcon color="primary" />}
+>
+  {canDispatch ? (
+    <Stack spacing={2}>
+      <Alert severity="info" variant="outlined">
+        Status changes are now guarded by the trip lifecycle.
+      </Alert>
 
-                        <Box
-                          sx={{
-                            position: "absolute",
-                            inset: 0,
-                            background:
-                              "linear-gradient(180deg, rgba(0,0,0,0.04) 0%, rgba(0,0,0,0.16) 100%)",
-                            pointerEvents: "none",
-                          }}
-                        />
+      <Box
+        sx={{
+          display: "grid",
+          gap: 2,
+          gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+        }}
+      >
+        <TextField
+          select
+          size="small"
+          label="Status"
+          value={ticketStatusEdit}
+          onChange={(e) =>
+            setTicketStatusEdit(e.target.value as TicketStatus)
+          }
+          disabled={isInvoicedTicket}
+        >
+          <MenuItem value="new">New</MenuItem>
+          <MenuItem value="scheduled">Scheduled</MenuItem>
+          <MenuItem value="in_progress">In Progress</MenuItem>
+          <MenuItem value="follow_up">Follow Up</MenuItem>
+          <MenuItem value="completed">Completed</MenuItem>
+          <MenuItem value="invoiced">Invoiced</MenuItem>
+          <MenuItem value="cancelled">Cancelled</MenuItem>
+        </TextField>
 
-                        {showMapPreview ? (
-                          <Box
-                            sx={{
-                              position: "absolute",
-                              left: "50%",
-                              top: "50%",
-                              transform: "translate(-50%, -100%)",
-                              width: 44,
-                              height: 44,
-                              borderRadius: "50%",
-                              backgroundColor: alpha(
-                                theme.palette.background.paper,
-                                0.92
-                              ),
-                              display: "grid",
-                              placeItems: "center",
-                              boxShadow: theme.shadows[4],
-                              border: "1px solid",
-                              borderColor: "divider",
-                              pointerEvents: "none",
-                            }}
-                          >
-                            <PlaceOutlinedIcon color="primary" />
-                          </Box>
-                        ) : null}
+        <TextField
+          size="small"
+          type="number"
+          label="Estimated Duration (minutes)"
+          inputProps={{ min: 1 }}
+          value={ticketEstimatedMinutesEdit}
+          onChange={(e) =>
+            setTicketEstimatedMinutesEdit(e.target.value)
+          }
+          disabled={isInvoicedTicket}
+        />
+      </Box>
 
-                        <Box
-                          sx={{
-                            position: "absolute",
-                            left: 12,
-                            right: 12,
-                            bottom: 12,
-                            pointerEvents: "none",
-                          }}
-                        >
-                          <Paper
-                            elevation={0}
-                            sx={{
-                              px: 1.25,
-                              py: 1,
-                              borderRadius: 1.5,
-                              backgroundColor: alpha(
-                                theme.palette.background.paper,
-                                0.88
-                              ),
-                              backdropFilter: "blur(8px)",
-                            }}
-                          >
-                            <Typography variant="subtitle2" fontWeight={800} noWrap>
-                              {ticket.customerDisplayName || "Customer"}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary" noWrap>
-                              {mapsAddress}
-                            </Typography>
-                          </Paper>
-                        </Box>
-                      </Box>
-                    ) : null}
+      <TextField
+        size="small"
+        label="Issue Summary"
+        value={ticketIssueSummaryEdit}
+        onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
+        disabled={isInvoicedTicket}
+      />
 
-                    <Stack spacing={0.25}>
-                      {ticket.serviceAddressLabel ? (
-                        <Typography variant="body2" color="text.secondary">
-                          {ticket.serviceAddressLabel}
-                        </Typography>
-                      ) : null}
+      <TextField
+        multiline
+        minRows={4}
+        label="Issue Details"
+        value={ticketIssueDetailsEdit}
+        onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+        disabled={isInvoicedTicket}
+      />
 
-                      <Typography variant="body1">
-                        {ticket.serviceAddressLine1 || "—"}
-                      </Typography>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+        <Button
+          variant="contained"
+          onClick={handleSaveTicketOverview}
+          disabled={ticketEditSaving || isInvoicedTicket}
+        >
+          {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
+        </Button>
 
-                      {ticket.serviceAddressLine2 ? (
-                        <Typography variant="body1">
-                          {ticket.serviceAddressLine2}
-                        </Typography>
-                      ) : null}
-
-                      <Typography variant="body1">
-                        {[ticket.serviceCity, ticket.serviceState, ticket.servicePostalCode]
-                          .filter(Boolean)
-                          .join(", ") || "—"}
-                      </Typography>
-                    </Stack>
-
-                    <Stack
-                      direction={{ xs: "column", sm: "row" }}
-                      spacing={1}
-                      useFlexGap
-                      flexWrap="wrap"
-                    >
-                      {phoneHref ? (
-                        <Button
-                          component="a"
-                          href={phoneHref}
-                          variant="outlined"
-                          startIcon={<PhoneOutlinedIcon />}
-                          sx={{
-                            alignSelf: "flex-start",
-                            borderRadius: 999,
-                            fontWeight: 700,
-                          }}
-                        >
-                          {customerPhone}
-                        </Button>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary">
-                          No phone number on file.
-                        </Typography>
-                      )}
-
-                      {!isFieldUser && customerEmail ? (
-                        <Button
-                          component="a"
-                          href={`mailto:${customerEmail}`}
-                          variant="text"
-                          startIcon={<AlternateEmailRoundedIcon />}
-                          sx={{ alignSelf: "flex-start" }}
-                        >
-                          {customerEmail}
-                        </Button>
-                      ) : null}
-                    </Stack>
-                  </Stack>
-                </Section>
-
-                <Section
-                  title="Ticket Overview"
-                  icon={<AssignmentTurnedInRoundedIcon color="primary" />}
-                >
-                  {canDispatch ? (
-                    <Stack spacing={2}>
-                      <Alert severity="info" variant="outlined">
-                        Status changes are now guarded by the trip lifecycle.
-                      </Alert>
-
-                      <Box
-                        sx={{
-                          display: "grid",
-                          gap: 2,
-                          gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                        }}
-                      >
-                        <TextField
-                          select
-                          size="small"
-                          label="Status"
-                          value={ticketStatusEdit}
-                          onChange={(e) =>
-                            setTicketStatusEdit(e.target.value as TicketStatus)
-                          }
-                          disabled={isInvoicedTicket}
-                        >
-                          <MenuItem value="new">New</MenuItem>
-                          <MenuItem value="scheduled">Scheduled</MenuItem>
-                          <MenuItem value="in_progress">In Progress</MenuItem>
-                          <MenuItem value="follow_up">Follow Up</MenuItem>
-                          <MenuItem value="completed">Completed</MenuItem>
-                          <MenuItem value="invoiced">Invoiced</MenuItem>
-                          <MenuItem value="cancelled">Cancelled</MenuItem>
-                        </TextField>
-
-                        <TextField
-                          size="small"
-                          type="number"
-                          label="Estimated Duration (minutes)"
-                          inputProps={{ min: 1 }}
-                          value={ticketEstimatedMinutesEdit}
-                          onChange={(e) =>
-                            setTicketEstimatedMinutesEdit(e.target.value)
-                          }
-                          disabled={isInvoicedTicket}
-                        />
-                      </Box>
-
-                      <TextField
-                        size="small"
-                        label="Issue Summary"
-                        value={ticketIssueSummaryEdit}
-                        onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
-                        disabled={isInvoicedTicket}
-                      />
-
-                      <TextField
-                        multiline
-                        minRows={4}
-                        label="Issue Details"
-                        value={ticketIssueDetailsEdit}
-                        onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
-                        disabled={isInvoicedTicket}
-                      />
-
-                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                        <Button
-                          variant="contained"
-                          onClick={handleSaveTicketOverview}
-                          disabled={ticketEditSaving || isInvoicedTicket}
-                        >
-                          {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
-                        </Button>
-                        {ticketEditErr ? <Alert severity="error">{ticketEditErr}</Alert> : null}
-                        {ticketEditOk ? <Alert severity="success">{ticketEditOk}</Alert> : null}
-                      </Stack>
-                    </Stack>
-                  ) : (
-                    <Stack spacing={1}>
-                      <Typography variant="body1">
-                        <strong>Status:</strong> {formatTicketStatus(ticket.status)}
-                      </Typography>
-                      <Typography variant="body1">
-                        <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
-                      </Typography>
-                      <Typography variant="body1">
-                        <strong>Estimated Duration:</strong>{" "}
-                        {ticket.estimatedDurationMinutes} minutes
-                      </Typography>
-                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
-                        {ticket.issueDetails || "No additional issue details."}
-                      </Typography>
-                    </Stack>
-                  )}
-                </Section>
+        {ticketEditErr ? <Alert severity="error">{ticketEditErr}</Alert> : null}
+        {ticketEditOk ? <Alert severity="success">{ticketEditOk}</Alert> : null}
+      </Stack>
+    </Stack>
+  ) : (
+    <Stack spacing={1}>
+      <Typography variant="body1">
+        <strong>Status:</strong> {formatTicketStatus(ticket.status)}
+      </Typography>
+      <Typography variant="body1">
+        <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
+      </Typography>
+      <Typography variant="body1">
+        <strong>Estimated Duration:</strong>{" "}
+        {ticket.estimatedDurationMinutes} minutes
+      </Typography>
+      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+        {ticket.issueDetails || "No additional issue details."}
+      </Typography>
+    </Stack>
+  )}
+</Section>
               </Stack>
 
               <Stack spacing={2.5}>
