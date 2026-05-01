@@ -75,6 +75,7 @@ import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
 
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
+import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import {
@@ -262,6 +263,17 @@ type AddressBidDraft = {
   totalBidAmount: string;
 };
 
+type GoogleAddressSelectionLike = {
+  placeId?: string;
+  formattedAddress: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  source?: string;
+};
+
 type CrewNotesDraft = {
   primaryUid: string;
   secondaryUid: string;
@@ -320,6 +332,19 @@ function normalizeRole(role?: string) {
 
 function safeTrim(x: any) {
   return String(x || "").trim();
+}
+
+function buildInlineAddress(
+  line1?: string,
+  line2?: string,
+  city?: string,
+  state?: string,
+  postal?: string,
+) {
+  return [line1, line2, city, state, postal]
+    .map((x) => safeTrim(x))
+    .filter(Boolean)
+    .join(", ");
 }
 
 function nowIso() {
@@ -795,6 +820,8 @@ export default function ProjectDetailPage() {
     bidStatus: "draft",
     totalBidAmount: "0",
   });
+  const [projectAddressSearch, setProjectAddressSearch] = useState("");
+  const [projectAddressSource, setProjectAddressSource] = useState<string>("manual");
 
   const [crewNotesDraft, setCrewNotesDraft] = useState<CrewNotesDraft>({
     primaryUid: "",
@@ -1080,6 +1107,36 @@ export default function ProjectDetailPage() {
       bidStatus: p.bidStatus || "draft",
       totalBidAmount: String(Number(p.totalBidAmount ?? 0)),
     });
+
+    setProjectAddressSearch(
+      buildInlineAddress(
+        p.serviceAddressLine1,
+        p.serviceAddressLine2,
+        p.serviceCity,
+        p.serviceState,
+        p.servicePostalCode,
+      ),
+    );
+    setProjectAddressSource(safeTrim((p as any)?.serviceAddressSource) || "manual");
+  }
+
+  function markProjectAddressManual() {
+    setProjectAddressSource((current) =>
+      current === "google_places" ? "manual" : current,
+    );
+  }
+
+  function handleProjectGoogleAddressSelected(selection: GoogleAddressSelectionLike) {
+    setProjectAddressSearch(selection.formattedAddress || "");
+    setAddressBidDraft((prev) => ({
+      ...prev,
+      serviceAddressLine1: selection.addressLine1 || "",
+      serviceAddressLine2: selection.addressLine2 || "",
+      serviceCity: selection.city || "",
+      serviceState: selection.state || "",
+      servicePostalCode: selection.postalCode || "",
+    }));
+    setProjectAddressSource("google_places");
   }
 
   function resetCrewNotesDraftFromProject(source?: Project | null) {
@@ -1738,6 +1795,7 @@ export default function ProjectDetailPage() {
         serviceCity: addressBidDraft.serviceCity.trim(),
         serviceState: addressBidDraft.serviceState.trim().toUpperCase(),
         servicePostalCode: addressBidDraft.servicePostalCode.trim(),
+        serviceAddressSource: projectAddressSource || null,
         bidStatus: addressBidDraft.bidStatus,
         totalBidAmount: totalBid,
         roughIn: nextRoughIn,
@@ -1753,6 +1811,7 @@ export default function ProjectDetailPage() {
         serviceCity: addressBidDraft.serviceCity.trim(),
         serviceState: addressBidDraft.serviceState.trim().toUpperCase(),
         servicePostalCode: addressBidDraft.servicePostalCode.trim(),
+        serviceAddressSource: projectAddressSource || undefined,
         bidStatus: addressBidDraft.bidStatus,
         totalBidAmount: totalBid,
         roughIn: nextRoughIn,
@@ -4479,6 +4538,33 @@ export default function ProjectDetailPage() {
 
                   {editingAddressBid ? (
                     <>
+                      <AddressAutocompleteField
+                        label="Search job site address"
+                        value={projectAddressSearch}
+                        onChange={(value) => {
+                          setProjectAddressSearch(value);
+                          markProjectAddressManual();
+                        }}
+                        onSelectAddress={handleProjectGoogleAddressSelected}
+                        helperText="Start typing to search for a real address, or keep editing manually below."
+                        placeholder="Start typing the project job site address..."
+                        disabled={addressBidSaveBusy}
+                      />
+
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip
+                          size="small"
+                          label={
+                            projectAddressSource === "google_places"
+                              ? "Google suggested"
+                              : "Manual entry"
+                          }
+                          color={projectAddressSource === "google_places" ? "primary" : "default"}
+                          variant={projectAddressSource === "google_places" ? "filled" : "outlined"}
+                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                        />
+                      </Stack>
+
                       <Box
                         sx={{
                           display: "grid",
@@ -4492,60 +4578,65 @@ export default function ProjectDetailPage() {
                         <TextField
                           label="Street Address"
                           value={addressBidDraft.serviceAddressLine1}
-                          onChange={(e) =>
+                          onChange={(e) => {
                             setAddressBidDraft((prev) => ({
                               ...prev,
                               serviceAddressLine1: e.target.value,
-                            }))
-                          }
+                            }));
+                            markProjectAddressManual();
+                          }}
                           fullWidth
                         />
 
                         <TextField
                           label="Address Line 2"
                           value={addressBidDraft.serviceAddressLine2}
-                          onChange={(e) =>
+                          onChange={(e) => {
                             setAddressBidDraft((prev) => ({
                               ...prev,
                               serviceAddressLine2: e.target.value,
-                            }))
-                          }
+                            }));
+                            markProjectAddressManual();
+                          }}
                           fullWidth
                         />
 
                         <TextField
                           label="City"
                           value={addressBidDraft.serviceCity}
-                          onChange={(e) =>
+                          onChange={(e) => {
                             setAddressBidDraft((prev) => ({
                               ...prev,
                               serviceCity: e.target.value,
-                            }))
-                          }
+                            }));
+                            markProjectAddressManual();
+                          }}
                           fullWidth
                         />
 
                         <TextField
                           label="State"
                           value={addressBidDraft.serviceState}
-                          onChange={(e) =>
+                          onChange={(e) => {
                             setAddressBidDraft((prev) => ({
                               ...prev,
                               serviceState: e.target.value,
-                            }))
-                          }
+                            }));
+                            markProjectAddressManual();
+                          }}
                           fullWidth
                         />
 
                         <TextField
                           label="ZIP"
                           value={addressBidDraft.servicePostalCode}
-                          onChange={(e) =>
+                          onChange={(e) => {
                             setAddressBidDraft((prev) => ({
                               ...prev,
                               servicePostalCode: e.target.value,
-                            }))
-                          }
+                            }));
+                            markProjectAddressManual();
+                          }}
                           fullWidth
                         />
 
