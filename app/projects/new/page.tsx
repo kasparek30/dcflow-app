@@ -13,7 +13,6 @@ import {
   CardContent,
   Chip,
   CircularProgress,
-  Divider,
   InputAdornment,
   MenuItem,
   Skeleton,
@@ -22,14 +21,12 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
-import ApartmentRoundedIcon from "@mui/icons-material/ApartmentRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import BusinessRoundedIcon from "@mui/icons-material/BusinessRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
-import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
 import PersonSearchRoundedIcon from "@mui/icons-material/PersonSearchRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
@@ -37,6 +34,7 @@ import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
 
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
+import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { ServiceAddress } from "../../../src/types/customer";
@@ -60,6 +58,17 @@ type CustomerOption = {
 };
 
 type ProjectType = "new_construction" | "remodel" | "time_materials";
+
+type GoogleAddressSelectionLike = {
+  placeId?: string;
+  formattedAddress: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  source?: string;
+};
 
 function getCustomerSearchText(customer: CustomerOption) {
   return [
@@ -159,6 +168,30 @@ function getBidStatusLabel(status: "draft" | "submitted" | "won" | "lost") {
   }
 }
 
+function safeStr(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function buildInlineAddress(
+  line1?: string,
+  line2?: string,
+  city?: string,
+  state?: string,
+  postal?: string
+) {
+  return [line1, line2, city, state, postal].map(safeStr).filter(Boolean).join(", ");
+}
+
+function getAddressSourceLabel(source: string) {
+  switch (source) {
+    case "google_places":
+      return "Google suggested";
+    case "manual":
+    default:
+      return "Manual entry";
+  }
+}
+
 export default function NewProjectPage() {
   const router = useRouter();
   const theme = useTheme();
@@ -178,6 +211,8 @@ export default function NewProjectPage() {
   const [totalBidAmount, setTotalBidAmount] = useState("0");
   const [internalNotes, setInternalNotes] = useState("");
 
+  const [jobAddressSearch, setJobAddressSearch] = useState("");
+  const [jobAddressSource, setJobAddressSource] = useState("manual");
   const [jobStreet1, setJobStreet1] = useState("");
   const [jobStreet2, setJobStreet2] = useState("");
   const [jobCity, setJobCity] = useState("");
@@ -213,7 +248,7 @@ export default function NewProjectPage() {
             billingPostalCode: data.billingPostalCode ?? "",
             serviceAddresses: Array.isArray(data.serviceAddresses)
               ? data.serviceAddresses.map((addr: any) => ({
-                  id: addr.id ?? crypto.randomUUID(),
+                  id: addr.id ?? uid(),
                   label: addr.label ?? undefined,
                   addressLine1: addr.addressLine1 ?? "",
                   addressLine2: addr.addressLine2 ?? undefined,
@@ -261,6 +296,10 @@ export default function NewProjectPage() {
     return buildStageBilledAmounts(projectType, totalBidNumber);
   }, [projectType, totalBidNumber]);
 
+  const jobAddressPreview = useMemo(() => {
+    return buildInlineAddress(jobStreet1, jobStreet2, jobCity, jobState, jobZip);
+  }, [jobStreet1, jobStreet2, jobCity, jobState, jobZip]);
+
   function handleSelectCustomer(customerId: string) {
     setSelectedCustomerId(customerId);
     setError("");
@@ -268,6 +307,20 @@ export default function NewProjectPage() {
 
   function handleClearSelectedCustomer() {
     setSelectedCustomerId("");
+  }
+
+  function markJobAddressManual() {
+    setJobAddressSource((current) => (current === "manual" ? current : "manual"));
+  }
+
+  function handleJobGoogleAddressSelected(selection: GoogleAddressSelectionLike) {
+    setJobAddressSearch(selection.formattedAddress || "");
+    setJobStreet1(selection.addressLine1 || "");
+    setJobStreet2(selection.addressLine2 || "");
+    setJobCity(selection.city || "");
+    setJobState(selection.state || "");
+    setJobZip(selection.postalCode || "");
+    setJobAddressSource("google_places");
   }
 
   function onPickPlans(files: FileList | null) {
@@ -397,9 +450,8 @@ export default function NewProjectPage() {
         updatedAt: now,
       });
 
-      let uploaded = [];
       if (planFiles.length) {
-        uploaded = await uploadPlans(docRef.id);
+        const uploaded = await uploadPlans(docRef.id);
 
         if (uploaded.length) {
           await updateDoc(doc(db, "projects", docRef.id), {
@@ -641,6 +693,29 @@ export default function NewProjectPage() {
                         </Box>
                       </Stack>
 
+                      <AddressAutocompleteField
+                        label="Search address"
+                        value={jobAddressSearch}
+                        onChange={(value) => {
+                          setJobAddressSearch(value);
+                          markJobAddressManual();
+                        }}
+                        onSelectAddress={handleJobGoogleAddressSelected}
+                        helperText="Start typing to search for a real address, or keep entering it manually below."
+                        placeholder="Start typing the job site address..."
+                        disabled={!selectedCustomer || saving || uploadingPlans}
+                      />
+
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip
+                          size="small"
+                          label={getAddressSourceLabel(jobAddressSource)}
+                          color={jobAddressSource === "google_places" ? "primary" : "default"}
+                          variant={jobAddressSource === "google_places" ? "filled" : "outlined"}
+                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                        />
+                      </Stack>
+
                       <Box
                         sx={{
                           display: "grid",
@@ -651,7 +726,10 @@ export default function NewProjectPage() {
                         <TextField
                           label="Street Address"
                           value={jobStreet1}
-                          onChange={(e) => setJobStreet1(e.target.value)}
+                          onChange={(e) => {
+                            setJobStreet1(e.target.value);
+                            markJobAddressManual();
+                          }}
                           placeholder="123 Main St"
                           fullWidth
                           disabled={!selectedCustomer}
@@ -661,7 +739,10 @@ export default function NewProjectPage() {
                         <TextField
                           label="Address Line 2"
                           value={jobStreet2}
-                          onChange={(e) => setJobStreet2(e.target.value)}
+                          onChange={(e) => {
+                            setJobStreet2(e.target.value);
+                            markJobAddressManual();
+                          }}
                           placeholder="Unit, suite, lot, etc."
                           fullWidth
                           disabled={!selectedCustomer}
@@ -671,7 +752,10 @@ export default function NewProjectPage() {
                         <TextField
                           label="City"
                           value={jobCity}
-                          onChange={(e) => setJobCity(e.target.value)}
+                          onChange={(e) => {
+                            setJobCity(e.target.value);
+                            markJobAddressManual();
+                          }}
                           placeholder="La Grange"
                           fullWidth
                           disabled={!selectedCustomer}
@@ -680,7 +764,10 @@ export default function NewProjectPage() {
                         <TextField
                           label="State"
                           value={jobState}
-                          onChange={(e) => setJobState(e.target.value)}
+                          onChange={(e) => {
+                            setJobState(e.target.value);
+                            markJobAddressManual();
+                          }}
                           placeholder="TX"
                           fullWidth
                           disabled={!selectedCustomer}
@@ -689,12 +776,33 @@ export default function NewProjectPage() {
                         <TextField
                           label="Zip"
                           value={jobZip}
-                          onChange={(e) => setJobZip(e.target.value)}
+                          onChange={(e) => {
+                            setJobZip(e.target.value);
+                            markJobAddressManual();
+                          }}
                           placeholder="78945"
                           fullWidth
                           disabled={!selectedCustomer}
                         />
                       </Box>
+
+                      {jobAddressPreview ? (
+                        <Box
+                          sx={{
+                            borderRadius: 3,
+                            p: 1.5,
+                            backgroundColor: alpha(theme.palette.primary.main, 0.05),
+                            border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+                          }}
+                        >
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Job site preview
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                            {jobAddressPreview}
+                          </Typography>
+                        </Box>
+                      ) : null}
                     </Stack>
                   </CardContent>
                 </Card>
@@ -841,7 +949,10 @@ export default function NewProjectPage() {
                           display: "grid",
                           gridTemplateColumns: {
                             xs: "1fr",
-                            md: projectType === "time_materials" ? "1fr" : "repeat(3, minmax(0, 1fr))",
+                            md:
+                              projectType === "time_materials"
+                                ? "1fr"
+                                : "repeat(3, minmax(0, 1fr))",
                           },
                           gap: 1.5,
                         }}
