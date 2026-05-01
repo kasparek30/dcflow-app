@@ -1,4 +1,3 @@
-// app/projects/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -41,6 +40,7 @@ import type { Project } from "../../src/types/project";
 type BidFilter = "all" | "draft" | "submitted" | "won" | "lost";
 type AssignmentFilter = "all" | "assigned" | "unassigned";
 type ActivityFilter = "all" | "active" | "inactive";
+type DisplayLifecycle = "active" | "completed" | "inactive";
 
 type StageLike = {
   status?: string;
@@ -83,6 +83,8 @@ function formatStageStatus(status?: string) {
       return "In Progress";
     case "complete":
       return "Complete";
+    case "inactive":
+      return "Inactive";
     default:
       return "Not Started";
   }
@@ -147,12 +149,16 @@ function getStageStatusColor(
       return "info";
     case "complete":
       return "success";
+    case "inactive":
+      return "default";
     default:
       return "default";
   }
 }
 
-function getWorkflowStages(project: Project): Array<{ label: string; stage: StageLike | undefined }> {
+function getWorkflowStages(
+  project: Project,
+): Array<{ label: string; stage: StageLike | undefined }> {
   if (project.projectType === "time_materials") {
     return [];
   }
@@ -171,13 +177,84 @@ function getWorkflowStages(project: Project): Array<{ label: string; stage: Stag
   ];
 }
 
+function isProjectWorkflowComplete(project: Project) {
+  if (project.projectType === "time_materials") {
+    return false;
+  }
+
+  const stages = getWorkflowStages(project);
+  if (stages.length === 0) return false;
+
+  return stages.every((entry) => entry.stage?.status === "complete");
+}
+
+function getProjectDisplayLifecycle(project: Project): DisplayLifecycle {
+  if (isProjectWorkflowComplete(project)) {
+    return "completed";
+  }
+
+  if (!project.active) {
+    return "inactive";
+  }
+
+  return "active";
+}
+
+function getProjectDisplayLifecycleLabel(lifecycle: DisplayLifecycle) {
+  switch (lifecycle) {
+    case "completed":
+      return "Completed";
+    case "inactive":
+      return "Inactive";
+    case "active":
+    default:
+      return "Active";
+  }
+}
+
+function getProjectDisplayLifecycleColor(
+  lifecycle: DisplayLifecycle,
+): "default" | "primary" | "success" {
+  switch (lifecycle) {
+    case "completed":
+      return "success";
+    case "inactive":
+      return "default";
+    case "active":
+    default:
+      return "primary";
+  }
+}
+
 function getNextStage(project: Project) {
+  const lifecycle = getProjectDisplayLifecycle(project);
+
+  if (lifecycle === "completed") {
+    return {
+      label: "Project Complete",
+      status: "complete",
+      dateText: "No remaining stage work",
+      helper: "All required project stages are complete.",
+    };
+  }
+
+  if (lifecycle === "inactive") {
+    return {
+      label: "Inactive Project",
+      status: "inactive",
+      dateText: "Inactive",
+      helper: "This project is currently inactive.",
+    };
+  }
+
   if (project.projectType === "time_materials") {
     return {
       label: "Trip-Based Work",
       status: project.active ? "in_progress" : "complete",
       dateText: project.active ? "Run trips and review billing" : "Closed / inactive",
-      helper: project.active ? "Track labor, materials, and billing handoff." : "No current action needed.",
+      helper: project.active
+        ? "Track labor, materials, and billing handoff."
+        : "No current action needed.",
     };
   }
 
@@ -186,10 +263,10 @@ function getNextStage(project: Project) {
 
   if (!nextStage) {
     return {
-      label: "All Stages Complete",
+      label: "Project Complete",
       status: "complete",
       dateText: "No remaining stage work",
-      helper: "Project stages are complete.",
+      helper: "All required project stages are complete.",
     };
   }
 
@@ -242,6 +319,7 @@ function projectMatchesSearch(project: Project, search: string) {
     project.assignedTechnicianName,
     formatProjectType(project.projectType),
     formatBidStatus(project.bidStatus),
+    getProjectDisplayLifecycleLabel(getProjectDisplayLifecycle(project)),
   ]
     .filter(Boolean)
     .join(" ")
@@ -339,19 +417,32 @@ export default function ProjectsPage() {
       if (assignmentFilter === "assigned" && !project.assignedTechnicianName) return false;
       if (assignmentFilter === "unassigned" && project.assignedTechnicianName) return false;
 
-      if (activityFilter === "active" && !project.active) return false;
-      if (activityFilter === "inactive" && project.active) return false;
+      const lifecycle = getProjectDisplayLifecycle(project);
+
+      if (activityFilter === "active" && lifecycle !== "active") return false;
+      if (activityFilter === "inactive" && lifecycle === "active") return false;
 
       return true;
     });
   }, [projects, searchText, bidFilter, assignmentFilter, activityFilter]);
 
   const summary = useMemo(() => {
-    const activeCount = projects.filter((project) => project.active).length;
-    const wonCount = projects.filter((project) => project.bidStatus === "won").length;
-    const unassignedCount = projects.filter(
-      (project) => !project.assignedTechnicianName?.trim(),
+    const activeCount = projects.filter(
+      (project) => getProjectDisplayLifecycle(project) === "active",
     ).length;
+
+    const completedCount = projects.filter(
+      (project) => getProjectDisplayLifecycle(project) === "completed",
+    ).length;
+
+    const wonCount = projects.filter((project) => project.bidStatus === "won").length;
+
+    const unassignedCount = projects.filter(
+      (project) =>
+        getProjectDisplayLifecycle(project) === "active" &&
+        !project.assignedTechnicianName?.trim(),
+    ).length;
+
     const totalPipeline = projects.reduce(
       (sum, project) => sum + Number(project.totalBidAmount ?? 0),
       0,
@@ -360,6 +451,7 @@ export default function ProjectsPage() {
     return {
       total: projects.length,
       active: activeCount,
+      completed: completedCount,
       won: wonCount,
       unassigned: unassignedCount,
       pipeline: totalPipeline,
@@ -412,9 +504,15 @@ export default function ProjectsPage() {
                   />
                   <Chip
                     icon={<AssignmentTurnedInRoundedIcon />}
-                    label={`${summary.won} Won`}
+                    label={`${summary.completed} Completed`}
                     color="success"
                     variant="filled"
+                  />
+                  <Chip
+                    icon={<AssignmentTurnedInRoundedIcon />}
+                    label={`${summary.won} Won`}
+                    color="success"
+                    variant="outlined"
                   />
                   <Chip
                     icon={<PersonRoundedIcon />}
@@ -504,10 +602,10 @@ export default function ProjectsPage() {
             >
               <CardContent>
                 <Typography variant="subtitle2" color="text.secondary">
-                  Won Projects
+                  Completed
                 </Typography>
                 <Typography variant="h4" sx={{ mt: 1, fontWeight: 700 }}>
-                  {summary.won}
+                  {summary.completed}
                 </Typography>
               </CardContent>
             </Card>
@@ -600,8 +698,8 @@ export default function ProjectsPage() {
                       onChange={(e) => setActivityFilter(e.target.value as ActivityFilter)}
                     >
                       <MenuItem value="all">All Activity</MenuItem>
-                      <MenuItem value="active">Active</MenuItem>
-                      <MenuItem value="inactive">Inactive</MenuItem>
+                      <MenuItem value="active">Active Workflow</MenuItem>
+                      <MenuItem value="inactive">Completed / Inactive</MenuItem>
                     </Select>
                   </FormControl>
                 </Box>
@@ -639,7 +737,11 @@ export default function ProjectsPage() {
                   ) : null}
                   {activityFilter !== "all" ? (
                     <Chip
-                      label={activityFilter === "active" ? "Active only" : "Inactive only"}
+                      label={
+                        activityFilter === "active"
+                          ? "Active workflow only"
+                          : "Completed / inactive only"
+                      }
                       onDelete={() => setActivityFilter("all")}
                       variant="outlined"
                     />
@@ -719,6 +821,14 @@ export default function ProjectsPage() {
               {filteredProjects.map((project) => {
                 const nextStage = getNextStage(project);
                 const progress = getStageProgressCount(project);
+                const lifecycle = getProjectDisplayLifecycle(project);
+                const lifecycleColor = getProjectDisplayLifecycleColor(lifecycle);
+                const nextStepAccent =
+                  lifecycle === "completed"
+                    ? theme.palette.success.main
+                    : lifecycle === "inactive"
+                      ? theme.palette.text.secondary
+                      : theme.palette.primary.main;
 
                 return (
                   <Card
@@ -728,7 +838,8 @@ export default function ProjectsPage() {
                       overflow: "hidden",
                       boxShadow: "none",
                       border: `1px solid ${theme.palette.divider}`,
-                      transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
+                      transition:
+                        "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
                       "&:hover": {
                         transform: "translateY(-1px)",
                         borderColor: alpha(theme.palette.primary.main, 0.28),
@@ -790,9 +901,9 @@ export default function ProjectsPage() {
                                 size="small"
                               />
                               <Chip
-                                label={project.active ? "Active" : "Inactive"}
-                                color={project.active ? "success" : "default"}
-                                variant={project.active ? "filled" : "outlined"}
+                                label={getProjectDisplayLifecycleLabel(lifecycle)}
+                                color={lifecycleColor}
+                                variant={lifecycle === "inactive" ? "outlined" : "filled"}
                                 size="small"
                               />
                             </Stack>
@@ -845,8 +956,8 @@ export default function ProjectsPage() {
                             sx={{
                               borderRadius: 3,
                               p: 1.5,
-                              backgroundColor: alpha(theme.palette.primary.main, 0.05),
-                              border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+                              backgroundColor: alpha(nextStepAccent, 0.05),
+                              border: `1px solid ${alpha(nextStepAccent, 0.14)}`,
                             }}
                           >
                             <Stack
@@ -919,7 +1030,7 @@ export default function ProjectsPage() {
                                 />
                               )}
 
-                              {!project.assignedTechnicianName ? (
+                              {lifecycle === "active" && !project.assignedTechnicianName ? (
                                 <Chip
                                   size="small"
                                   color="warning"
