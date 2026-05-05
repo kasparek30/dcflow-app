@@ -1,4 +1,3 @@
-// app/time-entries/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -391,6 +390,7 @@ function TimeEntriesPageContent() {
   >("all");
   const [categoryFilter, setCategoryFilter] =
     useState<CategoryFilterValue>("all");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
   const [weekOffset, setWeekOffset] = useState(0);
 
   const [myWeekLocked, setMyWeekLocked] = useState(false);
@@ -658,12 +658,36 @@ function TimeEntriesPageContent() {
     return users.find((u) => u.uid === uid) ?? null;
   }, [appUser?.uid, users]);
 
+  const activeUsers = useMemo(() => {
+    return users.filter((u) => u.active !== false);
+  }, [users]);
+
   const employeeScope = useMemo(() => {
     if (canSeeAll) {
-      return users.filter((u) => u.active !== false);
+      return activeUsers;
     }
     return currentUserRecord ? [currentUserRecord] : [];
-  }, [canSeeAll, currentUserRecord, users]);
+  }, [activeUsers, canSeeAll, currentUserRecord]);
+
+  const selectedEmployeeLabel = useMemo(() => {
+    if (!canSeeAll || employeeFilter === "all") return "All employees";
+    const employee = users.find((u) => u.uid === employeeFilter);
+    return employee?.displayName || "Selected employee";
+  }, [canSeeAll, employeeFilter, users]);
+
+  useEffect(() => {
+    if (!canSeeAll) {
+      setEmployeeFilter("all");
+      return;
+    }
+
+    if (employeeFilter === "all") return;
+
+    const stillExists = activeUsers.some((u) => u.uid === employeeFilter);
+    if (!stillExists) {
+      setEmployeeFilter("all");
+    }
+  }, [activeUsers, canSeeAll, employeeFilter]);
 
   const syntheticHolidayEntries = useMemo<DisplayTimeEntry[]>(() => {
     if (employeeScope.length === 0) return [];
@@ -736,6 +760,10 @@ function TimeEntriesPageContent() {
       items = items.filter((entry) => entry.employeeId === appUser.uid);
     }
 
+    if (canSeeAll && employeeFilter !== "all") {
+      items = items.filter((entry) => entry.employeeId === employeeFilter);
+    }
+
     items = items.filter(
       (entry) => entry.entryDate >= weekStart && entry.entryDate <= weekEnd
     );
@@ -759,7 +787,16 @@ function TimeEntriesPageContent() {
       }
       return safeTrim(a.createdAt).localeCompare(safeTrim(b.createdAt));
     });
-  }, [appUser?.uid, canSeeAll, categoryFilter, mergedEntries, statusFilter, weekEnd, weekStart]);
+  }, [
+    appUser?.uid,
+    canSeeAll,
+    categoryFilter,
+    employeeFilter,
+    mergedEntries,
+    statusFilter,
+    weekEnd,
+    weekStart,
+  ]);
 
   useEffect(() => {
     async function hydrate() {
@@ -1119,7 +1156,7 @@ function TimeEntriesPageContent() {
                     variant={myWeekLocked ? "filled" : "outlined"}
                   />
                 ) : (
-                  <Chip label="All employees" variant="outlined" />
+                  <Chip label={selectedEmployeeLabel} variant="outlined" />
                 )}
 
                 {showRejectedFocus ? (
@@ -1307,12 +1344,32 @@ function TimeEntriesPageContent() {
                     display: "grid",
                     gridTemplateColumns: {
                       xs: "1fr",
-                      sm: "repeat(2, minmax(0, 1fr))",
+                      sm: canSeeAll
+                        ? "repeat(3, minmax(0, 1fr))"
+                        : "repeat(2, minmax(0, 1fr))",
                     },
                     gap: 2,
-                    maxWidth: 760,
+                    maxWidth: canSeeAll ? 1080 : 760,
                   }}
                 >
+                  {canSeeAll ? (
+                    <FormControl fullWidth>
+                      <InputLabel>Employee</InputLabel>
+                      <Select
+                        label="Employee"
+                        value={employeeFilter}
+                        onChange={(e) => setEmployeeFilter(e.target.value)}
+                      >
+                        <MenuItem value="all">All employees</MenuItem>
+                        {activeUsers.map((user) => (
+                          <MenuItem key={user.uid} value={user.uid}>
+                            {user.displayName}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  ) : null}
+
                   <FormControl fullWidth>
                     <InputLabel>Status</InputLabel>
                     <Select
@@ -1353,7 +1410,8 @@ function TimeEntriesPageContent() {
 
                 <Typography variant="body2" color="text.secondary">
                   Showing {visibleEntries.length}{" "}
-                  {visibleEntries.length === 1 ? "entry" : "entries"} for this payroll week.
+                  {visibleEntries.length === 1 ? "entry" : "entries"} for this payroll week
+                  {canSeeAll && employeeFilter !== "all" ? ` for ${selectedEmployeeLabel}` : ""}.
                 </Typography>
               </Stack>
             </CardContent>
