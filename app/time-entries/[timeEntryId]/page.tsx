@@ -4,6 +4,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
+  arrayRemove,
   collection,
   deleteDoc,
   doc,
@@ -467,6 +468,9 @@ export default function TimeEntryDetailPage({ params }: Props) {
     appUser?.role === "manager" ||
     appUser?.role === "dispatcher";
 
+  const canDeleteTimeEntries =
+    appUser?.role === "admin" || appUser?.role === "manager";
+
   useEffect(() => {
     async function loadUsers() {
       if (!canEditOtherUsers) return;
@@ -796,7 +800,6 @@ export default function TimeEntryDetailPage({ params }: Props) {
   const isHolidayEntry = normalizedEntryCategory === "holiday";
   const isPtoEntry = normalizedEntryCategory === "pto";
   const isMeetingEntry = normalizedEntryCategory === "meeting";
-  const isManualEntry = safeTrim(entry?.source).toLowerCase() === "manual_entry";
   const isAdminOverride = canEditOtherUsers;
 
   const selectedEmployeeOption = useMemo<UserOption | null>(() => {
@@ -878,15 +881,18 @@ export default function TimeEntryDetailPage({ params }: Props) {
 
   const canDelete = useMemo(() => {
     if (!entry) return false;
-    if (!isManualEntry) return false;
+    if (!canDeleteTimeEntries) return false;
 
-    if (isAdminOverride) return true;
-    if (!canEdit) return false;
-    if (isTimesheetLocked) return false;
-    if (isEntryHoursLocked) return false;
+  const entryStatus = safeTrim(entry.entryStatus).toLowerCase();
+  const timesheetStatus = safeTrim(matchingTimesheet?.status).toLowerCase();
 
-    return true;
-  }, [canEdit, entry, isAdminOverride, isEntryHoursLocked, isManualEntry, isTimesheetLocked]);
+  if (entryStatus === "exported") return false;
+  if (timesheetStatus === "exported" || timesheetStatus === "exported_to_quickbooks") {
+    return false;
+  }
+
+  return true;
+}, [canDeleteTimeEntries, entry, matchingTimesheet?.status]);
 
   const canEditBillable = useMemo(() => {
     if (!canEdit) return false;
@@ -1082,25 +1088,46 @@ export default function TimeEntryDetailPage({ params }: Props) {
     if (!entry) {
       setError("Missing time entry.");
       return;
-    }
-
-    if (!canDelete) {
-      setError("Only allowed manual entries can be deleted here.");
-      return;
-    }
-
-    setDeleting(true);
-    setError("");
-
-    try {
-      await deleteDoc(doc(db, "timeEntries", entry.id));
-      router.push("/time-entries");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to delete time entry.");
-      setDeleting(false);
-      setDeleteDialogOpen(false);
-    }
   }
+
+  if (!canDelete) {
+    setError("Only admins and managers can delete non-exported time entries.");
+    return;
+  }
+
+  setDeleting(true);
+  setError("");
+
+  try {
+    const nowIso = new Date().toISOString();
+    const returnHref = entry.weekStartDate
+      ? `/time-entries?weekStart=${encodeURIComponent(entry.weekStartDate)}`
+      : "/time-entries";
+
+    await deleteDoc(doc(db, "timeEntries", entry.id));
+
+    if (matchingTimesheet?.id) {
+      try {
+await updateDoc(doc(db, "weeklyTimesheets", matchingTimesheet.id), {
+  timeEntryIds: arrayRemove(entry.id),
+  timesheetNeedsRecalculation: true,
+  managerNote: matchingTimesheet.managerNote
+    ? `${matchingTimesheet.managerNote}\n\nTime entry deleted on ${nowIso}. Totals may need review.`
+    : `Time entry deleted on ${nowIso}. Totals may need review.`,
+  updatedAt: nowIso,
+});
+      } catch {
+        // Best-effort cleanup only. The deleted time entry is the source of truth.
+      }
+    }
+
+    router.push(returnHref);
+  } catch (err: unknown) {
+    setError(err instanceof Error ? err.message : "Failed to delete time entry.");
+    setDeleting(false);
+    setDeleteDialogOpen(false);
+  }
+}
 
   return (
     <ProtectedPage fallbackTitle="Time Entry">
@@ -1674,22 +1701,56 @@ export default function TimeEntryDetailPage({ params }: Props) {
           ) : null}
         </Stack>
 
-        <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)} fullWidth maxWidth="xs">
-          <DialogTitle>Delete time entry?</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2" color="text.secondary">
-              This only deletes the time entry itself. Manual entries can be deleted here. Admin override also allows manual-entry cleanup when needed during payroll support.
-            </Typography>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setDeleteDialogOpen(false)} disabled={deleting}>
-              Cancel
-            </Button>
-            <Button color="error" variant="contained" onClick={handleDelete} disabled={deleting}>
-              {deleting ? "Deleting…" : "Delete"}
-            </Button>
-          </DialogActions>
-        </Dialog>
+  <Dialog
+    open={deleteDialogOpen}
+    onClose={() => {
+      if (!deleting) setDeleteDialogOpen(false);
+    }}
+   fullWidth
+    maxWidth="xs"
+  >
+  <DialogTitle>Delete time entry?</DialogTitle>
+  <DialogContent>
+    <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+      <Typography variant="body2" color="text.secondary">
+        This will permanently remove this time entry from payroll review totals.
+      </Typography>
+
+      {entry ? (
+        <Box
+          sx={{
+            p: 1.5,
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 3,
+            bgcolor: "background.default",
+          }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 800 }}>
+            {entry.employeeName || "Employee"} • {entry.entryDate}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {Number(entry.hours || 0).toFixed(2)} hours •{" "}
+            {formatCategoryLabel(entry.category)} • {formatSourceLabel(entry.source)}
+          </Typography>
+        </Box>
+      ) : null}
+
+      <Alert severity="warning" sx={{ borderRadius: 3 }}>
+        Use this only for duplicate, incorrect, or mistaken time entries. Exported payroll
+        entries cannot be deleted here.
+      </Alert>
+    </Stack>
+  </DialogContent>
+  <DialogActions>
+    <Button onClick={() => setDeleteDialogOpen(false)} disabled={deleting}>
+      Cancel
+    </Button>
+    <Button color="error" variant="contained" onClick={handleDelete} disabled={deleting}>
+      {deleting ? "Deleting…" : "Delete Time Entry"}
+    </Button>
+  </DialogActions>
+</Dialog>
 
         <Snackbar
           open={Boolean(saveMsg)}
