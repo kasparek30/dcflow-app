@@ -37,6 +37,7 @@ import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import AssignmentIndRoundedIcon from "@mui/icons-material/AssignmentIndRounded";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
+import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -51,7 +52,25 @@ type StatusFilter =
   | "in_progress"
   | "follow_up"
   | "completed"
+  | "invoiced"
   | "cancelled";
+
+type ServiceTicketListItem = ServiceTicket & {
+  status?: string;
+  openedAt?: unknown;
+  firstDispatchedAt?: unknown;
+  firstStartedAt?: unknown;
+  firstCompletedAt?: unknown;
+  firstReadyToBillAt?: unknown;
+  firstInvoicedAt?: unknown;
+  closedAt?: unknown;
+  billing?: {
+    status?: string | null;
+    readyToBillAt?: unknown;
+    qboSyncedAt?: unknown;
+    qboInvoiceStatus?: string | null;
+  } | null;
+};
 
 function SectionHeader({
   title,
@@ -106,8 +125,8 @@ function SectionSurface({ children }: { children: React.ReactNode }) {
   );
 }
 
-function getStatusLabel(status?: ServiceTicket["status"]) {
-  switch (status) {
+function getStatusLabel(status?: string) {
+  switch (normalize(status)) {
     case "new":
       return "New";
     case "scheduled":
@@ -118,6 +137,8 @@ function getStatusLabel(status?: ServiceTicket["status"]) {
       return "Follow Up";
     case "completed":
       return "Completed";
+    case "invoiced":
+      return "Invoiced";
     case "cancelled":
       return "Cancelled";
     default:
@@ -125,7 +146,7 @@ function getStatusLabel(status?: ServiceTicket["status"]) {
   }
 }
 
-function getScheduleText(ticket: ServiceTicket) {
+function getScheduleText(ticket: ServiceTicketListItem) {
   return formatDateTimeRange12h(
     ticket.scheduledDate,
     ticket.scheduledStartTime,
@@ -137,7 +158,7 @@ function normalize(s: unknown) {
   return String(s || "").trim().toLowerCase();
 }
 
-function isAssigned(ticket: ServiceTicket) {
+function isAssigned(ticket: ServiceTicketListItem) {
   return Boolean(ticket.assignedTechnicianId || ticket.assignedTechnicianName);
 }
 
@@ -148,7 +169,8 @@ function statusRankForSort(status: string) {
   if (s === "scheduled") return 2;
   if (s === "in_progress") return 3;
   if (s === "completed") return 4;
-  if (s === "cancelled") return 5;
+  if (s === "invoiced") return 5;
+  if (s === "cancelled") return 6;
   return 99;
 }
 
@@ -156,7 +178,219 @@ function safeStr(x: unknown) {
   return String(x ?? "");
 }
 
-function statusTone(status?: ServiceTicket["status"]) {
+function dateFromUnknown(value: unknown): Date | null {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  if (typeof value === "number") {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  if (typeof value === "object") {
+    const maybeTimestamp = value as {
+      toDate?: () => Date;
+      seconds?: number;
+      _seconds?: number;
+      nanoseconds?: number;
+      _nanoseconds?: number;
+    };
+
+    if (typeof maybeTimestamp.toDate === "function") {
+      const parsed = maybeTimestamp.toDate();
+      return Number.isFinite(parsed.getTime()) ? parsed : null;
+    }
+
+    const seconds =
+      typeof maybeTimestamp.seconds === "number"
+        ? maybeTimestamp.seconds
+        : typeof maybeTimestamp._seconds === "number"
+          ? maybeTimestamp._seconds
+          : null;
+
+    if (seconds !== null) {
+      const parsed = new Date(seconds * 1000);
+      return Number.isFinite(parsed.getTime()) ? parsed : null;
+    }
+  }
+
+  return null;
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function daysBetweenLocal(start: Date, end: Date) {
+  const startMs = startOfLocalDay(start).getTime();
+  const endMs = startOfLocalDay(end).getTime();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  return Math.max(0, Math.floor((endMs - startMs) / oneDayMs));
+}
+
+function getTicketOpenedDate(ticket: ServiceTicketListItem) {
+  return dateFromUnknown(ticket.openedAt) || dateFromUnknown(ticket.createdAt);
+}
+
+function getTicketLifecycleEndDate(ticket: ServiceTicketListItem) {
+  const status = normalize(ticket.status);
+
+  if (status === "invoiced") {
+    return (
+      dateFromUnknown(ticket.closedAt) ||
+      dateFromUnknown(ticket.firstInvoicedAt) ||
+      dateFromUnknown(ticket.billing?.qboSyncedAt) ||
+      dateFromUnknown(ticket.updatedAt)
+    );
+  }
+
+  if (status === "cancelled") {
+    return dateFromUnknown(ticket.closedAt) || dateFromUnknown(ticket.updatedAt);
+  }
+
+  if (status === "completed") {
+    return (
+      dateFromUnknown(ticket.firstReadyToBillAt) ||
+      dateFromUnknown(ticket.billing?.readyToBillAt) ||
+      dateFromUnknown(ticket.firstCompletedAt) ||
+      dateFromUnknown(ticket.updatedAt)
+    );
+  }
+
+  return null;
+}
+
+function isNewUntouchedTicket(ticket: ServiceTicketListItem) {
+  const status = normalize(ticket.status);
+  const scheduled = Boolean(
+    ticket.scheduledDate || ticket.scheduledStartTime || ticket.scheduledEndTime
+  );
+
+  return status === "new" && !isAssigned(ticket) && !scheduled;
+}
+
+function formatLifecycleDaysLabel(prefix: string, days: number) {
+  if (prefix === "Waiting") {
+    if (days === 0) return "Waiting today";
+    if (days === 1) return "Waiting 1 day";
+    return `Waiting ${days} days`;
+  }
+
+  if (prefix === "Open") {
+    if (days === 0) return "Open today";
+    if (days === 1) return "Open 1 day";
+    return `Open ${days} days`;
+  }
+
+  if (prefix === "Ready after") {
+    if (days === 0) return "Ready same day";
+    if (days === 1) return "Ready after 1 day";
+    return `Ready after ${days} days`;
+  }
+
+  if (prefix === "Closed in") {
+    if (days === 0) return "Closed same day";
+    if (days === 1) return "Closed in 1 day";
+    return `Closed in ${days} days`;
+  }
+
+  if (days === 0) return `${prefix} today`;
+  if (days === 1) return `${prefix} 1 day`;
+  return `${prefix} ${days} days`;
+}
+
+function getTicketAgeInfo(ticket: ServiceTicketListItem) {
+  const openedDate = getTicketOpenedDate(ticket);
+  if (!openedDate) return null;
+
+  const status = normalize(ticket.status);
+  const endDate = getTicketLifecycleEndDate(ticket);
+  const isClosedLike =
+    status === "completed" || status === "invoiced" || status === "cancelled";
+
+  const days = daysBetweenLocal(openedDate, endDate || new Date());
+
+  let labelPrefix = "Open";
+
+  if (isNewUntouchedTicket(ticket)) {
+    labelPrefix = "Waiting";
+  } else if (status === "completed") {
+    labelPrefix = "Ready after";
+  } else if (status === "invoiced" || status === "cancelled") {
+    labelPrefix = "Closed in";
+  }
+
+  const critical = !isClosedLike && days >= 14;
+  const warning = !isClosedLike && days >= 7;
+
+  if (critical) {
+    return {
+      days,
+      label: formatLifecycleDaysLabel(labelPrefix, days),
+      sx: {
+        color: "#FFE1E4",
+        backgroundColor: "rgba(255,42,54,0.10)",
+        border: "1px solid rgba(255,42,54,0.24)",
+      },
+    };
+  }
+
+  if (warning) {
+    return {
+      days,
+      label: formatLifecycleDaysLabel(labelPrefix, days),
+      sx: {
+        color: "#FFEDD5",
+        backgroundColor: "rgba(245,158,11,0.11)",
+        border: "1px solid rgba(245,158,11,0.24)",
+      },
+    };
+  }
+
+  if (status === "completed") {
+    return {
+      days,
+      label: formatLifecycleDaysLabel(labelPrefix, days),
+      sx: {
+        color: "#DFF7E7",
+        backgroundColor: "rgba(52,199,89,0.10)",
+        border: "1px solid rgba(52,199,89,0.22)",
+      },
+    };
+  }
+
+  if (status === "invoiced" || status === "cancelled") {
+    return {
+      days,
+      label: formatLifecycleDaysLabel(labelPrefix, days),
+      sx: {
+        color: "#E2E8F0",
+        backgroundColor: "rgba(148,163,184,0.10)",
+        border: "1px solid rgba(148,163,184,0.20)",
+      },
+    };
+  }
+
+  return {
+    days,
+    label: formatLifecycleDaysLabel(labelPrefix, days),
+    sx: {
+      color: "#DCEBFF",
+      backgroundColor: "rgba(13,126,242,0.08)",
+      border: "1px solid rgba(13,126,242,0.20)",
+    },
+  };
+}
+
+function statusTone(status?: string) {
   const s = normalize(status);
 
   if (s === "new") {
@@ -214,6 +448,17 @@ function statusTone(status?: ServiceTicket["status"]) {
     };
   }
 
+  if (s === "invoiced") {
+    return {
+      label: "Invoiced",
+      sx: {
+        color: "#DFF7E7",
+        backgroundColor: "rgba(52,199,89,0.12)",
+        border: "1px solid rgba(52,199,89,0.24)",
+      },
+    };
+  }
+
   if (s === "cancelled") {
     return {
       label: "Cancelled",
@@ -246,7 +491,7 @@ export default function ServiceTicketsPage() {
   const defaultHideCompleted = isFieldUser ? true : false;
 
   const [loading, setLoading] = useState(true);
-  const [tickets, setTickets] = useState<ServiceTicket[]>([]);
+  const [tickets, setTickets] = useState<ServiceTicketListItem[]>([]);
   const [error, setError] = useState("");
 
   const [searchText, setSearchText] = useState("");
@@ -262,7 +507,7 @@ export default function ServiceTicketsPage() {
         const q = query(collection(db, "serviceTickets"), orderBy("createdAt", "desc"));
         const snap = await getDocs(q);
 
-        const items: ServiceTicket[] = snap.docs.map((docSnap) => {
+        const items: ServiceTicketListItem[] = snap.docs.map((docSnap) => {
           const data = docSnap.data() as any;
 
           return {
@@ -289,6 +534,15 @@ export default function ServiceTicketsPage() {
             active: data.active ?? true,
             createdAt: data.createdAt ?? undefined,
             updatedAt: data.updatedAt ?? undefined,
+
+            openedAt: data.openedAt ?? undefined,
+            firstDispatchedAt: data.firstDispatchedAt ?? undefined,
+            firstStartedAt: data.firstStartedAt ?? undefined,
+            firstCompletedAt: data.firstCompletedAt ?? undefined,
+            firstReadyToBillAt: data.firstReadyToBillAt ?? undefined,
+            firstInvoicedAt: data.firstInvoicedAt ?? undefined,
+            closedAt: data.closedAt ?? undefined,
+            billing: data.billing ?? null,
           };
         });
 
@@ -309,7 +563,9 @@ export default function ServiceTicketsPage() {
     const base = tickets.filter((ticket) => {
       const s = normalize(ticket.status);
 
-      if (hideCompleted && (s === "completed" || s === "cancelled")) return false;
+      if (hideCompleted && (s === "completed" || s === "invoiced" || s === "cancelled")) {
+        return false;
+      }
 
       if (availableOnly) {
         const assigned = isAssigned(ticket);
@@ -317,7 +573,7 @@ export default function ServiceTicketsPage() {
         if (!(s === "new" || s === "scheduled")) return false;
       }
 
-      if (statusFilter !== "all" && ticket.status !== statusFilter) return false;
+      if (statusFilter !== "all" && normalize(ticket.status) !== statusFilter) return false;
 
       const assigned = isAssigned(ticket);
       if (assignedFilter === "assigned" && !assigned) return false;
@@ -330,6 +586,8 @@ export default function ServiceTicketsPage() {
       if (scheduleFilter === "unscheduled" && scheduled) return false;
 
       if (!normalizedSearch) return true;
+
+      const ageInfo = getTicketAgeInfo(ticket);
 
       const haystack = [
         ticket.issueSummary,
@@ -348,6 +606,7 @@ export default function ServiceTicketsPage() {
         ticket.scheduledEndTime,
         ticket.internalNotes,
         ticket.status,
+        ageInfo?.label,
       ]
         .filter(Boolean)
         .join(" ")
@@ -445,8 +704,8 @@ export default function ServiceTicketsPage() {
                     maxWidth: 960,
                   }}
                 >
-                  Search by customer, issue, address, technician, status, and schedule
-                  to manage the service work queue.
+                  Search by customer, issue, address, technician, status, schedule, and
+                  open age to manage the service work queue.
                 </Typography>
               </Box>
 
@@ -466,7 +725,7 @@ export default function ServiceTicketsPage() {
                 <Stack spacing={2.25}>
                   <SectionHeader
                     title="Filters"
-                    subtitle="Refine the work queue by search text, status, assignment state, and scheduling state."
+                    subtitle="Refine the work queue by search text, status, assignment state, scheduling state, and customer waiting age."
                   />
 
                   <Box
@@ -484,7 +743,7 @@ export default function ServiceTicketsPage() {
                       label="Search"
                       value={searchText}
                       onChange={(e) => setSearchText(e.target.value)}
-                      placeholder="Issue, customer, address, tech, date..."
+                      placeholder="Issue, customer, address, tech, date, waiting..."
                       size="small"
                       fullWidth
                       InputProps={{
@@ -511,6 +770,7 @@ export default function ServiceTicketsPage() {
                         <MenuItem value="in_progress">In Progress</MenuItem>
                         <MenuItem value="follow_up">Follow Up</MenuItem>
                         <MenuItem value="completed">Completed</MenuItem>
+                        <MenuItem value="invoiced">Invoiced</MenuItem>
                         <MenuItem value="cancelled">Cancelled</MenuItem>
                       </Select>
                     </FormControl>
@@ -680,6 +940,7 @@ export default function ServiceTicketsPage() {
                 {filteredTickets.map((ticket) => {
                   const assigned = isAssigned(ticket);
                   const tone = statusTone(ticket.status);
+                  const ageInfo = getTicketAgeInfo(ticket);
 
                   return (
                     <Card
@@ -757,7 +1018,13 @@ export default function ServiceTicketsPage() {
                                 </Box>
                               </Stack>
 
-                              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                flexWrap="wrap"
+                                useFlexGap
+                                justifyContent="flex-end"
+                              >
                                 {!assigned ? (
                                   <Chip
                                     size="small"
@@ -768,6 +1035,22 @@ export default function ServiceTicketsPage() {
                                       color: "#DCEBFF",
                                       backgroundColor: "rgba(13,126,242,0.10)",
                                       border: "1px solid rgba(13,126,242,0.22)",
+                                    }}
+                                  />
+                                ) : null}
+
+                                {ageInfo ? (
+                                  <Chip
+                                    size="small"
+                                    icon={<AccessTimeRoundedIcon sx={{ fontSize: 15 }} />}
+                                    label={ageInfo.label}
+                                    sx={{
+                                      borderRadius: 1.5,
+                                      fontWeight: 800,
+                                      "& .MuiChip-icon": {
+                                        color: "inherit",
+                                      },
+                                      ...ageInfo.sx,
                                     }}
                                   />
                                 ) : null}
