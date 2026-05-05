@@ -4128,6 +4128,9 @@ const latestDispatchConflicts = collectDispatchOverrideConflicts({
               <Stack spacing={2.5}>
                 <ServiceTicketLocationCard
                   customerDisplayName={ticket.customerDisplayName}
+                  customerHref={
+                    ticket.customerId ? `/customers/${ticket.customerId}` : undefined
+                  }
                   serviceAddressLine1={ticket.serviceAddressLine1}
                   serviceAddressLine2={ticket.serviceAddressLine2}
                   serviceCity={ticket.serviceCity}

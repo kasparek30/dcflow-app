@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Alert,
   Button,
@@ -11,9 +12,10 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
-import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
 import AlternateEmailRoundedIcon from "@mui/icons-material/AlternateEmailRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
+import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
 import ServiceTicketMapPreview from "./ServiceTicketMapPreview";
 import {
   buildPreferredMapsHref,
@@ -24,6 +26,7 @@ import {
 
 type Props = {
   customerDisplayName?: string | null;
+  customerHref?: string | null;
   serviceAddressLine1?: string | null;
   serviceAddressLine2?: string | null;
   serviceCity?: string | null;
@@ -36,6 +39,7 @@ type Props = {
 
 export default function ServiceTicketLocationCard({
   customerDisplayName,
+  customerHref,
   serviceAddressLine1,
   serviceAddressLine2,
   serviceCity,
@@ -69,6 +73,9 @@ export default function ServiceTicketLocationCard({
     ]
   );
 
+  const cleanCustomerName = String(customerDisplayName || "").trim();
+  const cleanCustomerHref = String(customerHref || "").trim();
+
   const phoneHref = buildTelHref(customerPhone);
   const mapsHref = buildPreferredMapsHref(mapsAddress, preferAppleMaps);
 
@@ -97,12 +104,54 @@ export default function ServiceTicketLocationCard({
           ) : null
         }
         title={
-          <Typography variant="h6" fontWeight={700} noWrap>
-            {customerDisplayName || "Customer"}
-          </Typography>
+          cleanCustomerHref ? (
+            <Button
+              component={Link}
+              href={cleanCustomerHref}
+              variant="text"
+              endIcon={<OpenInNewRoundedIcon fontSize="small" />}
+              sx={{
+                minWidth: 0,
+                justifyContent: "flex-start",
+                p: 0,
+                color: "text.primary",
+                textAlign: "left",
+                textTransform: "none",
+                fontSize: "1.25rem",
+                fontWeight: 800,
+                lineHeight: 1.25,
+                maxWidth: "100%",
+                "&:hover": {
+                  backgroundColor: "transparent",
+                  color: "primary.main",
+                  textDecoration: "underline",
+                  textUnderlineOffset: "3px",
+                },
+                "& .MuiButton-endIcon": {
+                  ml: 0.75,
+                },
+              }}
+            >
+              <Typography
+                component="span"
+                variant="h6"
+                fontWeight={800}
+                noWrap
+                sx={{ minWidth: 0, maxWidth: "100%" }}
+              >
+                {cleanCustomerName || "Customer"}
+              </Typography>
+            </Button>
+          ) : (
+            <Typography variant="h6" fontWeight={700} noWrap>
+              {cleanCustomerName || "Customer"}
+            </Typography>
+          )
         }
       />
+
       <Divider />
+
       <CardContent>
         <Stack spacing={1.5}>
           {mapsAddress ? (

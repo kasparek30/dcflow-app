@@ -55,6 +55,8 @@ type StatusFilter =
   | "invoiced"
   | "cancelled";
 
+type AgingTone = "default" | "warning" | "critical" | "success" | "muted";
+
 type ServiceTicketListItem = ServiceTicket & {
   status?: string;
   openedAt?: unknown;
@@ -334,11 +336,16 @@ function getTicketAgeInfo(ticket: ServiceTicketListItem) {
   if (critical) {
     return {
       days,
+      tone: "critical" as AgingTone,
       label: formatLifecycleDaysLabel(labelPrefix, days),
-      sx: {
+      chipSx: {
         color: "#FFE1E4",
         backgroundColor: "rgba(255,42,54,0.10)",
         border: "1px solid rgba(255,42,54,0.24)",
+      },
+      cardSx: {
+        border: "1.5px solid rgba(255,42,54,0.40)",
+        backgroundColor: "rgba(255,42,54,0.035)",
       },
     };
   }
@@ -346,11 +353,16 @@ function getTicketAgeInfo(ticket: ServiceTicketListItem) {
   if (warning) {
     return {
       days,
+      tone: "warning" as AgingTone,
       label: formatLifecycleDaysLabel(labelPrefix, days),
-      sx: {
+      chipSx: {
         color: "#FFEDD5",
         backgroundColor: "rgba(245,158,11,0.11)",
         border: "1px solid rgba(245,158,11,0.24)",
+      },
+      cardSx: {
+        border: "1.5px solid rgba(245,158,11,0.40)",
+        backgroundColor: "rgba(245,158,11,0.032)",
       },
     };
   }
@@ -358,11 +370,16 @@ function getTicketAgeInfo(ticket: ServiceTicketListItem) {
   if (status === "completed") {
     return {
       days,
+      tone: "success" as AgingTone,
       label: formatLifecycleDaysLabel(labelPrefix, days),
-      sx: {
+      chipSx: {
         color: "#DFF7E7",
         backgroundColor: "rgba(52,199,89,0.10)",
         border: "1px solid rgba(52,199,89,0.22)",
+      },
+      cardSx: {
+        border: "1px solid rgba(52,199,89,0.24)",
+        backgroundColor: "background.paper",
       },
     };
   }
@@ -370,22 +387,32 @@ function getTicketAgeInfo(ticket: ServiceTicketListItem) {
   if (status === "invoiced" || status === "cancelled") {
     return {
       days,
+      tone: "muted" as AgingTone,
       label: formatLifecycleDaysLabel(labelPrefix, days),
-      sx: {
+      chipSx: {
         color: "#E2E8F0",
         backgroundColor: "rgba(148,163,184,0.10)",
         border: "1px solid rgba(148,163,184,0.20)",
+      },
+      cardSx: {
+        border: "1px solid rgba(148,163,184,0.22)",
+        backgroundColor: "background.paper",
       },
     };
   }
 
   return {
     days,
+    tone: "default" as AgingTone,
     label: formatLifecycleDaysLabel(labelPrefix, days),
-    sx: {
+    chipSx: {
       color: "#DCEBFF",
       backgroundColor: "rgba(13,126,242,0.08)",
       border: "1px solid rgba(13,126,242,0.20)",
+    },
+    cardSx: {
+      border: "1px solid rgba(13,126,242,0.22)",
+      backgroundColor: "background.paper",
     },
   };
 }
@@ -950,8 +977,21 @@ export default function ServiceTicketsPage() {
                         height: "100%",
                         borderRadius: 4,
                         overflow: "hidden",
-                        border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                        backgroundColor: "background.paper",
+                        border:
+                          ageInfo?.cardSx.border ||
+                          `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                        backgroundColor:
+                          ageInfo?.cardSx.backgroundColor || "background.paper",
+                        transition:
+                          "border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease",
+                        "&:hover": {
+                          boxShadow:
+                            ageInfo?.tone === "critical"
+                              ? "0 0 0 1px rgba(255,42,54,0.18)"
+                              : ageInfo?.tone === "warning"
+                                ? "0 0 0 1px rgba(245,158,11,0.16)"
+                                : "0 0 0 1px rgba(255,255,255,0.06)",
+                        },
                       }}
                     >
                       <CardActionArea
@@ -1025,20 +1065,6 @@ export default function ServiceTicketsPage() {
                                 useFlexGap
                                 justifyContent="flex-end"
                               >
-                                {!assigned ? (
-                                  <Chip
-                                    size="small"
-                                    label="Unassigned"
-                                    sx={{
-                                      borderRadius: 1.5,
-                                      fontWeight: 700,
-                                      color: "#DCEBFF",
-                                      backgroundColor: "rgba(13,126,242,0.10)",
-                                      border: "1px solid rgba(13,126,242,0.22)",
-                                    }}
-                                  />
-                                ) : null}
-
                                 {ageInfo ? (
                                   <Chip
                                     size="small"
@@ -1050,7 +1076,7 @@ export default function ServiceTicketsPage() {
                                       "& .MuiChip-icon": {
                                         color: "inherit",
                                       },
-                                      ...ageInfo.sx,
+                                      ...ageInfo.chipSx,
                                     }}
                                   />
                                 ) : null}
