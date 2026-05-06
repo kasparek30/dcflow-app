@@ -543,7 +543,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
           })}
         </Stack>
 
-        <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+        <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
           <Stack spacing={1.25}>
             <Stack direction="row" spacing={1} alignItems="center">
               <ScheduleRoundedIcon color="primary" fontSize="small" />
