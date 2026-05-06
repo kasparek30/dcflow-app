@@ -1,3 +1,4 @@
+// components/trips/SharedTripCard.tsx
 "use client";
 
 import * as React from "react";

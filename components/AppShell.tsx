@@ -1,9 +1,11 @@
+//components/AppShell.tsx
 "use client";
 
 import Image from "next/image";
 import React, { ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import LogoutButton from "./LogoutButton";
+import GlobalSearch from "./GlobalSearch";
 import type { AppUser } from "../src/types/app-user";
 import { db } from "../src/lib/firebase";
 import {
@@ -3096,22 +3098,119 @@ export default function AppShell({
             flex: 1,
             minWidth: 0,
             height: "100vh",
-            overflow: "auto",
+            display: "flex",
+            flexDirection: "column",
             backgroundColor: "background.default",
+            overflow: "hidden",
           }}
         >
           <Box
+            component="header"
             sx={{
-              maxWidth: 1600,
-              mx: "auto",
-              px: { xs: 2, md: 3 },
-              py: 3,
+              height: 72,
+              px: 3,
+              display: "flex",
+              alignItems: "center",
+              gap: 2,
+              borderBottom: (theme) =>
+                `1px solid ${alpha(theme.palette.divider, 0.85)}`,
+              backgroundColor: "background.default",
+              flexShrink: 0,
             }}
           >
-            {globalDockNotice}
-            {rejectedBanner}
-            {mondayReminderBanner}
-            {children}
+            <GlobalSearch />
+
+            <Box sx={{ flex: 1 }} />
+
+<Paper
+  elevation={0}
+  sx={{
+    display: {
+      xs: "none",
+      lg: "flex",
+    },
+    alignItems: "center",
+    gap: 1,
+    px: 1.25,
+    py: 0.75,
+    borderRadius: 999,
+    border: (theme) => `1px solid ${alpha(theme.palette.divider, 0.78)}`,
+    backgroundColor: (theme) =>
+      theme.palette.mode === "dark"
+        ? alpha(theme.palette.common.white, 0.045)
+        : alpha(theme.palette.common.white, 0.72),
+  }}
+>
+  <Box
+    sx={{
+      width: 28,
+      height: 28,
+      borderRadius: 999,
+      display: "grid",
+      placeItems: "center",
+      backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.12),
+      color: "primary.main",
+      fontSize: 12,
+      fontWeight: 900,
+      textTransform: "uppercase",
+    }}
+  >
+    {safeTrim(appUser?.displayName || "U").slice(0, 1)}
+  </Box>
+
+  <Box sx={{ minWidth: 0 }}>
+    <Typography
+      variant="caption"
+      sx={{
+        display: "block",
+        lineHeight: 1.1,
+        fontWeight: 800,
+        color: "text.primary",
+        maxWidth: 180,
+      }}
+      noWrap
+    >
+      {appUser?.displayName || "Unknown User"}
+    </Typography>
+
+    <Typography
+      variant="caption"
+      color="text.secondary"
+      sx={{
+        display: "block",
+        lineHeight: 1.1,
+        textTransform: "capitalize",
+      }}
+      noWrap
+    >
+      {appUser?.role || "No Role"}
+    </Typography>
+  </Box>
+</Paper>
+          </Box>
+
+          <Box
+            component="main"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "auto",
+              backgroundColor: "background.default",
+            }}
+          >
+            <Box
+              sx={{
+                maxWidth: 1600,
+                mx: "auto",
+                px: { xs: 2, md: 3 },
+                py: 3,
+              }}
+            >
+              {globalDockNotice}
+              {rejectedBanner}
+              {mondayReminderBanner}
+              {children}
+            </Box>
           </Box>
         </Box>
       </Box>
