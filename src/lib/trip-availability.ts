@@ -1,3 +1,4 @@
+//src/lib/trip-availability.ts
 export type TripTimeWindow = "am" | "pm" | "all_day" | "custom";
 
 export type TripCrew = {

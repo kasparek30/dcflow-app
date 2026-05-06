@@ -41,12 +41,14 @@ import {
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import useMediaQuery from "@mui/material/useMediaQuery";
+import AddHomeRoundedIcon from "@mui/icons-material/AddHomeRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import AssignmentTurnedInRoundedIcon from "@mui/icons-material/AssignmentTurnedInRounded";
 import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
+import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
@@ -56,6 +58,7 @@ import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
+import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
@@ -203,6 +206,7 @@ type BillingPacket = {
 };
 
 type TicketWithBilling = ServiceTicket & {
+  serviceAddressId?: string | null;
   billing?: BillingPacket | null;
 };
 
@@ -220,6 +224,33 @@ type EmployeeProfileOption = {
   employmentStatus?: string;
   laborRole?: string;
   defaultPairedTechUid?: string | null;
+};
+
+type CustomerServiceAddressOption = {
+  id: string;
+  label?: string;
+  addressLine1: string;
+  addressLine2?: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  notes?: string | null;
+  active?: boolean;
+  isPrimary?: boolean;
+  source?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type GoogleAddressSelectionLike = {
+  placeId?: string;
+  formattedAddress: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  source?: string;
 };
 
 type FinishMode = "none" | "follow_up" | "resolved";
@@ -267,6 +298,31 @@ function roundToHalf(hours: number) {
 
 function normalizeRole(role?: string) {
   return String(role || "").trim().toLowerCase();
+}
+
+function safeStr(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `id_${Math.random().toString(36).slice(2, 11)}`;
+}
+
+function buildInlineAddress(
+  line1?: string | null,
+  line2?: string | null,
+  city?: string | null,
+  state?: string | null,
+  postal?: string | null
+) {
+  return [line1, line2, city, state, postal]
+    .map((x) => safeStr(x))
+    .filter(Boolean)
+    .join(", ");
 }
 
 function stripUndefined<T>(obj: T): T {
@@ -1311,25 +1367,32 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   >({});
 
   const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
-  const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] =
-    useState("240");
-const [ticketIssueSummaryEdit, setTicketIssueSummaryEdit] = useState("");
-const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
+  const [ticketEstimatedHoursEdit, setTicketEstimatedHoursEdit] = useState("4");
+  const [ticketIssueSummaryEdit, setTicketIssueSummaryEdit] = useState("");
+  const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
+  const [ticketEditSaving, setTicketEditSaving] = useState(false);
+  const [ticketEditErr, setTicketEditErr] = useState("");
+  const [ticketEditOk, setTicketEditOk] = useState("");
 
-const [ticketServiceAddressLabelEdit, setTicketServiceAddressLabelEdit] =
-  useState("");
-const [ticketServiceAddressLine1Edit, setTicketServiceAddressLine1Edit] =
-  useState("");
-const [ticketServiceAddressLine2Edit, setTicketServiceAddressLine2Edit] =
-  useState("");
-const [ticketServiceCityEdit, setTicketServiceCityEdit] = useState("");
-const [ticketServiceStateEdit, setTicketServiceStateEdit] = useState("");
-const [ticketServicePostalCodeEdit, setTicketServicePostalCodeEdit] =
-  useState("");
-
-const [ticketEditSaving, setTicketEditSaving] = useState(false);
-const [ticketEditErr, setTicketEditErr] = useState("");
-const [ticketEditOk, setTicketEditOk] = useState("");
+  const [customerServiceAddresses, setCustomerServiceAddresses] = useState<
+    CustomerServiceAddressOption[]
+  >([]);
+  const [showEditLocationDialog, setShowEditLocationDialog] = useState(false);
+  const [locationSaving, setLocationSaving] = useState(false);
+  const [locationErr, setLocationErr] = useState("");
+  const [locationOk, setLocationOk] = useState("");
+  const [selectedServiceAddressId, setSelectedServiceAddressId] = useState("");
+  const [quickAddMode, setQuickAddMode] = useState(false);
+  const [quickServiceLabel, setQuickServiceLabel] = useState("");
+  const [quickServiceAddressSearch, setQuickServiceAddressSearch] = useState("");
+  const [quickServiceAddressLine1, setQuickServiceAddressLine1] = useState("");
+  const [quickServiceAddressLine2, setQuickServiceAddressLine2] = useState("");
+  const [quickServiceCity, setQuickServiceCity] = useState("");
+  const [quickServiceState, setQuickServiceState] = useState("");
+  const [quickServicePostalCode, setQuickServicePostalCode] = useState("");
+  const [quickServiceNotes, setQuickServiceNotes] = useState("");
+  const [quickServiceAddressSource, setQuickServiceAddressSource] =
+    useState("manual");
 
   const [tripDate, setTripDate] = useState(isoTodayLocal());
   const [tripTimeWindow, setTripTimeWindow] = useState<TripTimeWindow>("am");
@@ -1466,6 +1529,7 @@ const [ticketEditOk, setTicketEditOk] = useState("");
           id: ticketSnap.id,
           customerId: d.customerId ?? "",
           customerDisplayName: d.customerDisplayName ?? "",
+          serviceAddressId: d.serviceAddressId ?? null,
           serviceAddressLabel: d.serviceAddressLabel ?? undefined,
           serviceAddressLine1: d.serviceAddressLine1 ?? "",
           serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
@@ -1494,25 +1558,11 @@ const [ticketEditOk, setTicketEditOk] = useState("");
 
         setTicket(nextTicket);
         setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
-        setTicketEstimatedMinutesEdit(
-          String(nextTicket.estimatedDurationMinutes || 60)
+        setTicketEstimatedHoursEdit(
+          String(Math.max(1, Number(nextTicket.estimatedDurationMinutes || 60) / 60))
         );
         setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
-        setTicketServiceAddressLabelEdit(
-  String(nextTicket.serviceAddressLabel || "")
-);
-setTicketServiceAddressLine1Edit(
-  String(nextTicket.serviceAddressLine1 || "")
-);
-setTicketServiceAddressLine2Edit(
-  String(nextTicket.serviceAddressLine2 || "")
-);
-setTicketServiceCityEdit(String(nextTicket.serviceCity || ""));
-setTicketServiceStateEdit(String(nextTicket.serviceState || ""));
-setTicketServicePostalCodeEdit(
-  String(nextTicket.servicePostalCode || "")
-);
 
         const [usersSnap, profilesSnap, tripSnap, ptoSnap, holidaySnap] = await Promise.all([
           getDocs(collection(db, "users")),
@@ -1617,8 +1667,39 @@ setTicketServicePostalCodeEdit(
           const customerSnap = await getDoc(doc(db, "customers", customerId));
           if (customerSnap.exists()) {
             const customer = customerSnap.data() as any;
-            setCustomerPhone(String(customer.phone || "").trim());
+
+            setCustomerPhone(
+              String(customer.phonePrimary || customer.phone || "").trim()
+            );
             setCustomerEmail(String(customer.email || "").trim());
+
+            const serviceAddresses = Array.isArray(customer.serviceAddresses)
+              ? customer.serviceAddresses
+                  .map((addr: any) => ({
+                    id: String(addr.id || createId()),
+                    label: addr.label ?? undefined,
+                    addressLine1: String(addr.addressLine1 || ""),
+                    addressLine2: addr.addressLine2 ?? null,
+                    city: String(addr.city || ""),
+                    state: String(addr.state || ""),
+                    postalCode: String(addr.postalCode || ""),
+                    notes: addr.notes ?? null,
+                    active: addr.active ?? true,
+                    isPrimary: Boolean(addr.isPrimary),
+                    source: addr.source ?? null,
+                    createdAt: addr.createdAt ?? undefined,
+                    updatedAt: addr.updatedAt ?? undefined,
+                  }))
+                  .filter((addr: CustomerServiceAddressOption) => addr.active !== false)
+              : [];
+
+            serviceAddresses.sort(
+              (a: CustomerServiceAddressOption, b: CustomerServiceAddressOption) =>
+                Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)) ||
+                safeStr(a.label).localeCompare(safeStr(b.label))
+            );
+
+            setCustomerServiceAddresses(serviceAddresses);
           }
         }
 
@@ -1788,17 +1869,17 @@ setTicketServicePostalCodeEdit(
     return selections;
   }
 
-async function loadAvailabilityTripsForDate(date: string) {
-  if (!date?.trim()) return [] as TripDocLite[];
+  async function loadAvailabilityTripsForDate(date: string) {
+    if (!date?.trim()) return [] as TripDocLite[];
 
-  const snap = await getDocs(
-    query(collection(db, "trips"), where("date", "==", date.trim()))
-  );
+    const snap = await getDocs(
+      query(collection(db, "trips"), where("date", "==", date.trim()))
+    );
 
-  const items = snap.docs.map((ds) => mapTripLikeFromDoc(ds));
-  setAvailabilityTripsByDate((prev) => ({ ...prev, [date]: items }));
-  return items;
-}
+    const items = snap.docs.map((ds) => mapTripLikeFromDoc(ds));
+    setAvailabilityTripsByDate((prev) => ({ ...prev, [date]: items }));
+    return items;
+  }
 
   function availabilityForOption(args: {
     uid: string;
@@ -2293,134 +2374,330 @@ Supply line`}
     );
   }
 
-async function handleSaveTicketOverview() {
-  if (!canDispatch || !ticket?.id) return;
-
-  if (ticket.status === "invoiced") {
-    setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
-    return;
+  function resetQuickAddServiceLocationForm() {
+    setQuickServiceLabel("");
+    setQuickServiceAddressSearch("");
+    setQuickServiceAddressLine1("");
+    setQuickServiceAddressLine2("");
+    setQuickServiceCity("");
+    setQuickServiceState("");
+    setQuickServicePostalCode("");
+    setQuickServiceNotes("");
+    setQuickServiceAddressSource("manual");
   }
 
-  setTicketEditErr("");
-  setTicketEditOk("");
-  setTicketEditSaving(true);
+  function markQuickServiceAddressManual() {
+    setQuickServiceAddressSource((current) =>
+      current === "google_places" ? "manual" : current
+    );
+  }
 
-  try {
-    const minutes = Number(ticketEstimatedMinutesEdit);
-    if (!Number.isFinite(minutes) || minutes <= 0) {
-      setTicketEditErr("Estimated duration must be a number > 0.");
-      return;
-    }
+  function handleQuickServiceGoogleAddressSelected(
+    selection: GoogleAddressSelectionLike
+  ) {
+    setQuickServiceAddressSearch(selection.formattedAddress || "");
+    setQuickServiceAddressLine1(selection.addressLine1 || "");
+    setQuickServiceAddressLine2(selection.addressLine2 || "");
+    setQuickServiceCity(selection.city || "");
+    setQuickServiceState(selection.state || "");
+    setQuickServicePostalCode(selection.postalCode || "");
+    setQuickServiceAddressSource("google_places");
+  }
 
-    const summary = ticketIssueSummaryEdit.trim();
-    if (!summary) {
-      setTicketEditErr("Issue summary is required.");
-      return;
-    }
+  function openEditLocationDialog() {
+    if (!ticket) return;
 
-    const nextStatus = ticketStatusEdit as TicketStatus;
-    const guard = getManualTicketStatusError({
-      nextStatus,
-      currentStatus: ticket.status,
-      trips,
-    });
+    setLocationErr("");
+    setLocationOk("");
+    setQuickAddMode(false);
+    resetQuickAddServiceLocationForm();
 
-    if (guard) {
-      setTicketEditErr(guard);
-      return;
-    }
+    const currentServiceAddressId = safeStr(ticket.serviceAddressId);
+    const fallbackMatch =
+      customerServiceAddresses.find(
+        (addr) =>
+          safeStr(addr.addressLine1) === safeStr(ticket.serviceAddressLine1) &&
+          safeStr(addr.city) === safeStr(ticket.serviceCity) &&
+          safeStr(addr.state) === safeStr(ticket.serviceState) &&
+          safeStr(addr.postalCode) === safeStr(ticket.servicePostalCode)
+      ) || null;
 
-    const serviceAddressLabel = ticketServiceAddressLabelEdit.trim();
-    const serviceAddressLine1 = ticketServiceAddressLine1Edit.trim();
-    const serviceAddressLine2 = ticketServiceAddressLine2Edit.trim();
-    const serviceCity = ticketServiceCityEdit.trim();
-    const serviceState = ticketServiceStateEdit.trim().toUpperCase();
-    const servicePostalCode = ticketServicePostalCodeEdit.trim();
+    setSelectedServiceAddressId(
+      currentServiceAddressId || fallbackMatch?.id || ""
+    );
 
-    const hasAnyServiceAddress =
-      Boolean(serviceAddressLabel) ||
-      Boolean(serviceAddressLine1) ||
-      Boolean(serviceAddressLine2) ||
-      Boolean(serviceCity) ||
-      Boolean(serviceState) ||
-      Boolean(servicePostalCode);
+    setShowEditLocationDialog(true);
+  }
 
-    if (hasAnyServiceAddress) {
-      if (!serviceAddressLine1) {
-        setTicketEditErr("Service Address Line 1 is required when adding an address.");
-        return;
-      }
-
-      if (!serviceCity) {
-        setTicketEditErr("Service City is required when adding an address.");
-        return;
-      }
-
-      if (!serviceState) {
-        setTicketEditErr("Service State is required when adding an address.");
-        return;
-      }
-
-      if (!servicePostalCode) {
-        setTicketEditErr("Service ZIP Code is required when adding an address.");
-        return;
-      }
-    }
-
-    const now = nowIso();
-
-    await updateDoc(doc(db, "serviceTickets", ticket.id), {
-      status: nextStatus,
-      issueSummary: summary,
-      estimatedDurationMinutes: minutes,
-      issueDetails: ticketIssueDetailsEdit.trim() || null,
-
-      serviceAddressLabel: serviceAddressLabel || null,
-      serviceAddressLine1: serviceAddressLine1 || "",
-      serviceAddressLine2: serviceAddressLine2 || null,
-      serviceCity: serviceCity || "",
-      serviceState: serviceState || "",
-      servicePostalCode: servicePostalCode || "",
-
-      updatedAt: now,
-    });
-
+  function applyServiceAddressToTicketState(
+    address: CustomerServiceAddressOption,
+    updatedAt: string
+  ) {
     setTicket((prev) =>
       prev
         ? {
             ...prev,
-            status: nextStatus,
-            issueSummary: summary,
-            estimatedDurationMinutes: minutes,
-            issueDetails: ticketIssueDetailsEdit.trim() || undefined,
-
-            serviceAddressLabel: serviceAddressLabel || undefined,
-            serviceAddressLine1,
-            serviceAddressLine2: serviceAddressLine2 || undefined,
-            serviceCity,
-            serviceState,
-            servicePostalCode,
-
-            updatedAt: now,
+            serviceAddressId: address.id,
+            serviceAddressLabel: address.label || "Service Address",
+            serviceAddressLine1: address.addressLine1 || "",
+            serviceAddressLine2: address.addressLine2 || undefined,
+            serviceCity: address.city || "",
+            serviceState: address.state || "",
+            servicePostalCode: address.postalCode || "",
+            updatedAt,
           }
         : prev
     );
-setTicketServiceAddressLabelEdit(serviceAddressLabel);
-setTicketServiceAddressLine1Edit(serviceAddressLine1);
-setTicketServiceAddressLine2Edit(serviceAddressLine2);
-setTicketServiceCityEdit(serviceCity);
-setTicketServiceStateEdit(serviceState);
-setTicketServicePostalCodeEdit(servicePostalCode);
-
-setTicketEditOk("Ticket updated.");
-  } catch (err: unknown) {
-    setTicketEditErr(
-      err instanceof Error ? err.message : "Failed to update ticket."
-    );
-  } finally {
-    setTicketEditSaving(false);
   }
-}
+
+  async function handleSaveTicketOverview() {
+    if (!canDispatch || !ticket?.id) return;
+
+    if (ticket.status === "invoiced") {
+      setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+      return;
+    }
+
+    setTicketEditErr("");
+    setTicketEditOk("");
+    setTicketEditSaving(true);
+
+    try {
+      const hours = Number(ticketEstimatedHoursEdit);
+
+      if (!Number.isFinite(hours) || hours < 1) {
+        setTicketEditErr("Estimated duration must be at least 1 hour.");
+        return;
+      }
+
+      if (!Number.isInteger(hours * 2)) {
+        setTicketEditErr("Estimated duration must use 0.5 hour increments.");
+        return;
+      }
+
+      const estimatedDurationMinutes = Math.round(hours * 60);
+
+      const summary = ticketIssueSummaryEdit.trim();
+      if (!summary) {
+        setTicketEditErr("Issue summary is required.");
+        return;
+      }
+
+      const nextStatus = ticketStatusEdit as TicketStatus;
+      const guard = getManualTicketStatusError({
+        nextStatus,
+        currentStatus: ticket.status,
+        trips,
+      });
+
+      if (guard) {
+        setTicketEditErr(guard);
+        return;
+      }
+
+      const now = nowIso();
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        status: nextStatus,
+        issueSummary: summary,
+        estimatedDurationMinutes,
+        issueDetails: ticketIssueDetailsEdit.trim() || null,
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      });
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: nextStatus,
+              issueSummary: summary,
+              estimatedDurationMinutes,
+              issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+              updatedAt: now,
+            }
+          : prev
+      );
+
+      setTicketEstimatedHoursEdit(String(hours));
+      setTicketEditOk("Ticket updated.");
+    } catch (err: unknown) {
+      setTicketEditErr(
+        err instanceof Error ? err.message : "Failed to update ticket."
+      );
+    } finally {
+      setTicketEditSaving(false);
+    }
+  }
+
+  async function handleSaveSelectedServiceLocation() {
+    if (!ticket?.id || !ticket.customerId || !canDispatch) return;
+
+    if (ticket.status === "invoiced") {
+      setLocationErr("Invoiced tickets are locked and location cannot be changed.");
+      return;
+    }
+
+    const selected = customerServiceAddresses.find(
+      (addr) => addr.id === selectedServiceAddressId
+    );
+
+    if (!selected) {
+      setLocationErr("Select a service location.");
+      return;
+    }
+
+    setLocationErr("");
+    setLocationOk("");
+    setLocationSaving(true);
+
+    try {
+      const now = nowIso();
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        serviceAddressId: selected.id,
+        serviceAddressLabel: selected.label || "Service Address",
+        serviceAddressLine1: selected.addressLine1 || "",
+        serviceAddressLine2: selected.addressLine2 || null,
+        serviceCity: selected.city || "",
+        serviceState: selected.state || "",
+        servicePostalCode: selected.postalCode || "",
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      });
+
+      applyServiceAddressToTicketState(selected, now);
+      setLocationOk("Service location updated.");
+      setShowEditLocationDialog(false);
+    } catch (err: unknown) {
+      setLocationErr(
+        err instanceof Error ? err.message : "Failed to update service location."
+      );
+    } finally {
+      setLocationSaving(false);
+    }
+  }
+
+  async function handleQuickAddAndUseServiceLocation() {
+    if (!ticket?.id || !ticket.customerId || !canDispatch) return;
+
+    if (ticket.status === "invoiced") {
+      setLocationErr("Invoiced tickets are locked and location cannot be changed.");
+      return;
+    }
+
+    const line1 = quickServiceAddressLine1.trim();
+    const city = quickServiceCity.trim();
+    const state = quickServiceState.trim();
+    const postalCode = quickServicePostalCode.trim();
+
+    if (!line1) {
+      setLocationErr("Address line 1 is required.");
+      return;
+    }
+
+    if (!city) {
+      setLocationErr("City is required.");
+      return;
+    }
+
+    if (!state) {
+      setLocationErr("State is required.");
+      return;
+    }
+
+    if (!postalCode) {
+      setLocationErr("Postal code is required.");
+      return;
+    }
+
+    setLocationErr("");
+    setLocationOk("");
+    setLocationSaving(true);
+
+    try {
+      const now = nowIso();
+
+      const customerRef = doc(db, "customers", ticket.customerId);
+      const customerSnap = await getDoc(customerRef);
+
+      if (!customerSnap.exists()) {
+        throw new Error("Customer not found.");
+      }
+
+      const customerData = customerSnap.data() as any;
+      const existingAddresses: CustomerServiceAddressOption[] = Array.isArray(
+        customerData.serviceAddresses
+      )
+        ? customerData.serviceAddresses
+        : [];
+
+      const nextAddress: CustomerServiceAddressOption = {
+        id: createId(),
+        label: quickServiceLabel.trim() || undefined,
+        addressLine1: line1,
+        addressLine2: quickServiceAddressLine2.trim() || null,
+        city,
+        state,
+        postalCode,
+        notes: quickServiceNotes.trim() || null,
+        active: true,
+        isPrimary: existingAddresses.filter((addr) => addr.active !== false).length === 0,
+        source: quickServiceAddressSource || "manual",
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const nextAddresses = [...existingAddresses, nextAddress];
+
+      const nextAddressesForFirestore = nextAddresses.map((addr) => ({
+        ...addr,
+        label: addr.label ?? null,
+        addressLine2: addr.addressLine2 ?? null,
+        notes: addr.notes ?? null,
+        source: addr.source ?? null,
+      }));
+
+      await updateDoc(customerRef, {
+        serviceAddresses: nextAddressesForFirestore,
+        updatedAt: now,
+      });
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        serviceAddressId: nextAddress.id,
+        serviceAddressLabel: nextAddress.label || "Service Address",
+        serviceAddressLine1: nextAddress.addressLine1 || "",
+        serviceAddressLine2: nextAddress.addressLine2 || null,
+        serviceCity: nextAddress.city || "",
+        serviceState: nextAddress.state || "",
+        servicePostalCode: nextAddress.postalCode || "",
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      });
+
+      setCustomerServiceAddresses((prev) =>
+        [...prev, nextAddress].sort(
+          (a, b) =>
+            Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)) ||
+            safeStr(a.label).localeCompare(safeStr(b.label))
+        )
+      );
+
+      setSelectedServiceAddressId(nextAddress.id);
+      applyServiceAddressToTicketState(nextAddress, now);
+
+      resetQuickAddServiceLocationForm();
+      setQuickAddMode(false);
+      setShowEditLocationDialog(false);
+      setLocationOk("Service location added and applied to ticket.");
+    } catch (err: unknown) {
+      setLocationErr(
+        err instanceof Error ? err.message : "Failed to add service location."
+      );
+    } finally {
+      setLocationSaving(false);
+    }
+  }
 
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -2470,24 +2747,24 @@ setTicketEditOk("Ticket updated.");
       return;
     }
 
-const freshDayTrips = await loadAvailabilityTripsForDate(tripDate);
+    const freshDayTrips = await loadAvailabilityTripsForDate(tripDate);
 
-const latestDispatchConflicts = collectDispatchOverrideConflicts({
-  members: buildCrewSelections({
-    primaryTechUid: tripPrimaryTechUid,
-    secondaryTechUid: tripSecondaryTechUid,
-    helperUid: tripHelperUid,
-    secondaryHelperUid: tripSecondaryHelperUid,
-  }),
-  date: tripDate,
-  timeWindow: tripTimeWindow,
-  startTime: tripStartTime,
-  endTime: tripEndTime,
-  dayTrips: freshDayTrips,
-  ptoRequests,
-  holidayNames: getHolidayNamesForDate(companyHolidays, tripDate),
-  holidayOverrideEnabled: tripHolidayOverride,
-});
+    const latestDispatchConflicts = collectDispatchOverrideConflicts({
+      members: buildCrewSelections({
+        primaryTechUid: tripPrimaryTechUid,
+        secondaryTechUid: tripSecondaryTechUid,
+        helperUid: tripHelperUid,
+        secondaryHelperUid: tripSecondaryHelperUid,
+      }),
+      date: tripDate,
+      timeWindow: tripTimeWindow,
+      startTime: tripStartTime,
+      endTime: tripEndTime,
+      dayTrips: freshDayTrips,
+      ptoRequests,
+      holidayNames: getHolidayNamesForDate(companyHolidays, tripDate),
+      holidayOverrideEnabled: tripHolidayOverride,
+    });
 
     if (latestDispatchConflicts.hardMessages.length > 0) {
       setTripSaveError(latestDispatchConflicts.hardMessages[0]);
@@ -3204,25 +3481,25 @@ const latestDispatchConflicts = collectDispatchOverrideConflicts({
         throw new Error("Enter a valid start and end time.");
       }
 
-const freshDayTrips = await loadAvailabilityTripsForDate(editTripDate);
+      const freshDayTrips = await loadAvailabilityTripsForDate(editTripDate);
 
-const latestDispatchConflicts = collectDispatchOverrideConflicts({
-  members: buildCrewSelections({
-    primaryTechUid: editTripPrimaryTechUid,
-    secondaryTechUid: editTripSecondaryTechUid,
-    helperUid: editTripHelperUid,
-    secondaryHelperUid: editTripSecondaryHelperUid,
-  }),
-  date: editTripDate,
-  timeWindow: editTripTimeWindow,
-  startTime: editTripStartTime,
-  endTime: editTripEndTime,
-  dayTrips: freshDayTrips,
-  ptoRequests,
-  holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
-  holidayOverrideEnabled: editTripHolidayOverride,
-  excludeTripId: trip.id,
-});
+      const latestDispatchConflicts = collectDispatchOverrideConflicts({
+        members: buildCrewSelections({
+          primaryTechUid: editTripPrimaryTechUid,
+          secondaryTechUid: editTripSecondaryTechUid,
+          helperUid: editTripHelperUid,
+          secondaryHelperUid: editTripSecondaryHelperUid,
+        }),
+        date: editTripDate,
+        timeWindow: editTripTimeWindow,
+        startTime: editTripStartTime,
+        endTime: editTripEndTime,
+        dayTrips: freshDayTrips,
+        ptoRequests,
+        holidayNames: getHolidayNamesForDate(companyHolidays, editTripDate),
+        holidayOverrideEnabled: editTripHolidayOverride,
+        excludeTripId: trip.id,
+      });
 
       if (latestDispatchConflicts.hardMessages.length > 0) {
         throw new Error(latestDispatchConflicts.hardMessages[0]);
@@ -4211,201 +4488,147 @@ const latestDispatchConflicts = collectDispatchOverrideConflicts({
               }}
             >
               <Stack spacing={2.5}>
-                <ServiceTicketLocationCard
-                  customerDisplayName={ticket.customerDisplayName}
-                  customerHref={
-                    ticket.customerId ? `/customers/${ticket.customerId}` : undefined
-                  }
-                  serviceAddressLine1={ticket.serviceAddressLine1}
-                  serviceAddressLine2={ticket.serviceAddressLine2}
-                  serviceCity={ticket.serviceCity}
-                  serviceState={ticket.serviceState}
-                  servicePostalCode={ticket.servicePostalCode}
-                  customerPhone={customerPhone}
-                  customerEmail={customerEmail}
-                  showEmail={!isFieldUser}
-                />
+                <Stack spacing={1}>
+                  <ServiceTicketLocationCard
+                    customerDisplayName={ticket.customerDisplayName}
+                    customerHref={
+                      ticket.customerId ? `/customers/${ticket.customerId}` : undefined
+                    }
+                    serviceAddressLine1={ticket.serviceAddressLine1}
+                    serviceAddressLine2={ticket.serviceAddressLine2}
+                    serviceCity={ticket.serviceCity}
+                    serviceState={ticket.serviceState}
+                    servicePostalCode={ticket.servicePostalCode}
+                    customerPhone={customerPhone}
+                    customerEmail={customerEmail}
+                    showEmail={!isFieldUser}
+                  />
+
+                  {canDispatch ? (
+                    <Button
+                      variant="outlined"
+                      startIcon={<LocationOnRoundedIcon />}
+                      onClick={openEditLocationDialog}
+                      disabled={isInvoicedTicket}
+                      sx={{
+                        alignSelf: { xs: "stretch", sm: "flex-start" },
+                        borderRadius: 999,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Edit Service Location
+                    </Button>
+                  ) : null}
+
+                  {locationOk ? <Alert severity="success">{locationOk}</Alert> : null}
+                </Stack>
+
                 <Section
-  title="Ticket Overview"
-  icon={<AssignmentTurnedInRoundedIcon color="primary" />}
->
-  {canDispatch ? (
-    <Stack spacing={2}>
-      <Alert severity="info" variant="outlined">
-        Status changes are now guarded by the trip lifecycle.
-      </Alert>
+                  title="Ticket Overview"
+                  icon={<AssignmentTurnedInRoundedIcon color="primary" />}
+                >
+                  {canDispatch ? (
+                    <Stack spacing={2}>
+                      <Alert severity="info" variant="outlined">
+                        Status changes are guarded by the trip lifecycle. Customer cannot be changed from this page.
+                      </Alert>
 
-      <Box
-        sx={{
-          display: "grid",
-          gap: 2,
-          gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-        }}
-      >
-        <TextField
-          select
-          size="small"
-          label="Status"
-          value={ticketStatusEdit}
-          onChange={(e) =>
-            setTicketStatusEdit(e.target.value as TicketStatus)
-          }
-          disabled={isInvoicedTicket}
-        >
-          <MenuItem value="new">New</MenuItem>
-          <MenuItem value="scheduled">Scheduled</MenuItem>
-          <MenuItem value="in_progress">In Progress</MenuItem>
-          <MenuItem value="follow_up">Follow Up</MenuItem>
-          <MenuItem value="completed">Completed</MenuItem>
-          <MenuItem value="invoiced">Invoiced</MenuItem>
-          <MenuItem value="cancelled">Cancelled</MenuItem>
-        </TextField>
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                        }}
+                      >
+                        <TextField
+                          select
+                          size="small"
+                          label="Status"
+                          value={ticketStatusEdit}
+                          onChange={(e) =>
+                            setTicketStatusEdit(e.target.value as TicketStatus)
+                          }
+                          disabled={isInvoicedTicket}
+                        >
+                          <MenuItem value="new">New</MenuItem>
+                          <MenuItem value="scheduled">Scheduled</MenuItem>
+                          <MenuItem value="in_progress">In Progress</MenuItem>
+                          <MenuItem value="follow_up">Follow Up</MenuItem>
+                          <MenuItem value="completed">Completed</MenuItem>
+                          <MenuItem value="invoiced">Invoiced</MenuItem>
+                          <MenuItem value="cancelled">Cancelled</MenuItem>
+                        </TextField>
 
-        <TextField
-          size="small"
-          type="number"
-          label="Estimated Duration (minutes)"
-          inputProps={{ min: 1 }}
-          value={ticketEstimatedMinutesEdit}
-          onChange={(e) =>
-            setTicketEstimatedMinutesEdit(e.target.value)
-          }
-          disabled={isInvoicedTicket}
-        />
-      </Box>
+                        <TextField
+                          size="small"
+                          type="number"
+                          label="Estimated Duration (hours)"
+                          inputProps={{ min: 1, step: 0.5 }}
+                          value={ticketEstimatedHoursEdit}
+                          onChange={(e) => setTicketEstimatedHoursEdit(e.target.value)}
+                          disabled={isInvoicedTicket}
+                          helperText="Minimum 1 hour. Use 0.5 hour increments."
+                        />
+                      </Box>
 
-      <TextField
-        size="small"
-        label="Issue Summary"
-        value={ticketIssueSummaryEdit}
-        onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
-        disabled={isInvoicedTicket}
-      />
+                      <TextField
+                        size="small"
+                        label="Issue Summary"
+                        value={ticketIssueSummaryEdit}
+                        onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
+                        disabled={isInvoicedTicket}
+                      />
 
-<TextField
-  multiline
-  minRows={4}
-  label="Issue Details"
-  value={ticketIssueDetailsEdit}
-  onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
-  disabled={isInvoicedTicket}
-/>
+                      <TextField
+                        multiline
+                        minRows={4}
+                        label="Issue Details"
+                        value={ticketIssueDetailsEdit}
+                        onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+                        disabled={isInvoicedTicket}
+                      />
 
-<Paper
-  variant="outlined"
-  sx={{
-    p: 1.5,
-    borderRadius: 1,
-    backgroundColor: alpha(theme.palette.primary.main, 0.035),
-  }}
->
-  <Stack spacing={1.5}>
-    <Stack direction="row" spacing={1} alignItems="center">
-      <EditRoundedIcon color="primary" fontSize="small" />
-      <Box>
-        <Typography variant="subtitle1" fontWeight={800}>
-          Service Address
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Add or update the location for this service ticket.
-        </Typography>
-      </Box>
-    </Stack>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <Button
+                          variant="contained"
+                          onClick={handleSaveTicketOverview}
+                          disabled={ticketEditSaving || isInvoicedTicket}
+                        >
+                          {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
+                        </Button>
 
-    <TextField
-      size="small"
-      label="Address Label"
-      value={ticketServiceAddressLabelEdit}
-      onChange={(e) => setTicketServiceAddressLabelEdit(e.target.value)}
-      disabled={isInvoicedTicket}
-      placeholder="Example: Home, Shop, Main House, Upstairs Unit"
-    />
-
-    <TextField
-      size="small"
-      label="Address Line 1"
-      value={ticketServiceAddressLine1Edit}
-      onChange={(e) => setTicketServiceAddressLine1Edit(e.target.value)}
-      disabled={isInvoicedTicket}
-      placeholder="Street address"
-    />
-
-    <TextField
-      size="small"
-      label="Address Line 2"
-      value={ticketServiceAddressLine2Edit}
-      onChange={(e) => setTicketServiceAddressLine2Edit(e.target.value)}
-      disabled={isInvoicedTicket}
-      placeholder="Suite, unit, gate code note, etc."
-    />
-
-    <Box
-      sx={{
-        display: "grid",
-        gap: 1.5,
-        gridTemplateColumns: { xs: "1fr", md: "1fr 120px 160px" },
-      }}
-    >
-      <TextField
-        size="small"
-        label="City"
-        value={ticketServiceCityEdit}
-        onChange={(e) => setTicketServiceCityEdit(e.target.value)}
-        disabled={isInvoicedTicket}
-      />
-
-      <TextField
-        size="small"
-        label="State"
-        value={ticketServiceStateEdit}
-        onChange={(e) => setTicketServiceStateEdit(e.target.value)}
-        disabled={isInvoicedTicket}
-        inputProps={{ maxLength: 2 }}
-        placeholder="TX"
-      />
-
-      <TextField
-        size="small"
-        label="ZIP Code"
-        value={ticketServicePostalCodeEdit}
-        onChange={(e) => setTicketServicePostalCodeEdit(e.target.value)}
-        disabled={isInvoicedTicket}
-      />
-    </Box>
-  </Stack>
-</Paper>
-
-<Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-        <Button
-          variant="contained"
-          onClick={handleSaveTicketOverview}
-          disabled={ticketEditSaving || isInvoicedTicket}
-        >
-          {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
-        </Button>
-
-        {ticketEditErr ? <Alert severity="error">{ticketEditErr}</Alert> : null}
-        {ticketEditOk ? <Alert severity="success">{ticketEditOk}</Alert> : null}
-      </Stack>
-    </Stack>
-  ) : (
-    <Stack spacing={1}>
-      <Typography variant="body1">
-        <strong>Status:</strong> {formatTicketStatus(ticket.status)}
-      </Typography>
-      <Typography variant="body1">
-        <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
-      </Typography>
-      <Typography variant="body1">
-        <strong>Estimated Duration:</strong>{" "}
-        {ticket.estimatedDurationMinutes} minutes
-      </Typography>
-      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
-        {ticket.issueDetails || "No additional issue details."}
-      </Typography>
-    </Stack>
-  )}
-</Section>
+                        {ticketEditErr ? <Alert severity="error">{ticketEditErr}</Alert> : null}
+                        {ticketEditOk ? <Alert severity="success">{ticketEditOk}</Alert> : null}
+                      </Stack>
+                    </Stack>
+                  ) : (
+                    <Stack spacing={1}>
+                      <Typography variant="body1">
+                        <strong>Status:</strong> {formatTicketStatus(ticket.status)}
+                      </Typography>
+                      <Typography variant="body1">
+                        <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
+                      </Typography>
+                      <Typography variant="body1">
+                        <strong>Estimated Duration:</strong>{" "}
+                        {Math.max(
+                          1,
+                          Number(ticket.estimatedDurationMinutes || 60) / 60
+                        )}{" "}
+                        hour
+                        {Math.max(
+                          1,
+                          Number(ticket.estimatedDurationMinutes || 60) / 60
+                        ) === 1
+                          ? ""
+                          : "s"}
+                      </Typography>
+                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                        {ticket.issueDetails || "No additional issue details."}
+                      </Typography>
+                    </Stack>
+                  )}
+                </Section>
               </Stack>
 
               <Stack spacing={2.5}>
@@ -5177,6 +5400,290 @@ const latestDispatchConflicts = collectDispatchOverrideConflicts({
                 </Section>
               </Stack>
             </Box>
+
+            <Dialog
+              open={showEditLocationDialog}
+              onClose={() => {
+                if (!locationSaving) {
+                  setShowEditLocationDialog(false);
+                  setLocationErr("");
+                  setQuickAddMode(false);
+                  resetQuickAddServiceLocationForm();
+                }
+              }}
+              fullWidth
+              maxWidth="md"
+            >
+              <DialogTitle>Edit Service Location</DialogTitle>
+
+              <DialogContent dividers>
+                <Stack spacing={2} sx={{ pt: 0.5 }}>
+                  <Alert severity="info" variant="outlined">
+                    Customer stays locked on this ticket. Choose one of this customer&apos;s service
+                    locations, or quick add a new one using Google address search.
+                  </Alert>
+
+                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                    <Stack spacing={0.75}>
+                      <Typography variant="body2" color="text.secondary">
+                        Customer
+                      </Typography>
+                      <Typography variant="subtitle1" fontWeight={800}>
+                        {ticket.customerDisplayName || "Customer"}
+                      </Typography>
+                    </Stack>
+                  </Paper>
+
+                  {!quickAddMode ? (
+                    <Stack spacing={2}>
+                      <TextField
+                        select
+                        label="Service Location"
+                        value={selectedServiceAddressId}
+                        onChange={(e) => setSelectedServiceAddressId(e.target.value)}
+                        disabled={locationSaving}
+                        helperText={
+                          customerServiceAddresses.length > 0
+                            ? "Select an existing service location saved on the customer record."
+                            : "No active service locations found. Quick add one below."
+                        }
+                      >
+                        <MenuItem value="">Select service location…</MenuItem>
+                        {customerServiceAddresses.map((addr) => (
+                          <MenuItem key={addr.id} value={addr.id}>
+                            {(addr.label || "Service Address") +
+                              (addr.isPrimary ? " (Primary)" : "")}{" "}
+                            — {addr.addressLine1}, {addr.city}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+
+                      {selectedServiceAddressId ? (
+                        (() => {
+                          const selected = customerServiceAddresses.find(
+                            (addr) => addr.id === selectedServiceAddressId
+                          );
+
+                          if (!selected) return null;
+
+                          return (
+                            <Paper
+                              variant="outlined"
+                              sx={{
+                                p: 1.5,
+                                borderRadius: 2,
+                                backgroundColor: alpha(theme.palette.primary.main, 0.035),
+                              }}
+                            >
+                              <Typography variant="body2" color="text.secondary">
+                                Selected location
+                              </Typography>
+                              <Typography variant="body1" fontWeight={800} sx={{ mt: 0.5 }}>
+                                {selected.label || "Service Address"}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                                {buildInlineAddress(
+                                  selected.addressLine1,
+                                  selected.addressLine2,
+                                  selected.city,
+                                  selected.state,
+                                  selected.postalCode
+                                )}
+                              </Typography>
+                            </Paper>
+                          );
+                        })()
+                      ) : null}
+
+                      <Button
+                        variant="outlined"
+                        startIcon={<AddHomeRoundedIcon />}
+                        onClick={() => {
+                          setLocationErr("");
+                          resetQuickAddServiceLocationForm();
+                          setQuickAddMode(true);
+                        }}
+                        disabled={locationSaving}
+                        sx={{ alignSelf: "flex-start", borderRadius: 999, fontWeight: 700 }}
+                      >
+                        Quick Add Service Location
+                      </Button>
+                    </Stack>
+                  ) : (
+                    <Stack spacing={2}>
+                      <Typography variant="subtitle1" fontWeight={800}>
+                        Quick Add Service Location
+                      </Typography>
+
+                      <TextField
+                        label="Label"
+                        value={quickServiceLabel}
+                        onChange={(e) => setQuickServiceLabel(e.target.value)}
+                        fullWidth
+                        placeholder="Home, Rental House, Shop, Weekend House..."
+                        disabled={locationSaving}
+                      />
+
+                      <AddressAutocompleteField
+                        label="Search address"
+                        value={quickServiceAddressSearch}
+                        onChange={(value) => {
+                          setQuickServiceAddressSearch(value);
+                          markQuickServiceAddressManual();
+                        }}
+                        onSelectAddress={handleQuickServiceGoogleAddressSelected}
+                        helperText="Start typing to search for a real address, or keep entering it manually below."
+                        placeholder="Start typing a service address..."
+                        disabled={locationSaving}
+                      />
+
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Chip
+                          size="small"
+                          label={
+                            quickServiceAddressSource === "google_places"
+                              ? "Google suggested"
+                              : "Manual entry"
+                          }
+                          color={
+                            quickServiceAddressSource === "google_places" ? "primary" : "default"
+                          }
+                          variant={
+                            quickServiceAddressSource === "google_places" ? "filled" : "outlined"
+                          }
+                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                        />
+                      </Stack>
+
+                      <TextField
+                        label="Address line 1"
+                        value={quickServiceAddressLine1}
+                        onChange={(e) => {
+                          setQuickServiceAddressLine1(e.target.value);
+                          markQuickServiceAddressManual();
+                        }}
+                        required
+                        fullWidth
+                        disabled={locationSaving}
+                      />
+
+                      <TextField
+                        label="Address line 2"
+                        value={quickServiceAddressLine2}
+                        onChange={(e) => {
+                          setQuickServiceAddressLine2(e.target.value);
+                          markQuickServiceAddressManual();
+                        }}
+                        fullWidth
+                        disabled={locationSaving}
+                      />
+
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
+                          gap: 2,
+                        }}
+                      >
+                        <TextField
+                          label="City"
+                          value={quickServiceCity}
+                          onChange={(e) => {
+                            setQuickServiceCity(e.target.value);
+                            markQuickServiceAddressManual();
+                          }}
+                          required
+                          fullWidth
+                          disabled={locationSaving}
+                        />
+
+                        <TextField
+                          label="State"
+                          value={quickServiceState}
+                          onChange={(e) => {
+                            setQuickServiceState(e.target.value);
+                            markQuickServiceAddressManual();
+                          }}
+                          required
+                          fullWidth
+                          disabled={locationSaving}
+                        />
+
+                        <TextField
+                          label="Postal code"
+                          value={quickServicePostalCode}
+                          onChange={(e) => {
+                            setQuickServicePostalCode(e.target.value);
+                            markQuickServiceAddressManual();
+                          }}
+                          required
+                          fullWidth
+                          disabled={locationSaving}
+                        />
+                      </Box>
+
+                      <TextField
+                        label="Notes"
+                        value={quickServiceNotes}
+                        onChange={(e) => setQuickServiceNotes(e.target.value)}
+                        multiline
+                        minRows={3}
+                        fullWidth
+                        disabled={locationSaving}
+                      />
+
+                      <Button
+                        variant="outlined"
+                        onClick={() => {
+                          setQuickAddMode(false);
+                          resetQuickAddServiceLocationForm();
+                          setLocationErr("");
+                        }}
+                        disabled={locationSaving}
+                        sx={{ alignSelf: "flex-start", borderRadius: 999, fontWeight: 700 }}
+                      >
+                        Back to Existing Locations
+                      </Button>
+                    </Stack>
+                  )}
+
+                  {locationErr ? <Alert severity="error">{locationErr}</Alert> : null}
+                </Stack>
+              </DialogContent>
+
+              <DialogActions>
+                <Button
+                  onClick={() => {
+                    setShowEditLocationDialog(false);
+                    setLocationErr("");
+                    setQuickAddMode(false);
+                    resetQuickAddServiceLocationForm();
+                  }}
+                  disabled={locationSaving}
+                >
+                  Cancel
+                </Button>
+
+                {quickAddMode ? (
+                  <Button
+                    variant="contained"
+                    startIcon={<AddHomeRoundedIcon />}
+                    onClick={handleQuickAddAndUseServiceLocation}
+                    disabled={locationSaving || isInvoicedTicket}
+                  >
+                    {locationSaving ? "Saving..." : "Add & Use Location"}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="contained"
+                    onClick={handleSaveSelectedServiceLocation}
+                    disabled={locationSaving || isInvoicedTicket || !selectedServiceAddressId}
+                  >
+                    {locationSaving ? "Saving..." : "Save Location"}
+                  </Button>
+                )}
+              </DialogActions>
+            </Dialog>
 
             <Dialog
               open={Boolean(editTripId)}

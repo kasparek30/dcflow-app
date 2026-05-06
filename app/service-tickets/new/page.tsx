@@ -1,8 +1,14 @@
-// app/service-tcikets/new/page.tsx
+// app/service-tickets/new/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, getDocs } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDocs,
+  updateDoc,
+} from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import {
   Alert,
@@ -16,10 +22,12 @@ import {
   Divider,
   InputAdornment,
   MenuItem,
+  Paper,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
+import AddHomeRoundedIcon from "@mui/icons-material/AddHomeRounded";
 import AddTaskRoundedIcon from "@mui/icons-material/AddTaskRounded";
 import AssignmentIndRoundedIcon from "@mui/icons-material/AssignmentIndRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
@@ -30,9 +38,25 @@ import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import BuildCircleRoundedIcon from "@mui/icons-material/BuildCircleRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
+import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import type { ServiceAddress } from "../../../src/types/customer";
+
+type ServiceAddressSource =
+  | "manual"
+  | "google_places"
+  | "qbo_ship"
+  | "qbo_bill"
+  | "legacy";
+
+type ServiceAddressOption = Omit<ServiceAddress, "source"> & {
+  source?: ServiceAddressSource | null;
+};
+
+type AvailableServiceAddressOption = ServiceAddressOption & {
+  isBillingFallback?: boolean;
+};
 
 type CustomerOption = {
   id: string;
@@ -45,7 +69,7 @@ type CustomerOption = {
   billingCity: string;
   billingState: string;
   billingPostalCode: string;
-  serviceAddresses: ServiceAddress[];
+  serviceAddresses: ServiceAddressOption[];
 };
 
 type DcflowUserOption = {
@@ -72,6 +96,33 @@ type TicketStatus =
   | "follow_up"
   | "completed"
   | "cancelled";
+
+type GoogleAddressSelectionLike = {
+  placeId?: string;
+  formattedAddress: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  source?: string;
+};
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function safeStr(x: unknown) {
+  return String(x ?? "").trim();
+}
+
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `id_${Math.random().toString(36).slice(2, 11)}`;
+}
 
 function getCustomerSearchText(customer: CustomerOption) {
   return [
@@ -103,14 +154,22 @@ function normalizeRole(role?: string) {
 }
 
 function formatAddress(params: {
-  addressLine1?: string;
-  addressLine2?: string;
-  city?: string;
-  state?: string;
-  postalCode?: string;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
 }) {
-  const line1 = [params.addressLine1, params.addressLine2].filter(Boolean).join(", ");
-  const line2 = [params.city, params.state, params.postalCode].filter(Boolean).join(" ");
+  const line1 = [params.addressLine1, params.addressLine2]
+    .map((x) => safeStr(x))
+    .filter(Boolean)
+    .join(", ");
+
+  const line2 = [params.city, params.state, params.postalCode]
+    .map((x) => safeStr(x))
+    .filter(Boolean)
+    .join(" ");
+
   return [line1, line2].filter(Boolean).join(" • ");
 }
 
@@ -148,7 +207,7 @@ export default function NewServiceTicketPage() {
   const [issueSummary, setIssueSummary] = useState("");
   const [issueDetails, setIssueDetails] = useState("");
   const [status, setStatus] = useState<TicketStatus>("new");
-  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState("240");
+  const [estimatedDurationHours, setEstimatedDurationHours] = useState("4");
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledStartTime, setScheduledStartTime] = useState("");
   const [scheduledEndTime, setScheduledEndTime] = useState("");
@@ -160,6 +219,20 @@ export default function NewServiceTicketPage() {
   const [primaryTechnicianId, setPrimaryTechnicianId] = useState("");
   const [assignedTechnicianIds, setAssignedTechnicianIds] = useState<string[]>([]);
   const [assignmentError, setAssignmentError] = useState("");
+
+  const [quickAddServiceLocationOpen, setQuickAddServiceLocationOpen] = useState(false);
+  const [quickAddSaving, setQuickAddSaving] = useState(false);
+  const [quickAddError, setQuickAddError] = useState("");
+  const [quickServiceLabel, setQuickServiceLabel] = useState("");
+  const [quickServiceAddressSearch, setQuickServiceAddressSearch] = useState("");
+  const [quickServiceAddressLine1, setQuickServiceAddressLine1] = useState("");
+  const [quickServiceAddressLine2, setQuickServiceAddressLine2] = useState("");
+  const [quickServiceCity, setQuickServiceCity] = useState("");
+  const [quickServiceState, setQuickServiceState] = useState("");
+  const [quickServicePostalCode, setQuickServicePostalCode] = useState("");
+  const [quickServiceNotes, setQuickServiceNotes] = useState("");
+  const [quickServiceAddressSource, setQuickServiceAddressSource] =
+    useState<ServiceAddressSource>("manual");
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -174,18 +247,28 @@ export default function NewServiceTicketPage() {
 
           return {
             id: docSnap.id,
-            displayName: data.displayName ?? "",
-            phonePrimary: data.phonePrimary ?? "",
+            displayName:
+              data.displayName ??
+              data.customerDisplayName ??
+              data.qboDisplayName ??
+              "",
+            phonePrimary: data.phonePrimary ?? data.phone ?? "",
             phoneSecondary: data.phoneSecondary ?? undefined,
             email: data.email ?? undefined,
-            billingAddressLine1: data.billingAddressLine1 ?? "",
-            billingAddressLine2: data.billingAddressLine2 ?? undefined,
-            billingCity: data.billingCity ?? "",
-            billingState: data.billingState ?? "",
-            billingPostalCode: data.billingPostalCode ?? "",
+            billingAddressLine1:
+              data.billingAddressLine1 ?? data.billAddrLine1 ?? "",
+            billingAddressLine2:
+              data.billingAddressLine2 ??
+              data.billAddrLine2 ??
+              data.billAddrLine3 ??
+              undefined,
+            billingCity: data.billingCity ?? data.billAddrCity ?? "",
+            billingState: data.billingState ?? data.billAddrState ?? "",
+            billingPostalCode:
+              data.billingPostalCode ?? data.billAddrPostalCode ?? "",
             serviceAddresses: Array.isArray(data.serviceAddresses)
               ? data.serviceAddresses.map((addr: any) => ({
-                  id: addr.id ?? crypto.randomUUID(),
+                  id: addr.id ?? createId(),
                   label: addr.label ?? undefined,
                   addressLine1: addr.addressLine1 ?? "",
                   addressLine2: addr.addressLine2 ?? undefined,
@@ -195,7 +278,15 @@ export default function NewServiceTicketPage() {
                   notes: addr.notes ?? undefined,
                   active: addr.active ?? true,
                   isPrimary: addr.isPrimary ?? false,
-                  createdAt: addr.createdAt ?? undefined,
+source:
+  addr.source === "manual" ||
+  addr.source === "google_places" ||
+  addr.source === "qbo_ship" ||
+  addr.source === "qbo_bill" ||
+  addr.source === "legacy"
+    ? addr.source
+    : undefined,
+                      createdAt: addr.createdAt ?? undefined,
                   updatedAt: addr.updatedAt ?? undefined,
                 }))
               : [],
@@ -284,46 +375,61 @@ export default function NewServiceTicketPage() {
     return customers.find((customer) => customer.id === selectedCustomerId) ?? null;
   }, [customers, selectedCustomerId]);
 
-  const availableServiceAddresses = useMemo(() => {
-    if (!selectedCustomer) return [];
+  const activeServiceAddressCount = useMemo(() => {
+    return selectedCustomer?.serviceAddresses.filter((addr) => addr.active !== false).length ?? 0;
+  }, [selectedCustomer]);
 
-    const activeAddresses = selectedCustomer.serviceAddresses.filter((addr) => addr.active);
+const availableServiceAddresses = useMemo<AvailableServiceAddressOption[]>(() => {
+      if (!selectedCustomer) return [];
+
+    const activeAddresses = selectedCustomer.serviceAddresses.filter(
+      (addr) => addr.active !== false
+    );
 
     if (activeAddresses.length === 0) {
       return [
-        {
-          id: "billing-fallback",
-          label: "Billing Address",
-          addressLine1: selectedCustomer.billingAddressLine1,
-          addressLine2: selectedCustomer.billingAddressLine2,
-          city: selectedCustomer.billingCity,
-          state: selectedCustomer.billingState,
-          postalCode: selectedCustomer.billingPostalCode,
-          active: true,
-          isPrimary: true,
-        },
+{
+  id: "billing-fallback",
+  label: "Billing Address",
+  addressLine1: selectedCustomer.billingAddressLine1,
+  addressLine2: selectedCustomer.billingAddressLine2,
+  city: selectedCustomer.billingCity,
+  state: selectedCustomer.billingState,
+  postalCode: selectedCustomer.billingPostalCode,
+  active: true,
+  isPrimary: true,
+  isBillingFallback: true,
+} satisfies AvailableServiceAddressOption,
       ];
     }
 
     const sorted = [...activeAddresses].sort((a, b) => {
       if (a.isPrimary && !b.isPrimary) return -1;
       if (!a.isPrimary && b.isPrimary) return 1;
-      return 0;
+      return String(a.label || "").localeCompare(String(b.label || ""));
     });
 
-    return sorted;
+return sorted;
   }, [selectedCustomer]);
 
   useEffect(() => {
     if (availableServiceAddresses.length > 0) {
-      setSelectedServiceAddressId(availableServiceAddresses[0].id);
+      const stillExists = availableServiceAddresses.some(
+        (addr) => addr.id === selectedServiceAddressId
+      );
+
+      if (!stillExists) {
+        setSelectedServiceAddressId(availableServiceAddresses[0].id);
+      }
     } else {
       setSelectedServiceAddressId("");
     }
-  }, [availableServiceAddresses]);
+  }, [availableServiceAddresses, selectedServiceAddressId]);
 
   function handleSelectCustomer(customerId: string) {
     setSelectedCustomerId(customerId);
+    setQuickAddServiceLocationOpen(false);
+    resetQuickAddServiceLocationForm();
     setError("");
   }
 
@@ -331,7 +437,138 @@ export default function NewServiceTicketPage() {
     setSelectedCustomerId("");
     setSelectedServiceAddressId("");
     setCustomerSearch("");
+    setQuickAddServiceLocationOpen(false);
+    resetQuickAddServiceLocationForm();
     setError("");
+  }
+
+  function resetQuickAddServiceLocationForm() {
+    setQuickAddError("");
+    setQuickServiceLabel("");
+    setQuickServiceAddressSearch("");
+    setQuickServiceAddressLine1("");
+    setQuickServiceAddressLine2("");
+    setQuickServiceCity("");
+    setQuickServiceState("");
+    setQuickServicePostalCode("");
+    setQuickServiceNotes("");
+    setQuickServiceAddressSource("manual");
+  }
+
+  function markQuickServiceAddressManual() {
+    setQuickServiceAddressSource((current) =>
+      current === "google_places" ? "manual" : current
+    );
+  }
+
+  function handleQuickServiceGoogleAddressSelected(
+    selection: GoogleAddressSelectionLike
+  ) {
+    setQuickServiceAddressSearch(selection.formattedAddress || "");
+    setQuickServiceAddressLine1(selection.addressLine1 || "");
+    setQuickServiceAddressLine2(selection.addressLine2 || "");
+    setQuickServiceCity(selection.city || "");
+    setQuickServiceState(selection.state || "");
+    setQuickServicePostalCode(selection.postalCode || "");
+    setQuickServiceAddressSource("google_places");
+  }
+
+  async function handleQuickAddServiceLocation() {
+    if (!selectedCustomer) {
+      setQuickAddError("Select a customer first.");
+      return;
+    }
+
+    const addressLine1 = quickServiceAddressLine1.trim();
+    const city = quickServiceCity.trim();
+    const state = quickServiceState.trim();
+    const postalCode = quickServicePostalCode.trim();
+
+    if (!addressLine1) {
+      setQuickAddError("Address line 1 is required.");
+      return;
+    }
+
+    if (!city) {
+      setQuickAddError("City is required.");
+      return;
+    }
+
+    if (!state) {
+      setQuickAddError("State is required.");
+      return;
+    }
+
+    if (!postalCode) {
+      setQuickAddError("Postal code is required.");
+      return;
+    }
+
+    setQuickAddError("");
+    setQuickAddSaving(true);
+
+    try {
+      const timestamp = nowIso();
+
+      const activeExisting = selectedCustomer.serviceAddresses.filter(
+        (addr) => addr.active !== false
+      );
+
+      const nextAddress: ServiceAddressOption = {
+        id: createId(),
+        label: quickServiceLabel.trim() || undefined,
+        addressLine1,
+        addressLine2: quickServiceAddressLine2.trim() || undefined,
+        city,
+        state,
+        postalCode,
+        notes: quickServiceNotes.trim() || undefined,
+        active: true,
+        isPrimary: activeExisting.length === 0,
+        source: quickServiceAddressSource,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+
+      const nextServiceAddresses = [
+        ...selectedCustomer.serviceAddresses,
+        nextAddress,
+      ];
+
+      const nextServiceAddressesForFirestore = nextServiceAddresses.map((addr) => ({
+        ...addr,
+        label: addr.label ?? null,
+        addressLine2: addr.addressLine2 ?? null,
+        notes: addr.notes ?? null,
+        source: addr.source ?? null,
+      }));
+
+      await updateDoc(doc(db, "customers", selectedCustomer.id), {
+        serviceAddresses: nextServiceAddressesForFirestore,
+        updatedAt: timestamp,
+      });
+
+      setCustomers((prev) =>
+        prev.map((customer) =>
+          customer.id === selectedCustomer.id
+            ? {
+                ...customer,
+                serviceAddresses: nextServiceAddresses,
+              }
+            : customer
+        )
+      );
+
+      setSelectedServiceAddressId(nextAddress.id);
+      setQuickAddServiceLocationOpen(false);
+      resetQuickAddServiceLocationForm();
+    } catch (err: unknown) {
+      setQuickAddError(
+        err instanceof Error ? err.message : "Failed to add service location."
+      );
+    } finally {
+      setQuickAddSaving(false);
+    }
   }
 
   const currentTechnicians = useMemo(() => {
@@ -417,6 +654,18 @@ export default function NewServiceTicketPage() {
       return;
     }
 
+    const hours = Number(estimatedDurationHours);
+
+    if (!Number.isFinite(hours) || hours < 1) {
+      setError("Estimated duration must be at least 1 hour.");
+      return;
+    }
+
+    if (!Number.isInteger(hours * 2)) {
+      setError("Estimated duration must use 0.5 hour increments.");
+      return;
+    }
+
     if ((status === "scheduled" || status === "in_progress") && !primaryTechnicianId.trim()) {
       setError("Please select a primary technician for scheduled or in-progress tickets.");
       return;
@@ -426,7 +675,7 @@ export default function NewServiceTicketPage() {
     setSaving(true);
 
     try {
-      const nowIso = new Date().toISOString();
+      const timestamp = nowIso();
 
       const primaryUid = primaryTechnicianId.trim() || null;
       const teamUids =
@@ -436,11 +685,13 @@ export default function NewServiceTicketPage() {
             ? [primaryUid]
             : [];
 
+      const estimatedDurationMinutes = Math.round(hours * 60);
+
       const docRef = await addDoc(collection(db, "serviceTickets"), {
         customerId: selectedCustomer.id,
         customerDisplayName: selectedCustomer.displayName,
 
-        serviceAddressId: chosenAddress.id === "billing-fallback" ? null : chosenAddress.id,
+serviceAddressId: chosenAddress.isBillingFallback ? null : chosenAddress.id,
         serviceAddressLabel: chosenAddress.label ?? null,
         serviceAddressLine1: chosenAddress.addressLine1,
         serviceAddressLine2: chosenAddress.addressLine2 ?? null,
@@ -452,7 +703,7 @@ export default function NewServiceTicketPage() {
         issueDetails: issueDetails.trim() || null,
 
         status,
-        estimatedDurationMinutes: Number(estimatedDurationMinutes),
+        estimatedDurationMinutes,
 
         scheduledDate: scheduledDate || null,
         scheduledStartTime: scheduledStartTime || null,
@@ -467,8 +718,8 @@ export default function NewServiceTicketPage() {
         internalNotes: internalNotes.trim() || null,
 
         active: true,
-        createdAt: nowIso,
-        updatedAt: nowIso,
+        createdAt: timestamp,
+        updatedAt: timestamp,
       });
 
       router.push(`/service-tickets/${docRef.id}`);
@@ -552,7 +803,7 @@ export default function NewServiceTicketPage() {
                             <Card
                               variant="outlined"
                               sx={{
-                                borderRadius: 4,
+                                borderRadius: 1,
                                 bgcolor: "action.hover",
                                 borderColor: "primary.main",
                               }}
@@ -591,8 +842,8 @@ export default function NewServiceTicketPage() {
                                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                     <Chip label="Customer selected" color="primary" />
                                     <Chip
-                                      label={`${availableServiceAddresses.length} service location${
-                                        availableServiceAddresses.length === 1 ? "" : "s"
+                                      label={`${activeServiceAddressCount} saved service location${
+                                        activeServiceAddressCount === 1 ? "" : "s"
                                       }`}
                                       variant="outlined"
                                     />
@@ -606,7 +857,7 @@ export default function NewServiceTicketPage() {
                                       city: selectedCustomer.billingCity,
                                       state: selectedCustomer.billingState,
                                       postalCode: selectedCustomer.billingPostalCode,
-                                    })}
+                                    }) || "—"}
                                   </Typography>
                                 </Stack>
                               </CardContent>
@@ -656,7 +907,7 @@ export default function NewServiceTicketPage() {
                                               city: customer.billingCity,
                                               state: customer.billingState,
                                               postalCode: customer.billingPostalCode,
-                                            })}
+                                            }) || "No billing address"}
                                           </Typography>
                                         </Stack>
                                       </CardContent>
@@ -679,43 +930,70 @@ export default function NewServiceTicketPage() {
                                   Service Location
                                 </Typography>
                                 <Typography variant="body2" color="text.secondary">
-                                  Choose where the work will be performed.
+                                  Choose where the work will be performed, or quick add a new
+                                  location for this customer.
                                 </Typography>
                               </Box>
                             </Stack>
 
                             <TextField
-                              select
-                              label="Service address"
-                              value={selectedServiceAddressId}
-                              onChange={(e) => setSelectedServiceAddressId(e.target.value)}
-                              fullWidth
-                              required
-                              disabled={!selectedCustomer}
-                              helperText={
-                                selectedCustomer
-                                  ? "Primary service address is selected by default when available."
-                                  : "Select a customer first."
-                              }
-                            >
-                              <MenuItem value="">
-                                {selectedCustomer
-                                  ? "Select a service address"
-                                  : "Select a customer first"}
-                              </MenuItem>
-                              {availableServiceAddresses.map((addr) => (
-                                <MenuItem key={addr.id} value={addr.id}>
-                                  {addr.label ? `${addr.label} — ` : ""}
-                                  {addr.addressLine1}, {addr.city}, {addr.state} {addr.postalCode}
-                                  {addr.isPrimary ? " (Primary)" : ""}
-                                </MenuItem>
-                              ))}
-                            </TextField>
+  select
+  label="Service address"
+  value={selectedServiceAddressId}
+  onChange={(e) => {
+    const nextValue = String(e.target.value);
+
+    if (nextValue === "__quick_add__") {
+      setQuickAddServiceLocationOpen(true);
+      setQuickAddError("");
+      return;
+    }
+
+    setSelectedServiceAddressId(nextValue);
+  }}
+  fullWidth
+  required
+  disabled={!selectedCustomer}
+  helperText={
+    selectedCustomer
+      ? "Choose an existing location, or quick add a new one from this list."
+      : "Select a customer first."
+  }
+>
+  <MenuItem value="">
+    {selectedCustomer
+      ? "Select a service address"
+      : "Select a customer first"}
+  </MenuItem>
+
+  {availableServiceAddresses.map((addr) => (
+    <MenuItem key={addr.id} value={addr.id}>
+      {addr.label ? `${addr.label} — ` : ""}
+      {addr.addressLine1}, {addr.city}, {addr.state} {addr.postalCode}
+      {addr.isPrimary ? " (Primary)" : ""}
+    </MenuItem>
+  ))}
+
+  {selectedCustomer ? (
+    <MenuItem
+      value="__quick_add__"
+      sx={{
+        mt: 0.5,
+        borderTop: "1px solid",
+        borderColor: "divider",
+        color: "primary.main",
+        fontWeight: 800,
+      }}
+    >
+      + Quick Add Service Location
+    </MenuItem>
+  ) : null}
+</TextField>
 
                             {selectedServiceAddress ? (
                               <Card
                                 variant="outlined"
-                                sx={{ borderRadius: 4, bgcolor: "background.default" }}
+                                sx={{ borderRadius: 1, bgcolor: "background.default" }}
                               >
                                 <CardContent sx={{ py: 2 }}>
                                   <Stack spacing={0.75}>
@@ -732,11 +1010,201 @@ export default function NewServiceTicketPage() {
                                         city: selectedServiceAddress.city,
                                         state: selectedServiceAddress.state,
                                         postalCode: selectedServiceAddress.postalCode,
-                                      })}
+                                      }) || "—"}
                                     </Typography>
                                   </Stack>
                                 </CardContent>
                               </Card>
+                            ) : null}
+
+                            {selectedCustomer ? (
+                              <Stack spacing={1.5}>
+                                {quickAddServiceLocationOpen ? (
+                                  <Paper
+                                    variant="outlined"
+                                    sx={{
+                                      p: { xs: 2, sm: 2.5 },
+                                      borderRadius: 4,
+                                      bgcolor: "background.default",
+                                    }}
+                                  >
+                                    <Stack spacing={2}>
+                                      <Box>
+                                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                          Quick Add Service Location
+                                        </Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                          Add a new service location to this customer, then use it
+                                          for this ticket.
+                                        </Typography>
+                                      </Box>
+
+                                      <TextField
+                                        label="Label"
+                                        value={quickServiceLabel}
+                                        onChange={(e) => setQuickServiceLabel(e.target.value)}
+                                        fullWidth
+                                        placeholder="Home, Rental House, Shop, Weekend House..."
+                                        disabled={quickAddSaving}
+                                      />
+
+                                      <AddressAutocompleteField
+                                        label="Search address"
+                                        value={quickServiceAddressSearch}
+                                        onChange={(value) => {
+                                          setQuickServiceAddressSearch(value);
+                                          markQuickServiceAddressManual();
+                                        }}
+                                        onSelectAddress={handleQuickServiceGoogleAddressSelected}
+                                        helperText="Start typing to search for a real address, or keep entering it manually below."
+                                        placeholder="Start typing a service address..."
+                                        disabled={quickAddSaving}
+                                      />
+
+                                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                        <Chip
+                                          size="small"
+                                          label={
+                                            quickServiceAddressSource === "google_places"
+                                              ? "Google suggested"
+                                              : "Manual entry"
+                                          }
+                                          color={
+                                            quickServiceAddressSource === "google_places"
+                                              ? "primary"
+                                              : "default"
+                                          }
+                                          variant={
+                                            quickServiceAddressSource === "google_places"
+                                              ? "filled"
+                                              : "outlined"
+                                          }
+                                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                                        />
+                                      </Stack>
+
+                                      <TextField
+                                        label="Address line 1"
+                                        value={quickServiceAddressLine1}
+                                        onChange={(e) => {
+                                          setQuickServiceAddressLine1(e.target.value);
+                                          markQuickServiceAddressManual();
+                                        }}
+                                        required
+                                        fullWidth
+                                        disabled={quickAddSaving}
+                                      />
+
+                                      <TextField
+                                        label="Address line 2"
+                                        value={quickServiceAddressLine2}
+                                        onChange={(e) => {
+                                          setQuickServiceAddressLine2(e.target.value);
+                                          markQuickServiceAddressManual();
+                                        }}
+                                        fullWidth
+                                        disabled={quickAddSaving}
+                                      />
+
+                                      <Box
+                                        sx={{
+                                          display: "grid",
+                                          gridTemplateColumns: {
+                                            xs: "1fr",
+                                            sm: "repeat(3, minmax(0, 1fr))",
+                                          },
+                                          gap: 2,
+                                        }}
+                                      >
+                                        <TextField
+                                          label="City"
+                                          value={quickServiceCity}
+                                          onChange={(e) => {
+                                            setQuickServiceCity(e.target.value);
+                                            markQuickServiceAddressManual();
+                                          }}
+                                          required
+                                          fullWidth
+                                          disabled={quickAddSaving}
+                                        />
+
+                                        <TextField
+                                          label="State"
+                                          value={quickServiceState}
+                                          onChange={(e) => {
+                                            setQuickServiceState(e.target.value);
+                                            markQuickServiceAddressManual();
+                                          }}
+                                          required
+                                          fullWidth
+                                          disabled={quickAddSaving}
+                                        />
+
+                                        <TextField
+                                          label="Postal code"
+                                          value={quickServicePostalCode}
+                                          onChange={(e) => {
+                                            setQuickServicePostalCode(e.target.value);
+                                            markQuickServiceAddressManual();
+                                          }}
+                                          required
+                                          fullWidth
+                                          disabled={quickAddSaving}
+                                        />
+                                      </Box>
+
+                                      <TextField
+                                        label="Notes"
+                                        value={quickServiceNotes}
+                                        onChange={(e) => setQuickServiceNotes(e.target.value)}
+                                        multiline
+                                        minRows={3}
+                                        fullWidth
+                                        disabled={quickAddSaving}
+                                        placeholder="Gate code, unit note, access details, etc."
+                                      />
+
+                                      {quickAddError ? (
+                                        <Alert severity="error">{quickAddError}</Alert>
+                                      ) : null}
+
+                                      <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1.5}
+                                        justifyContent="flex-end"
+                                      >
+                                        <Button
+                                          type="button"
+                                          variant="outlined"
+                                          onClick={() => {
+                                            setQuickAddServiceLocationOpen(false);
+                                            resetQuickAddServiceLocationForm();
+                                          }}
+                                          disabled={quickAddSaving}
+                                        >
+                                          Cancel
+                                        </Button>
+
+                                        <Button
+                                          type="button"
+                                          variant="contained"
+                                          startIcon={
+                                            quickAddSaving ? (
+                                              <CircularProgress size={18} color="inherit" />
+                                            ) : (
+                                              <AddHomeRoundedIcon />
+                                            )
+                                          }
+                                          onClick={handleQuickAddServiceLocation}
+                                          disabled={quickAddSaving}
+                                        >
+                                          {quickAddSaving ? "Saving..." : "Add & Use Location"}
+                                        </Button>
+                                      </Stack>
+                                    </Stack>
+                                  </Paper>
+                                ) : null}
+                              </Stack>
                             ) : null}
                           </Stack>
                         </Stack>
@@ -799,14 +1267,14 @@ export default function NewServiceTicketPage() {
                             </TextField>
 
                             <TextField
-                              label="Estimated duration (minutes)"
+                              label="Estimated duration (hours)"
                               type="number"
-                              inputProps={{ min: 1 }}
-                              value={estimatedDurationMinutes}
-                              onChange={(e) => setEstimatedDurationMinutes(e.target.value)}
+                              inputProps={{ min: 1, step: 0.5 }}
+                              value={estimatedDurationHours}
+                              onChange={(e) => setEstimatedDurationHours(e.target.value)}
                               fullWidth
                               required
-                              helperText="Example: 60, 120, 240"
+                              helperText="Minimum 1 hour. Use 0.5 hour increments."
                             />
                           </Box>
 
@@ -874,7 +1342,7 @@ export default function NewServiceTicketPage() {
 
                               <Card
                                 variant="outlined"
-                                sx={{ borderRadius: 4, bgcolor: "background.default" }}
+                                sx={{ borderRadius: 1, bgcolor: "background.default" }}
                               >
                                 <CardContent sx={{ py: 2 }}>
                                   <Stack spacing={1.25}>
@@ -1007,14 +1475,14 @@ export default function NewServiceTicketPage() {
                           type="button"
                           variant="outlined"
                           onClick={() => router.push("/service-tickets")}
-                          disabled={saving}
+                          disabled={saving || quickAddSaving}
                         >
                           Cancel
                         </Button>
                         <Button
                           type="submit"
                           variant="contained"
-                          disabled={saving}
+                          disabled={saving || quickAddSaving}
                           startIcon={
                             saving ? (
                               <CircularProgress size={18} color="inherit" />
