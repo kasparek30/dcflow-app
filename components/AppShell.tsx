@@ -3104,90 +3104,122 @@ export default function AppShell({
             overflow: "hidden",
           }}
         >
-          <Box
-            component="header"
-            sx={{
-              height: 72,
-              px: 3,
-              display: "flex",
-              alignItems: "center",
-              gap: 2,
-              borderBottom: (theme) =>
-                `1px solid ${alpha(theme.palette.divider, 0.85)}`,
-              backgroundColor: "background.default",
-              flexShrink: 0,
-            }}
-          >
-            <GlobalSearch />
-
-            <Box sx={{ flex: 1 }} />
-
-<Paper
-  elevation={0}
+<Box
+  component="header"
   sx={{
-    display: {
-      xs: "none",
-      lg: "flex",
-    },
+    height: 72,
+    px: 3,
+    display: "flex",
     alignItems: "center",
-    gap: 1,
-    px: 1.25,
-    py: 0.75,
-    borderRadius: 999,
-    border: (theme) => `1px solid ${alpha(theme.palette.divider, 0.78)}`,
+    gap: 2,
+borderBottom: (theme) =>
+  `1px solid ${
+    theme.palette.mode === "dark"
+      ? alpha("#FFFFFF", 0.08)
+      : alpha(theme.palette.divider, 0.72)
+  }`,
     backgroundColor: (theme) =>
       theme.palette.mode === "dark"
-        ? alpha(theme.palette.common.white, 0.045)
-        : alpha(theme.palette.common.white, 0.72),
+        ? alpha(theme.palette.background.paper, 0.76)
+        : alpha(theme.palette.background.paper, 0.94),
+    backgroundImage: (theme) =>
+      theme.palette.mode === "dark"
+        ? `linear-gradient(180deg, ${alpha(
+            theme.palette.common.white,
+            0.035
+          )} 0%, ${alpha(theme.palette.common.white, 0.012)} 100%)`
+        : `linear-gradient(180deg, ${alpha(
+            theme.palette.common.white,
+            0.82
+          )} 0%, ${alpha(theme.palette.common.white, 0.54)} 100%)`,
+boxShadow: (theme) =>
+  theme.palette.mode === "dark"
+    ? `inset 0 -1px 0 ${alpha("#FFFFFF", 0.025)}`
+    : `inset 0 -1px 0 ${alpha(theme.palette.common.black, 0.035)}`,
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+    flexShrink: 0,
   }}
 >
-  <Box
+  <GlobalSearch />
+
+  <Box sx={{ flex: 1 }} />
+
+  <Paper
+    elevation={0}
     sx={{
-      width: 28,
-      height: 28,
+      display: {
+        xs: "none",
+        lg: "flex",
+      },
+      alignItems: "center",
+      gap: 1,
+      px: 1.15,
+      py: 0.7,
       borderRadius: 999,
-      display: "grid",
-      placeItems: "center",
-      backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.12),
-      color: "primary.main",
-      fontSize: 12,
-      fontWeight: 900,
-      textTransform: "uppercase",
+      border: (theme) =>
+        `1px solid ${alpha(theme.palette.divider, 0.72)}`,
+      backgroundColor: (theme) =>
+        theme.palette.mode === "dark"
+          ? alpha(theme.palette.common.white, 0.045)
+          : alpha(theme.palette.common.white, 0.72),
+      boxShadow: (theme) =>
+        theme.palette.mode === "dark"
+          ? `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.04)}`
+          : `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.82)}`,
     }}
   >
-    {safeTrim(appUser?.displayName || "U").slice(0, 1)}
-  </Box>
-
-  <Box sx={{ minWidth: 0 }}>
-    <Typography
-      variant="caption"
+    <Box
       sx={{
-        display: "block",
-        lineHeight: 1.1,
-        fontWeight: 800,
-        color: "text.primary",
-        maxWidth: 180,
+        width: 28,
+        height: 28,
+        borderRadius: 999,
+        display: "grid",
+        placeItems: "center",
+        backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.16),
+        color: "primary.main",
+        fontSize: 12,
+        fontWeight: 900,
+        textTransform: "uppercase",
+        border: (theme) =>
+          `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
       }}
-      noWrap
     >
-      {appUser?.displayName || "Unknown User"}
-    </Typography>
+      {safeTrim(appUser?.displayName || "U").slice(0, 1)}
+    </Box>
 
-    <Typography
-      variant="caption"
-      color="text.secondary"
-      sx={{
-        display: "block",
-        lineHeight: 1.1,
-        textTransform: "capitalize",
-      }}
-      noWrap
-    >
-      {appUser?.role || "No Role"}
-    </Typography>
-  </Box>
-</Paper>
-          </Box>
+    <Box sx={{ minWidth: 0 }}>
+      <Typography
+        variant="caption"
+        sx={{
+          display: "block",
+          lineHeight: 1.1,
+          fontWeight: 850,
+          color: "text.primary",
+          maxWidth: 180,
+          letterSpacing: "-0.01em",
+        }}
+        noWrap
+      >
+        {appUser?.displayName || "Unknown User"}
+      </Typography>
+
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{
+          display: "block",
+          lineHeight: 1.1,
+          textTransform: "capitalize",
+          fontWeight: 600,
+        }}
+        noWrap
+      >
+        {appUser?.role || "No Role"}
+      </Typography>
+    </Box>
+  </Paper>
+</Box>
 
           <Box
             component="main"

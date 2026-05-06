@@ -638,7 +638,7 @@ const matches = allResults
           handleNavigate(result);
         }}
         sx={{
-          borderRadius: 3,
+          borderRadius: 1,
           px: 1.25,
           py: 1,
           alignItems: "center",
@@ -771,19 +771,23 @@ const matches = allResults
           alignItems: "center",
           gap: 1,
           borderRadius: 999,
-          border: `1px solid ${
-            focused || popperOpen
-              ? alpha(theme.palette.primary.main, 0.34)
-              : alpha(theme.palette.divider, 0.85)
-          }`,
+border: `1px solid ${
+  focused || popperOpen
+    ? alpha(theme.palette.primary.main, 0.58)
+    : theme.palette.mode === "dark"
+      ? alpha("#FFFFFF", 0.10)
+      : alpha(theme.palette.divider, 0.72)
+}`,
           backgroundColor:
             theme.palette.mode === "dark"
               ? alpha(theme.palette.common.white, 0.055)
               : alpha(theme.palette.common.white, 0.92),
           boxShadow:
-            focused || popperOpen
-              ? `0 0 0 4px ${alpha(theme.palette.primary.main, 0.12)}`
-              : `0 1px 0 ${alpha(theme.palette.common.black, 0.02)}`,
+  focused || popperOpen
+    ? `0 0 0 3px ${alpha(theme.palette.primary.main, 0.2)}`
+    : theme.palette.mode === "dark"
+      ? `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.04)}`
+      : `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.78)}`,
           transition: theme.transitions.create([
             "box-shadow",
             "border-color",
@@ -805,10 +809,11 @@ const matches = allResults
             borderRadius: 999,
             display: "grid",
             placeItems: "center",
-            color: focused ? "primary.main" : "text.secondary",
-            backgroundColor: focused
-              ? alpha(theme.palette.primary.main, 0.1)
-              : "transparent",
+color: focused || popperOpen ? "primary.main" : "text.secondary",
+backgroundColor:
+  focused || popperOpen
+    ? alpha(theme.palette.primary.main, 0.1)
+    : "transparent",
             transition: theme.transitions.create(["background-color", "color"]),
           }}
         >
@@ -892,36 +897,73 @@ const matches = allResults
         sx={{
           zIndex: theme.zIndex.modal + 1,
           width: anchorRef.current?.offsetWidth || 680,
-          pt: 1,
+          pt: 1.25,
         }}
       >
-        <Paper
-          elevation={10}
-          sx={{
-            borderRadius: 1,
-            overflow: "hidden",
-            border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-            backgroundColor: "background.paper",
-            backgroundImage:
-              theme.palette.mode === "dark"
-                ? `linear-gradient(${alpha(
-                    theme.palette.common.white,
-                    0.035
-                  )}, ${alpha(theme.palette.common.white, 0.035)})`
-                : "none",
-            boxShadow:
-              theme.palette.mode === "dark"
-                ? `0 24px 60px ${alpha(theme.palette.common.black, 0.42)}`
-                : `0 24px 60px ${alpha(theme.palette.common.black, 0.16)}`,
-          }}
-        >
+<Paper
+  elevation={0}
+  sx={{
+    borderRadius: 1,
+    overflow: "hidden",
+    border: `1px solid ${
+      theme.palette.mode === "dark"
+        ? alpha("#FFFFFF", 0.12)
+        : alpha(theme.palette.divider, 0.8)
+    }`,
+    backgroundColor:
+      theme.palette.mode === "dark"
+        ? alpha(theme.palette.background.paper, 0.98)
+        : theme.palette.background.paper,
+    backgroundImage:
+      theme.palette.mode === "dark"
+        ? `
+          linear-gradient(180deg, ${alpha("#FFFFFF", 0.075)} 0%, ${alpha(
+            "#FFFFFF",
+            0.025
+          )} 100%),
+          radial-gradient(circle at top left, ${alpha(
+            theme.palette.primary.main,
+            0.16
+          )} 0%, transparent 34%)
+        `
+        : `
+          linear-gradient(180deg, ${alpha("#FFFFFF", 0.98)} 0%, ${alpha(
+            "#FFFFFF",
+            0.88
+          )} 100%),
+          radial-gradient(circle at top left, ${alpha(
+            theme.palette.primary.main,
+            0.08
+          )} 0%, transparent 34%)
+        `,
+    boxShadow:
+      theme.palette.mode === "dark"
+        ? [
+            `0 28px 80px ${alpha("#000000", 0.62)}`,
+            `0 12px 28px ${alpha("#000000", 0.48)}`,
+            `0 0 0 1px ${alpha(theme.palette.primary.main, 0.08)}`,
+          ].join(", ")
+        : [
+            `0 28px 80px ${alpha("#000000", 0.18)}`,
+            `0 12px 28px ${alpha("#000000", 0.12)}`,
+            `0 0 0 1px ${alpha(theme.palette.primary.main, 0.05)}`,
+          ].join(", "),
+  }}
+>
           <Box
             sx={{
               px: 1.5,
               py: 1.25,
-              borderBottom: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
-              backgroundColor: alpha(theme.palette.primary.main, 0.035),
-            }}
+borderBottom: `1px solid ${
+  theme.palette.mode === "dark"
+    ? alpha("#FFFFFF", 0.08)
+    : alpha(theme.palette.divider, 0.72)
+}`,
+backgroundColor:
+  theme.palette.mode === "dark"
+    ? alpha(theme.palette.primary.main, 0.075)
+    : alpha(theme.palette.primary.main, 0.035),
+              }}
           >
             <Stack direction="row" spacing={1} alignItems="center">
               <Box sx={{ minWidth: 0, flex: 1 }}>

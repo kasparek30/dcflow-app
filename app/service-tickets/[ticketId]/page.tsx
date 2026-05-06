@@ -1313,11 +1313,23 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
   const [ticketEstimatedMinutesEdit, setTicketEstimatedMinutesEdit] =
     useState("240");
-  const [ticketIssueSummaryEdit, setTicketIssueSummaryEdit] = useState("");
-  const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
-  const [ticketEditSaving, setTicketEditSaving] = useState(false);
-  const [ticketEditErr, setTicketEditErr] = useState("");
-  const [ticketEditOk, setTicketEditOk] = useState("");
+const [ticketIssueSummaryEdit, setTicketIssueSummaryEdit] = useState("");
+const [ticketIssueDetailsEdit, setTicketIssueDetailsEdit] = useState("");
+
+const [ticketServiceAddressLabelEdit, setTicketServiceAddressLabelEdit] =
+  useState("");
+const [ticketServiceAddressLine1Edit, setTicketServiceAddressLine1Edit] =
+  useState("");
+const [ticketServiceAddressLine2Edit, setTicketServiceAddressLine2Edit] =
+  useState("");
+const [ticketServiceCityEdit, setTicketServiceCityEdit] = useState("");
+const [ticketServiceStateEdit, setTicketServiceStateEdit] = useState("");
+const [ticketServicePostalCodeEdit, setTicketServicePostalCodeEdit] =
+  useState("");
+
+const [ticketEditSaving, setTicketEditSaving] = useState(false);
+const [ticketEditErr, setTicketEditErr] = useState("");
+const [ticketEditOk, setTicketEditOk] = useState("");
 
   const [tripDate, setTripDate] = useState(isoTodayLocal());
   const [tripTimeWindow, setTripTimeWindow] = useState<TripTimeWindow>("am");
@@ -1487,6 +1499,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         );
         setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
+        setTicketServiceAddressLabelEdit(
+  String(nextTicket.serviceAddressLabel || "")
+);
+setTicketServiceAddressLine1Edit(
+  String(nextTicket.serviceAddressLine1 || "")
+);
+setTicketServiceAddressLine2Edit(
+  String(nextTicket.serviceAddressLine2 || "")
+);
+setTicketServiceCityEdit(String(nextTicket.serviceCity || ""));
+setTicketServiceStateEdit(String(nextTicket.serviceState || ""));
+setTicketServicePostalCodeEdit(
+  String(nextTicket.servicePostalCode || "")
+);
 
         const [usersSnap, profilesSnap, tripSnap, ptoSnap, holidaySnap] = await Promise.all([
           getDocs(collection(db, "users")),
@@ -2267,75 +2293,134 @@ Supply line`}
     );
   }
 
-  async function handleSaveTicketOverview() {
-    if (!canDispatch || !ticket?.id) return;
+async function handleSaveTicketOverview() {
+  if (!canDispatch || !ticket?.id) return;
 
-    if (ticket.status === "invoiced") {
-      setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+  if (ticket.status === "invoiced") {
+    setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+    return;
+  }
+
+  setTicketEditErr("");
+  setTicketEditOk("");
+  setTicketEditSaving(true);
+
+  try {
+    const minutes = Number(ticketEstimatedMinutesEdit);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      setTicketEditErr("Estimated duration must be a number > 0.");
       return;
     }
 
-    setTicketEditErr("");
-    setTicketEditOk("");
-    setTicketEditSaving(true);
-
-    try {
-      const minutes = Number(ticketEstimatedMinutesEdit);
-      if (!Number.isFinite(minutes) || minutes <= 0) {
-        setTicketEditErr("Estimated duration must be a number > 0.");
-        return;
-      }
-
-      const summary = ticketIssueSummaryEdit.trim();
-      if (!summary) {
-        setTicketEditErr("Issue summary is required.");
-        return;
-      }
-
-      const nextStatus = ticketStatusEdit as TicketStatus;
-      const guard = getManualTicketStatusError({
-        nextStatus,
-        currentStatus: ticket.status,
-        trips,
-      });
-
-      if (guard) {
-        setTicketEditErr(guard);
-        return;
-      }
-
-      const now = nowIso();
-
-      await updateDoc(doc(db, "serviceTickets", ticket.id), {
-        status: nextStatus,
-        issueSummary: summary,
-        estimatedDurationMinutes: minutes,
-        issueDetails: ticketIssueDetailsEdit.trim() || null,
-        updatedAt: now,
-      });
-
-      setTicket((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: nextStatus,
-              issueSummary: summary,
-              estimatedDurationMinutes: minutes,
-              issueDetails: ticketIssueDetailsEdit.trim() || undefined,
-              updatedAt: now,
-            }
-          : prev
-      );
-
-      setTicketEditOk("Ticket updated.");
-    } catch (err: unknown) {
-      setTicketEditErr(
-        err instanceof Error ? err.message : "Failed to update ticket."
-      );
-    } finally {
-      setTicketEditSaving(false);
+    const summary = ticketIssueSummaryEdit.trim();
+    if (!summary) {
+      setTicketEditErr("Issue summary is required.");
+      return;
     }
+
+    const nextStatus = ticketStatusEdit as TicketStatus;
+    const guard = getManualTicketStatusError({
+      nextStatus,
+      currentStatus: ticket.status,
+      trips,
+    });
+
+    if (guard) {
+      setTicketEditErr(guard);
+      return;
+    }
+
+    const serviceAddressLabel = ticketServiceAddressLabelEdit.trim();
+    const serviceAddressLine1 = ticketServiceAddressLine1Edit.trim();
+    const serviceAddressLine2 = ticketServiceAddressLine2Edit.trim();
+    const serviceCity = ticketServiceCityEdit.trim();
+    const serviceState = ticketServiceStateEdit.trim().toUpperCase();
+    const servicePostalCode = ticketServicePostalCodeEdit.trim();
+
+    const hasAnyServiceAddress =
+      Boolean(serviceAddressLabel) ||
+      Boolean(serviceAddressLine1) ||
+      Boolean(serviceAddressLine2) ||
+      Boolean(serviceCity) ||
+      Boolean(serviceState) ||
+      Boolean(servicePostalCode);
+
+    if (hasAnyServiceAddress) {
+      if (!serviceAddressLine1) {
+        setTicketEditErr("Service Address Line 1 is required when adding an address.");
+        return;
+      }
+
+      if (!serviceCity) {
+        setTicketEditErr("Service City is required when adding an address.");
+        return;
+      }
+
+      if (!serviceState) {
+        setTicketEditErr("Service State is required when adding an address.");
+        return;
+      }
+
+      if (!servicePostalCode) {
+        setTicketEditErr("Service ZIP Code is required when adding an address.");
+        return;
+      }
+    }
+
+    const now = nowIso();
+
+    await updateDoc(doc(db, "serviceTickets", ticket.id), {
+      status: nextStatus,
+      issueSummary: summary,
+      estimatedDurationMinutes: minutes,
+      issueDetails: ticketIssueDetailsEdit.trim() || null,
+
+      serviceAddressLabel: serviceAddressLabel || null,
+      serviceAddressLine1: serviceAddressLine1 || "",
+      serviceAddressLine2: serviceAddressLine2 || null,
+      serviceCity: serviceCity || "",
+      serviceState: serviceState || "",
+      servicePostalCode: servicePostalCode || "",
+
+      updatedAt: now,
+    });
+
+    setTicket((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: nextStatus,
+            issueSummary: summary,
+            estimatedDurationMinutes: minutes,
+            issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+
+            serviceAddressLabel: serviceAddressLabel || undefined,
+            serviceAddressLine1,
+            serviceAddressLine2: serviceAddressLine2 || undefined,
+            serviceCity,
+            serviceState,
+            servicePostalCode,
+
+            updatedAt: now,
+          }
+        : prev
+    );
+setTicketServiceAddressLabelEdit(serviceAddressLabel);
+setTicketServiceAddressLine1Edit(serviceAddressLine1);
+setTicketServiceAddressLine2Edit(serviceAddressLine2);
+setTicketServiceCityEdit(serviceCity);
+setTicketServiceStateEdit(serviceState);
+setTicketServicePostalCodeEdit(servicePostalCode);
+
+setTicketEditOk("Ticket updated.");
+  } catch (err: unknown) {
+    setTicketEditErr(
+      err instanceof Error ? err.message : "Failed to update ticket."
+    );
+  } finally {
+    setTicketEditSaving(false);
   }
+}
 
   async function handleCreateTrip(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -4197,16 +4282,100 @@ const latestDispatchConflicts = collectDispatchOverrideConflicts({
         disabled={isInvoicedTicket}
       />
 
+<TextField
+  multiline
+  minRows={4}
+  label="Issue Details"
+  value={ticketIssueDetailsEdit}
+  onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+  disabled={isInvoicedTicket}
+/>
+
+<Paper
+  variant="outlined"
+  sx={{
+    p: 1.5,
+    borderRadius: 1,
+    backgroundColor: alpha(theme.palette.primary.main, 0.035),
+  }}
+>
+  <Stack spacing={1.5}>
+    <Stack direction="row" spacing={1} alignItems="center">
+      <EditRoundedIcon color="primary" fontSize="small" />
+      <Box>
+        <Typography variant="subtitle1" fontWeight={800}>
+          Service Address
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Add or update the location for this service ticket.
+        </Typography>
+      </Box>
+    </Stack>
+
+    <TextField
+      size="small"
+      label="Address Label"
+      value={ticketServiceAddressLabelEdit}
+      onChange={(e) => setTicketServiceAddressLabelEdit(e.target.value)}
+      disabled={isInvoicedTicket}
+      placeholder="Example: Home, Shop, Main House, Upstairs Unit"
+    />
+
+    <TextField
+      size="small"
+      label="Address Line 1"
+      value={ticketServiceAddressLine1Edit}
+      onChange={(e) => setTicketServiceAddressLine1Edit(e.target.value)}
+      disabled={isInvoicedTicket}
+      placeholder="Street address"
+    />
+
+    <TextField
+      size="small"
+      label="Address Line 2"
+      value={ticketServiceAddressLine2Edit}
+      onChange={(e) => setTicketServiceAddressLine2Edit(e.target.value)}
+      disabled={isInvoicedTicket}
+      placeholder="Suite, unit, gate code note, etc."
+    />
+
+    <Box
+      sx={{
+        display: "grid",
+        gap: 1.5,
+        gridTemplateColumns: { xs: "1fr", md: "1fr 120px 160px" },
+      }}
+    >
       <TextField
-        multiline
-        minRows={4}
-        label="Issue Details"
-        value={ticketIssueDetailsEdit}
-        onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+        size="small"
+        label="City"
+        value={ticketServiceCityEdit}
+        onChange={(e) => setTicketServiceCityEdit(e.target.value)}
         disabled={isInvoicedTicket}
       />
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+      <TextField
+        size="small"
+        label="State"
+        value={ticketServiceStateEdit}
+        onChange={(e) => setTicketServiceStateEdit(e.target.value)}
+        disabled={isInvoicedTicket}
+        inputProps={{ maxLength: 2 }}
+        placeholder="TX"
+      />
+
+      <TextField
+        size="small"
+        label="ZIP Code"
+        value={ticketServicePostalCodeEdit}
+        onChange={(e) => setTicketServicePostalCodeEdit(e.target.value)}
+        disabled={isInvoicedTicket}
+      />
+    </Box>
+  </Stack>
+</Paper>
+
+<Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
         <Button
           variant="contained"
           onClick={handleSaveTicketOverview}
