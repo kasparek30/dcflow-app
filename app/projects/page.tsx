@@ -464,7 +464,7 @@ export default function ProjectsPage() {
         <Stack spacing={3}>
           <Box
             sx={{
-              borderRadius: 4,
+              borderRadius: 1,
               p: { xs: 2, sm: 3 },
               backgroundColor: alpha(theme.palette.primary.main, 0.08),
               border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
@@ -561,7 +561,7 @@ export default function ProjectsPage() {
           >
             <Card
               sx={{
-                borderRadius: 4,
+                borderRadius: 1,
                 boxShadow: "none",
                 border: `1px solid ${theme.palette.divider}`,
               }}
@@ -578,7 +578,7 @@ export default function ProjectsPage() {
 
             <Card
               sx={{
-                borderRadius: 4,
+                borderRadius: 1,
                 boxShadow: "none",
                 border: `1px solid ${theme.palette.divider}`,
               }}
@@ -595,7 +595,7 @@ export default function ProjectsPage() {
 
             <Card
               sx={{
-                borderRadius: 4,
+                borderRadius: 1,
                 boxShadow: "none",
                 border: `1px solid ${theme.palette.divider}`,
               }}
@@ -612,7 +612,7 @@ export default function ProjectsPage() {
 
             <Card
               sx={{
-                borderRadius: 4,
+                borderRadius: 1,
                 boxShadow: "none",
                 border: `1px solid ${theme.palette.divider}`,
               }}
@@ -630,7 +630,7 @@ export default function ProjectsPage() {
 
           <Card
             sx={{
-              borderRadius: 4,
+              borderRadius: 1,
               boxShadow: "none",
               border: `1px solid ${theme.palette.divider}`,
             }}
@@ -763,7 +763,7 @@ export default function ProjectsPage() {
                 <Card
                   key={index}
                   sx={{
-                    borderRadius: 4,
+                    borderRadius: 1,
                     boxShadow: "none",
                     border: `1px solid ${theme.palette.divider}`,
                   }}
@@ -784,7 +784,7 @@ export default function ProjectsPage() {
           {!loading && !error && filteredProjects.length === 0 ? (
             <Card
               sx={{
-                borderRadius: 4,
+                borderRadius: 1,
                 boxShadow: "none",
                 border: `1px solid ${theme.palette.divider}`,
               }}
@@ -834,7 +834,7 @@ export default function ProjectsPage() {
                   <Card
                     key={project.id}
                     sx={{
-                      borderRadius: 4,
+                      borderRadius: 1,
                       overflow: "hidden",
                       boxShadow: "none",
                       border: `1px solid ${theme.palette.divider}`,
@@ -954,7 +954,7 @@ export default function ProjectsPage() {
 
                           <Box
                             sx={{
-                              borderRadius: 3,
+                              borderRadius: 1,
                               p: 1.5,
                               backgroundColor: alpha(nextStepAccent, 0.05),
                               border: `1px solid ${alpha(nextStepAccent, 0.14)}`,

@@ -2268,7 +2268,7 @@ export default function NewServiceTicketPage() {
                             {selectedServiceAddress ? (
                               <Card
                                 variant="outlined"
-                                sx={{ borderRadius: 3, bgcolor: "background.default" }}
+                                sx={{ borderRadius: 1, bgcolor: "background.default" }}
                               >
                                 <CardContent sx={{ py: 2 }}>
                                   <Stack spacing={0.75}>

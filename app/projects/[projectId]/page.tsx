@@ -26,6 +26,7 @@ import {
   Card,
   CardContent,
   Chip,
+  ClickAwayListener,
   Dialog,
   DialogActions,
   DialogContent,
@@ -34,10 +35,14 @@ import {
   FormControl,
   FormControlLabel,
   FormLabel,
+  Grow,
   IconButton,
   InputLabel,
+  ListItemIcon,
   MenuItem,
+  MenuList,
   Paper,
+  Popper,
   Radio,
   RadioGroup,
   Select,
@@ -53,6 +58,7 @@ import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRou
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import DeleteForeverRoundedIcon from "@mui/icons-material/DeleteForeverRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
@@ -63,6 +69,7 @@ import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
 import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
+import MoreVertRoundedIcon from "@mui/icons-material/MoreVertRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
@@ -141,6 +148,7 @@ type ProjectActivityType =
   | "trip_paused"
   | "trip_resumed"
   | "trip_closeout_saved"
+  | "trip_labor_resynced"
   | "trip_reopened"
   | "trip_notes_saved"
   | "attachment_added"
@@ -487,6 +495,21 @@ function formatTripWindow(w: string) {
   return w;
 }
 
+function formatTripDate(dateIso?: string | null) {
+  const raw = safeTrim(dateIso);
+  if (!raw) return "No date";
+
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? fromIsoDate(raw) : new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+
+  const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
+  return `${weekday} • ${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}/${date.getFullYear()}`;
+}
+
+function formatTripScheduleLine(t: TripDoc) {
+  return `${formatTripDate(t.date)} • ${formatTripWindow(String(t.timeWindow || "all_day"))} • ${t.startTime || "--:--"}–${t.endTime || "--:--"}`;
+}
+
 function windowToTimes(window: string) {
   const w = String(window || "").toLowerCase();
   if (w === "am") return { start: "08:00", end: "12:00" };
@@ -562,6 +585,7 @@ function activityTypeColor(
   switch (type) {
     case "attachment_added":
     case "trip_closeout_saved":
+    case "trip_labor_resynced":
       return "success";
     case "attachment_removed":
     case "trip_paused":
@@ -604,6 +628,8 @@ function activityTypeLabel(type: ProjectActivityType) {
       return "Trip Resumed";
     case "trip_closeout_saved":
       return "Closeout Saved";
+    case "trip_labor_resynced":
+      return "Labor Resynced";
     case "trip_reopened":
       return "Trip Reopened";
     case "trip_notes_saved":
@@ -626,7 +652,7 @@ function InfoField({
       variant="outlined"
       sx={{
         p: 2,
-        borderRadius: 3,
+        borderRadius: 1,
         height: "100%",
         bgcolor: "background.paper",
       }}
@@ -653,7 +679,7 @@ function MetricCard({
   return (
     <Card
       sx={{
-        borderRadius: 4,
+        borderRadius: 1,
         boxShadow: "none",
         border: (theme) => `1px solid ${theme.palette.divider}`,
       }}
@@ -692,7 +718,7 @@ function SectionCard({
     <Card
       elevation={0}
       sx={{
-        borderRadius: 4,
+        borderRadius: 1,
         border: (theme) => `1px solid ${theme.palette.divider}`,
         overflow: "hidden",
       }}
@@ -731,6 +757,51 @@ function SectionCard({
 
       <CardContent sx={{ p: { xs: 2, sm: 3 } }}>{children}</CardContent>
     </Card>
+  );
+}
+
+function CloseoutDetailBlock({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        borderRadius: 4,
+        height: "100%",
+        bgcolor: (theme) => alpha(theme.palette.primary.main, 0.025),
+      }}
+    >
+      <Stack spacing={1.25}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Box
+            sx={{
+              width: 34,
+              height: 34,
+              borderRadius: "50%",
+              display: "grid",
+              placeItems: "center",
+              bgcolor: (theme) => alpha(theme.palette.primary.main, 0.12),
+              color: "primary.main",
+              flex: "0 0 auto",
+            }}
+          >
+            {icon}
+          </Box>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+            {title}
+          </Typography>
+        </Stack>
+        {children}
+      </Stack>
+    </Paper>
   );
 }
 
@@ -797,6 +868,7 @@ export default function ProjectDetailPage() {
   const [tripModalOk, setTripModalOk] = useState("");
 
   const [closeoutModal, setCloseoutModal] = useState<TripCloseoutModalState>(emptyCloseoutModal());
+  const [closeoutDetailsTripId, setCloseoutDetailsTripId] = useState<string | null>(null);
   const [tripActionBusyId, setTripActionBusyId] = useState<string | null>(null);
   const [tripNoteDrafts, setTripNoteDrafts] = useState<Record<string, string>>({});
 
@@ -971,6 +1043,11 @@ export default function ProjectDetailPage() {
 
   const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
 
+  const closeoutDetailsTrip = useMemo(() => {
+    if (!closeoutDetailsTripId) return null;
+    return projectTrips.find((trip) => trip.id === closeoutDetailsTripId) || null;
+  }, [closeoutDetailsTripId, projectTrips]);
+
   const previewStageAmounts = useMemo(() => {
     return buildStageBilledAmounts(
       editingAddressBid
@@ -1072,14 +1149,24 @@ export default function ProjectDetailPage() {
     return details;
   }
 
-  function canCurrentUserEditTrip(t: TripDoc) {
+  function canCurrentUserViewTrip(t: TripDoc) {
     if (canEditProject) return true;
     if (!isFieldRole) return false;
     return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
   }
 
+  function canCurrentUserEditTrip(t: TripDoc) {
+    if (canEditProject) return true;
+    if (String(t.status || "").toLowerCase() === "complete") return false;
+    if (!isFieldRole) return false;
+    return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
+  }
+
   function canCurrentUserOperateTrip(t: TripDoc) {
-    return canCurrentUserEditTrip(t);
+    if (canEditProject) return true;
+    if (String(t.status || "").toLowerCase() === "complete") return false;
+    if (!isFieldRole) return false;
+    return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
   }
 
   function resetBasicsDraftFromProject(source?: Project | null) {
@@ -3246,6 +3333,16 @@ export default function ProjectDetailPage() {
         source: "project_trip_closeout",
       });
 
+      tripPatch.closeout = {
+        ...(tripPatch.closeout || {}),
+        timeEntrySyncStatus: "synced",
+        timeEntrySyncMode: "automatic_closeout",
+        timeEntryMemberCount: synced.memberCount,
+        timeEntrySyncedAt: now,
+        timeEntrySyncedByUid: myUid || null,
+        timeEntrySyncedByName: actorDisplayName || null,
+      };
+
       batch.update(doc(db, "trips", t.id), tripPatch as any);
 
       if (Object.keys(projectPatch).length > 1) {
@@ -3306,14 +3403,14 @@ export default function ProjectDetailPage() {
   async function syncProjectTripTimeEntries(t: TripDoc) {
     if (!project) return;
 
-    if (!canCurrentUserOperateTrip(t)) {
-      alert("You do not have permission to sync time entries for this trip.");
+    if (!canEditProject) {
+      alert("Only Admin/Dispatcher/Manager can resync labor hours for this trip.");
       return;
     }
 
     const status = String(t.status || "").toLowerCase();
     if (status !== "complete") {
-      alert("Only completed project trips can sync time entries.");
+      alert("Only completed project trips can resync labor hours.");
       return;
     }
 
@@ -3329,14 +3426,14 @@ export default function ProjectDetailPage() {
       Number.isFinite(closeoutHours) && closeoutHours > 0 ? closeoutHours : estimatedHours;
 
     if (!Number.isFinite(hours) || hours <= 0) {
-      alert("This trip does not have valid hours to sync.");
+      alert("This trip does not have valid hours to resync.");
       return;
     }
 
     const ok = window.confirm(
-      `Sync time entries for all assigned crew on this completed project trip?\n\nHours: ${hours.toFixed(
+      `Resync labor hours for all assigned crew on this completed project trip?\n\nHours: ${hours.toFixed(
         2,
-      )}\n\nThis will update existing entries and create missing ones. It will not duplicate entries.`,
+      )}\n\nThis is a safety repair action. It will update existing time entries and create missing ones. It will not duplicate entries.`,
     );
 
     if (!ok) return;
@@ -3344,6 +3441,7 @@ export default function ProjectDetailPage() {
     setTripActionBusyId(t.id);
 
     try {
+      const now = nowIso();
       const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
       const notes =
         safeTrim((t.closeout as any)?.workNotes) ||
@@ -3361,22 +3459,51 @@ export default function ProjectDetailPage() {
         source: "project_trip_manual_sync",
       });
 
+      const nextCloseout = {
+        ...((t.closeout && typeof t.closeout === "object" ? t.closeout : {}) as any),
+        timeEntrySyncStatus: "synced",
+        timeEntrySyncMode: "manual_resync",
+        timeEntryMemberCount: synced.memberCount,
+        timeEntrySyncedAt: now,
+        timeEntrySyncedByUid: myUid || null,
+        timeEntrySyncedByName: actorDisplayName || null,
+      };
+
+      await updateDoc(doc(db, "trips", t.id), {
+        closeout: nextCloseout,
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      } as any);
+
+      setProjectTrips((prev) =>
+        prev.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                closeout: nextCloseout,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : x,
+        ),
+      );
+
       void recordProjectActivity({
-        type: "trip_closeout_saved",
-        title: "Project trip time entries synced",
-        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
+        type: "trip_labor_resynced",
+        title: "Project trip labor hours resynced",
+        description: formatTripScheduleLine(t),
         details: [
-          `Time entries synced: ${synced.memberCount}`,
+          `Crew entries updated/created: ${synced.memberCount}`,
           `Hours: ${hours.toFixed(2)}`,
           stageKey ? `Stage: ${stageLabel(stageKey)}` : "Project Trip",
         ],
       });
 
       alert(
-        `✅ Time entries synced.\n\nCrew entries updated/created: ${synced.memberCount}`,
+        `✅ Labor hours resynced.\n\nCrew entries updated/created: ${synced.memberCount}`,
       );
     } catch (err: any) {
-      alert(err?.message || "Failed to sync time entries.");
+      alert(err?.message || "Failed to resync labor hours.");
     } finally {
       setTripActionBusyId(null);
     }
@@ -3453,43 +3580,234 @@ export default function ProjectDetailPage() {
     return "Timer: idle";
   }
 
+  function getCloseoutHours(t?: TripDoc | null) {
+    if (!t) return null;
+    const raw =
+      (t.closeout as any)?.hoursWorkedToday ??
+      (t.closeout as any)?.closeoutHours ??
+      t.closeoutHours ??
+      null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  function getCloseoutSavedSummary(t: TripDoc) {
+    const hours = getCloseoutHours(t);
+    const outcome = safeTrim((t.closeout as any)?.outcome).replaceAll("_", " ");
+    if (outcome && hours != null) return `${outcome} • ${hours.toFixed(2)}h`;
+    if (hours != null) return `${hours.toFixed(2)}h`;
+    return "Closeout saved";
+  }
+
+  function getCloseoutSubmittedBy(t?: TripDoc | null) {
+    if (!t) return "Unknown user";
+    return safeTrim((t.closeout as any)?.savedByName) || "Unknown user";
+  }
+
+  function getCloseoutWorkSummary(t?: TripDoc | null) {
+    if (!t) return "—";
+    return (
+      safeTrim((t.closeout as any)?.workNotes) ||
+      safeTrim(t.notes) ||
+      "No work summary saved."
+    );
+  }
+
+  function getCloseoutMaterials(t?: TripDoc | null) {
+    if (!t) return "—";
+    return (
+      safeTrim((t.closeout as any)?.materialsUsedToday) ||
+      safeTrim(t.materialsUsedToday) ||
+      "No materials recorded."
+    );
+  }
+
+  function getCloseoutTimeEntryStatus(t?: TripDoc | null) {
+    if (!t) return "Not available";
+    const closeout = (t.closeout || {}) as any;
+    const status = safeTrim(closeout.timeEntrySyncStatus);
+    const mode = safeTrim(closeout.timeEntrySyncMode);
+    const count = Number(closeout.timeEntryMemberCount || 0);
+    const countSuffix = count > 0 ? ` (${count} crew)` : "";
+
+    if (status === "synced" && mode === "manual_resync") {
+      return `Resynced${countSuffix}`;
+    }
+    if (status === "synced") {
+      return `Synced automatically${countSuffix}`;
+    }
+    if (String(t.status || "").toLowerCase() === "complete") {
+      return "Not stamped — use Resync Labor Hours if needed";
+    }
+    return "Not available";
+  }
+
+  function openCloseoutDetails(t: TripDoc) {
+    if (!canCurrentUserViewTrip(t)) return;
+    setCloseoutDetailsTripId(t.id);
+  }
+
+  function closeCloseoutDetails() {
+    setCloseoutDetailsTripId(null);
+  }
+
   function TripActionRow({ t }: { t: TripDoc }) {
     const canOperate = canCurrentUserOperateTrip(t);
+    const canView = canCurrentUserViewTrip(t);
     const busy = tripActionBusyId === t.id || closeoutModal.saving;
     const timerState = String(t.timerState || "idle").toLowerCase();
     const status = String(t.status || "").toLowerCase();
     const cancelled = status === "cancelled" || t.active === false;
+    const [completedMenuAnchorEl, setCompletedMenuAnchorEl] = useState<HTMLElement | null>(null);
+    const completedMenuOpen = Boolean(completedMenuAnchorEl);
+
+    function openCompletedTripMenu(event: React.MouseEvent<HTMLElement>) {
+      event.stopPropagation();
+      setCompletedMenuAnchorEl(event.currentTarget);
+    }
+
+    function closeCompletedTripMenu() {
+      setCompletedMenuAnchorEl(null);
+    }
 
     if (cancelled) return null;
+
+    if (status === "complete") {
+      return (
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          justifyContent="space-between"
+          alignItems={{ xs: "stretch", sm: "center" }}
+        >
+          <Button
+            variant="outlined"
+            startIcon={<OpenInNewRoundedIcon />}
+            onClick={() => openCloseoutDetails(t)}
+            disabled={!canView || busy}
+            sx={{ borderRadius: 99, alignSelf: { xs: "stretch", sm: "flex-start" } }}
+          >
+            View Closeout
+          </Button>
+
+          {canEditProject ? (
+            <Box sx={{ alignSelf: { xs: "flex-end", sm: "center" } }}>
+              <IconButton
+                aria-label="Completed trip actions"
+                onClick={openCompletedTripMenu}
+                disabled={busy}
+                sx={{
+                  border: (theme) => `1px solid ${theme.palette.divider}`,
+                }}
+              >
+                <MoreVertRoundedIcon />
+              </IconButton>
+
+              <Popper
+                open={completedMenuOpen}
+                anchorEl={completedMenuAnchorEl}
+                placement="bottom-end"
+                transition
+                disablePortal
+                modifiers={[
+                  {
+                    name: "offset",
+                    options: {
+                      offset: [0, 8],
+                    },
+                  },
+                  {
+                    name: "preventOverflow",
+                    options: {
+                      padding: 8,
+                    },
+                  },
+                ]}
+                sx={{ zIndex: (theme) => theme.zIndex.modal + 1 }}
+              >
+                {({ TransitionProps }) => (
+                  <Grow {...TransitionProps} style={{ transformOrigin: "right top" }}>
+                    <Paper
+                      elevation={6}
+                      sx={{
+                        borderRadius: 1,
+                        minWidth: 230,
+                        overflow: "hidden",
+                        border: (theme) => `1px solid ${theme.palette.divider}`,
+                      }}
+                    >
+                      <ClickAwayListener onClickAway={closeCompletedTripMenu}>
+                        <MenuList autoFocusItem={completedMenuOpen} dense={false}>
+                          <MenuItem
+                            disabled={!canCurrentUserEditTrip(t)}
+                            onClick={() => {
+                              closeCompletedTripMenu();
+                              openEditTrip(t);
+                            }}
+                          >
+                            <ListItemIcon>
+                              <OpenInNewRoundedIcon fontSize="small" />
+                            </ListItemIcon>
+                            Open Trip
+                          </MenuItem>
+
+                          <MenuItem
+                            disabled={!canEditProject || tripActionBusyId === t.id}
+                            onClick={() => {
+                              closeCompletedTripMenu();
+                              void syncProjectTripTimeEntries(t);
+                            }}
+                          >
+                            <ListItemIcon>
+                              <AccessTimeFilledRoundedIcon fontSize="small" />
+                            </ListItemIcon>
+                            Resync Labor Hours
+                          </MenuItem>
+
+                          <MenuItem
+                            disabled={!canEditProject || tripActionBusyId === t.id}
+                            onClick={() => {
+                              closeCompletedTripMenu();
+                              void applyTripLifecycleAction(t, "reopen");
+                            }}
+                          >
+                            <ListItemIcon>
+                              <RefreshRoundedIcon fontSize="small" />
+                            </ListItemIcon>
+                            Reopen Trip
+                          </MenuItem>
+
+                          <Divider />
+
+                          <MenuItem
+                            disabled={!canEditProject || tripActionBusyId === t.id}
+                            onClick={() => {
+                              closeCompletedTripMenu();
+                              void removeTrip(t);
+                            }}
+                            sx={{ color: "error.main" }}
+                          >
+                            <ListItemIcon sx={{ color: "error.main" }}>
+                              <DeleteOutlineRoundedIcon fontSize="small" />
+                            </ListItemIcon>
+                            Delete Trip
+                          </MenuItem>
+                        </MenuList>
+                      </ClickAwayListener>
+                    </Paper>
+                  </Grow>
+                )}
+              </Popper>
+            </Box>
+          ) : null}
+        </Stack>
+      );
+    }
 
     return (
       <Stack spacing={1.25}>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          {status === "complete" ? (
-            <>
-              <Button
-                variant="outlined"
-                startIcon={<AccessTimeFilledRoundedIcon />}
-                onClick={() => syncProjectTripTimeEntries(t)}
-                disabled={!canOperate || busy}
-                sx={{ borderRadius: 99 }}
-              >
-                Sync Time Entries
-              </Button>
-
-              <Button
-                variant="outlined"
-                startIcon={<RefreshRoundedIcon />}
-                onClick={() => applyTripLifecycleAction(t, "reopen")}
-                disabled={!canOperate || busy}
-                sx={{ borderRadius: 99 }}
-              >
-                Reopen
-              </Button>
-            </>
-          ) : null}
-
-          {status !== "complete" && timerState === "idle" ? (
+          {timerState === "idle" ? (
             <Button
               variant="outlined"
               startIcon={<PlayArrowRoundedIcon />}
@@ -3501,7 +3819,7 @@ export default function ProjectDetailPage() {
             </Button>
           ) : null}
 
-          {status !== "complete" && timerState === "running" ? (
+          {timerState === "running" ? (
             <Button
               variant="outlined"
               color="warning"
@@ -3514,7 +3832,7 @@ export default function ProjectDetailPage() {
             </Button>
           ) : null}
 
-          {status !== "complete" && timerState === "paused" ? (
+          {timerState === "paused" ? (
             <Button
               variant="outlined"
               startIcon={<PlayArrowRoundedIcon />}
@@ -3526,21 +3844,19 @@ export default function ProjectDetailPage() {
             </Button>
           ) : null}
 
-          {status !== "complete" ? (
-            <Button
-              variant="contained"
-              color="warning"
-              startIcon={<StopRoundedIcon />}
-              onClick={() => openCloseoutModal(t)}
-              disabled={!canOperate || busy}
-              sx={{
-                borderRadius: 99,
-                boxShadow: "none",
-              }}
-            >
-              Finish Day
-            </Button>
-          ) : null}
+          <Button
+            variant="contained"
+            color="warning"
+            startIcon={<StopRoundedIcon />}
+            onClick={() => openCloseoutModal(t)}
+            disabled={!canOperate || busy}
+            sx={{
+              borderRadius: 99,
+              boxShadow: "none",
+            }}
+          >
+            Finish Day
+          </Button>
         </Stack>
 
         <Button
@@ -3579,7 +3895,7 @@ export default function ProjectDetailPage() {
     return (
       <Card
         sx={{
-          borderRadius: 4,
+          borderRadius: 1,
           boxShadow: "none",
           border: `1px solid ${theme.palette.divider}`,
           bgcolor: cancelled
@@ -3599,8 +3915,7 @@ export default function ProjectDetailPage() {
             >
               <Box>
                 <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                  {t.date} • {formatTripWindow(String(t.timeWindow || "all_day"))} •{" "}
-                  {t.startTime}–{t.endTime}
+                  {formatTripScheduleLine(t)}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                   Crew: {tech}
@@ -3631,18 +3946,15 @@ export default function ProjectDetailPage() {
 
             <TripActionRow t={t} />
 
-            {t.closeout ? (
-              <Alert severity="info" variant="outlined">
-                Last closeout saved: {String(t.closeout.outcome || "").replaceAll("_", " ")}
-                {typeof t.closeout.hoursWorkedToday === "number"
-                  ? ` • ${Number(t.closeout.hoursWorkedToday).toFixed(2)}h`
-                  : ""}
-              </Alert>
-            ) : null}
-
-            {!t.closeout && typeof t.closeoutHours === "number" && t.closeoutHours > 0 ? (
-              <Alert severity="info" variant="outlined">
-                Last closeout saved: {Number(t.closeoutHours).toFixed(2)}h
+            {String(t.status || "").toLowerCase() === "complete" &&
+            (t.closeout || (typeof t.closeoutHours === "number" && t.closeoutHours > 0)) ? (
+              <Alert
+                severity="info"
+                variant="outlined"
+                icon={<InfoRoundedIcon fontSize="inherit" />}
+                sx={{ borderRadius: 3 }}
+              >
+                Last closeout saved: {getCloseoutSavedSummary(t)}
               </Alert>
             ) : null}
 
@@ -3652,57 +3964,63 @@ export default function ProjectDetailPage() {
               </Typography>
             ) : null}
 
-            <TextField
-              label="Work Notes"
-              value={noteValue}
-              onChange={(e) =>
-                setTripNoteDrafts((prev) => ({
-                  ...prev,
-                  [t.id]: e.target.value,
-                }))
-              }
-              multiline
-              minRows={3}
-              disabled={!canOperateThis || busy}
-              fullWidth
-            />
+            {String(t.status || "").toLowerCase() !== "complete" ? (
+              <>
+                <TextField
+                  label="Work Notes"
+                  value={noteValue}
+                  onChange={(e) =>
+                    setTripNoteDrafts((prev) => ({
+                      ...prev,
+                      [t.id]: e.target.value,
+                    }))
+                  }
+                  multiline
+                  minRows={3}
+                  disabled={!canOperateThis || busy}
+                  fullWidth
+                />
 
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              <Button
-                variant="outlined"
-                startIcon={<SaveRoundedIcon />}
-                onClick={() => saveTripNotes(t)}
-                disabled={!canOperateThis || busy}
-                sx={{ borderRadius: 99 }}
-              >
-                Save Notes
-              </Button>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Button
+                    variant="outlined"
+                    startIcon={<SaveRoundedIcon />}
+                    onClick={() => saveTripNotes(t)}
+                    disabled={!canOperateThis || busy}
+                    sx={{ borderRadius: 99 }}
+                  >
+                    Save Notes
+                  </Button>
 
-              {canEditProject ? (
-                <>
-                  <Button
-                    variant="text"
-                    color="warning"
-                    onClick={() => cancelTrip(t)}
-                    disabled={cancelled || busy}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="text"
-                    color="error"
-                    onClick={() => removeTrip(t)}
-                    disabled={busy}
-                  >
-                    Delete
-                  </Button>
-                </>
-              ) : null}
-            </Stack>
+                  {canEditProject ? (
+                    <>
+                      <Button
+                        variant="text"
+                        color="warning"
+                        onClick={() => cancelTrip(t)}
+                        disabled={cancelled || busy}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="text"
+                        color="error"
+                        onClick={() => removeTrip(t)}
+                        disabled={busy}
+                      >
+                        Delete
+                      </Button>
+                    </>
+                  ) : null}
+                </Stack>
+              </>
+            ) : null}
 
             {!canEditThis ? (
               <Typography variant="caption" color="text.secondary">
-                Techs can operate trips they are assigned to. Admin / Dispatcher / Manager can act on any project trip from this desktop card.
+                {String(t.status || "").toLowerCase() === "complete" && canCurrentUserViewTrip(t)
+                  ? "Completed trips are read-only for field crew. Use View Closeout to review what was submitted."
+                  : "Techs can operate trips they are assigned to. Admin / Dispatcher / Manager can act on any project trip from this desktop card."}
               </Typography>
             ) : null}
           </Stack>
@@ -3721,7 +4039,7 @@ export default function ProjectDetailPage() {
           maxWidth="md"
           PaperProps={{
             sx: {
-              borderRadius: 4,
+              borderRadius: 1,
             },
           }}
         >
@@ -3987,7 +4305,7 @@ export default function ProjectDetailPage() {
               return (
                 <Stack spacing={2.25}>
                   <Alert severity="info" variant="outlined">
-                    This saves the project closeout from desktop and creates/updates time entries for all assigned crew.
+                    This saves the project closeout and automatically creates/updates time entries for all assigned crew.
                   </Alert>
 
                   {t ? (
@@ -4006,7 +4324,7 @@ export default function ProjectDetailPage() {
                           {stageKey ? stageLabel(stageKey) : "Project Trip"}
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
-                          {t.date} • {formatTripWindow(String(t.timeWindow || ""))} • {t.startTime}-{t.endTime}
+                          {formatTripScheduleLine(t)}
                         </Typography>
                       </Stack>
                     </Paper>
@@ -4146,6 +4464,164 @@ export default function ProjectDetailPage() {
         </Dialog>
 
         <Dialog
+          open={Boolean(closeoutDetailsTrip)}
+          onClose={closeCloseoutDetails}
+          fullWidth
+          maxWidth="md"
+          PaperProps={{
+            sx: {
+              borderRadius: 4,
+            },
+          }}
+        >
+          <DialogTitle sx={{ pb: 1.25 }}>
+            <Stack direction="row" spacing={1.5} alignItems="flex-start">
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900, letterSpacing: -0.2 }}>
+                  Trip Closeout
+                </Typography>
+                {closeoutDetailsTrip ? (
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Submitted by {getCloseoutSubmittedBy(closeoutDetailsTrip)}
+                    {getCloseoutHours(closeoutDetailsTrip) != null
+                      ? ` • ${getCloseoutHours(closeoutDetailsTrip)?.toFixed(2)}h saved`
+                      : ""}
+                  </Typography>
+                ) : null}
+              </Box>
+
+              <IconButton aria-label="Close closeout details" onClick={closeCloseoutDetails}>
+                <CloseRoundedIcon />
+              </IconButton>
+            </Stack>
+          </DialogTitle>
+
+          <DialogContent dividers>
+            {closeoutDetailsTrip ? (
+              <Stack spacing={2}>
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 2,
+                    borderRadius: 4,
+                    bgcolor: alpha(theme.palette.primary.main, 0.04),
+                  }}
+                >
+                  <Stack spacing={0.75}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                      {formatTripScheduleLine(closeoutDetailsTrip)}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {closeoutDetailsTrip.link?.projectStageKey
+                        ? stageLabel(closeoutDetailsTrip.link.projectStageKey as StageKey)
+                        : "Project Trip"}
+                    </Typography>
+                  </Stack>
+                </Paper>
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                    gridTemplateColumns: {
+                      xs: "1fr",
+                      md: "minmax(0, 1.15fr) minmax(0, 0.85fr)",
+                    },
+                  }}
+                >
+                  <CloseoutDetailBlock
+                    icon={<DescriptionRoundedIcon fontSize="small" />}
+                    title="Work Summary"
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      {getCloseoutWorkSummary(closeoutDetailsTrip)}
+                    </Typography>
+                  </CloseoutDetailBlock>
+
+                  <CloseoutDetailBlock icon={<GroupRoundedIcon fontSize="small" />} title="Crew">
+                    <Stack spacing={0.75}>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Tech:</strong> {closeoutDetailsTrip.crew?.primaryTechName || "Unassigned"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Helper:</strong> {closeoutDetailsTrip.crew?.helperName || "—"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>2nd Tech:</strong> {closeoutDetailsTrip.crew?.secondaryTechName || "—"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>2nd Helper:</strong>{" "}
+                        {closeoutDetailsTrip.crew?.secondaryHelperName || "—"}
+                      </Typography>
+                    </Stack>
+                  </CloseoutDetailBlock>
+
+                  <CloseoutDetailBlock
+                    icon={<AccessTimeFilledRoundedIcon fontSize="small" />}
+                    title="Time Summary"
+                  >
+                    <Stack spacing={0.75}>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Total labor:</strong>{" "}
+                        {getCloseoutHours(closeoutDetailsTrip) != null
+                          ? `${getCloseoutHours(closeoutDetailsTrip)?.toFixed(2)}h`
+                          : "—"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Time entries:</strong> {getCloseoutTimeEntryStatus(closeoutDetailsTrip)}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Saved:</strong>{" "}
+                        {formatDateTime((closeoutDetailsTrip.closeout as any)?.savedAt)}
+                      </Typography>
+                    </Stack>
+                  </CloseoutDetailBlock>
+
+                  <CloseoutDetailBlock icon={<InfoRoundedIcon fontSize="small" />} title="Notes">
+                    <Stack spacing={1}>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Outcome:</strong>{" "}
+                        {safeTrim((closeoutDetailsTrip.closeout as any)?.outcome)
+                          ? safeTrim((closeoutDetailsTrip.closeout as any)?.outcome).replaceAll("_", " ")
+                          : "—"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>More work needed:</strong>{" "}
+                        {safeTrim((closeoutDetailsTrip.closeout as any)?.needsMoreWork) === "yes"
+                          ? "Yes"
+                          : "No"}
+                      </Typography>
+                      <Divider />
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Materials:</strong> {getCloseoutMaterials(closeoutDetailsTrip)}
+                      </Typography>
+                    </Stack>
+                  </CloseoutDetailBlock>
+                </Box>
+              </Stack>
+            ) : null}
+          </DialogContent>
+
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={closeCloseoutDetails}>Close</Button>
+            {closeoutDetailsTrip && canCurrentUserEditTrip(closeoutDetailsTrip) ? (
+              <Button
+                variant="outlined"
+                startIcon={<OpenInNewRoundedIcon />}
+                onClick={() => {
+                  const t = closeoutDetailsTrip;
+                  closeCloseoutDetails();
+                  openEditTrip(t);
+                }}
+                sx={{ borderRadius: 99 }}
+              >
+                Open Trip
+              </Button>
+            ) : null}
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
           open={deleteDialogOpen}
           onClose={deleteBusy ? undefined : () => setDeleteDialogOpen(false)}
           fullWidth
@@ -4210,7 +4686,7 @@ export default function ProjectDetailPage() {
                 elevation={0}
                 sx={{
                   p: { xs: 2, sm: 3 },
-                  borderRadius: 4,
+                  borderRadius: 1,
                   border: (theme) => `1px solid ${theme.palette.divider}`,
                   background:
                     theme.palette.mode === "light"
@@ -5659,7 +6135,7 @@ export default function ProjectDetailPage() {
 
                                 <Card
                                   sx={{
-                                    borderRadius: 4,
+                                    borderRadius: 1,
                                     boxShadow: "none",
                                     border: `1px solid ${theme.palette.divider}`,
                                   }}

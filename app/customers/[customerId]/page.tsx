@@ -285,7 +285,7 @@ function SectionCard(props: {
     <Card
       elevation={0}
       sx={{
-        borderRadius: 5,
+        borderRadius: 1,
         border: (theme) => `1px solid ${alpha(theme.palette.divider, 0.8)}`,
       }}
     >
@@ -327,7 +327,7 @@ function EmptyMiniState(props: {
     <Paper
       elevation={0}
       sx={{
-        borderRadius: 4,
+        borderRadius: 1,
         p: 3,
         border: (theme) => `1px dashed ${alpha(theme.palette.divider, 0.9)}`,
         textAlign: "center",
@@ -1326,7 +1326,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         <AppShell appUser={appUser}>
           <Box sx={{ maxWidth: 1320, mx: "auto", px: { xs: 1, sm: 2 }, pb: 4 }}>
             <Stack spacing={2}>
-              <Skeleton variant="rounded" height={150} sx={{ borderRadius: 5 }} />
+              <Skeleton variant="rounded" height={150} sx={{ borderRadius: 1 }} />
               <Box
                 sx={{
                   display: "grid",
@@ -1362,7 +1362,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
               <Paper
                 elevation={0}
                 sx={{
-                  borderRadius: 5,
+                  borderRadius: 1,
                   px: { xs: 2, sm: 3 },
                   py: { xs: 2.25, sm: 3 },
                   border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
@@ -1511,7 +1511,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     <Paper
                       elevation={0}
                       sx={{
-                        borderRadius: 4,
+                        borderRadius: 1,
                         p: 2,
                         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                         bgcolor: theme.palette.background.paper,
@@ -1531,7 +1531,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     <Paper
                       elevation={0}
                       sx={{
-                        borderRadius: 4,
+                        borderRadius: 1,
                         p: 2,
                         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                         bgcolor: theme.palette.background.paper,
@@ -1551,7 +1551,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     <Paper
                       elevation={0}
                       sx={{
-                        borderRadius: 4,
+                        borderRadius: 1,
                         p: 2,
                         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                         bgcolor: theme.palette.background.paper,
@@ -1568,7 +1568,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                     <Paper
                       elevation={0}
                       sx={{
-                        borderRadius: 4,
+                        borderRadius: 1,
                         p: 2,
                         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                         bgcolor: theme.palette.background.paper,
@@ -1984,7 +1984,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                           key={addr.id}
                           elevation={0}
                           sx={{
-                            borderRadius: 4,
+                            borderRadius: 1,
                             border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                           }}
                         >
@@ -2089,7 +2089,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                   <Card
                     elevation={0}
                     sx={{
-                      borderRadius: 4,
+                      borderRadius: 1,
                       border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                     }}
                   >
@@ -2142,7 +2142,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                                   role="button"
                                   tabIndex={0}
                                   sx={{
-                                    borderRadius: 4,
+                                    borderRadius: 1,
                                     border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                                     cursor: "pointer",
                                     transition: "border-color 160ms ease, transform 160ms ease",
@@ -2227,7 +2227,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                   <Card
                     elevation={0}
                     sx={{
-                      borderRadius: 4,
+                      borderRadius: 1,
                       border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                     }}
                   >
@@ -2280,7 +2280,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                                   role="button"
                                   tabIndex={0}
                                   sx={{
-                                    borderRadius: 4,
+                                    borderRadius: 1,
                                     border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                                     cursor: "pointer",
                                     transition: "border-color 160ms ease, transform 160ms ease",
@@ -2876,7 +2876,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 <Paper
                   elevation={0}
                   sx={{
-                    borderRadius: 3,
+                    borderRadius: 1,
                     p: 2,
                     bgcolor: "action.hover",
                     border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
