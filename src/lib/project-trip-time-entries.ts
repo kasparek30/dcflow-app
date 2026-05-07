@@ -21,6 +21,9 @@ type ProjectTripLite = {
   status?: string | null;
   timerState?: string | null;
   crew?: TripCrew | null;
+  billingPeriodId?: string | null;
+  billingPeriodSequence?: number | null;
+  billingPeriodLabel?: string | null;
   link?: {
     projectId?: string | null;
     projectStageKey?: string | null;
@@ -223,6 +226,10 @@ export async function queueProjectTripTimeEntryWrites(
     args.projectStageKey ?? trip?.link?.projectStageKey,
   );
 
+  const billingPeriodId = safeTrim(trip.billingPeriodId) || null;
+  const billingPeriodLabel = safeTrim(trip.billingPeriodLabel) || null;
+  const billingPeriodSequence = Number(trip.billingPeriodSequence);
+
   const createdOrUpdatedEntryIds: string[] = [];
 
   for (const rawMember of crewMembers) {
@@ -293,6 +300,11 @@ export async function queueProjectTripTimeEntryWrites(
         tripId,
         projectId,
         projectStageKey,
+        billingPeriodId,
+        billingPeriodLabel,
+        billingPeriodSequence: Number.isFinite(billingPeriodSequence)
+          ? billingPeriodSequence
+          : null,
 
         crewRole: member.crewRole,
 

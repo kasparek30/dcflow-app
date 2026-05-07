@@ -1496,9 +1496,21 @@ export default function AppShell({
             activeTrip.date || todayKeyLocal();
         }
 
-        projectUpdates.active = false;
-        projectUpdates.completedAt = stamp;
-        projectUpdates.completedByUid = myUid || null;
+        if (isTmProject) {
+          projectUpdates.active = true;
+          projectUpdates.projectOfficeStatus = "field_complete";
+          projectUpdates.fieldCompletedAt = stamp;
+          projectUpdates.fieldCompletedByUid = myUid || null;
+          projectUpdates.fieldCompletedByName = myDisplayName || null;
+        } else {
+          projectUpdates.active = true;
+          projectUpdates.projectOfficeStatus = "field_complete";
+          projectUpdates.fieldCompletedAt = stamp;
+          projectUpdates.fieldCompletedByUid = myUid || null;
+          projectUpdates.fieldCompletedByName = myDisplayName || null;
+          projectUpdates.completedAt = stamp;
+          projectUpdates.completedByUid = myUid || null;
+        }
         projectUpdates.completionNotes = closeoutNotes || null;
 
         projectUpdates.additionalTripRequested = false;
@@ -1566,7 +1578,7 @@ export default function AppShell({
         );
       } else {
         setProjectDockNotice(
-          `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. ${isTmProject ? "Work" : "Project"} marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. ${isTmProject ? "Project marked field complete." : "Project marked field complete."}${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
         );
       }
     } catch (err: unknown) {
@@ -2909,7 +2921,7 @@ export default function AppShell({
               <FormControlLabel
                 value="project_complete"
                 control={<Radio />}
-                label={isTmProject ? "Work complete" : "Complete entire project"}
+                label={isTmProject ? "No more field work expected" : "Complete entire project"}
               />
             </RadioGroup>
 
@@ -2984,7 +2996,7 @@ export default function AppShell({
             />
 
             <Typography variant="caption" color="text.secondary">
-              These hours are saved now as project time entries for all assigned crew, so no extra confirmation step is required.
+              These hours are populated from the trip timer when available, can be adjusted if needed, and are then saved as project time entries for all assigned crew.
             </Typography>
 
             <TextField

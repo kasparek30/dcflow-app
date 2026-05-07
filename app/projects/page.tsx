@@ -1,3 +1,4 @@
+// app/projects/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -35,18 +36,50 @@ import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
-import type { Project } from "../../src/types/project";
+import {
+  getEffectiveProjectOfficeStatus,
+  getProjectBillingSummary,
+  getProjectBillingPeriods,
+  isTimeMaterialsProject,
+  safeTrim,
+} from "../../src/lib/project-billing";
+import type { Project, ProjectOfficeStatus } from "../../src/types/project";
 
 type BidFilter = "all" | "draft" | "submitted" | "won" | "lost";
 type AssignmentFilter = "all" | "assigned" | "unassigned";
-type ActivityFilter = "all" | "active" | "inactive";
-type DisplayLifecycle = "active" | "completed" | "inactive";
+type ActivityFilter = "all" | "active" | "billing" | "closed" | "inactive";
+type DisplayLifecycle =
+  | "active"
+  | "field_complete"
+  | "ready_to_invoice"
+  | "invoiced"
+  | "closed"
+  | "completed"
+  | "inactive";
 
 type StageLike = {
   status?: string;
   scheduledDate?: string;
   billed?: boolean;
   billedAmount?: number;
+};
+
+type ProjectTripLite = {
+  id: string;
+  projectId: string;
+  date?: string | null;
+  status?: string | null;
+  active?: boolean | null;
+  closeoutHours?: number | null;
+  materialsUsedToday?: string | null;
+  closeout?: {
+    hoursWorkedToday?: number | null;
+    materialsUsedToday?: string | null;
+  } | null;
+  billingPeriodId?: string | null;
+  billingPeriodSequence?: number | null;
+  billingPeriodLabel?: string | null;
+  billingPeriodStatus?: string | null;
 };
 
 function formatCurrency(value?: number) {
@@ -85,6 +118,12 @@ function formatStageStatus(status?: string) {
       return "Complete";
     case "inactive":
       return "Inactive";
+    case "field_complete":
+      return "Field Complete";
+    case "ready_to_invoice":
+      return "Ready to Invoice";
+    case "invoiced":
+      return "Invoiced";
     default:
       return "Not Started";
   }
@@ -144,15 +183,38 @@ function getStageStatusColor(
     case "not_started":
       return "default";
     case "scheduled":
+    case "ready_to_invoice":
       return "warning";
     case "in_progress":
+    case "field_complete":
       return "info";
     case "complete":
+    case "invoiced":
+    case "closed":
       return "success";
     case "inactive":
-      return "default";
     default:
       return "default";
+  }
+}
+
+function safeOfficeStatus(project: Project, trips: ProjectTripLite[]): ProjectOfficeStatus {
+  return getEffectiveProjectOfficeStatus(project, trips);
+}
+
+function formatProjectOfficeStatus(status: ProjectOfficeStatus) {
+  switch (status) {
+    case "field_complete":
+      return "Field Complete";
+    case "ready_to_invoice":
+      return "Ready to Invoice";
+    case "invoiced":
+      return "Invoiced";
+    case "closed":
+      return "Closed";
+    case "active_work":
+    default:
+      return "Active Work";
   }
 }
 
@@ -188,20 +250,31 @@ function isProjectWorkflowComplete(project: Project) {
   return stages.every((entry) => entry.stage?.status === "complete");
 }
 
-function getProjectDisplayLifecycle(project: Project): DisplayLifecycle {
-  if (isProjectWorkflowComplete(project)) {
-    return "completed";
-  }
+function getProjectDisplayLifecycle(project: Project, trips: ProjectTripLite[]): DisplayLifecycle {
+  const officeStatus = safeOfficeStatus(project, trips);
 
-  if (!project.active) {
-    return "inactive";
-  }
+  if (officeStatus === "field_complete") return "field_complete";
+  if (officeStatus === "ready_to_invoice") return "ready_to_invoice";
+  if (officeStatus === "invoiced") return "invoiced";
+  if (officeStatus === "closed") return "closed";
+
+  if (!project.active) return "inactive";
+
+  if (isProjectWorkflowComplete(project)) return "completed";
 
   return "active";
 }
 
 function getProjectDisplayLifecycleLabel(lifecycle: DisplayLifecycle) {
   switch (lifecycle) {
+    case "field_complete":
+      return "Field Complete";
+    case "ready_to_invoice":
+      return "Ready to Invoice";
+    case "invoiced":
+      return "Invoiced";
+    case "closed":
+      return "Closed";
     case "completed":
       return "Completed";
     case "inactive":
@@ -214,9 +287,15 @@ function getProjectDisplayLifecycleLabel(lifecycle: DisplayLifecycle) {
 
 function getProjectDisplayLifecycleColor(
   lifecycle: DisplayLifecycle,
-): "default" | "primary" | "success" {
+): "default" | "primary" | "success" | "warning" | "info" {
   switch (lifecycle) {
+    case "field_complete":
+      return "info";
+    case "ready_to_invoice":
+      return "warning";
     case "completed":
+    case "invoiced":
+    case "closed":
       return "success";
     case "inactive":
       return "default";
@@ -226,15 +305,121 @@ function getProjectDisplayLifecycleColor(
   }
 }
 
-function getNextStage(project: Project) {
-  const lifecycle = getProjectDisplayLifecycle(project);
+function getNextStage(project: Project, trips: ProjectTripLite[]) {
+  const lifecycle = getProjectDisplayLifecycle(project, trips);
+  const billingSummary = getProjectBillingSummary(trips, project);
+  const periods = getProjectBillingPeriods(project);
+
+  if (isTimeMaterialsProject(project.projectType)) {
+    const currentPeriod = periods.find((period) => period.status === "open") || null;
+
+    if (lifecycle === "ready_to_invoice") {
+      return {
+        label: periods.some((period) => period.status === "ready_to_bill")
+          ? "Invoice Ready Billing Period"
+          : "Ready to Invoice",
+        status: "ready_to_invoice",
+        dateText: billingSummary.unbilledCompletedTrips > 0
+          ? `${billingSummary.unbilledCompletedTrips} trip(s) frozen`
+          : `${billingSummary.readyPeriods} ready period(s)`,
+        helper:
+          "A frozen T&M billing period is waiting on office billing. Historical periods stay visible while future work can continue in the current period.",
+      };
+    }
+
+    if (lifecycle === "field_complete") {
+      return {
+        label: "Final Billing Review",
+        status: "field_complete",
+        dateText:
+          billingSummary.unbilledCompletedTrips > 0
+            ? `${billingSummary.unbilledCompletedTrips} unbilled completed trip(s)`
+            : "No more field work expected",
+        helper:
+          "No more field work is expected. Review the final accumulated labor and materials, then freeze the last billing period when ready.",
+      };
+    }
+
+    if (lifecycle === "invoiced") {
+      return {
+        label: "Final Invoice Recorded",
+        status: "invoiced",
+        dateText: (project as any).invoiceNumber
+          ? `Invoice #${(project as any).invoiceNumber}`
+          : "Final invoice recorded",
+        helper: "All T&M billing periods are invoiced and the project is now historical.",
+      };
+    }
+
+    if (lifecycle === "closed") {
+      return {
+        label: "Closed",
+        status: "closed",
+        dateText: "Historical record",
+        helper: "Project is fully closed and historical.",
+      };
+    }
+
+    return {
+      label: currentPeriod ? "Current Billing Period" : "Open Billing Period",
+      status: billingSummary.unbilledCompletedTrips > 0 ? "scheduled" : "in_progress",
+      dateText:
+        billingSummary.unbilledCompletedTrips > 0
+          ? `${billingSummary.unbilledCompletedTrips} completed trip(s) ready to batch`
+          : billingSummary.openTrips > 0
+            ? `${billingSummary.openTrips} trip(s) still active`
+            : "Accumulating work for the next bill",
+      helper:
+        billingSummary.unbilledCompletedTrips > 0
+          ? "Completed T&M trips and materials are accumulating in the current period until someone marks Ready to Bill."
+          : "T&M work can continue while the current period stays open for future accumulated trips and materials.",
+    };
+  }
+
+  if (lifecycle === "ready_to_invoice") {
+    return {
+      label: "Ready to Invoice",
+      status: "ready_to_invoice",
+      dateText: "Create final invoice",
+      helper: "Office review is complete. Create/send the final invoice.",
+    };
+  }
+
+  if (lifecycle === "field_complete") {
+    return {
+      label: "Office Review",
+      status: "field_complete",
+      dateText: "Review billing",
+      helper: "Field work is complete. Review labor, materials, and closeouts.",
+    };
+  }
+
+  if (lifecycle === "invoiced") {
+    return {
+      label: "Invoiced",
+      status: "invoiced",
+      dateText: (project as any).invoiceNumber
+        ? `Invoice #${(project as any).invoiceNumber}`
+        : "Invoice recorded",
+      helper: "Project is locked for history unless reopened.",
+    };
+  }
+
+  if (lifecycle === "closed") {
+    return {
+      label: "Closed",
+      status: "closed",
+      dateText: "Historical record",
+      helper: "Project is fully closed and historical.",
+    };
+  }
 
   if (lifecycle === "completed") {
     return {
       label: "Project Complete",
       status: "complete",
       dateText: "No remaining stage work",
-      helper: "All required project stages are complete.",
+      helper: "All required project stages are complete. Move to office review when ready.",
     };
   }
 
@@ -247,17 +432,6 @@ function getNextStage(project: Project) {
     };
   }
 
-  if (project.projectType === "time_materials") {
-    return {
-      label: "Trip-Based Work",
-      status: project.active ? "in_progress" : "complete",
-      dateText: project.active ? "Run trips and review billing" : "Closed / inactive",
-      helper: project.active
-        ? "Track labor, materials, and billing handoff."
-        : "No current action needed.",
-    };
-  }
-
   const stages = getWorkflowStages(project);
   const nextStage = stages.find((entry) => entry.stage?.status !== "complete");
 
@@ -266,7 +440,7 @@ function getNextStage(project: Project) {
       label: "Project Complete",
       status: "complete",
       dateText: "No remaining stage work",
-      helper: "All required project stages are complete.",
+      helper: "All required project stages are complete. Move to office review when ready.",
     };
   }
 
@@ -306,9 +480,10 @@ function buildAddress(project: Project) {
   return cityStateZip ? `${line1} • ${cityStateZip}` : line1;
 }
 
-function projectMatchesSearch(project: Project, search: string) {
+function projectMatchesSearch(project: Project, trips: ProjectTripLite[], search: string) {
   if (!search.trim()) return true;
 
+  const billingSummary = getProjectBillingSummary(trips, project);
   const haystack = [
     project.projectName,
     project.customerDisplayName,
@@ -317,9 +492,12 @@ function projectMatchesSearch(project: Project, search: string) {
     project.serviceState,
     project.servicePostalCode,
     project.assignedTechnicianName,
+    project.primaryTechnicianName,
     formatProjectType(project.projectType),
     formatBidStatus(project.bidStatus),
-    getProjectDisplayLifecycleLabel(getProjectDisplayLifecycle(project)),
+    getProjectDisplayLifecycleLabel(getProjectDisplayLifecycle(project, trips)),
+    formatProjectOfficeStatus(safeOfficeStatus(project, trips)),
+    billingSummary.unbilledCompletedTrips > 0 ? "ready to bill" : "",
   ]
     .filter(Boolean)
     .join(" ")
@@ -334,6 +512,7 @@ export default function ProjectsPage() {
 
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectTripsById, setProjectTripsById] = useState<Record<string, ProjectTripLite[]>>({});
   const [error, setError] = useState("");
 
   const [searchText, setSearchText] = useState("");
@@ -347,11 +526,45 @@ export default function ProjectsPage() {
         setLoading(true);
         setError("");
 
-        const q = query(collection(db, "projects"), orderBy("createdAt", "desc"));
-        const snap = await getDocs(q);
+        const [projectsSnap, tripsSnap] = await Promise.all([
+          getDocs(query(collection(db, "projects"), orderBy("createdAt", "desc"))),
+          getDocs(collection(db, "trips")),
+        ]);
 
-        const items: Project[] = snap.docs.map((docSnap) => {
-          const data = docSnap.data();
+        const tripsByProject: Record<string, ProjectTripLite[]> = {};
+        tripsSnap.docs.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          const projectId = safeTrim(data.link?.projectId);
+          if (!projectId) return;
+
+          if (!tripsByProject[projectId]) {
+            tripsByProject[projectId] = [];
+          }
+
+          tripsByProject[projectId].push({
+            id: docSnap.id,
+            projectId,
+            date: data.date ?? null,
+            status: data.status ?? null,
+            active: data.active ?? true,
+            closeoutHours:
+              typeof data.closeoutHours === "number"
+                ? data.closeoutHours
+                : typeof data.closeout?.hoursWorkedToday === "number"
+                  ? data.closeout.hoursWorkedToday
+                  : null,
+            materialsUsedToday: data.materialsUsedToday ?? data.materialsSummary ?? null,
+            closeout: data.closeout ?? null,
+            billingPeriodId: data.billingPeriodId ?? null,
+            billingPeriodSequence:
+              typeof data.billingPeriodSequence === "number" ? data.billingPeriodSequence : null,
+            billingPeriodLabel: data.billingPeriodLabel ?? null,
+            billingPeriodStatus: data.billingPeriodStatus ?? null,
+          });
+        });
+
+        const items: Project[] = projectsSnap.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
 
           return {
             id: docSnap.id,
@@ -386,7 +599,35 @@ export default function ProjectsPage() {
             },
             assignedTechnicianId: data.assignedTechnicianId ?? undefined,
             assignedTechnicianName: data.assignedTechnicianName ?? undefined,
+            primaryTechnicianId: data.primaryTechnicianId ?? undefined,
+            primaryTechnicianName: data.primaryTechnicianName ?? undefined,
+            secondaryTechnicianId: data.secondaryTechnicianId ?? undefined,
+            secondaryTechnicianName: data.secondaryTechnicianName ?? undefined,
+            helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
+            helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
             internalNotes: data.internalNotes ?? undefined,
+            projectOfficeStatus: data.projectOfficeStatus ?? undefined,
+            billingPeriods: Array.isArray(data.billingPeriods) ? data.billingPeriods : undefined,
+            currentBillingPeriodId: data.currentBillingPeriodId ?? undefined,
+            fieldCompletedAt: data.fieldCompletedAt ?? undefined,
+            fieldCompletedByUid: data.fieldCompletedByUid ?? undefined,
+            fieldCompletedByName: data.fieldCompletedByName ?? undefined,
+            readyToInvoiceAt: data.readyToInvoiceAt ?? undefined,
+            readyToInvoiceByUid: data.readyToInvoiceByUid ?? undefined,
+            readyToInvoiceByName: data.readyToInvoiceByName ?? undefined,
+            invoicedAt: data.invoicedAt ?? undefined,
+            invoicedByUid: data.invoicedByUid ?? undefined,
+            invoicedByName: data.invoicedByName ?? undefined,
+            invoiceNumber: data.invoiceNumber ?? undefined,
+            invoiceDate: data.invoiceDate ?? undefined,
+            invoiceNotes: data.invoiceNotes ?? undefined,
+            closedAt: data.closedAt ?? undefined,
+            closedByUid: data.closedByUid ?? undefined,
+            closedByName: data.closedByName ?? undefined,
+            reopenedAt: data.reopenedAt ?? undefined,
+            reopenedByUid: data.reopenedByUid ?? undefined,
+            reopenedByName: data.reopenedByName ?? undefined,
+            reopenReason: data.reopenReason ?? undefined,
             active: data.active ?? true,
             createdAt: data.createdAt ?? undefined,
             updatedAt: data.updatedAt ?? undefined,
@@ -394,6 +635,7 @@ export default function ProjectsPage() {
         });
 
         setProjects(items);
+        setProjectTripsById(tripsByProject);
       } catch (err: unknown) {
         if (err instanceof Error) {
           setError(err.message);
@@ -410,53 +652,105 @@ export default function ProjectsPage() {
 
   const filteredProjects = useMemo(() => {
     return projects.filter((project) => {
-      if (!projectMatchesSearch(project, searchText)) return false;
+      const trips = projectTripsById[project.id] || [];
+      if (!projectMatchesSearch(project, trips, searchText)) return false;
 
       if (bidFilter !== "all" && project.bidStatus !== bidFilter) return false;
 
-      if (assignmentFilter === "assigned" && !project.assignedTechnicianName) return false;
-      if (assignmentFilter === "unassigned" && project.assignedTechnicianName) return false;
+      const assignmentName = project.primaryTechnicianName || project.assignedTechnicianName;
+      if (assignmentFilter === "assigned" && !assignmentName) return false;
+      if (assignmentFilter === "unassigned" && assignmentName) return false;
 
-      const lifecycle = getProjectDisplayLifecycle(project);
+      const lifecycle = getProjectDisplayLifecycle(project, trips);
 
       if (activityFilter === "active" && lifecycle !== "active") return false;
-      if (activityFilter === "inactive" && lifecycle === "active") return false;
+      if (
+        activityFilter === "billing" &&
+        lifecycle !== "field_complete" &&
+        lifecycle !== "ready_to_invoice"
+      ) {
+        return false;
+      }
+      if (activityFilter === "closed" && lifecycle !== "invoiced" && lifecycle !== "closed") {
+        return false;
+      }
+      if (activityFilter === "inactive" && lifecycle !== "inactive") return false;
 
       return true;
     });
-  }, [projects, searchText, bidFilter, assignmentFilter, activityFilter]);
+  }, [projects, projectTripsById, searchText, bidFilter, assignmentFilter, activityFilter]);
 
   const summary = useMemo(() => {
-    const activeCount = projects.filter(
-      (project) => getProjectDisplayLifecycle(project) === "active",
-    ).length;
+    const activeCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      return getProjectDisplayLifecycle(project, trips) === "active";
+    }).length;
 
-    const completedCount = projects.filter(
-      (project) => getProjectDisplayLifecycle(project) === "completed",
-    ).length;
+    const fieldCompleteCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      return getProjectDisplayLifecycle(project, trips) === "field_complete";
+    }).length;
+
+    const readyToInvoiceCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      return getProjectDisplayLifecycle(project, trips) === "ready_to_invoice";
+    }).length;
+
+    const invoicedCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      const lifecycle = getProjectDisplayLifecycle(project, trips);
+      return lifecycle === "invoiced" || lifecycle === "closed";
+    }).length;
+
+    const completedCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      const lifecycle = getProjectDisplayLifecycle(project, trips);
+      return (
+        lifecycle === "completed" ||
+        lifecycle === "field_complete" ||
+        lifecycle === "ready_to_invoice" ||
+        lifecycle === "invoiced" ||
+        lifecycle === "closed"
+      );
+    }).length;
 
     const wonCount = projects.filter((project) => project.bidStatus === "won").length;
 
-    const unassignedCount = projects.filter(
-      (project) =>
-        getProjectDisplayLifecycle(project) === "active" &&
-        !project.assignedTechnicianName?.trim(),
-    ).length;
+    const unassignedCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      return (
+        getProjectDisplayLifecycle(project, trips) === "active" &&
+        !safeTrim(project.primaryTechnicianName || project.assignedTechnicianName)
+      );
+    }).length;
 
-    const totalPipeline = projects.reduce(
-      (sum, project) => sum + Number(project.totalBidAmount ?? 0),
-      0,
-    );
+    const billingQueueCount = projects.filter((project) => {
+      const trips = projectTripsById[project.id] || [];
+      const lifecycle = getProjectDisplayLifecycle(project, trips);
+      return lifecycle === "field_complete" || lifecycle === "ready_to_invoice";
+    }).length;
+
+    const totalPipeline = projects
+      .filter((project) => {
+        const trips = projectTripsById[project.id] || [];
+        const lifecycle = getProjectDisplayLifecycle(project, trips);
+        return lifecycle !== "invoiced" && lifecycle !== "closed" && lifecycle !== "inactive";
+      })
+      .reduce((sum, project) => sum + Number(project.totalBidAmount ?? 0), 0);
 
     return {
       total: projects.length,
       active: activeCount,
+      fieldComplete: fieldCompleteCount,
+      readyToInvoice: readyToInvoiceCount,
+      invoiced: invoicedCount,
       completed: completedCount,
       won: wonCount,
       unassigned: unassignedCount,
       pipeline: totalPipeline,
+      billingQueue: billingQueueCount,
     };
-  }, [projects]);
+  }, [projects, projectTripsById]);
 
   return (
     <ProtectedPage fallbackTitle="Projects">
@@ -485,17 +779,11 @@ export default function ProjectsPage() {
                   color="text.secondary"
                   sx={{ mt: 0.75, maxWidth: 780 }}
                 >
-                  Manage new construction, remodel, and time + materials work with a
-                  clearer project workflow, assignment visibility, and next-stage focus.
+                  Manage new construction, remodel, and time + materials work with clearer
+                  stage visibility, stronger field-closeout flow, and a T&M batch billing queue.
                 </Typography>
 
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  useFlexGap
-                  flexWrap="wrap"
-                  sx={{ mt: 2 }}
-                >
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 2 }}>
                   <Chip
                     icon={<ConstructionRoundedIcon />}
                     label={`${summary.active} Active`}
@@ -504,9 +792,21 @@ export default function ProjectsPage() {
                   />
                   <Chip
                     icon={<AssignmentTurnedInRoundedIcon />}
-                    label={`${summary.completed} Completed`}
+                    label={`${summary.completed} Completed / Review`}
                     color="success"
                     variant="filled"
+                  />
+                  <Chip
+                    icon={<SellRoundedIcon />}
+                    label={`${summary.billingQueue} Billing Queue`}
+                    color={summary.billingQueue > 0 ? "warning" : "default"}
+                    variant="filled"
+                  />
+                  <Chip
+                    icon={<AssignmentTurnedInRoundedIcon />}
+                    label={`${summary.invoiced} Invoiced / Closed`}
+                    color="success"
+                    variant="outlined"
                   />
                   <Chip
                     icon={<AssignmentTurnedInRoundedIcon />}
@@ -559,73 +859,30 @@ export default function ProjectsPage() {
               gap: 2,
             }}
           >
-            <Card
-              sx={{
-                borderRadius: 1,
-                boxShadow: "none",
-                border: `1px solid ${theme.palette.divider}`,
-              }}
-            >
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Total Projects
-                </Typography>
-                <Typography variant="h4" sx={{ mt: 1, fontWeight: 700 }}>
-                  {summary.total}
-                </Typography>
-              </CardContent>
-            </Card>
-
-            <Card
-              sx={{
-                borderRadius: 1,
-                boxShadow: "none",
-                border: `1px solid ${theme.palette.divider}`,
-              }}
-            >
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Active Work
-                </Typography>
-                <Typography variant="h4" sx={{ mt: 1, fontWeight: 700 }}>
-                  {summary.active}
-                </Typography>
-              </CardContent>
-            </Card>
-
-            <Card
-              sx={{
-                borderRadius: 1,
-                boxShadow: "none",
-                border: `1px solid ${theme.palette.divider}`,
-              }}
-            >
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Completed
-                </Typography>
-                <Typography variant="h4" sx={{ mt: 1, fontWeight: 700 }}>
-                  {summary.completed}
-                </Typography>
-              </CardContent>
-            </Card>
-
-            <Card
-              sx={{
-                borderRadius: 1,
-                boxShadow: "none",
-                border: `1px solid ${theme.palette.divider}`,
-              }}
-            >
-              <CardContent>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Pipeline Value
-                </Typography>
-                <Typography variant="h5" sx={{ mt: 1, fontWeight: 700 }}>
-                  {formatCurrency(summary.pipeline)}
-                </Typography>
-              </CardContent>
-            </Card>
+            {[
+              { label: "Total Projects", value: summary.total },
+              { label: "Active Work", value: summary.active },
+              { label: "Billing Queue", value: summary.billingQueue },
+              { label: "Pipeline Value", value: formatCurrency(summary.pipeline) },
+            ].map((item) => (
+              <Card
+                key={item.label}
+                sx={{
+                  borderRadius: 1,
+                  boxShadow: "none",
+                  border: `1px solid ${theme.palette.divider}`,
+                }}
+              >
+                <CardContent>
+                  <Typography variant="subtitle2" color="text.secondary">
+                    {item.label}
+                  </Typography>
+                  <Typography variant="h4" sx={{ mt: 1, fontWeight: 700 }}>
+                    {item.value}
+                  </Typography>
+                </CardContent>
+              </Card>
+            ))}
           </Box>
 
           <Card
@@ -667,10 +924,7 @@ export default function ProjectsPage() {
                   />
 
                   <FormControl size="small" fullWidth>
-                    <Select
-                      value={bidFilter}
-                      onChange={(e) => setBidFilter(e.target.value as BidFilter)}
-                    >
+                    <Select value={bidFilter} onChange={(e) => setBidFilter(e.target.value as BidFilter)}>
                       <MenuItem value="all">All Bid Statuses</MenuItem>
                       <MenuItem value="draft">Draft</MenuItem>
                       <MenuItem value="submitted">Submitted</MenuItem>
@@ -682,9 +936,7 @@ export default function ProjectsPage() {
                   <FormControl size="small" fullWidth>
                     <Select
                       value={assignmentFilter}
-                      onChange={(e) =>
-                        setAssignmentFilter(e.target.value as AssignmentFilter)
-                      }
+                      onChange={(e) => setAssignmentFilter(e.target.value as AssignmentFilter)}
                     >
                       <MenuItem value="all">All Assignments</MenuItem>
                       <MenuItem value="assigned">Assigned</MenuItem>
@@ -693,44 +945,27 @@ export default function ProjectsPage() {
                   </FormControl>
 
                   <FormControl size="small" fullWidth>
-                    <Select
-                      value={activityFilter}
-                      onChange={(e) => setActivityFilter(e.target.value as ActivityFilter)}
-                    >
+                    <Select value={activityFilter} onChange={(e) => setActivityFilter(e.target.value as ActivityFilter)}>
                       <MenuItem value="all">All Activity</MenuItem>
                       <MenuItem value="active">Active Workflow</MenuItem>
-                      <MenuItem value="inactive">Completed / Inactive</MenuItem>
+                      <MenuItem value="billing">Billing Queue</MenuItem>
+                      <MenuItem value="closed">Invoiced / Closed</MenuItem>
+                      <MenuItem value="inactive">Inactive Only</MenuItem>
                     </Select>
                   </FormControl>
                 </Box>
 
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip
-                    label={`${filteredProjects.length} Showing`}
-                    color="primary"
-                    variant="outlined"
-                  />
+                  <Chip label={`${filteredProjects.length} Showing`} color="primary" variant="outlined" />
                   {searchText.trim() ? (
-                    <Chip
-                      label={`Search: ${searchText.trim()}`}
-                      onDelete={() => setSearchText("")}
-                      variant="outlined"
-                    />
+                    <Chip label={`Search: ${searchText.trim()}`} onDelete={() => setSearchText("")} variant="outlined" />
                   ) : null}
                   {bidFilter !== "all" ? (
-                    <Chip
-                      label={`Bid: ${formatBidStatus(bidFilter)}`}
-                      onDelete={() => setBidFilter("all")}
-                      variant="outlined"
-                    />
+                    <Chip label={`Bid: ${formatBidStatus(bidFilter)}`} onDelete={() => setBidFilter("all")} variant="outlined" />
                   ) : null}
                   {assignmentFilter !== "all" ? (
                     <Chip
-                      label={
-                        assignmentFilter === "assigned"
-                          ? "Assigned only"
-                          : "Unassigned only"
-                      }
+                      label={assignmentFilter === "assigned" ? "Assigned only" : "Unassigned only"}
                       onDelete={() => setAssignmentFilter("all")}
                       variant="outlined"
                     />
@@ -740,7 +975,11 @@ export default function ProjectsPage() {
                       label={
                         activityFilter === "active"
                           ? "Active workflow only"
-                          : "Completed / inactive only"
+                          : activityFilter === "billing"
+                            ? "Billing queue only"
+                            : activityFilter === "closed"
+                              ? "Invoiced / closed only"
+                              : "Inactive only"
                       }
                       onDelete={() => setActivityFilter("all")}
                       variant="outlined"
@@ -760,14 +999,7 @@ export default function ProjectsPage() {
               }}
             >
               {Array.from({ length: 6 }).map((_, index) => (
-                <Card
-                  key={index}
-                  sx={{
-                    borderRadius: 1,
-                    boxShadow: "none",
-                    border: `1px solid ${theme.palette.divider}`,
-                  }}
-                >
+                <Card key={index} sx={{ borderRadius: 1, boxShadow: "none", border: `1px solid ${theme.palette.divider}` }}>
                   <CardContent sx={{ p: 2.5 }}>
                     <Skeleton variant="text" width="45%" height={34} />
                     <Skeleton variant="text" width="65%" />
@@ -782,20 +1014,13 @@ export default function ProjectsPage() {
           {!loading && error ? <Alert severity="error">{error}</Alert> : null}
 
           {!loading && !error && filteredProjects.length === 0 ? (
-            <Card
-              sx={{
-                borderRadius: 1,
-                boxShadow: "none",
-                border: `1px solid ${theme.palette.divider}`,
-              }}
-            >
+            <Card sx={{ borderRadius: 1, boxShadow: "none", border: `1px solid ${theme.palette.divider}` }}>
               <CardContent sx={{ p: 3 }}>
                 <Typography variant="h6" sx={{ fontWeight: 700 }}>
                   No matching projects
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  Try adjusting your search or filters, or create a new project to get
-                  started.
+                  Try adjusting your search or filters, or create a new project to get started.
                 </Typography>
                 <Button
                   component={Link}
@@ -811,24 +1036,24 @@ export default function ProjectsPage() {
           ) : null}
 
           {!loading && !error && filteredProjects.length > 0 ? (
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", xl: "repeat(2, minmax(0, 1fr))" },
-                gap: 2,
-              }}
-            >
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", xl: "repeat(2, minmax(0, 1fr))" }, gap: 2 }}>
               {filteredProjects.map((project) => {
-                const nextStage = getNextStage(project);
+                const trips = projectTripsById[project.id] || [];
+                const billingSummary = getProjectBillingSummary(trips, project);
+                const nextStage = getNextStage(project, trips);
                 const progress = getStageProgressCount(project);
-                const lifecycle = getProjectDisplayLifecycle(project);
+                const lifecycle = getProjectDisplayLifecycle(project, trips);
                 const lifecycleColor = getProjectDisplayLifecycleColor(lifecycle);
                 const nextStepAccent =
-                  lifecycle === "completed"
-                    ? theme.palette.success.main
-                    : lifecycle === "inactive"
-                      ? theme.palette.text.secondary
-                      : theme.palette.primary.main;
+                  lifecycle === "ready_to_invoice"
+                    ? theme.palette.warning.main
+                    : lifecycle === "field_complete"
+                      ? theme.palette.info.main
+                      : lifecycle === "completed" || lifecycle === "invoiced" || lifecycle === "closed"
+                        ? theme.palette.success.main
+                        : lifecycle === "inactive"
+                          ? theme.palette.text.secondary
+                          : theme.palette.primary.main;
 
                 return (
                   <Card
@@ -838,8 +1063,7 @@ export default function ProjectsPage() {
                       overflow: "hidden",
                       boxShadow: "none",
                       border: `1px solid ${theme.palette.divider}`,
-                      transition:
-                        "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
+                      transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
                       "&:hover": {
                         transform: "translateY(-1px)",
                         borderColor: alpha(theme.palette.primary.main, 0.28),
@@ -847,102 +1071,48 @@ export default function ProjectsPage() {
                       },
                     }}
                   >
-                    <CardActionArea
-                      component={Link}
-                      href={`/projects/${project.id}`}
-                      sx={{ alignItems: "stretch" }}
-                    >
+                    <CardActionArea component={Link} href={`/projects/${project.id}`} sx={{ alignItems: "stretch" }}>
                       <CardContent sx={{ p: 2.5 }}>
                         <Stack spacing={2}>
-                          <Stack
-                            direction={{ xs: "column", sm: "row" }}
-                            spacing={1.25}
-                            justifyContent="space-between"
-                            alignItems={{ xs: "flex-start", sm: "flex-start" }}
-                          >
+                          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "flex-start" }}>
                             <Box sx={{ minWidth: 0 }}>
-                              <Typography
-                                variant="h6"
-                                sx={{
-                                  fontWeight: 700,
-                                  lineHeight: 1.2,
-                                  wordBreak: "break-word",
-                                }}
-                              >
+                              <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2, wordBreak: "break-word" }}>
                                 {project.projectName || "Untitled Project"}
                               </Typography>
-
-                              <Typography
-                                variant="body2"
-                                color="text.secondary"
-                                sx={{ mt: 0.75 }}
-                              >
+                              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
                                 {project.customerDisplayName || "No customer"}
                               </Typography>
                             </Box>
 
-                            <Stack
-                              direction="row"
-                              spacing={1}
-                              useFlexGap
-                              flexWrap="wrap"
-                              justifyContent={{ xs: "flex-start", sm: "flex-end" }}
-                            >
-                              <Chip
-                                label={formatProjectType(project.projectType)}
-                                color={getProjectTypeTone(project.projectType)}
-                                variant="filled"
-                                size="small"
-                              />
-                              <Chip
-                                label={formatBidStatus(project.bidStatus)}
-                                color={getBidStatusColor(project.bidStatus)}
-                                variant="filled"
-                                size="small"
-                              />
-                              <Chip
-                                label={getProjectDisplayLifecycleLabel(lifecycle)}
-                                color={lifecycleColor}
-                                variant={lifecycle === "inactive" ? "outlined" : "filled"}
-                                size="small"
-                              />
+                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent={{ xs: "flex-start", sm: "flex-end" }}>
+                              <Chip label={formatProjectType(project.projectType)} color={getProjectTypeTone(project.projectType)} variant="filled" size="small" />
+                              <Chip label={formatBidStatus(project.bidStatus)} color={getBidStatusColor(project.bidStatus)} variant="filled" size="small" />
+                              <Chip label={getProjectDisplayLifecycleLabel(lifecycle)} color={lifecycleColor} variant={lifecycle === "inactive" ? "outlined" : "filled"} size="small" />
                             </Stack>
                           </Stack>
 
                           <Stack spacing={1}>
                             <Stack direction="row" spacing={1} alignItems="flex-start">
-                              <LocationOnRoundedIcon
-                                sx={{ color: "text.secondary", fontSize: 18, mt: 0.2 }}
-                              />
+                              <LocationOnRoundedIcon sx={{ color: "text.secondary", fontSize: 18, mt: 0.2 }} />
                               <Typography variant="body2" color="text.secondary">
                                 {buildAddress(project)}
                               </Typography>
                             </Stack>
 
                             <Stack direction="row" spacing={1} alignItems="center">
-                              <PersonRoundedIcon
-                                sx={{ color: "text.secondary", fontSize: 18 }}
-                              />
+                              <PersonRoundedIcon sx={{ color: "text.secondary", fontSize: 18 }} />
                               <Typography variant="body2" color="text.secondary">
                                 Lead Tech:{" "}
-                                <Box
-                                  component="span"
-                                  sx={{
-                                    color: "text.primary",
-                                    fontWeight: project.assignedTechnicianName ? 600 : 500,
-                                  }}
-                                >
-                                  {project.assignedTechnicianName || "Unassigned"}
+                                <Box component="span" sx={{ color: "text.primary", fontWeight: project.primaryTechnicianName || project.assignedTechnicianName ? 600 : 500 }}>
+                                  {project.primaryTechnicianName || project.assignedTechnicianName || "Unassigned"}
                                 </Box>
                               </Typography>
                             </Stack>
 
                             <Stack direction="row" spacing={1} alignItems="center">
-                              <TrendingUpRoundedIcon
-                                sx={{ color: "text.secondary", fontSize: 18 }}
-                              />
+                              <TrendingUpRoundedIcon sx={{ color: "text.secondary", fontSize: 18 }} />
                               <Typography variant="body2" color="text.secondary">
-                                Total Bid:{" "}
+                                {isTimeMaterialsProject(project.projectType) ? "Project Value:" : "Total Bid:"}{" "}
                                 <Box component="span" sx={{ color: "text.primary", fontWeight: 600 }}>
                                   {formatCurrency(project.totalBidAmount)}
                                 </Box>
@@ -952,91 +1122,47 @@ export default function ProjectsPage() {
 
                           <Divider />
 
-                          <Box
-                            sx={{
-                              borderRadius: 1,
-                              p: 1.5,
-                              backgroundColor: alpha(nextStepAccent, 0.05),
-                              border: `1px solid ${alpha(nextStepAccent, 0.14)}`,
-                            }}
-                          >
-                            <Stack
-                              direction={{ xs: "column", sm: "row" }}
-                              spacing={1.5}
-                              justifyContent="space-between"
-                              alignItems={{ xs: "flex-start", sm: "center" }}
-                            >
+                          <Box sx={{ borderRadius: 1, p: 1.5, backgroundColor: alpha(nextStepAccent, 0.05), border: `1px solid ${alpha(nextStepAccent, 0.14)}` }}>
+                            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
                               <Box>
                                 <Typography variant="subtitle2" color="text.secondary">
                                   Next step
                                 </Typography>
-                                <Typography
-                                  variant="h6"
-                                  sx={{ mt: 0.5, fontWeight: 700 }}
-                                >
+                                <Typography variant="h6" sx={{ mt: 0.5, fontWeight: 700 }}>
                                   {nextStage.label}
                                 </Typography>
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                  sx={{ mt: 0.5 }}
-                                >
+                                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
                                   {nextStage.helper}
                                 </Typography>
                               </Box>
 
-                              <Stack
-                                direction="row"
-                                spacing={1}
-                                useFlexGap
-                                flexWrap="wrap"
-                                justifyContent={{ xs: "flex-start", sm: "flex-end" }}
-                              >
-                                <Chip
-                                  label={formatStageStatus(nextStage.status)}
-                                  color={getStageStatusColor(nextStage.status)}
-                                  size="small"
-                                  variant="filled"
-                                />
-                                <Chip
-                                  label={nextStage.dateText}
-                                  size="small"
-                                  variant="outlined"
-                                />
+                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent={{ xs: "flex-start", sm: "flex-end" }}>
+                                <Chip label={formatStageStatus(nextStage.status)} color={getStageStatusColor(nextStage.status)} size="small" variant="filled" />
+                                <Chip label={nextStage.dateText} size="small" variant="outlined" />
                               </Stack>
                             </Stack>
                           </Box>
 
-                          <Stack
-                            direction="row"
-                            spacing={1}
-                            useFlexGap
-                            flexWrap="wrap"
-                            justifyContent="space-between"
-                            alignItems="center"
-                          >
+                          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent="space-between" alignItems="center">
                             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                               {progress ? (
-                                <Chip
-                                  size="small"
-                                  variant="outlined"
-                                  label={`Stage Progress ${progress.complete}/${progress.total}`}
-                                />
+                                <Chip size="small" variant="outlined" label={`Stage Progress ${progress.complete}/${progress.total}`} />
                               ) : (
                                 <Chip
                                   size="small"
                                   variant="outlined"
-                                  label="Trip-Based Billing Workflow"
+                                  label={
+                                    billingSummary.unbilledCompletedTrips > 0
+                                      ? `${billingSummary.unbilledCompletedTrips} trip(s) awaiting batch bill`
+                                      : billingSummary.readyPeriods > 0
+                                        ? `${billingSummary.readyPeriods} ready period(s)`
+                                        : "T&M batch billing workflow"
+                                  }
                                 />
                               )}
 
-                              {lifecycle === "active" && !project.assignedTechnicianName ? (
-                                <Chip
-                                  size="small"
-                                  color="warning"
-                                  variant="filled"
-                                  label="Needs Assignment"
-                                />
+                              {lifecycle === "active" && !safeTrim(project.primaryTechnicianName || project.assignedTechnicianName) ? (
+                                <Chip size="small" color="warning" variant="filled" label="Needs Assignment" />
                               ) : null}
                             </Stack>
 

@@ -91,7 +91,26 @@ import {
   upsertProjectTripTimeEntriesForCrew,
 } from "../../../src/lib/project-trip-time-entries";
 import type { AppUser } from "../../../src/types/app-user";
-import type { Project, StageStaffing } from "../../../src/types/project";
+import type {
+  Project,
+  ProjectBillingPeriod,
+  ProjectOfficeStatus,
+  StageStaffing,
+} from "../../../src/types/project";
+import {
+  buildBillingTabLabel,
+  createOpenBillingPeriod,
+  getCurrentOpenBillingPeriod,
+  getEffectiveProjectOfficeStatus,
+  getNextBillingSequence,
+  getProjectBillingPeriods,
+  getProjectBillingSummary,
+  getTripCloseoutHours as getTripCloseoutHoursFromBilling,
+  getTripMaterialsSummary,
+  getUnbilledCompletedTrips,
+  isTimeMaterialsProject,
+  summarizeBillingPeriodTrips,
+} from "../../../src/lib/project-billing";
 import {
   deleteObject,
   getDownloadURL,
@@ -179,6 +198,11 @@ type StageAssignmentState = {
 
 type TripTimerState = "idle" | "running" | "paused" | "stopped";
 
+type PauseBlock = {
+  startAt: string;
+  endAt: string | null;
+};
+
 type TripCrew = {
   primaryTechUid?: string | null;
   primaryTechName?: string | null;
@@ -211,9 +235,20 @@ type TripDoc = {
   startedAt?: string | null;
   pausedAt?: string | null;
   completedAt?: string | null;
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
+  pauseBlocks?: PauseBlock[] | null;
   closeout?: any;
   closeoutHours?: number | null;
   materialsUsedToday?: string | null;
+  billingPeriodId?: string | null;
+  billingPeriodSequence?: number | null;
+  billingPeriodLabel?: string | null;
+  billingPeriodStatus?: string | null;
+  readyToBillAt?: string | null;
+  invoicedAt?: string | null;
+  invoiceNumber?: string | null;
+  invoiceDate?: string | null;
   createdAt?: string;
   createdByUid?: string | null;
   updatedAt?: string;
@@ -250,6 +285,27 @@ type TripCloseoutModalState = {
   hoursWorkedToday: string;
   workNotes: string;
   materialsUsedToday: string;
+  saving: boolean;
+  error: string;
+};
+
+type ProjectOfficeDialogState = {
+  open: boolean;
+  nextStatus: ProjectOfficeStatus | null;
+  invoiceNumber: string;
+  invoiceDate: string;
+  invoiceNotes: string;
+  reopenReason: string;
+  saving: boolean;
+  error: string;
+};
+
+type TmInvoiceDialogState = {
+  open: boolean;
+  periodId: string | null;
+  invoiceNumber: string;
+  invoiceDate: string;
+  invoiceNotes: string;
   saving: boolean;
   error: string;
 };
@@ -292,6 +348,52 @@ type CrewNotesDraft = {
   internalNotes: string;
 };
 
+type TmBillingTabData = {
+  key: string;
+  label: string;
+  period: ProjectBillingPeriod | null;
+  trips: TripDoc[];
+  summary: ReturnType<typeof summarizeBillingPeriodTrips>;
+  isCurrentOpen: boolean;
+};
+
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripUndefinedDeep(item))
+      .filter((item) => item !== undefined) as T;
+  }
+
+  if (value && typeof value === "object") {
+    const cleanedEntries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [k, stripUndefinedDeep(v)]);
+
+    return Object.fromEntries(cleanedEntries) as T;
+  }
+
+  return value;
+}
+
+function periodHasAssignedTrips(periodId: string, trips: TripDoc[]) {
+  const target = safeTrim(periodId);
+  if (!target) return false;
+
+  return trips.some((trip) => {
+    if (safeTrim(trip.billingPeriodId) !== target) return false;
+    if (String(trip.status || "").toLowerCase() !== "complete") return false;
+    if (trip.active === false) return false;
+    return true;
+  });
+}
+
+function removeEmptyOpenBillingPeriods(periods: ProjectBillingPeriod[], trips: TripDoc[]) {
+  return periods.filter((period) => {
+    if (period.status !== "open") return true;
+    return periodHasAssignedTrips(period.id, trips);
+  });
+}
+
 function emptyStageAssignment(): StageAssignmentState {
   return {
     primaryUid: "",
@@ -333,6 +435,153 @@ function emptyCloseoutModal(): TripCloseoutModalState {
     saving: false,
     error: "",
   };
+}
+
+function emptyProjectOfficeDialog(): ProjectOfficeDialogState {
+  return {
+    open: false,
+    nextStatus: null,
+    invoiceNumber: "",
+    invoiceDate: toIsoDate(new Date()),
+    invoiceNotes: "",
+    reopenReason: "",
+    saving: false,
+    error: "",
+  };
+}
+
+function emptyTmInvoiceDialog(): TmInvoiceDialogState {
+  return {
+    open: false,
+    periodId: null,
+    invoiceNumber: "",
+    invoiceDate: toIsoDate(new Date()),
+    invoiceNotes: "",
+    saving: false,
+    error: "",
+  };
+}
+
+function getProjectOfficeStatus(project?: Project | null): ProjectOfficeStatus {
+  const raw = safeTrim((project as any)?.projectOfficeStatus) as ProjectOfficeStatus;
+  if (
+    raw === "active_work" ||
+    raw === "field_complete" ||
+    raw === "ready_to_invoice" ||
+    raw === "invoiced" ||
+    raw === "closed"
+  ) {
+    return raw;
+  }
+  return "active_work";
+}
+
+function isProjectOfficeLocked(project?: Project | null) {
+  const status = getProjectOfficeStatus(project);
+  return status === "invoiced" || status === "closed";
+}
+
+function formatProjectOfficeStatus(status: ProjectOfficeStatus) {
+  switch (status) {
+    case "field_complete":
+      return "Field Complete";
+    case "ready_to_invoice":
+      return "Ready to Invoice";
+    case "invoiced":
+      return "Invoiced";
+    case "closed":
+      return "Closed";
+    case "active_work":
+    default:
+      return "Active Work";
+  }
+}
+
+function projectOfficeStatusColor(
+  status: ProjectOfficeStatus,
+): "default" | "primary" | "success" | "warning" | "info" {
+  switch (status) {
+    case "field_complete":
+      return "info";
+    case "ready_to_invoice":
+      return "warning";
+    case "invoiced":
+    case "closed":
+      return "success";
+    case "active_work":
+    default:
+      return "primary";
+  }
+}
+
+function projectOfficeStatusHelper(status: ProjectOfficeStatus) {
+  switch (status) {
+    case "field_complete":
+      return "Field work is marked complete. Office review is next.";
+    case "ready_to_invoice":
+      return "Office review is complete. This project is ready for final billing.";
+    case "invoiced":
+      return "Final invoice has been recorded. Project is locked for history unless reopened.";
+    case "closed":
+      return "Project is fully closed and historical.";
+    case "active_work":
+    default:
+      return "Project is still open for field work, scheduling, and closeouts.";
+  }
+}
+
+function projectOfficeStatusActionLabel(status: ProjectOfficeStatus) {
+  switch (status) {
+    case "field_complete":
+      return "Mark Field Complete";
+    case "ready_to_invoice":
+      return "Mark Ready to Invoice";
+    case "invoiced":
+      return "Mark Invoiced";
+    case "closed":
+      return "Mark Closed";
+    case "active_work":
+    default:
+      return "Reopen Active Work";
+  }
+}
+
+function projectOfficeStatusDialogTitle(status?: ProjectOfficeStatus | null) {
+  if (!status) return "Update Project Status";
+  return projectOfficeStatusActionLabel(status);
+}
+
+function parseIsoMs(value?: string | null) {
+  const t = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(t) ? t : NaN;
+}
+
+function minutesBetweenMs(aMs: number, bMs: number) {
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return 0;
+  return Math.max(0, Math.round((bMs - aMs) / 60000));
+}
+
+function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null, referenceEndMs?: number) {
+  if (!Array.isArray(pauseBlocks) || pauseBlocks.length === 0) return 0;
+  const endMs = Number.isFinite(referenceEndMs) ? Number(referenceEndMs) : Date.now();
+  return pauseBlocks.reduce((sum, block) => {
+    const startMs = parseIsoMs(block?.startAt || null);
+    const stopMs = block?.endAt ? parseIsoMs(block.endAt) : endMs;
+    if (!Number.isFinite(startMs) || !Number.isFinite(stopMs) || stopMs <= startMs) return sum;
+    return sum + minutesBetweenMs(startMs, stopMs);
+  }, 0);
+}
+
+function getTimerDrivenHoursForTrip(t?: TripDoc | null) {
+  if (!t) return null;
+  const startMs = parseIsoMs(t.actualStartAt || t.startedAt || null);
+  const endMs = parseIsoMs(t.actualEndAt || t.completedAt || null);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  const grossMinutes = minutesBetweenMs(startMs, endMs);
+  const pausedMinutes = sumPausedMinutes(t.pauseBlocks || null, endMs);
+  const liveMinutes = Math.max(0, grossMinutes - pausedMinutes);
+  if (liveMinutes <= 0) return null;
+  return (Math.round((liveMinutes / 60) * 4) / 4).toFixed(2);
 }
 
 function normalizeRole(role?: string) {
@@ -422,6 +671,13 @@ function formatStageStatus(status: Project["roughIn"]["status"]) {
     default:
       return status;
   }
+}
+
+function formatBillingPeriodStatus(status?: ProjectBillingPeriod["status"] | null) {
+  const s = safeTrim(status);
+  if (s === "ready_to_bill") return "Ready to Bill";
+  if (s === "invoiced") return "Invoiced";
+  return "Open";
 }
 
 function formatProjectType(projectType?: string) {
@@ -869,6 +1125,9 @@ export default function ProjectDetailPage() {
 
   const [closeoutModal, setCloseoutModal] = useState<TripCloseoutModalState>(emptyCloseoutModal());
   const [closeoutDetailsTripId, setCloseoutDetailsTripId] = useState<string | null>(null);
+  const [projectOfficeDialog, setProjectOfficeDialog] = useState<ProjectOfficeDialogState>(emptyProjectOfficeDialog());
+  const [tmInvoiceDialog, setTmInvoiceDialog] = useState<TmInvoiceDialogState>(emptyTmInvoiceDialog());
+  const [activeTmBillingTab, setActiveTmBillingTab] = useState<string>("current");
   const [tripActionBusyId, setTripActionBusyId] = useState<string | null>(null);
   const [tripNoteDrafts, setTripNoteDrafts] = useState<Record<string, string>>({});
 
@@ -962,6 +1221,28 @@ export default function ProjectDetailPage() {
   const canDeleteProject =
     appUser?.role === "admin" || appUser?.role === "manager";
 
+  const isTmProject = isTimeMaterialsProject(project?.projectType);
+  const projectOfficeStatus = useMemo(
+    () => getEffectiveProjectOfficeStatus(project, projectTrips),
+    [project, projectTrips],
+  );
+  const projectOfficeLocked =
+    projectOfficeStatus === "invoiced" || projectOfficeStatus === "closed";
+  const projectFieldWorkLocked =
+    projectOfficeLocked || projectOfficeStatus === "field_complete";
+
+  const canUpdateProjectOfficeStatus = canEditProject && !isTmProject;
+  const canCloseProject = canEditProject && projectOfficeStatus === "invoiced";
+  const canReopenClosedProject = canEditProject && projectOfficeStatus === "closed";
+
+  const canMarkTmReadyToBill =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager" ||
+    appUser?.role === "technician";
+  const canMarkTmFieldComplete = canMarkTmReadyToBill;
+  const canInvoiceTmPeriods = canEditProject;
+
   const isFieldRole =
     appUser?.role === "technician" ||
     appUser?.role === "helper" ||
@@ -1042,6 +1323,94 @@ export default function ProjectDetailPage() {
   }, [projectTrips]);
 
   const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
+
+  const projectBillingSummary = useMemo(() => {
+    const summary = getProjectBillingSummary(projectTrips, project);
+    const completedTrips = projectTrips.filter(
+      (trip) => String(trip.status || "").toLowerCase() === "complete" && trip.active !== false,
+    );
+
+    const needsTimeEntryReview = completedTrips.some((trip) => {
+      const closeout = (trip.closeout || {}) as any;
+      return safeTrim(closeout.timeEntrySyncStatus) !== "synced";
+    });
+
+    return {
+      ...summary,
+      needsTimeEntryReview,
+    };
+  }, [projectTrips, project]);
+
+  const tmBillingPeriods = useMemo(() => getProjectBillingPeriods(project), [project]);
+  const currentOpenTmPeriod = useMemo(() => getCurrentOpenBillingPeriod(project), [project]);
+const unbilledCompletedTmTrips = useMemo<TripDoc[]>(
+  () =>
+    isTmProject
+      ? projectTrips.filter((trip) => {
+          const status = String(trip.status || "").toLowerCase();
+          if (status !== "complete") return false;
+          if (trip.active === false) return false;
+          if (safeTrim(trip.billingPeriodId)) return false;
+          return true;
+        })
+      : [],
+  [isTmProject, projectTrips],
+);
+
+const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
+  if (!isTmProject) return [];
+
+  const frozenTabs: TmBillingTabData[] = tmBillingPeriods.map((period) => {
+    const periodTrips: TripDoc[] = projectTrips.filter(
+      (trip) => safeTrim(trip.billingPeriodId) === period.id,
+    );
+
+    return {
+      key: period.id,
+      label: buildBillingTabLabel(period, false),
+      period,
+      trips: periodTrips,
+      summary: summarizeBillingPeriodTrips(periodTrips),
+      isCurrentOpen: false,
+    };
+  });
+
+  const tabs: TmBillingTabData[] = [...frozenTabs];
+
+  if (projectOfficeStatus !== "closed") {
+    const currentTrips: TripDoc[] = unbilledCompletedTmTrips;
+
+    tabs.unshift({
+      key: "current",
+      label: "Current Period",
+      period: currentOpenTmPeriod,
+      trips: currentTrips,
+      summary: summarizeBillingPeriodTrips(currentTrips),
+      isCurrentOpen: true,
+    });
+  }
+
+  return tabs;
+}, [
+  isTmProject,
+  tmBillingPeriods,
+  currentOpenTmPeriod,
+  unbilledCompletedTmTrips,
+  projectTrips,
+  projectOfficeStatus,
+]);
+
+  const activeTmBillingTabData = useMemo(() => {
+    if (!tmBillingTabs.length) return null;
+    return tmBillingTabs.find((tab) => tab.key === activeTmBillingTab) || tmBillingTabs[0];
+  }, [tmBillingTabs, activeTmBillingTab]);
+
+  useEffect(() => {
+    if (!tmBillingTabs.length) return;
+    if (!tmBillingTabs.some((tab) => tab.key === activeTmBillingTab)) {
+      setActiveTmBillingTab(tmBillingTabs[0].key);
+    }
+  }, [tmBillingTabs, activeTmBillingTab]);
 
   const closeoutDetailsTrip = useMemo(() => {
     if (!closeoutDetailsTripId) return null;
@@ -1155,7 +1524,14 @@ export default function ProjectDetailPage() {
     return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
   }
 
+  function isFrozenTmBillingTrip(t: TripDoc) {
+    if (!isTmProject) return false;
+    const status = safeTrim(t.billingPeriodStatus).toLowerCase();
+    return status === "ready_to_bill" || status === "invoiced";
+  }
+
   function canCurrentUserEditTrip(t: TripDoc) {
+    if (projectFieldWorkLocked || isFrozenTmBillingTrip(t)) return false;
     if (canEditProject) return true;
     if (String(t.status || "").toLowerCase() === "complete") return false;
     if (!isFieldRole) return false;
@@ -1163,6 +1539,7 @@ export default function ProjectDetailPage() {
   }
 
   function canCurrentUserOperateTrip(t: TripDoc) {
+    if (projectFieldWorkLocked || isFrozenTmBillingTrip(t)) return false;
     if (canEditProject) return true;
     if (String(t.status || "").toLowerCase() === "complete") return false;
     if (!isFieldRole) return false;
@@ -1324,6 +1701,28 @@ export default function ProjectDetailPage() {
           helperIds: Array.isArray(data.helperIds) ? data.helperIds.filter(Boolean) : undefined,
           helperNames: Array.isArray(data.helperNames) ? data.helperNames.filter(Boolean) : undefined,
           internalNotes: data.internalNotes ?? undefined,
+          projectOfficeStatus: data.projectOfficeStatus ?? undefined,
+          billingPeriods: Array.isArray(data.billingPeriods) ? data.billingPeriods : undefined,
+          currentBillingPeriodId: data.currentBillingPeriodId ?? undefined,
+          fieldCompletedAt: data.fieldCompletedAt ?? undefined,
+          fieldCompletedByUid: data.fieldCompletedByUid ?? undefined,
+          fieldCompletedByName: data.fieldCompletedByName ?? undefined,
+          readyToInvoiceAt: data.readyToInvoiceAt ?? undefined,
+          readyToInvoiceByUid: data.readyToInvoiceByUid ?? undefined,
+          readyToInvoiceByName: data.readyToInvoiceByName ?? undefined,
+          invoicedAt: data.invoicedAt ?? undefined,
+          invoicedByUid: data.invoicedByUid ?? undefined,
+          invoicedByName: data.invoicedByName ?? undefined,
+          invoiceNumber: data.invoiceNumber ?? undefined,
+          invoiceDate: data.invoiceDate ?? undefined,
+          invoiceNotes: data.invoiceNotes ?? undefined,
+          closedAt: data.closedAt ?? undefined,
+          closedByUid: data.closedByUid ?? undefined,
+          closedByName: data.closedByName ?? undefined,
+          reopenedAt: data.reopenedAt ?? undefined,
+          reopenedByUid: data.reopenedByUid ?? undefined,
+          reopenedByName: data.reopenedByName ?? undefined,
+          reopenReason: data.reopenReason ?? undefined,
           active: data.active ?? true,
           createdAt: data.createdAt ?? undefined,
           updatedAt: data.updatedAt ?? undefined,
@@ -1540,9 +1939,21 @@ export default function ProjectDetailPage() {
             startedAt: d.startedAt ?? d.actualStartAt ?? null,
             pausedAt: d.pausedAt ?? null,
             completedAt: d.completedAt ?? null,
+            actualStartAt: d.actualStartAt ?? d.startedAt ?? null,
+            actualEndAt: d.actualEndAt ?? d.completedAt ?? null,
+            pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
             closeout: d.closeout ?? null,
             closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
             materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
+            billingPeriodId: d.billingPeriodId ?? null,
+            billingPeriodSequence:
+              typeof d.billingPeriodSequence === "number" ? d.billingPeriodSequence : null,
+            billingPeriodLabel: d.billingPeriodLabel ?? null,
+            billingPeriodStatus: d.billingPeriodStatus ?? null,
+            readyToBillAt: d.readyToBillAt ?? null,
+            invoicedAt: d.invoicedAt ?? null,
+            invoiceNumber: d.invoiceNumber ?? null,
+            invoiceDate: d.invoiceDate ?? null,
             createdAt: d.createdAt ?? undefined,
             createdByUid: d.createdByUid ?? null,
             updatedAt: d.updatedAt ?? undefined,
@@ -2357,6 +2768,10 @@ export default function ProjectDetailPage() {
 
   async function syncStageTrips(stageKey: StageKey) {
     if (!project) return;
+    if (projectFieldWorkLocked) {
+      alert("This project is field-complete, invoiced, or closed. Reopen active work before scheduling or changing trips.");
+      return;
+    }
     if (!canEditProject) return;
 
     const start =
@@ -2535,6 +2950,10 @@ export default function ProjectDetailPage() {
 
   async function addStageTrip(stageKey: StageKey) {
     if (!project) return;
+    if (projectFieldWorkLocked) {
+      alert("This project is field-complete, invoiced, or closed. Reopen active work before scheduling or changing trips.");
+      return;
+    }
     if (!canEditProject) {
       alert("Only Admin/Dispatcher/Manager can add project trips.");
       return;
@@ -2716,6 +3135,10 @@ export default function ProjectDetailPage() {
 
   function openCreateTrip(stageKey: StageKey | null) {
     if (!project) return;
+    if (projectFieldWorkLocked) {
+      alert("This project is field-complete, invoiced, or closed. Reopen active work before scheduling or changing trips.");
+      return;
+    }
 
     const defaults =
       stageKey && hasStages
@@ -3147,6 +3570,9 @@ export default function ProjectDetailPage() {
   }
 
   function estimateTripHours(t: TripDoc) {
+    const timerHours = getTimerDrivenHoursForTrip(t);
+    if (timerHours) return timerHours;
+
     const start = safeTrim(t.startTime);
     const end = safeTrim(t.endTime);
 
@@ -3155,7 +3581,7 @@ export default function ProjectDetailPage() {
       const [eh, em] = end.split(":").map(Number);
       const diff = eh * 60 + em - (sh * 60 + sm);
       if (diff > 0) {
-        return (diff / 60).toFixed(2);
+        return (Math.round((diff / 60) * 4) / 4).toFixed(2);
       }
     }
 
@@ -3167,7 +3593,7 @@ export default function ProjectDetailPage() {
     setCloseoutModal({
       open: true,
       tripId: t.id,
-      outcome: hasStage ? "done_today" : "complete_project",
+      outcome: hasStage ? "done_today" : isTmProject ? "done_today" : "complete_project",
       needsMoreWork: "no",
       hoursWorkedToday: estimateTripHours(t),
       workNotes: safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? ""),
@@ -3293,28 +3719,52 @@ export default function ProjectDetailPage() {
       if (closeoutModal.outcome === "complete_project") {
         const completeDate = t.date || toIsoDate(new Date());
 
-        for (const key of enabled) {
-          const baseStage =
-            key === "roughIn"
-              ? projectPatch.roughIn || project.roughIn
-              : key === "topOutVent"
-                ? projectPatch.topOutVent || project.topOutVent
-                : projectPatch.trimFinish || project.trimFinish;
+        if (isTmProject) {
+          projectPatch.projectOfficeStatus = "field_complete";
+          projectPatch.fieldCompletedAt = now;
+          projectPatch.fieldCompletedByUid = myUid || null;
+          projectPatch.fieldCompletedByName = actorDisplayName || null;
+          projectPatch.active = true;
+        } else {
+          for (const key of enabled) {
+            const baseStage =
+              key === "roughIn"
+                ? projectPatch.roughIn || project.roughIn
+                : key === "topOutVent"
+                  ? projectPatch.topOutVent || project.topOutVent
+                  : projectPatch.trimFinish || project.trimFinish;
 
-          projectPatch[key] = {
-            ...(baseStage as any),
-            status: "complete",
-            completedDate: completeDate,
-          };
+            projectPatch[key] = {
+              ...(baseStage as any),
+              status: "complete",
+              completedDate: completeDate,
+            };
+          }
+
+          projectPatch.projectOfficeStatus = "field_complete";
+          projectPatch.fieldCompletedAt = now;
+          projectPatch.fieldCompletedByUid = myUid || null;
+          projectPatch.fieldCompletedByName = actorDisplayName || null;
+          projectPatch.active = true;
+
+          setRoughInStatus(enabled.includes("roughIn") ? "complete" : roughInStatus);
+          setTopOutVentStatus(enabled.includes("topOutVent") ? "complete" : topOutVentStatus);
+          setTrimFinishStatus(enabled.includes("trimFinish") ? "complete" : trimFinishStatus);
+
+          if (enabled.includes("roughIn")) setRoughInCompletedDate(completeDate);
+          if (enabled.includes("topOutVent")) setTopOutVentCompletedDate(completeDate);
+          if (enabled.includes("trimFinish")) setTrimFinishCompletedDate(completeDate);
         }
+      }
 
-        setRoughInStatus(enabled.includes("roughIn") ? "complete" : roughInStatus);
-        setTopOutVentStatus(enabled.includes("topOutVent") ? "complete" : topOutVentStatus);
-        setTrimFinishStatus(enabled.includes("trimFinish") ? "complete" : trimFinishStatus);
-
-        if (enabled.includes("roughIn")) setRoughInCompletedDate(completeDate);
-        if (enabled.includes("topOutVent")) setTopOutVentCompletedDate(completeDate);
-        if (enabled.includes("trimFinish")) setTrimFinishCompletedDate(completeDate);
+      if (isTmProject && closeoutModal.outcome === "done_today") {
+        if (projectOfficeStatus === "field_complete") {
+          projectPatch.projectOfficeStatus = "field_complete";
+        } else if (projectOfficeStatus === "ready_to_invoice") {
+          projectPatch.projectOfficeStatus = "ready_to_invoice";
+        } else {
+          projectPatch.projectOfficeStatus = "active_work";
+        }
       }
 
       const batch = writeBatch(db);
@@ -3343,10 +3793,13 @@ export default function ProjectDetailPage() {
         timeEntrySyncedByName: actorDisplayName || null,
       };
 
-      batch.update(doc(db, "trips", t.id), tripPatch as any);
+      const cleanTripPatch = stripUndefinedDeep(tripPatch);
+      const cleanProjectPatch = stripUndefinedDeep(projectPatch);
 
-      if (Object.keys(projectPatch).length > 1) {
-        batch.update(doc(db, "projects", project.id), projectPatch as any);
+      batch.update(doc(db, "trips", t.id), cleanTripPatch as any);
+
+      if (Object.keys(cleanProjectPatch).length > 1) {
+        batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
       }
 
       await batch.commit();
@@ -3356,14 +3809,14 @@ export default function ProjectDetailPage() {
           x.id === t.id
             ? {
                 ...x,
-                ...tripPatch,
+                ...cleanTripPatch,
               }
             : x,
         ),
       );
 
-      if (Object.keys(projectPatch).length > 1) {
-        mergeProjectState(projectPatch);
+      if (Object.keys(cleanProjectPatch).length > 1) {
+        mergeProjectState(cleanProjectPatch);
       } else {
         mergeProjectState({ updatedAt: now });
       }
@@ -3397,6 +3850,381 @@ export default function ProjectDetailPage() {
       }));
     } finally {
       setTripActionBusyId(null);
+    }
+  }
+
+  function openTmInvoiceDialog(periodId: string) {
+    const period = tmBillingPeriods.find((item) => item.id === periodId) || null;
+    if (!period) return;
+    setTmInvoiceDialog({
+      open: true,
+      periodId,
+      invoiceNumber: safeTrim(period.invoiceNumber || ""),
+      invoiceDate: safeTrim(period.invoiceDate || toIsoDate(new Date())),
+      invoiceNotes: safeTrim(period.invoiceNotes || ""),
+      saving: false,
+      error: "",
+    });
+  }
+
+  function closeTmInvoiceDialog() {
+    if (tmInvoiceDialog.saving) return;
+    setTmInvoiceDialog(emptyTmInvoiceDialog());
+  }
+
+  async function markTmProjectFieldComplete() {
+    if (!project || !isTmProject || !canMarkTmFieldComplete) return;
+
+    try {
+      const now = nowIso();
+      const nextStatus: ProjectOfficeStatus = projectBillingSummary.readyPeriods > 0 ? "ready_to_invoice" : "field_complete";
+      const patch: Record<string, any> = {
+        projectOfficeStatus: nextStatus,
+        fieldCompletedAt: now,
+        fieldCompletedByUid: myUid || null,
+        fieldCompletedByName: actorDisplayName || null,
+        active: true,
+        updatedAt: now,
+      };
+
+      await updateDoc(doc(db, "projects", project.id), patch as any);
+      mergeProjectState(patch);
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: "T&M project marked field complete",
+        description: projectBillingSummary.unbilledCompletedTrips > 0
+          ? `${projectBillingSummary.unbilledCompletedTrips} unbilled completed trip(s) still need review.`
+          : "No more field work is expected for this project.",
+        details: [
+          `Updated by: ${actorDisplayName}`,
+          `Office status: ${formatProjectOfficeStatus(nextStatus)}`,
+        ],
+      });
+    } catch (err: any) {
+      alert(err?.message || "Failed to mark project field complete.");
+    }
+  }
+
+  async function markTmCurrentPeriodReadyToBill() {
+    if (!project || !isTmProject || !canMarkTmReadyToBill) return;
+
+    const eligibleTrips = getUnbilledCompletedTrips(projectTrips);
+    if (!eligibleTrips.length) {
+      alert("There are no completed unbilled T&M trips ready to freeze into a billing period.");
+      return;
+    }
+
+    try {
+      const now = nowIso();
+      const existingPeriods = getProjectBillingPeriods(project);
+      const openPeriod = getCurrentOpenBillingPeriod(project) || createOpenBillingPeriod({
+        project,
+        actorUid: myUid || null,
+        actorName: actorDisplayName || null,
+        openedAt: now,
+      });
+      const summary = summarizeBillingPeriodTrips(eligibleTrips);
+
+      const frozenPeriod: ProjectBillingPeriod = {
+        ...openPeriod,
+        label: openPeriod.label || `Billing ${openPeriod.sequence}`,
+        status: "ready_to_bill",
+        readyToBillAt: now,
+        readyToBillByUid: myUid || undefined,
+        readyToBillByName: actorDisplayName || undefined,
+        tripIds: summary.tripIds,
+        tripCount: summary.tripCount,
+        totalHours: summary.totalHours,
+        materialsCount: summary.materialsCount,
+        dateFrom: summary.dateFrom,
+        dateTo: summary.dateTo,
+      };
+
+      const nextPeriods = existingPeriods
+        .filter((period) => period.id !== frozenPeriod.id)
+        .concat(frozenPeriod)
+        .sort((a, b) => a.sequence - b.sequence);
+
+      let currentBillingPeriodId: string | null = null;
+      if (!project.fieldCompletedAt) {
+        const nextOpen = createOpenBillingPeriod({
+          project: { ...(project as any), billingPeriods: nextPeriods } as Project,
+          actorUid: myUid || null,
+          actorName: actorDisplayName || null,
+          openedAt: now,
+        });
+        nextPeriods.push(nextOpen);
+        currentBillingPeriodId = nextOpen.id;
+      }
+
+      const cleanNextPeriods = stripUndefinedDeep(nextPeriods);
+      const nextOfficeStatus: ProjectOfficeStatus = project.fieldCompletedAt
+        ? "ready_to_invoice"
+        : "active_work";
+      const projectUpdatePatch = stripUndefinedDeep({
+        billingPeriods: cleanNextPeriods,
+        currentBillingPeriodId,
+        projectOfficeStatus: nextOfficeStatus,
+        readyToInvoiceAt: now,
+        readyToInvoiceByUid: myUid || null,
+        readyToInvoiceByName: actorDisplayName || null,
+        updatedAt: now,
+      });
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "projects", project.id), projectUpdatePatch as any);
+
+      for (const trip of eligibleTrips) {
+        batch.update(doc(db, "trips", trip.id), {
+          billingPeriodId: frozenPeriod.id,
+          billingPeriodSequence: frozenPeriod.sequence,
+          billingPeriodLabel: frozenPeriod.label,
+          billingPeriodStatus: "ready_to_bill",
+          readyToBillAt: now,
+          updatedAt: now,
+          updatedByUid: myUid || null,
+        } as any);
+      }
+
+      await batch.commit();
+
+      setProjectTrips((prev) =>
+        prev.map((trip) =>
+          summary.tripIds.includes(trip.id)
+            ? {
+                ...trip,
+                billingPeriodId: frozenPeriod.id,
+                billingPeriodSequence: frozenPeriod.sequence,
+                billingPeriodLabel: frozenPeriod.label,
+                billingPeriodStatus: "ready_to_bill",
+                readyToBillAt: now,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : trip,
+        ),
+      );
+
+      mergeProjectState(projectUpdatePatch);
+      setActiveTmBillingTab(frozenPeriod.id);
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: "T&M billing period marked ready to bill",
+        description: `${summary.tripCount} trip(s) frozen into ${frozenPeriod.label || `Billing ${frozenPeriod.sequence}`}.`,
+        details: [
+          `Hours: ${summary.totalHours.toFixed(2)}`,
+          `Materials notes: ${summary.materialsCount}`,
+          ...(summary.dateFrom ? [`Date range: ${summary.dateFrom}${summary.dateTo && summary.dateTo !== summary.dateFrom ? ` → ${summary.dateTo}` : ""}`] : []),
+        ],
+      });
+    } catch (err: any) {
+      alert(err?.message || "Failed to mark the current T&M period ready to bill.");
+    }
+  }
+
+  async function reopenTmBillingPeriod(periodId: string) {
+    if (!project || !isTmProject || !canInvoiceTmPeriods) return;
+
+    const period = tmBillingPeriods.find((item) => item.id === periodId) || null;
+    if (!period || period.status !== "ready_to_bill") return;
+
+    const currentOpenSummary = activeTmBillingTabData?.isCurrentOpen ? activeTmBillingTabData.summary : tmBillingTabs.find((tab) => tab.isCurrentOpen)?.summary;
+    if (currentOpenSummary && currentOpenSummary.tripCount > 0) {
+      alert("There is already later work accumulated in the current open period. Invoice or clear that work before reopening this frozen billing period.");
+      return;
+    }
+
+    try {
+      const now = nowIso();
+const reopenedPeriod: ProjectBillingPeriod = {
+  ...period,
+  status: "open",
+  readyToBillAt: undefined,
+  readyToBillByUid: undefined,
+  readyToBillByName: undefined,
+};
+      const nextPeriods = tmBillingPeriods
+        .filter((item) => item.id !== periodId)
+        .filter((item) => item.status !== "open")
+        .concat(reopenedPeriod)
+        .sort((a, b) => a.sequence - b.sequence);
+
+      const cleanNextPeriods = stripUndefinedDeep(nextPeriods);
+      const nextStatus: ProjectOfficeStatus = project.fieldCompletedAt ? "field_complete" : "active_work";
+      const projectUpdatePatch = stripUndefinedDeep({
+        billingPeriods: cleanNextPeriods,
+        currentBillingPeriodId: reopenedPeriod.id,
+        projectOfficeStatus: nextStatus,
+        updatedAt: now,
+      });
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "projects", project.id), projectUpdatePatch as any);
+
+      const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === periodId);
+      for (const trip of periodTrips) {
+        batch.update(doc(db, "trips", trip.id), {
+          billingPeriodStatus: "open",
+          readyToBillAt: null,
+          updatedAt: now,
+          updatedByUid: myUid || null,
+        } as any);
+      }
+
+      await batch.commit();
+
+      setProjectTrips((prev) =>
+        prev.map((trip) =>
+          safeTrim(trip.billingPeriodId) === periodId
+            ? {
+                ...trip,
+                billingPeriodStatus: "open",
+                readyToBillAt: null,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : trip,
+        ),
+      );
+      mergeProjectState(projectUpdatePatch);
+      setActiveTmBillingTab("current");
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: "T&M billing period reopened",
+        description: `${reopenedPeriod.label || `Billing ${reopenedPeriod.sequence}`} is open again for billing changes.`,
+        details: [`Updated by: ${actorDisplayName}`],
+      });
+    } catch (err: any) {
+      alert(err?.message || "Failed to reopen the billing period.");
+    }
+  }
+
+  async function saveTmBillingPeriodInvoice() {
+    if (!project || !isTmProject || !tmInvoiceDialog.periodId || !canInvoiceTmPeriods) return;
+
+    const period = tmBillingPeriods.find((item) => item.id === tmInvoiceDialog.periodId) || null;
+    if (!period || period.status !== "ready_to_bill") return;
+
+    const invoiceDate = safeTrim(tmInvoiceDialog.invoiceDate);
+    if (!invoiceDate) {
+      setTmInvoiceDialog((prev) => ({ ...prev, error: "Invoice date is required." }));
+      return;
+    }
+
+    setTmInvoiceDialog((prev) => ({ ...prev, saving: true, error: "" }));
+
+    try {
+      const now = nowIso();
+      const invoiceNumber = safeTrim(tmInvoiceDialog.invoiceNumber);
+      const invoiceNotes = safeTrim(tmInvoiceDialog.invoiceNotes);
+      const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === period.id);
+const invoicedPeriod: ProjectBillingPeriod = {
+  ...period,
+  status: "invoiced",
+  invoicedAt: now,
+  invoicedByUid: myUid || undefined,
+  invoicedByName: actorDisplayName || undefined,
+  invoiceNumber: invoiceNumber || undefined,
+  invoiceDate,
+  invoiceNotes: invoiceNotes || undefined,
+};
+
+      const baseNextPeriods = tmBillingPeriods
+        .map((item) => (item.id === invoicedPeriod.id ? invoicedPeriod : item))
+        .sort((a, b) => a.sequence - b.sequence);
+
+      const remainingReadyPeriods = baseNextPeriods.filter((item) => item.status === "ready_to_bill");
+      const remainingUnbilledTrips = getUnbilledCompletedTrips(
+        projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) !== period.id),
+      );
+      const hasOpenPeriodWithTrips = baseNextPeriods.some(
+        (item) => item.status === "open" && periodHasAssignedTrips(item.id, projectTrips),
+      );
+
+      let nextStatus: ProjectOfficeStatus = project.fieldCompletedAt ? "field_complete" : "active_work";
+      let nextActive = true;
+      let nextPeriods = baseNextPeriods;
+      const projectPatch: Record<string, any> = {
+        updatedAt: now,
+      };
+
+      if (remainingReadyPeriods.length > 0) {
+        nextStatus = "ready_to_invoice";
+      } else if (project.fieldCompletedAt) {
+        if (!hasOpenPeriodWithTrips && remainingUnbilledTrips.length === 0) {
+          nextStatus = "invoiced";
+          nextActive = false;
+          nextPeriods = removeEmptyOpenBillingPeriods(baseNextPeriods, projectTrips);
+          projectPatch.invoicedAt = now;
+          projectPatch.invoicedByUid = myUid || null;
+          projectPatch.invoicedByName = actorDisplayName || null;
+          projectPatch.invoiceNumber = invoiceNumber || null;
+          projectPatch.invoiceDate = invoiceDate;
+          projectPatch.invoiceNotes = invoiceNotes || null;
+          projectPatch.currentBillingPeriodId = null;
+        }
+      }
+
+      projectPatch.billingPeriods = stripUndefinedDeep(nextPeriods);
+      projectPatch.projectOfficeStatus = nextStatus;
+      projectPatch.active = nextActive;
+
+      const cleanProjectPatch = stripUndefinedDeep(projectPatch);
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
+      for (const trip of periodTrips) {
+        batch.update(doc(db, "trips", trip.id), {
+          billingPeriodStatus: "invoiced",
+          invoicedAt: now,
+          invoiceNumber: invoiceNumber || null,
+          invoiceDate,
+          updatedAt: now,
+          updatedByUid: myUid || null,
+        } as any);
+      }
+
+      await batch.commit();
+
+      setProjectTrips((prev) =>
+        prev.map((trip) =>
+          safeTrim(trip.billingPeriodId) === period.id
+            ? {
+                ...trip,
+                billingPeriodStatus: "invoiced",
+                invoicedAt: now,
+                invoiceNumber: invoiceNumber || null,
+                invoiceDate,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : trip,
+        ),
+      );
+      mergeProjectState(cleanProjectPatch);
+      setActiveTmBillingTab(period.id);
+      setTmInvoiceDialog(emptyTmInvoiceDialog());
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: "T&M billing period invoiced",
+        description: `${period.label || `Billing ${period.sequence}`} recorded as invoiced.`,
+        details: [
+          ...(invoiceNumber ? [`Invoice #: ${invoiceNumber}`] : []),
+          `Invoice date: ${invoiceDate}`,
+          ...(invoiceNotes ? [`Invoice notes: ${invoiceNotes}`] : []),
+          `Trips in period: ${periodTrips.length}`,
+        ],
+      });
+    } catch (err: any) {
+      setTmInvoiceDialog((prev) => ({
+        ...prev,
+        saving: false,
+        error: err?.message || "Failed to mark the billing period invoiced.",
+      }));
     }
   }
 
@@ -3581,13 +4409,7 @@ export default function ProjectDetailPage() {
   }
 
   function getCloseoutHours(t?: TripDoc | null) {
-    if (!t) return null;
-    const raw =
-      (t.closeout as any)?.hoursWorkedToday ??
-      (t.closeout as any)?.closeoutHours ??
-      t.closeoutHours ??
-      null;
-    const n = Number(raw);
+    const n = Number(getTripCloseoutHoursFromBilling(t || null));
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
@@ -3649,6 +4471,208 @@ export default function ProjectDetailPage() {
 
   function closeCloseoutDetails() {
     setCloseoutDetailsTripId(null);
+  }
+
+  function openProjectOfficeDialog(nextStatus: ProjectOfficeStatus) {
+    if (!project) return;
+
+    const canOpen =
+      nextStatus === "closed"
+        ? canCloseProject
+        : nextStatus === "active_work" && projectOfficeStatus === "closed"
+          ? canReopenClosedProject
+          : canUpdateProjectOfficeStatus;
+
+    if (!canOpen) return;
+
+    setProjectOfficeDialog({
+      open: true,
+      nextStatus,
+      invoiceNumber: safeTrim((project as any).invoiceNumber || ""),
+      invoiceDate: safeTrim((project as any).invoiceDate || toIsoDate(new Date())),
+      invoiceNotes: safeTrim((project as any).invoiceNotes || ""),
+      reopenReason: "",
+      saving: false,
+      error: "",
+    });
+  }
+
+  function closeProjectOfficeDialog() {
+    if (projectOfficeDialog.saving) return;
+    setProjectOfficeDialog(emptyProjectOfficeDialog());
+  }
+
+  async function saveProjectOfficeStatus() {
+    if (!project || !projectOfficeDialog.nextStatus) return;
+
+    const nextStatus = projectOfficeDialog.nextStatus;
+
+    const canSave =
+      nextStatus === "closed"
+        ? canCloseProject
+        : nextStatus === "active_work" && projectOfficeStatus === "closed"
+          ? canReopenClosedProject
+          : canUpdateProjectOfficeStatus;
+
+    if (!canSave) return;
+
+    const invoiceNumber = safeTrim(projectOfficeDialog.invoiceNumber);
+    const invoiceDate = safeTrim(projectOfficeDialog.invoiceDate);
+    const invoiceNotes = safeTrim(projectOfficeDialog.invoiceNotes);
+    const reopenReason = safeTrim(projectOfficeDialog.reopenReason);
+
+    if (nextStatus === "invoiced" && !invoiceDate) {
+      setProjectOfficeDialog((prev) => ({
+        ...prev,
+        error: "Invoice date is required.",
+      }));
+      return;
+    }
+
+    if (nextStatus === "active_work" && !reopenReason) {
+      setProjectOfficeDialog((prev) => ({
+        ...prev,
+        error: "Enter a brief reopen reason.",
+      }));
+      return;
+    }
+
+    setProjectOfficeDialog((prev) => ({ ...prev, saving: true, error: "" }));
+
+    try {
+      const now = nowIso();
+      const previousStatus = getProjectOfficeStatus(project);
+      const patch: Record<string, any> = {
+        projectOfficeStatus: nextStatus,
+        updatedAt: now,
+      };
+
+      if (nextStatus === "active_work") {
+        patch.active = true;
+        patch.reopenedAt = now;
+        patch.reopenedByUid = myUid || null;
+        patch.reopenedByName = actorDisplayName || null;
+        patch.reopenReason = reopenReason || null;
+        patch.closedAt = null;
+        patch.closedByUid = null;
+        patch.closedByName = null;
+
+        if (isTmProject && projectOfficeStatus === "closed") {
+          const existingPeriods = getProjectBillingPeriods(project);
+          const existingOpenPeriod =
+            existingPeriods.find((period) => period.status === "open") || null;
+
+          if (existingOpenPeriod) {
+            patch.currentBillingPeriodId = existingOpenPeriod.id;
+          } else {
+            const reopenedOpenPeriod = createOpenBillingPeriod({
+              project: { ...(project as any), billingPeriods: existingPeriods } as Project,
+              actorUid: myUid || null,
+              actorName: actorDisplayName || null,
+              openedAt: now,
+            });
+
+            patch.billingPeriods = stripUndefinedDeep([
+              ...existingPeriods,
+              reopenedOpenPeriod,
+            ]);
+            patch.currentBillingPeriodId = reopenedOpenPeriod.id;
+          }
+        }
+      }
+
+      if (nextStatus === "field_complete") {
+        patch.active = true;
+        patch.fieldCompletedAt = now;
+        patch.fieldCompletedByUid = myUid || null;
+        patch.fieldCompletedByName = actorDisplayName || null;
+      }
+
+      if (nextStatus === "ready_to_invoice") {
+        patch.active = true;
+        patch.fieldCompletedAt = (project as any).fieldCompletedAt || now;
+        patch.fieldCompletedByUid =
+          (project as any).fieldCompletedByUid || myUid || null;
+        patch.fieldCompletedByName =
+          (project as any).fieldCompletedByName || actorDisplayName || null;
+        patch.readyToInvoiceAt = now;
+        patch.readyToInvoiceByUid = myUid || null;
+        patch.readyToInvoiceByName = actorDisplayName || null;
+      }
+
+      if (nextStatus === "invoiced") {
+        patch.active = false;
+        patch.fieldCompletedAt = (project as any).fieldCompletedAt || now;
+        patch.fieldCompletedByUid =
+          (project as any).fieldCompletedByUid || myUid || null;
+        patch.fieldCompletedByName =
+          (project as any).fieldCompletedByName || actorDisplayName || null;
+        patch.readyToInvoiceAt = (project as any).readyToInvoiceAt || now;
+        patch.readyToInvoiceByUid =
+          (project as any).readyToInvoiceByUid || myUid || null;
+        patch.readyToInvoiceByName =
+          (project as any).readyToInvoiceByName || actorDisplayName || null;
+        patch.invoicedAt = now;
+        patch.invoicedByUid = myUid || null;
+        patch.invoicedByName = actorDisplayName || null;
+        patch.invoiceNumber = invoiceNumber || null;
+        patch.invoiceDate = invoiceDate || null;
+        patch.invoiceNotes = invoiceNotes || null;
+      }
+
+      if (nextStatus === "closed") {
+        patch.active = false;
+        patch.closedAt = now;
+        patch.closedByUid = myUid || null;
+        patch.closedByName = actorDisplayName || null;
+
+        if (isTmProject) {
+          const cleanedPeriods = removeEmptyOpenBillingPeriods(
+            getProjectBillingPeriods(project),
+            projectTrips,
+          );
+
+          patch.billingPeriods = stripUndefinedDeep(cleanedPeriods);
+          patch.currentBillingPeriodId = null;
+        }
+      }
+
+      const cleanPatch = stripUndefinedDeep(patch);
+
+      await updateDoc(doc(db, "projects", project.id), cleanPatch as any);
+
+      mergeProjectState(cleanPatch);
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: "Project office status updated",
+        description: `${formatProjectOfficeStatus(previousStatus)} → ${formatProjectOfficeStatus(nextStatus)}`,
+        details: [
+          `Updated by: ${actorDisplayName}`,
+          ...(nextStatus === "invoiced" && invoiceNumber
+            ? [`Invoice #: ${invoiceNumber}`]
+            : []),
+          ...(nextStatus === "invoiced" && invoiceDate
+            ? [`Invoice date: ${invoiceDate}`]
+            : []),
+          ...(nextStatus === "active_work" && reopenReason
+            ? [`Reopen reason: ${reopenReason}`]
+            : []),
+          ...(nextStatus === "closed"
+            ? ["Project moved to historical closed status."]
+            : []),
+          ...(invoiceNotes ? [`Invoice notes: ${invoiceNotes}`] : []),
+        ],
+      });
+
+      setProjectOfficeDialog(emptyProjectOfficeDialog());
+    } catch (err: any) {
+      setProjectOfficeDialog((prev) => ({
+        ...prev,
+        saving: false,
+        error: err?.message || "Failed to update project office status.",
+      }));
+    }
   }
 
   function TripActionRow({ t }: { t: TripDoc }) {
@@ -3730,7 +4754,7 @@ export default function ProjectDetailPage() {
                     <Paper
                       elevation={6}
                       sx={{
-                        borderRadius: 1,
+                        borderRadius: 3,
                         minWidth: 230,
                         overflow: "hidden",
                         border: (theme) => `1px solid ${theme.palette.divider}`,
@@ -3752,7 +4776,7 @@ export default function ProjectDetailPage() {
                           </MenuItem>
 
                           <MenuItem
-                            disabled={!canEditProject || tripActionBusyId === t.id}
+                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenTmBillingTrip(t) || tripActionBusyId === t.id}
                             onClick={() => {
                               closeCompletedTripMenu();
                               void syncProjectTripTimeEntries(t);
@@ -3765,7 +4789,7 @@ export default function ProjectDetailPage() {
                           </MenuItem>
 
                           <MenuItem
-                            disabled={!canEditProject || tripActionBusyId === t.id}
+                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenTmBillingTrip(t) || tripActionBusyId === t.id}
                             onClick={() => {
                               closeCompletedTripMenu();
                               void applyTripLifecycleAction(t, "reopen");
@@ -3780,7 +4804,7 @@ export default function ProjectDetailPage() {
                           <Divider />
 
                           <MenuItem
-                            disabled={!canEditProject || tripActionBusyId === t.id}
+                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenTmBillingTrip(t) || tripActionBusyId === t.id}
                             onClick={() => {
                               closeCompletedTripMenu();
                               void removeTrip(t);
@@ -3941,6 +4965,13 @@ export default function ProjectDetailPage() {
                   variant="outlined"
                   size="small"
                 />
+                {isTmProject && safeTrim(t.billingPeriodLabel) ? (
+                  <Chip
+                    label={`${safeTrim(t.billingPeriodLabel)} • ${safeTrim(t.billingPeriodStatus || "open").replaceAll("_", " ")}`}
+                    variant="outlined"
+                    size="small"
+                  />
+                ) : null}
               </Stack>
             </Stack>
 
@@ -4358,7 +5389,7 @@ export default function ProjectDetailPage() {
                       <FormControlLabel
                         value="complete_project"
                         control={<Radio />}
-                        label="Complete entire project"
+                        label={isTmProject ? "No more field work expected" : "Complete entire project"}
                       />
                     </RadioGroup>
                   </Box>
@@ -4404,7 +5435,7 @@ export default function ProjectDetailPage() {
                   />
 
                   <Typography variant="body2" color="text.secondary">
-                    These hours are saved for all assigned project-trip crew.
+                    These hours start from the trip timer when available, but the tech can adjust them before saving. They are then saved for all assigned project-trip crew.
                   </Typography>
 
                   <TextField
@@ -4622,6 +5653,175 @@ export default function ProjectDetailPage() {
         </Dialog>
 
         <Dialog
+          open={projectOfficeDialog.open}
+          onClose={projectOfficeDialog.saving ? undefined : closeProjectOfficeDialog}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: { borderRadius: 1 },
+          }}
+        >
+          <DialogTitle sx={{ fontWeight: 900 }}>
+            {projectOfficeStatusDialogTitle(projectOfficeDialog.nextStatus)}
+          </DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              {projectOfficeDialog.nextStatus ? (
+                <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                  {formatProjectOfficeStatus(projectOfficeStatus)} → {formatProjectOfficeStatus(projectOfficeDialog.nextStatus)}
+                </Alert>
+              ) : null}
+
+              {projectOfficeDialog.nextStatus === "field_complete" ? (
+                <Typography variant="body2" color="text.secondary">
+                  Field work will be marked complete. This means no additional field trips are expected unless the project is reopened.
+                </Typography>
+              ) : null}
+
+              {projectOfficeDialog.nextStatus === "ready_to_invoice" ? (
+                <Typography variant="body2" color="text.secondary">
+                  This moves the project into the front-office billing queue. Review closeouts, labor, materials, and notes before confirming.
+                </Typography>
+              ) : null}
+
+              {projectOfficeDialog.nextStatus === "invoiced" ? (
+                <Stack spacing={2}>
+                  <Typography variant="body2" color="text.secondary">
+                    This records the project as invoiced and locks it from normal scheduling and trip edits.
+                  </Typography>
+                  <TextField
+                    label="Invoice #"
+                    value={projectOfficeDialog.invoiceNumber}
+                    onChange={(e) =>
+                      setProjectOfficeDialog((prev) => ({ ...prev, invoiceNumber: e.target.value }))
+                    }
+                    fullWidth
+                  />
+                  <TextField
+                    label="Invoice Date"
+                    type="date"
+                    value={projectOfficeDialog.invoiceDate}
+                    onChange={(e) =>
+                      setProjectOfficeDialog((prev) => ({ ...prev, invoiceDate: e.target.value }))
+                    }
+                    InputLabelProps={{ shrink: true }}
+                    fullWidth
+                  />
+                  <TextField
+                    label="Invoice Notes"
+                    value={projectOfficeDialog.invoiceNotes}
+                    onChange={(e) =>
+                      setProjectOfficeDialog((prev) => ({ ...prev, invoiceNotes: e.target.value }))
+                    }
+                    multiline
+                    minRows={3}
+                    fullWidth
+                  />
+                </Stack>
+              ) : null}
+
+              {projectOfficeDialog.nextStatus === "closed" ? (
+                <Typography variant="body2" color="text.secondary">
+                  This closes the project as historical. It can still be reopened by office staff if needed.
+                </Typography>
+              ) : null}
+
+              {projectOfficeDialog.nextStatus === "active_work" ? (
+                <TextField
+                  label="Reopen Reason"
+                  value={projectOfficeDialog.reopenReason}
+                  onChange={(e) =>
+                    setProjectOfficeDialog((prev) => ({ ...prev, reopenReason: e.target.value }))
+                  }
+                  placeholder="Example: Additional work requested / billing correction needed"
+                  multiline
+                  minRows={3}
+                  fullWidth
+                />
+              ) : null}
+
+              {projectOfficeDialog.error ? (
+                <Alert severity="error">{projectOfficeDialog.error}</Alert>
+              ) : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={closeProjectOfficeDialog} disabled={projectOfficeDialog.saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              onClick={saveProjectOfficeStatus}
+              disabled={projectOfficeDialog.saving}
+              sx={{ borderRadius: 99, boxShadow: "none" }}
+            >
+              {projectOfficeDialog.saving ? "Saving..." : "Confirm"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={tmInvoiceDialog.open}
+          onClose={tmInvoiceDialog.saving ? undefined : closeTmInvoiceDialog}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: { borderRadius: 1 },
+          }}
+        >
+          <DialogTitle sx={{ fontWeight: 900 }}>Record T&M Billing Period Invoice</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                This records the selected frozen T&M billing period as invoiced. Techs and helpers cannot do this step.
+              </Alert>
+              <TextField
+                label="Invoice #"
+                value={tmInvoiceDialog.invoiceNumber}
+                onChange={(e) =>
+                  setTmInvoiceDialog((prev) => ({ ...prev, invoiceNumber: e.target.value }))
+                }
+                fullWidth
+              />
+              <TextField
+                label="Invoice Date"
+                type="date"
+                value={tmInvoiceDialog.invoiceDate}
+                onChange={(e) =>
+                  setTmInvoiceDialog((prev) => ({ ...prev, invoiceDate: e.target.value }))
+                }
+                InputLabelProps={{ shrink: true }}
+                fullWidth
+              />
+              <TextField
+                label="Invoice Notes"
+                value={tmInvoiceDialog.invoiceNotes}
+                onChange={(e) =>
+                  setTmInvoiceDialog((prev) => ({ ...prev, invoiceNotes: e.target.value }))
+                }
+                multiline
+                minRows={3}
+                fullWidth
+              />
+              {tmInvoiceDialog.error ? <Alert severity="error">{tmInvoiceDialog.error}</Alert> : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={closeTmInvoiceDialog} disabled={tmInvoiceDialog.saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              onClick={saveTmBillingPeriodInvoice}
+              disabled={tmInvoiceDialog.saving}
+              sx={{ borderRadius: 99, boxShadow: "none" }}
+            >
+              {tmInvoiceDialog.saving ? "Saving..." : "Save Invoice"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
           open={deleteDialogOpen}
           onClose={deleteBusy ? undefined : () => setDeleteDialogOpen(false)}
           fullWidth
@@ -4750,6 +5950,29 @@ export default function ProjectDetailPage() {
                       Back to Projects
                     </Button>
 
+                    {canCloseProject ? (
+                      <Button
+                        color="success"
+                        variant="contained"
+                        startIcon={<PaidRoundedIcon />}
+                        onClick={() => openProjectOfficeDialog("closed")}
+                        sx={{ borderRadius: 99, boxShadow: "none" }}
+                      >
+                        Close Project
+                      </Button>
+                    ) : null}
+
+                    {canReopenClosedProject ? (
+                      <Button
+                        variant="outlined"
+                        startIcon={<RefreshRoundedIcon />}
+                        onClick={() => openProjectOfficeDialog("active_work")}
+                        sx={{ borderRadius: 99 }}
+                      >
+                        Reopen Project
+                      </Button>
+                    ) : null}
+
                     {canDeleteProject ? (
                       <Button
                         color="error"
@@ -4784,6 +6007,185 @@ export default function ProjectDetailPage() {
                 <MetricCard label="Bid Status" value={formatBidStatus(project.bidStatus)} />
                 <MetricCard label="Total Bid" value={formatCurrency(project.totalBidAmount)} />
               </Box>
+
+              <SectionCard
+                title="Project Closeout & Billing"
+                subtitle="Track field completion, office review, invoice readiness, and final project closure."
+                icon={<PaidRoundedIcon color="primary" />}
+                action={
+                  canUpdateProjectOfficeStatus ? (
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {projectOfficeStatus === "active_work" ? (
+                        <>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("field_complete")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Mark Field Complete
+                          </Button>
+                          <Button
+                            variant="contained"
+                            onClick={() => openProjectOfficeDialog("ready_to_invoice")}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Mark Ready to Invoice
+                          </Button>
+                        </>
+                      ) : null}
+
+                      {projectOfficeStatus === "field_complete" ? (
+                        <>
+                          <Button
+                            variant="contained"
+                            onClick={() => openProjectOfficeDialog("ready_to_invoice")}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Mark Ready to Invoice
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("active_work")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Reopen Active Work
+                          </Button>
+                        </>
+                      ) : null}
+
+                      {projectOfficeStatus === "ready_to_invoice" ? (
+                        <>
+                          <Button
+                            variant="contained"
+                            onClick={() => openProjectOfficeDialog("invoiced")}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Mark Invoiced
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("active_work")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Reopen Active Work
+                          </Button>
+                        </>
+                      ) : null}
+
+                      {projectOfficeStatus === "invoiced" ? (
+                        <>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("closed")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Mark Closed
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("active_work")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Reopen Project
+                          </Button>
+                        </>
+                      ) : null}
+
+                      {projectOfficeStatus === "closed" ? (
+                        <Button
+                          variant="outlined"
+                          onClick={() => openProjectOfficeDialog("active_work")}
+                          sx={{ borderRadius: 99 }}
+                        >
+                          Reopen Project
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  ) : null
+                }
+              >
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip
+                      label={formatProjectOfficeStatus(projectOfficeStatus)}
+                      color={projectOfficeStatusColor(projectOfficeStatus)}
+                      variant="filled"
+                      sx={{ fontWeight: 800 }}
+                    />
+                    {projectFieldWorkLocked ? (
+                      <Chip label={projectOfficeLocked ? "Locked history" : "Field work locked"} variant="outlined" size="small" />
+                    ) : null}
+                    {projectBillingSummary.openTrips > 0 ? (
+                      <Chip
+                        label={`${projectBillingSummary.openTrips} open trip${projectBillingSummary.openTrips === 1 ? "" : "s"}`}
+                        color="warning"
+                        variant="outlined"
+                        size="small"
+                      />
+                    ) : (
+                      <Chip label="No open trips" color="success" variant="outlined" size="small" />
+                    )}
+                  </Stack>
+
+                  <Typography variant="body2" color="text.secondary">
+                    {projectOfficeStatusHelper(projectOfficeStatus)}
+                  </Typography>
+
+                  {projectFieldWorkLocked ? (
+                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                      This project is locked from normal scheduling and trip edits. Reopen active work if additional field work or corrections are needed.
+                    </Alert>
+                  ) : null}
+
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(2, minmax(0, 1fr))",
+                        lg: "repeat(4, minmax(0, 1fr))",
+                      },
+                    }}
+                  >
+                    <InfoField label="Office Status" value={formatProjectOfficeStatus(projectOfficeStatus)} />
+                    <InfoField
+                      label="Trip Review"
+                      value={`${projectBillingSummary.completedTrips}/${projectBillingSummary.totalTrips} completed`}
+                    />
+                    <InfoField
+                      label="Labor Captured"
+                      value={`${projectBillingSummary.totalLaborHours.toFixed(2)}h`}
+                    />
+                    <InfoField
+                      label="Time Entries"
+                      value={
+                        projectBillingSummary.completedTrips === 0
+                          ? "No completed trips"
+                          : projectBillingSummary.needsTimeEntryReview
+                            ? "Needs review"
+                            : "Synced"
+                      }
+                    />
+                    <InfoField
+                      label="Ready To Invoice"
+                      value={(project as any).readyToInvoiceAt ? formatDateTime((project as any).readyToInvoiceAt) : "—"}
+                    />
+                    <InfoField
+                      label="Invoice #"
+                      value={(project as any).invoiceNumber || "—"}
+                    />
+                    <InfoField
+                      label="Invoice Date"
+                      value={(project as any).invoiceDate || "—"}
+                    />
+                    <InfoField
+                      label="Invoiced At"
+                      value={(project as any).invoicedAt ? formatDateTime((project as any).invoicedAt) : "—"}
+                    />
+                  </Box>
+                </Stack>
+              </SectionCard>
 
               <SectionCard
                 title="Project Basics"
@@ -5439,7 +6841,7 @@ export default function ProjectDetailPage() {
                   subtitle="Stage details and stage trips are managed together."
                   icon={<ConstructionRoundedIcon color="primary" />}
                   action={
-                    canEditProject ? (
+                    canEditProject && !projectFieldWorkLocked ? (
                       <>
                         <Button
                           variant="outlined"
@@ -5588,7 +6990,7 @@ export default function ProjectDetailPage() {
                               />
                             </Box>
 
-                            <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
+                            <Paper variant="outlined" sx={{ p: 2, borderRadius: 1 }}>
                               <Stack spacing={2}>
                                 <Stack
                                   direction={{ xs: "column", sm: "row" }}
@@ -5805,7 +7207,7 @@ export default function ProjectDetailPage() {
                                 />
                               </Stack>
 
-                              {canEditProject ? (
+                              {canEditProject && !projectFieldWorkLocked ? (
                                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                   <Button
                                     variant="outlined"
@@ -5848,12 +7250,200 @@ export default function ProjectDetailPage() {
                   })()}
                 </SectionCard>
               ) : (
+                <>
+                  {isTmProject ? (
+                    <SectionCard
+                      title="T&M Billing Periods"
+                      subtitle="Freeze accumulated completed trips and materials into billing periods without itemizing every line for the field crew."
+                      icon={<PaidRoundedIcon color="primary" />}
+                      action={
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          {canMarkTmFieldComplete ? (
+                            <Button
+                              variant="outlined"
+                              onClick={() => void markTmProjectFieldComplete()}
+                              sx={{ borderRadius: 99 }}
+                            >
+                              Mark Field Complete
+                            </Button>
+                          ) : null}
+                          {canMarkTmReadyToBill ? (
+                            <Button
+                              variant="contained"
+                              color="warning"
+                              onClick={() => void markTmCurrentPeriodReadyToBill()}
+                              sx={{ borderRadius: 99, boxShadow: "none" }}
+                            >
+                              Ready To Bill Current Period
+                            </Button>
+                          ) : null}
+                          {canInvoiceTmPeriods && activeTmBillingTabData?.period?.status === "ready_to_bill" ? (
+                            <Button
+                              variant="outlined"
+                              onClick={() => openTmInvoiceDialog(activeTmBillingTabData.period!.id)}
+                              sx={{ borderRadius: 99 }}
+                            >
+                              Record Invoiced
+                            </Button>
+                          ) : null}
+                          {canInvoiceTmPeriods && activeTmBillingTabData?.period?.status === "ready_to_bill" ? (
+                            <Button
+                              variant="outlined"
+                              onClick={() => void reopenTmBillingPeriod(activeTmBillingTabData.period!.id)}
+                              sx={{ borderRadius: 99 }}
+                            >
+                              Reopen Frozen Period
+                            </Button>
+                          ) : null}
+                        </Stack>
+                      }
+                    >
+                      <Stack spacing={2}>
+                        <Alert severity="info" variant="outlined">
+                          Completed T&M trips stay in the <strong>Current Period</strong> until someone marks <strong>Ready To Bill</strong>. That freezes the period for office billing and, unless the project is field complete, automatically starts a fresh current period for future accumulated work.
+                        </Alert>
+
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: {
+                              xs: "1fr",
+                              sm: "repeat(2, minmax(0, 1fr))",
+                              lg: "repeat(4, minmax(0, 1fr))",
+                            },
+                          }}
+                        >
+                          <InfoField label="Current Office Status" value={formatProjectOfficeStatus(projectOfficeStatus)} />
+                          <InfoField label="Unbilled Completed Trips" value={projectBillingSummary.unbilledCompletedTrips} />
+                          <InfoField label="Unbilled Labor" value={`${projectBillingSummary.unbilledCompletedHours.toFixed(2)}h`} />
+                          <InfoField label="Unbilled Materials Notes" value={projectBillingSummary.unbilledMaterialsCount} />
+                        </Box>
+
+                        <Tabs
+                          value={activeTmBillingTabData?.key || false}
+                          onChange={(_, value) => setActiveTmBillingTab(value)}
+                          variant="scrollable"
+                          scrollButtons="auto"
+                        >
+                          {tmBillingTabs.map((tab) => (
+                            <Tab key={tab.key} value={tab.key} label={tab.label} />
+                          ))}
+                        </Tabs>
+
+                        {activeTmBillingTabData ? (
+                          <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 1 }}>
+                            <Stack spacing={2}>
+                              <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                                justifyContent="space-between"
+                                alignItems={{ xs: "flex-start", sm: "center" }}
+                              >
+                                <Box>
+                                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                    {activeTmBillingTabData.label}
+                                  </Typography>
+                                  <Typography variant="body2" color="text.secondary">
+                                    {activeTmBillingTabData.isCurrentOpen
+                                      ? "This tab shows completed T&M trips and materials that will be captured the next time Ready To Bill is used."
+                                      : activeTmBillingTabData.period?.status === "invoiced"
+                                        ? "This historical billing period is frozen and invoiced."
+                                        : "This frozen billing period is ready for office billing review."}
+                                  </Typography>
+                                </Box>
+                                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                  <Chip
+label={activeTmBillingTabData.isCurrentOpen ? "Open" : formatBillingPeriodStatus(activeTmBillingTabData.period?.status)}                                    color={
+                                      activeTmBillingTabData.isCurrentOpen
+                                        ? "primary"
+                                        : activeTmBillingTabData.period?.status === "invoiced"
+                                          ? "success"
+                                          : "warning"
+                                    }
+                                    variant="filled"
+                                    size="small"
+                                  />
+                                  {activeTmBillingTabData.period?.invoiceNumber ? (
+                                    <Chip label={`Invoice #${activeTmBillingTabData.period.invoiceNumber}`} size="small" variant="outlined" />
+                                  ) : null}
+                                </Stack>
+                              </Stack>
+
+                              <Box
+                                sx={{
+                                  display: "grid",
+                                  gap: 2,
+                                  gridTemplateColumns: {
+                                    xs: "1fr",
+                                    sm: "repeat(2, minmax(0, 1fr))",
+                                    lg: "repeat(4, minmax(0, 1fr))",
+                                  },
+                                }}
+                              >
+                                <InfoField label="Trips" value={activeTmBillingTabData.summary.tripCount} />
+                                <InfoField label="Labor Hours" value={`${activeTmBillingTabData.summary.totalHours.toFixed(2)}h`} />
+                                <InfoField label="Materials Notes" value={activeTmBillingTabData.summary.materialsCount} />
+                                <InfoField
+                                  label="Date Range"
+                                  value={
+                                    activeTmBillingTabData.summary.dateFrom
+                                      ? `${activeTmBillingTabData.summary.dateFrom}${activeTmBillingTabData.summary.dateTo && activeTmBillingTabData.summary.dateTo !== activeTmBillingTabData.summary.dateFrom ? ` → ${activeTmBillingTabData.summary.dateTo}` : ""}`
+                                      : "—"
+                                  }
+                                />
+                              </Box>
+
+                              {activeTmBillingTabData.trips.length === 0 ? (
+                                <Alert severity="info" variant="outlined">
+                                  {activeTmBillingTabData.isCurrentOpen
+                                    ? "No completed unbilled trips are sitting in the current period right now."
+                                    : "No trips were captured in this billing period."}
+                                </Alert>
+                              ) : (
+                                <Stack spacing={1.5}>
+                                  {activeTmBillingTabData.trips.map((trip) => (
+                                    <Card key={`${activeTmBillingTabData.key}-${trip.id}`} sx={{ borderRadius: 1, boxShadow: "none", border: `1px solid ${theme.palette.divider}` }}>
+                                      <CardContent sx={{ p: 2 }}>
+                                        <Stack spacing={1}>
+                                          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                              {formatTripScheduleLine(trip)}
+                                            </Typography>
+                                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                              <Chip label={`${(getCloseoutHours(trip) || 0).toFixed(2)}h`} size="small" variant="outlined" />
+                                              {getTripMaterialsSummary(trip) ? <Chip label="Materials noted" size="small" variant="outlined" /> : null}
+                                            </Stack>
+                                          </Stack>
+                                          <Typography variant="body2" color="text.secondary">
+                                            {safeTrim(trip.crew?.primaryTechName) || "Unassigned"}
+                                            {safeTrim(trip.crew?.helperName) ? ` • Helper: ${safeTrim(trip.crew?.helperName)}` : ""}
+                                          </Typography>
+                                          <Typography variant="body2" color="text.secondary">
+                                            <strong>Work:</strong> {getCloseoutWorkSummary(trip)}
+                                          </Typography>
+                                          <Typography variant="body2" color="text.secondary">
+                                            <strong>Materials:</strong> {getCloseoutMaterials(trip)}
+                                          </Typography>
+                                        </Stack>
+                                      </CardContent>
+                                    </Card>
+                                  ))}
+                                </Stack>
+                              )}
+                            </Stack>
+                          </Paper>
+                        ) : null}
+                      </Stack>
+                    </SectionCard>
+                  ) : null}
+
                 <SectionCard
-                  title="Project Trips"
+                  title={isTmProject ? "Project Trips" : "Project Trips"}
                   subtitle="This project type does not use stages. Trips are managed directly here."
                   icon={<RouteRoundedIcon color="primary" />}
                   action={
-                    canEditProject ? (
+                    canEditProject && !projectFieldWorkLocked ? (
                       <Button
                         variant="contained"
                         onClick={() => openCreateTrip(null)}
@@ -5884,6 +7474,7 @@ export default function ProjectDetailPage() {
                     ) : null}
                   </Stack>
                 </SectionCard>
+                </>
               )}
 
               <SectionCard

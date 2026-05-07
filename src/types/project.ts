@@ -6,7 +6,40 @@ export type ProjectStageStatus =
   | "in_progress"
   | "complete";
 
-// ✅ Optional staffing fields (safe + additive)
+export type ProjectOfficeStatus =
+  | "active_work"
+  | "field_complete"
+  | "ready_to_invoice"
+  | "invoiced"
+  | "closed";
+
+export type ProjectBillingPeriodStatus = "open" | "ready_to_bill" | "invoiced";
+
+export type ProjectBillingPeriod = {
+  id: string;
+  sequence: number;
+  label?: string;
+  status: ProjectBillingPeriodStatus;
+  openedAt?: string;
+  openedByUid?: string;
+  openedByName?: string;
+  readyToBillAt?: string;
+  readyToBillByUid?: string;
+  readyToBillByName?: string;
+  invoicedAt?: string;
+  invoicedByUid?: string;
+  invoicedByName?: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  invoiceNotes?: string;
+  tripIds?: string[];
+  tripCount?: number;
+  totalHours?: number;
+  materialsCount?: number;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
 export type StageStaffing = {
   primaryTechnicianId?: string;
   primaryTechnicianName?: string;
@@ -26,7 +59,6 @@ export type ProjectStage = {
   billed: boolean;
   billedAmount: number;
 
-  // ✅ NEW: stage-level staffing (optional)
   staffing?: StageStaffing;
 };
 
@@ -55,7 +87,6 @@ export type Project = {
   topOutVent: ProjectStage;
   trimFinish: ProjectStage;
 
-  // ✅ Project-level default crew (optional fallback)
   primaryTechnicianId?: string;
   primaryTechnicianName?: string;
 
@@ -65,11 +96,47 @@ export type Project = {
   helperIds?: string[];
   helperNames?: string[];
 
-  // Legacy single-tech fields (keep for backwards compatibility)
   assignedTechnicianId?: string;
   assignedTechnicianName?: string;
 
   internalNotes?: string;
+
+  projectOfficeStatus?: ProjectOfficeStatus;
+
+  /**
+   * T&M billing periods.
+   *
+   * - One open period may exist while work is still accumulating.
+   * - Ready-to-bill periods are frozen for office billing.
+   * - Invoiced periods remain historical and accessible.
+   */
+  billingPeriods?: ProjectBillingPeriod[];
+  currentBillingPeriodId?: string;
+
+  fieldCompletedAt?: string;
+  fieldCompletedByUid?: string;
+  fieldCompletedByName?: string;
+
+  readyToInvoiceAt?: string;
+  readyToInvoiceByUid?: string;
+  readyToInvoiceByName?: string;
+
+  invoicedAt?: string;
+  invoicedByUid?: string;
+  invoicedByName?: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  invoiceNotes?: string;
+
+  closedAt?: string;
+  closedByUid?: string;
+  closedByName?: string;
+
+  reopenedAt?: string;
+  reopenedByUid?: string;
+  reopenedByName?: string;
+  reopenReason?: string;
+
   active: boolean;
 
   createdAt?: string;
