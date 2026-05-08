@@ -69,6 +69,7 @@ import GroupRoundedIcon from "@mui/icons-material/GroupRounded";
 import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
 import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
+import MapRoundedIcon from "@mui/icons-material/MapRounded";
 import MoreVertRoundedIcon from "@mui/icons-material/MoreVertRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
@@ -316,6 +317,8 @@ type BasicsDraft = {
   projectType: EditableProjectType;
   description: string;
   active: boolean;
+  bidStatus: "draft" | "submitted" | "won" | "lost";
+  totalBidAmount: string;
 };
 
 type AddressBidDraft = {
@@ -324,8 +327,6 @@ type AddressBidDraft = {
   serviceCity: string;
   serviceState: string;
   servicePostalCode: string;
-  bidStatus: "draft" | "submitted" | "won" | "lost";
-  totalBidAmount: string;
 };
 
 type GoogleAddressSelectionLike = {
@@ -348,15 +349,6 @@ type CrewNotesDraft = {
   internalNotes: string;
 };
 
-type TmBillingTabData = {
-  key: string;
-  label: string;
-  period: ProjectBillingPeriod | null;
-  trips: TripDoc[];
-  summary: ReturnType<typeof summarizeBillingPeriodTrips>;
-  isCurrentOpen: boolean;
-};
-
 function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
     return value
@@ -375,23 +367,10 @@ function stripUndefinedDeep<T>(value: T): T {
   return value;
 }
 
-function periodHasAssignedTrips(periodId: string, trips: TripDoc[]) {
-  const target = safeTrim(periodId);
-  if (!target) return false;
-
-  return trips.some((trip) => {
-    if (safeTrim(trip.billingPeriodId) !== target) return false;
-    if (String(trip.status || "").toLowerCase() !== "complete") return false;
-    if (trip.active === false) return false;
-    return true;
-  });
-}
-
-function removeEmptyOpenBillingPeriods(periods: ProjectBillingPeriod[], trips: TripDoc[]) {
-  return periods.filter((period) => {
-    if (period.status !== "open") return true;
-    return periodHasAssignedTrips(period.id, trips);
-  });
+function formatBillingPeriodStatus(status?: ProjectBillingPeriod["status"] | null) {
+  if (status === "invoiced") return "Invoiced";
+  if (status === "ready_to_bill") return "Ready to Bill";
+  return "Open";
 }
 
 function emptyStageAssignment(): StageAssignmentState {
@@ -605,6 +584,38 @@ function buildInlineAddress(
     .join(", ");
 }
 
+function buildCityStatePostalLine(city?: string, state?: string, postal?: string) {
+  const statePostal = [safeTrim(state), safeTrim(postal)].filter(Boolean).join(" ");
+  return [safeTrim(city), statePostal].filter(Boolean).join(", ");
+}
+
+function buildGoogleMapsEmbedSrc(address: string, apiKey: string) {
+  const cleanAddress = safeTrim(address);
+  const cleanKey = safeTrim(apiKey);
+  if (!cleanAddress || !cleanKey) return "";
+  return `https://www.google.com/maps/embed/v1/place?key=${encodeURIComponent(cleanKey)}&q=${encodeURIComponent(cleanAddress)}&zoom=16`;
+}
+
+function buildGoogleMapsSearchUrl(address: string) {
+  const cleanAddress = safeTrim(address);
+  if (!cleanAddress) return "";
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cleanAddress)}`;
+}
+
+function buildAppleMapsSearchUrl(address: string) {
+  const cleanAddress = safeTrim(address);
+  if (!cleanAddress) return "";
+  return `https://maps.apple.com/?q=${encodeURIComponent(cleanAddress)}`;
+}
+
+function prefersAppleMaps() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const isIOS = /iPad|iPhone|iPod/.test(ua);
+  const isTouchMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  return isIOS || isTouchMac;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -671,13 +682,6 @@ function formatStageStatus(status: Project["roughIn"]["status"]) {
     default:
       return status;
   }
-}
-
-function formatBillingPeriodStatus(status?: ProjectBillingPeriod["status"] | null) {
-  const s = safeTrim(status);
-  if (s === "ready_to_bill") return "Ready to Bill";
-  if (s === "invoiced") return "Invoiced";
-  return "Open";
 }
 
 function formatProjectType(projectType?: string) {
@@ -1141,6 +1145,8 @@ export default function ProjectDetailPage() {
     projectType: "new_construction",
     description: "",
     active: true,
+    bidStatus: "draft",
+    totalBidAmount: "0",
   });
 
   const [addressBidDraft, setAddressBidDraft] = useState<AddressBidDraft>({
@@ -1149,8 +1155,6 @@ export default function ProjectDetailPage() {
     serviceCity: "",
     serviceState: "TX",
     servicePostalCode: "",
-    bidStatus: "draft",
-    totalBidAmount: "0",
   });
   const [projectAddressSearch, setProjectAddressSearch] = useState("");
   const [projectAddressSource, setProjectAddressSource] = useState<string>("manual");
@@ -1226,16 +1230,13 @@ export default function ProjectDetailPage() {
     () => getEffectiveProjectOfficeStatus(project, projectTrips),
     [project, projectTrips],
   );
-  const projectOfficeLocked =
-    projectOfficeStatus === "invoiced" || projectOfficeStatus === "closed";
-  const projectFieldWorkLocked =
-    projectOfficeLocked || projectOfficeStatus === "field_complete";
+  const projectOfficeLocked = projectOfficeStatus === "invoiced" || projectOfficeStatus === "closed";
+  const projectFieldWorkLocked = projectOfficeLocked || projectOfficeStatus === "field_complete";
+const canUpdateProjectOfficeStatus = canEditProject && !isTmProject;
+const canCloseProject = canEditProject && projectOfficeStatus === "invoiced";
+const canReopenClosedProject = canEditProject && projectOfficeStatus === "closed";
 
-  const canUpdateProjectOfficeStatus = canEditProject && !isTmProject;
-  const canCloseProject = canEditProject && projectOfficeStatus === "invoiced";
-  const canReopenClosedProject = canEditProject && projectOfficeStatus === "closed";
-
-  const canMarkTmReadyToBill =
+const canMarkTmReadyToBill =
     appUser?.role === "admin" ||
     appUser?.role === "dispatcher" ||
     appUser?.role === "manager" ||
@@ -1343,62 +1344,55 @@ export default function ProjectDetailPage() {
 
   const tmBillingPeriods = useMemo(() => getProjectBillingPeriods(project), [project]);
   const currentOpenTmPeriod = useMemo(() => getCurrentOpenBillingPeriod(project), [project]);
-const unbilledCompletedTmTrips = useMemo<TripDoc[]>(
-  () =>
-    isTmProject
-      ? projectTrips.filter((trip) => {
-          const status = String(trip.status || "").toLowerCase();
-          if (status !== "complete") return false;
-          if (trip.active === false) return false;
-          if (safeTrim(trip.billingPeriodId)) return false;
-          return true;
-        })
-      : [],
-  [isTmProject, projectTrips],
-);
+  const unbilledCompletedTmTrips = useMemo<TripDoc[]>(
+    () =>
+      isTmProject
+        ? projectTrips.filter((trip) => {
+            const status = String(trip.status || "").toLowerCase();
+            if (status !== "complete") return false;
+            if (trip.active === false) return false;
+            if (safeTrim(trip.billingPeriodId)) return false;
+            return true;
+          })
+        : [],
+    [isTmProject, projectTrips],
+  );
 
-const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
-  if (!isTmProject) return [];
+  const tmBillingTabs = useMemo(() => {
+    if (!isTmProject) return [] as Array<{
+      key: string;
+      label: string;
+      period: ProjectBillingPeriod | null;
+      trips: TripDoc[];
+      summary: ReturnType<typeof summarizeBillingPeriodTrips>;
+      isCurrentOpen: boolean;
+    }>;
 
-  const frozenTabs: TmBillingTabData[] = tmBillingPeriods.map((period) => {
-    const periodTrips: TripDoc[] = projectTrips.filter(
-      (trip) => safeTrim(trip.billingPeriodId) === period.id,
-    );
-
-    return {
-      key: period.id,
-      label: buildBillingTabLabel(period, false),
-      period,
-      trips: periodTrips,
-      summary: summarizeBillingPeriodTrips(periodTrips),
-      isCurrentOpen: false,
-    };
-  });
-
-  const tabs: TmBillingTabData[] = [...frozenTabs];
-
-  if (projectOfficeStatus !== "closed") {
-    const currentTrips: TripDoc[] = unbilledCompletedTmTrips;
-
-    tabs.unshift({
-      key: "current",
-      label: "Current Period",
-      period: currentOpenTmPeriod,
-      trips: currentTrips,
-      summary: summarizeBillingPeriodTrips(currentTrips),
-      isCurrentOpen: true,
+    const frozenTabs = tmBillingPeriods.map((period) => {
+      const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === period.id);
+      return {
+        key: period.id,
+        label: buildBillingTabLabel(period, false),
+        period,
+        trips: periodTrips,
+        summary: summarizeBillingPeriodTrips(periodTrips),
+        isCurrentOpen: false,
+      };
     });
-  }
 
-  return tabs;
-}, [
-  isTmProject,
-  tmBillingPeriods,
-  currentOpenTmPeriod,
-  unbilledCompletedTmTrips,
-  projectTrips,
-  projectOfficeStatus,
-]);
+    const currentTrips = unbilledCompletedTmTrips;
+    return [
+      {
+        key: "current",
+        label: "Current Period",
+        period: currentOpenTmPeriod,
+        trips: currentTrips,
+        summary: summarizeBillingPeriodTrips(currentTrips),
+        isCurrentOpen: true,
+      },
+      ...frozenTabs,
+    ];
+  }, [isTmProject, tmBillingPeriods, currentOpenTmPeriod, unbilledCompletedTmTrips, projectTrips]);
 
   const activeTmBillingTabData = useMemo(() => {
     if (!tmBillingTabs.length) return null;
@@ -1419,20 +1413,72 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
 
   const previewStageAmounts = useMemo(() => {
     return buildStageBilledAmounts(
-      editingAddressBid
-        ? addressBidDraft.bidStatus && basicsDraft.projectType
-          ? basicsDraft.projectType
-          : (project?.projectType as EditableProjectType) || "new_construction"
-        : (project?.projectType as EditableProjectType) || "new_construction",
-      Number(editingAddressBid ? addressBidDraft.totalBidAmount : project?.totalBidAmount || 0),
+      (editingBasics
+        ? basicsDraft.projectType
+        : (project?.projectType as EditableProjectType)) || "new_construction",
+      Number(editingBasics ? basicsDraft.totalBidAmount : project?.totalBidAmount || 0),
     );
-  }, [
-    editingAddressBid,
-    addressBidDraft.totalBidAmount,
-    basicsDraft.projectType,
-    project?.projectType,
-    project?.totalBidAmount,
-  ]);
+  }, [editingBasics, basicsDraft.projectType, basicsDraft.totalBidAmount, project?.projectType, project?.totalBidAmount]);
+
+  const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
+
+  const locationPreviewLine1 = editingAddressBid
+    ? safeTrim(addressBidDraft.serviceAddressLine1)
+    : safeTrim(project?.serviceAddressLine1);
+  const locationPreviewLine2 = editingAddressBid
+    ? safeTrim(addressBidDraft.serviceAddressLine2)
+    : safeTrim(project?.serviceAddressLine2);
+  const locationPreviewCity = editingAddressBid
+    ? safeTrim(addressBidDraft.serviceCity)
+    : safeTrim(project?.serviceCity);
+  const locationPreviewState = editingAddressBid
+    ? safeTrim(addressBidDraft.serviceState)
+    : safeTrim(project?.serviceState);
+  const locationPreviewPostalCode = editingAddressBid
+    ? safeTrim(addressBidDraft.servicePostalCode)
+    : safeTrim(project?.servicePostalCode);
+
+  const locationPreviewAddress = useMemo(
+    () =>
+      buildInlineAddress(
+        locationPreviewLine1,
+        locationPreviewLine2,
+        locationPreviewCity,
+        locationPreviewState,
+        locationPreviewPostalCode,
+      ),
+    [
+      locationPreviewLine1,
+      locationPreviewLine2,
+      locationPreviewCity,
+      locationPreviewState,
+      locationPreviewPostalCode,
+    ],
+  );
+
+  const locationPreviewCityStatePostal = useMemo(
+    () => buildCityStatePostalLine(locationPreviewCity, locationPreviewState, locationPreviewPostalCode),
+    [locationPreviewCity, locationPreviewState, locationPreviewPostalCode],
+  );
+
+  const locationPreviewEmbedSrc = useMemo(
+    () => buildGoogleMapsEmbedSrc(locationPreviewAddress, googleMapsApiKey),
+    [locationPreviewAddress, googleMapsApiKey],
+  );
+
+  const locationPreviewGoogleMapsUrl = useMemo(
+    () => buildGoogleMapsSearchUrl(locationPreviewAddress),
+    [locationPreviewAddress],
+  );
+
+  function openLocationInPreferredMaps() {
+    const targetUrl = prefersAppleMaps()
+      ? buildAppleMapsSearchUrl(locationPreviewAddress)
+      : locationPreviewGoogleMapsUrl;
+
+    if (!targetUrl || typeof window === "undefined") return;
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
+  }
 
   function mergeProjectState(patch: any) {
     setProject((prev) => (prev ? ({ ...prev, ...patch } as any) : prev));
@@ -1556,6 +1602,8 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
       projectType: ((p.projectType as EditableProjectType) || "new_construction"),
       description: p.description || "",
       active: Boolean(p.active),
+      bidStatus: p.bidStatus || "draft",
+      totalBidAmount: String(Number(p.totalBidAmount ?? 0)),
     });
   }
 
@@ -1569,8 +1617,6 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
       serviceCity: p.serviceCity || "",
       serviceState: p.serviceState || "TX",
       servicePostalCode: p.servicePostalCode || "",
-      bidStatus: p.bidStatus || "draft",
-      totalBidAmount: String(Number(p.totalBidAmount ?? 0)),
     });
 
     setProjectAddressSearch(
@@ -2160,6 +2206,19 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
       const now = nowIso();
       const selectedCustomerRecord =
         customers.find((customer) => customer.id === basicsDraft.customerId.trim()) ?? null;
+      const totalBid = Number(basicsDraft.totalBidAmount) || 0;
+      const nextRoughIn = {
+        ...(project.roughIn as any),
+        billedAmount: previewStageAmounts.roughIn,
+      };
+      const nextTopOutVent = {
+        ...(project.topOutVent as any),
+        billedAmount: previewStageAmounts.topOutVent,
+      };
+      const nextTrimFinish = {
+        ...(project.trimFinish as any),
+        billedAmount: previewStageAmounts.trimFinish,
+      };
 
       const details: string[] = [];
 
@@ -2182,6 +2241,16 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
       if (Boolean(project.active) !== basicsDraft.active) {
         details.push(`Project marked ${basicsDraft.active ? "active" : "inactive"}`);
       }
+      if (project.bidStatus !== basicsDraft.bidStatus) {
+        details.push(
+          `Bid status: ${formatBidStatus(project.bidStatus)} → ${formatBidStatus(basicsDraft.bidStatus)}`,
+        );
+      }
+      if (Number(project.totalBidAmount || 0) !== totalBid) {
+        details.push(
+          `Total bid: ${formatCurrency(project.totalBidAmount)} → ${formatCurrency(totalBid)}`,
+        );
+      }
 
       await updateDoc(doc(db, "projects", project.id), {
         customerId: basicsDraft.customerId.trim(),
@@ -2191,6 +2260,11 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         projectType: basicsDraft.projectType,
         description: basicsDraft.description.trim() || null,
         active: basicsDraft.active,
+        bidStatus: basicsDraft.bidStatus,
+        totalBidAmount: totalBid,
+        roughIn: nextRoughIn,
+        topOutVent: nextTopOutVent,
+        trimFinish: nextTrimFinish,
         updatedAt: now,
       });
 
@@ -2202,6 +2276,11 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         projectType: basicsDraft.projectType,
         description: basicsDraft.description.trim() || undefined,
         active: basicsDraft.active,
+        bidStatus: basicsDraft.bidStatus,
+        totalBidAmount: totalBid,
+        roughIn: nextRoughIn,
+        topOutVent: nextTopOutVent,
+        trimFinish: nextTrimFinish,
         updatedAt: now,
       });
 
@@ -2215,7 +2294,7 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
       }
 
       setEditingBasics(false);
-      setBasicsSaveSuccess("✅ Project basics saved.");
+      setBasicsSaveSuccess("✅ Project basics and bid saved.");
     } catch (err: unknown) {
       setBasicsSaveError(
         err instanceof Error ? err.message : "Failed to save project basics.",
@@ -2244,12 +2323,6 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
 
     try {
       const now = nowIso();
-      const totalBid = Number(addressBidDraft.totalBidAmount) || 0;
-      const stageAmounts = buildStageBilledAmounts(
-        (project?.projectType as EditableProjectType) || "new_construction",
-        totalBid,
-      );
-
       const details: string[] = [];
 
       if (
@@ -2262,31 +2335,6 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         details.push("Job site address updated");
       }
 
-      if (project.bidStatus !== addressBidDraft.bidStatus) {
-        details.push(
-          `Bid status: ${formatBidStatus(project.bidStatus)} → ${formatBidStatus(addressBidDraft.bidStatus)}`,
-        );
-      }
-
-      if (Number(project.totalBidAmount || 0) !== totalBid) {
-        details.push(
-          `Total bid: ${formatCurrency(project.totalBidAmount)} → ${formatCurrency(totalBid)}`,
-        );
-      }
-
-      const nextRoughIn = {
-        ...(project.roughIn as any),
-        billedAmount: stageAmounts.roughIn,
-      };
-      const nextTopOutVent = {
-        ...(project.topOutVent as any),
-        billedAmount: stageAmounts.topOutVent,
-      };
-      const nextTrimFinish = {
-        ...(project.trimFinish as any),
-        billedAmount: stageAmounts.trimFinish,
-      };
-
       await updateDoc(doc(db, "projects", project.id), {
         serviceAddressLabel: null,
         serviceAddressLine1: addressBidDraft.serviceAddressLine1.trim(),
@@ -2295,11 +2343,6 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         serviceState: addressBidDraft.serviceState.trim().toUpperCase(),
         servicePostalCode: addressBidDraft.servicePostalCode.trim(),
         serviceAddressSource: projectAddressSource || null,
-        bidStatus: addressBidDraft.bidStatus,
-        totalBidAmount: totalBid,
-        roughIn: nextRoughIn,
-        topOutVent: nextTopOutVent,
-        trimFinish: nextTrimFinish,
         updatedAt: now,
       });
 
@@ -2311,28 +2354,23 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         serviceState: addressBidDraft.serviceState.trim().toUpperCase(),
         servicePostalCode: addressBidDraft.servicePostalCode.trim(),
         serviceAddressSource: projectAddressSource || undefined,
-        bidStatus: addressBidDraft.bidStatus,
-        totalBidAmount: totalBid,
-        roughIn: nextRoughIn,
-        topOutVent: nextTopOutVent,
-        trimFinish: nextTrimFinish,
         updatedAt: now,
       });
 
       if (details.length > 0) {
         void recordProjectActivity({
           type: "project_updated",
-          title: "Address / bid updated",
+          title: "Job site updated",
           description: `${details.length} change${details.length === 1 ? "" : "s"} saved.`,
           details,
         });
       }
 
       setEditingAddressBid(false);
-      setAddressBidSaveSuccess("✅ Address / bid saved.");
+      setAddressBidSaveSuccess("✅ Job site saved.");
     } catch (err: unknown) {
       setAddressBidSaveError(
-        err instanceof Error ? err.message : "Failed to save address / bid.",
+        err instanceof Error ? err.message : "Failed to save job site.",
       );
     } finally {
       setAddressBidSaveBusy(false);
@@ -3793,33 +3831,33 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         timeEntrySyncedByName: actorDisplayName || null,
       };
 
-      const cleanTripPatch = stripUndefinedDeep(tripPatch);
-      const cleanProjectPatch = stripUndefinedDeep(projectPatch);
+const cleanTripPatch = stripUndefinedDeep(tripPatch);
+const cleanProjectPatch = stripUndefinedDeep(projectPatch);
 
-      batch.update(doc(db, "trips", t.id), cleanTripPatch as any);
+batch.update(doc(db, "trips", t.id), cleanTripPatch as any);
 
-      if (Object.keys(cleanProjectPatch).length > 1) {
-        batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
-      }
+if (Object.keys(cleanProjectPatch).length > 1) {
+  batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
+}
 
-      await batch.commit();
+await batch.commit();
 
-      setProjectTrips((prev) =>
-        prev.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                ...cleanTripPatch,
-              }
-            : x,
-        ),
-      );
+setProjectTrips((prev) =>
+  prev.map((x) =>
+    x.id === t.id
+      ? {
+          ...x,
+          ...cleanTripPatch,
+        }
+      : x,
+  ),
+);
 
-      if (Object.keys(cleanProjectPatch).length > 1) {
-        mergeProjectState(cleanProjectPatch);
-      } else {
-        mergeProjectState({ updatedAt: now });
-      }
+if (Object.keys(cleanProjectPatch).length > 1) {
+  mergeProjectState(cleanProjectPatch);
+} else {
+  mergeProjectState({ updatedAt: now });
+}
 
       const details: string[] = [];
       details.push(`Outcome: ${closeoutModal.outcome.replaceAll("_", " ")}`);
@@ -3958,22 +3996,16 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         currentBillingPeriodId = nextOpen.id;
       }
 
-      const cleanNextPeriods = stripUndefinedDeep(nextPeriods);
-      const nextOfficeStatus: ProjectOfficeStatus = project.fieldCompletedAt
-        ? "ready_to_invoice"
-        : "active_work";
-      const projectUpdatePatch = stripUndefinedDeep({
-        billingPeriods: cleanNextPeriods,
-        currentBillingPeriodId,
-        projectOfficeStatus: nextOfficeStatus,
+      const batch = writeBatch(db);
+      batch.update(doc(db, "projects", project.id), {
+        billingPeriods: nextPeriods,
+        currentBillingPeriodId: currentBillingPeriodId,
+        projectOfficeStatus: "ready_to_invoice",
         readyToInvoiceAt: now,
         readyToInvoiceByUid: myUid || null,
         readyToInvoiceByName: actorDisplayName || null,
         updatedAt: now,
-      });
-
-      const batch = writeBatch(db);
-      batch.update(doc(db, "projects", project.id), projectUpdatePatch as any);
+      } as any);
 
       for (const trip of eligibleTrips) {
         batch.update(doc(db, "trips", trip.id), {
@@ -4006,7 +4038,15 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
         ),
       );
 
-      mergeProjectState(projectUpdatePatch);
+      mergeProjectState({
+        billingPeriods: nextPeriods,
+        currentBillingPeriodId: currentBillingPeriodId || undefined,
+        projectOfficeStatus: "ready_to_invoice",
+        readyToInvoiceAt: now,
+        readyToInvoiceByUid: myUid || undefined,
+        readyToInvoiceByName: actorDisplayName || undefined,
+        updatedAt: now,
+      });
       setActiveTmBillingTab(frozenPeriod.id);
 
       void recordProjectActivity({
@@ -4038,30 +4078,28 @@ const tmBillingTabs = useMemo<TmBillingTabData[]>(() => {
 
     try {
       const now = nowIso();
-const reopenedPeriod: ProjectBillingPeriod = {
-  ...period,
-  status: "open",
-  readyToBillAt: undefined,
-  readyToBillByUid: undefined,
-  readyToBillByName: undefined,
-};
+      const reopenedPeriod: ProjectBillingPeriod = {
+        ...period,
+        status: "open",
+        readyToBillAt: undefined,
+        readyToBillByUid: undefined,
+        readyToBillByName: undefined,
+      };
       const nextPeriods = tmBillingPeriods
         .filter((item) => item.id !== periodId)
         .filter((item) => item.status !== "open")
         .concat(reopenedPeriod)
         .sort((a, b) => a.sequence - b.sequence);
 
-      const cleanNextPeriods = stripUndefinedDeep(nextPeriods);
       const nextStatus: ProjectOfficeStatus = project.fieldCompletedAt ? "field_complete" : "active_work";
-      const projectUpdatePatch = stripUndefinedDeep({
-        billingPeriods: cleanNextPeriods,
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "projects", project.id), {
+        billingPeriods: nextPeriods,
         currentBillingPeriodId: reopenedPeriod.id,
         projectOfficeStatus: nextStatus,
         updatedAt: now,
-      });
-
-      const batch = writeBatch(db);
-      batch.update(doc(db, "projects", project.id), projectUpdatePatch as any);
+      } as any);
 
       const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === periodId);
       for (const trip of periodTrips) {
@@ -4088,7 +4126,12 @@ const reopenedPeriod: ProjectBillingPeriod = {
             : trip,
         ),
       );
-      mergeProjectState(projectUpdatePatch);
+      mergeProjectState({
+        billingPeriods: nextPeriods,
+        currentBillingPeriodId: reopenedPeriod.id,
+        projectOfficeStatus: nextStatus,
+        updatedAt: now,
+      });
       setActiveTmBillingTab("current");
 
       void recordProjectActivity({
@@ -4121,61 +4164,56 @@ const reopenedPeriod: ProjectBillingPeriod = {
       const invoiceNumber = safeTrim(tmInvoiceDialog.invoiceNumber);
       const invoiceNotes = safeTrim(tmInvoiceDialog.invoiceNotes);
       const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === period.id);
-const invoicedPeriod: ProjectBillingPeriod = {
-  ...period,
-  status: "invoiced",
-  invoicedAt: now,
-  invoicedByUid: myUid || undefined,
-  invoicedByName: actorDisplayName || undefined,
-  invoiceNumber: invoiceNumber || undefined,
-  invoiceDate,
-  invoiceNotes: invoiceNotes || undefined,
-};
+      const invoicedPeriod: ProjectBillingPeriod = {
+        ...period,
+        status: "invoiced",
+        invoicedAt: now,
+        invoicedByUid: myUid || undefined,
+        invoicedByName: actorDisplayName || undefined,
+        invoiceNumber: invoiceNumber || undefined,
+        invoiceDate,
+        invoiceNotes: invoiceNotes || undefined,
+      };
 
-      const baseNextPeriods = tmBillingPeriods
+      const nextPeriods = tmBillingPeriods
         .map((item) => (item.id === invoicedPeriod.id ? invoicedPeriod : item))
         .sort((a, b) => a.sequence - b.sequence);
 
-      const remainingReadyPeriods = baseNextPeriods.filter((item) => item.status === "ready_to_bill");
+      const remainingReadyPeriods = nextPeriods.filter((item) => item.status === "ready_to_bill");
       const remainingUnbilledTrips = getUnbilledCompletedTrips(
         projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) !== period.id),
       );
-      const hasOpenPeriodWithTrips = baseNextPeriods.some(
-        (item) => item.status === "open" && periodHasAssignedTrips(item.id, projectTrips),
-      );
+      const hasOpenPeriod = nextPeriods.some((item) => item.status === "open");
 
-      let nextStatus: ProjectOfficeStatus = project.fieldCompletedAt ? "field_complete" : "active_work";
+      let nextStatus: ProjectOfficeStatus = "active_work";
       let nextActive = true;
-      let nextPeriods = baseNextPeriods;
       const projectPatch: Record<string, any> = {
+        billingPeriods: nextPeriods,
         updatedAt: now,
       };
 
       if (remainingReadyPeriods.length > 0) {
         nextStatus = "ready_to_invoice";
       } else if (project.fieldCompletedAt) {
-        if (!hasOpenPeriodWithTrips && remainingUnbilledTrips.length === 0) {
+        if (!hasOpenPeriod && remainingUnbilledTrips.length === 0) {
           nextStatus = "invoiced";
           nextActive = false;
-          nextPeriods = removeEmptyOpenBillingPeriods(baseNextPeriods, projectTrips);
           projectPatch.invoicedAt = now;
           projectPatch.invoicedByUid = myUid || null;
           projectPatch.invoicedByName = actorDisplayName || null;
           projectPatch.invoiceNumber = invoiceNumber || null;
           projectPatch.invoiceDate = invoiceDate;
           projectPatch.invoiceNotes = invoiceNotes || null;
-          projectPatch.currentBillingPeriodId = null;
+        } else {
+          nextStatus = "field_complete";
         }
       }
 
-      projectPatch.billingPeriods = stripUndefinedDeep(nextPeriods);
       projectPatch.projectOfficeStatus = nextStatus;
       projectPatch.active = nextActive;
 
-      const cleanProjectPatch = stripUndefinedDeep(projectPatch);
-
       const batch = writeBatch(db);
-      batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
+      batch.update(doc(db, "projects", project.id), projectPatch as any);
       for (const trip of periodTrips) {
         batch.update(doc(db, "trips", trip.id), {
           billingPeriodStatus: "invoiced",
@@ -4204,7 +4242,9 @@ const invoicedPeriod: ProjectBillingPeriod = {
             : trip,
         ),
       );
-      mergeProjectState(cleanProjectPatch);
+      mergeProjectState({
+        ...projectPatch,
+      });
       setActiveTmBillingTab(period.id);
       setTmInvoiceDialog(emptyTmInvoiceDialog());
 
@@ -4473,29 +4513,29 @@ const invoicedPeriod: ProjectBillingPeriod = {
     setCloseoutDetailsTripId(null);
   }
 
-  function openProjectOfficeDialog(nextStatus: ProjectOfficeStatus) {
-    if (!project) return;
+function openProjectOfficeDialog(nextStatus: ProjectOfficeStatus) {
+  if (!project) return;
 
-    const canOpen =
-      nextStatus === "closed"
-        ? canCloseProject
-        : nextStatus === "active_work" && projectOfficeStatus === "closed"
-          ? canReopenClosedProject
-          : canUpdateProjectOfficeStatus;
+  const canOpen =
+    nextStatus === "closed"
+      ? canCloseProject
+      : nextStatus === "active_work" && projectOfficeStatus === "closed"
+        ? canReopenClosedProject
+        : canUpdateProjectOfficeStatus;
 
-    if (!canOpen) return;
+  if (!canOpen) return;
 
-    setProjectOfficeDialog({
-      open: true,
-      nextStatus,
-      invoiceNumber: safeTrim((project as any).invoiceNumber || ""),
-      invoiceDate: safeTrim((project as any).invoiceDate || toIsoDate(new Date())),
-      invoiceNotes: safeTrim((project as any).invoiceNotes || ""),
-      reopenReason: "",
-      saving: false,
-      error: "",
-    });
-  }
+  setProjectOfficeDialog({
+    open: true,
+    nextStatus,
+    invoiceNumber: safeTrim((project as any).invoiceNumber || ""),
+    invoiceDate: safeTrim((project as any).invoiceDate || toIsoDate(new Date())),
+    invoiceNotes: safeTrim((project as any).invoiceNotes || ""),
+    reopenReason: "",
+    saving: false,
+    error: "",
+  });
+}
 
   function closeProjectOfficeDialog() {
     if (projectOfficeDialog.saving) return;
@@ -4503,37 +4543,30 @@ const invoicedPeriod: ProjectBillingPeriod = {
   }
 
   async function saveProjectOfficeStatus() {
-    if (!project || !projectOfficeDialog.nextStatus) return;
+if (!project || !projectOfficeDialog.nextStatus) return;
 
-    const nextStatus = projectOfficeDialog.nextStatus;
+const nextStatus = projectOfficeDialog.nextStatus;
 
-    const canSave =
-      nextStatus === "closed"
-        ? canCloseProject
-        : nextStatus === "active_work" && projectOfficeStatus === "closed"
-          ? canReopenClosedProject
-          : canUpdateProjectOfficeStatus;
+const canSave =
+  nextStatus === "closed"
+    ? canCloseProject
+    : nextStatus === "active_work" && projectOfficeStatus === "closed"
+      ? canReopenClosedProject
+      : canUpdateProjectOfficeStatus;
 
-    if (!canSave) return;
-
+if (!canSave) return;
     const invoiceNumber = safeTrim(projectOfficeDialog.invoiceNumber);
     const invoiceDate = safeTrim(projectOfficeDialog.invoiceDate);
     const invoiceNotes = safeTrim(projectOfficeDialog.invoiceNotes);
     const reopenReason = safeTrim(projectOfficeDialog.reopenReason);
 
     if (nextStatus === "invoiced" && !invoiceDate) {
-      setProjectOfficeDialog((prev) => ({
-        ...prev,
-        error: "Invoice date is required.",
-      }));
+      setProjectOfficeDialog((prev) => ({ ...prev, error: "Invoice date is required." }));
       return;
     }
 
     if (nextStatus === "active_work" && !reopenReason) {
-      setProjectOfficeDialog((prev) => ({
-        ...prev,
-        error: "Enter a brief reopen reason.",
-      }));
+      setProjectOfficeDialog((prev) => ({ ...prev, error: "Enter a brief reopen reason." }));
       return;
     }
 
@@ -4547,39 +4580,16 @@ const invoicedPeriod: ProjectBillingPeriod = {
         updatedAt: now,
       };
 
-      if (nextStatus === "active_work") {
-        patch.active = true;
-        patch.reopenedAt = now;
-        patch.reopenedByUid = myUid || null;
-        patch.reopenedByName = actorDisplayName || null;
-        patch.reopenReason = reopenReason || null;
-        patch.closedAt = null;
-        patch.closedByUid = null;
-        patch.closedByName = null;
-
-        if (isTmProject && projectOfficeStatus === "closed") {
-          const existingPeriods = getProjectBillingPeriods(project);
-          const existingOpenPeriod =
-            existingPeriods.find((period) => period.status === "open") || null;
-
-          if (existingOpenPeriod) {
-            patch.currentBillingPeriodId = existingOpenPeriod.id;
-          } else {
-            const reopenedOpenPeriod = createOpenBillingPeriod({
-              project: { ...(project as any), billingPeriods: existingPeriods } as Project,
-              actorUid: myUid || null,
-              actorName: actorDisplayName || null,
-              openedAt: now,
-            });
-
-            patch.billingPeriods = stripUndefinedDeep([
-              ...existingPeriods,
-              reopenedOpenPeriod,
-            ]);
-            patch.currentBillingPeriodId = reopenedOpenPeriod.id;
-          }
-        }
-      }
+if (nextStatus === "active_work") {
+  patch.active = true;
+  patch.reopenedAt = now;
+  patch.reopenedByUid = myUid || null;
+  patch.reopenedByName = actorDisplayName || null;
+  patch.reopenReason = reopenReason || null;
+  patch.closedAt = null;
+  patch.closedByUid = null;
+  patch.closedByName = null;
+}
 
       if (nextStatus === "field_complete") {
         patch.active = true;
@@ -4591,10 +4601,8 @@ const invoicedPeriod: ProjectBillingPeriod = {
       if (nextStatus === "ready_to_invoice") {
         patch.active = true;
         patch.fieldCompletedAt = (project as any).fieldCompletedAt || now;
-        patch.fieldCompletedByUid =
-          (project as any).fieldCompletedByUid || myUid || null;
-        patch.fieldCompletedByName =
-          (project as any).fieldCompletedByName || actorDisplayName || null;
+        patch.fieldCompletedByUid = (project as any).fieldCompletedByUid || myUid || null;
+        patch.fieldCompletedByName = (project as any).fieldCompletedByName || actorDisplayName || null;
         patch.readyToInvoiceAt = now;
         patch.readyToInvoiceByUid = myUid || null;
         patch.readyToInvoiceByName = actorDisplayName || null;
@@ -4603,15 +4611,11 @@ const invoicedPeriod: ProjectBillingPeriod = {
       if (nextStatus === "invoiced") {
         patch.active = false;
         patch.fieldCompletedAt = (project as any).fieldCompletedAt || now;
-        patch.fieldCompletedByUid =
-          (project as any).fieldCompletedByUid || myUid || null;
-        patch.fieldCompletedByName =
-          (project as any).fieldCompletedByName || actorDisplayName || null;
+        patch.fieldCompletedByUid = (project as any).fieldCompletedByUid || myUid || null;
+        patch.fieldCompletedByName = (project as any).fieldCompletedByName || actorDisplayName || null;
         patch.readyToInvoiceAt = (project as any).readyToInvoiceAt || now;
-        patch.readyToInvoiceByUid =
-          (project as any).readyToInvoiceByUid || myUid || null;
-        patch.readyToInvoiceByName =
-          (project as any).readyToInvoiceByName || actorDisplayName || null;
+        patch.readyToInvoiceByUid = (project as any).readyToInvoiceByUid || myUid || null;
+        patch.readyToInvoiceByName = (project as any).readyToInvoiceByName || actorDisplayName || null;
         patch.invoicedAt = now;
         patch.invoicedByUid = myUid || null;
         patch.invoicedByName = actorDisplayName || null;
@@ -4625,23 +4629,11 @@ const invoicedPeriod: ProjectBillingPeriod = {
         patch.closedAt = now;
         patch.closedByUid = myUid || null;
         patch.closedByName = actorDisplayName || null;
-
-        if (isTmProject) {
-          const cleanedPeriods = removeEmptyOpenBillingPeriods(
-            getProjectBillingPeriods(project),
-            projectTrips,
-          );
-
-          patch.billingPeriods = stripUndefinedDeep(cleanedPeriods);
-          patch.currentBillingPeriodId = null;
-        }
       }
 
-      const cleanPatch = stripUndefinedDeep(patch);
+      await updateDoc(doc(db, "projects", project.id), patch as any);
 
-      await updateDoc(doc(db, "projects", project.id), cleanPatch as any);
-
-      mergeProjectState(cleanPatch);
+      mergeProjectState(patch);
 
       void recordProjectActivity({
         type: "project_updated",
@@ -4649,18 +4641,9 @@ const invoicedPeriod: ProjectBillingPeriod = {
         description: `${formatProjectOfficeStatus(previousStatus)} → ${formatProjectOfficeStatus(nextStatus)}`,
         details: [
           `Updated by: ${actorDisplayName}`,
-          ...(nextStatus === "invoiced" && invoiceNumber
-            ? [`Invoice #: ${invoiceNumber}`]
-            : []),
-          ...(nextStatus === "invoiced" && invoiceDate
-            ? [`Invoice date: ${invoiceDate}`]
-            : []),
-          ...(nextStatus === "active_work" && reopenReason
-            ? [`Reopen reason: ${reopenReason}`]
-            : []),
-          ...(nextStatus === "closed"
-            ? ["Project moved to historical closed status."]
-            : []),
+          ...(nextStatus === "invoiced" && invoiceNumber ? [`Invoice #: ${invoiceNumber}`] : []),
+          ...(nextStatus === "invoiced" && invoiceDate ? [`Invoice date: ${invoiceDate}`] : []),
+          ...(nextStatus === "active_work" && reopenReason ? [`Reopen reason: ${reopenReason}`] : []),
           ...(invoiceNotes ? [`Invoice notes: ${invoiceNotes}`] : []),
         ],
       });
@@ -4754,7 +4737,7 @@ const invoicedPeriod: ProjectBillingPeriod = {
                     <Paper
                       elevation={6}
                       sx={{
-                        borderRadius: 3,
+                        borderRadius: 1,
                         minWidth: 230,
                         overflow: "hidden",
                         border: (theme) => `1px solid ${theme.palette.divider}`,
@@ -4983,7 +4966,7 @@ const invoicedPeriod: ProjectBillingPeriod = {
                 severity="info"
                 variant="outlined"
                 icon={<InfoRoundedIcon fontSize="inherit" />}
-                sx={{ borderRadius: 3 }}
+                sx={{ borderRadius: 1 }}
               >
                 Last closeout saved: {getCloseoutSavedSummary(t)}
               </Alert>
@@ -5991,205 +5974,9 @@ const invoicedPeriod: ProjectBillingPeriod = {
                 </Stack>
               </Paper>
 
-              <Box
-                sx={{
-                  display: "grid",
-                  gap: 2,
-                  gridTemplateColumns: {
-                    xs: "1fr",
-                    sm: "repeat(2, minmax(0, 1fr))",
-                    lg: "repeat(4, minmax(0, 1fr))",
-                  },
-                }}
-              >
-                <MetricCard label="Customer" value={project.customerDisplayName || "—"} />
-                <MetricCard label="Project Type" value={formatProjectType(project.projectType)} />
-                <MetricCard label="Bid Status" value={formatBidStatus(project.bidStatus)} />
-                <MetricCard label="Total Bid" value={formatCurrency(project.totalBidAmount)} />
-              </Box>
-
-              <SectionCard
-                title="Project Closeout & Billing"
-                subtitle="Track field completion, office review, invoice readiness, and final project closure."
-                icon={<PaidRoundedIcon color="primary" />}
-                action={
-                  canUpdateProjectOfficeStatus ? (
-                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      {projectOfficeStatus === "active_work" ? (
-                        <>
-                          <Button
-                            variant="outlined"
-                            onClick={() => openProjectOfficeDialog("field_complete")}
-                            sx={{ borderRadius: 99 }}
-                          >
-                            Mark Field Complete
-                          </Button>
-                          <Button
-                            variant="contained"
-                            onClick={() => openProjectOfficeDialog("ready_to_invoice")}
-                            sx={{ borderRadius: 99, boxShadow: "none" }}
-                          >
-                            Mark Ready to Invoice
-                          </Button>
-                        </>
-                      ) : null}
-
-                      {projectOfficeStatus === "field_complete" ? (
-                        <>
-                          <Button
-                            variant="contained"
-                            onClick={() => openProjectOfficeDialog("ready_to_invoice")}
-                            sx={{ borderRadius: 99, boxShadow: "none" }}
-                          >
-                            Mark Ready to Invoice
-                          </Button>
-                          <Button
-                            variant="outlined"
-                            onClick={() => openProjectOfficeDialog("active_work")}
-                            sx={{ borderRadius: 99 }}
-                          >
-                            Reopen Active Work
-                          </Button>
-                        </>
-                      ) : null}
-
-                      {projectOfficeStatus === "ready_to_invoice" ? (
-                        <>
-                          <Button
-                            variant="contained"
-                            onClick={() => openProjectOfficeDialog("invoiced")}
-                            sx={{ borderRadius: 99, boxShadow: "none" }}
-                          >
-                            Mark Invoiced
-                          </Button>
-                          <Button
-                            variant="outlined"
-                            onClick={() => openProjectOfficeDialog("active_work")}
-                            sx={{ borderRadius: 99 }}
-                          >
-                            Reopen Active Work
-                          </Button>
-                        </>
-                      ) : null}
-
-                      {projectOfficeStatus === "invoiced" ? (
-                        <>
-                          <Button
-                            variant="outlined"
-                            onClick={() => openProjectOfficeDialog("closed")}
-                            sx={{ borderRadius: 99 }}
-                          >
-                            Mark Closed
-                          </Button>
-                          <Button
-                            variant="outlined"
-                            onClick={() => openProjectOfficeDialog("active_work")}
-                            sx={{ borderRadius: 99 }}
-                          >
-                            Reopen Project
-                          </Button>
-                        </>
-                      ) : null}
-
-                      {projectOfficeStatus === "closed" ? (
-                        <Button
-                          variant="outlined"
-                          onClick={() => openProjectOfficeDialog("active_work")}
-                          sx={{ borderRadius: 99 }}
-                        >
-                          Reopen Project
-                        </Button>
-                      ) : null}
-                    </Stack>
-                  ) : null
-                }
-              >
-                <Stack spacing={2}>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip
-                      label={formatProjectOfficeStatus(projectOfficeStatus)}
-                      color={projectOfficeStatusColor(projectOfficeStatus)}
-                      variant="filled"
-                      sx={{ fontWeight: 800 }}
-                    />
-                    {projectFieldWorkLocked ? (
-                      <Chip label={projectOfficeLocked ? "Locked history" : "Field work locked"} variant="outlined" size="small" />
-                    ) : null}
-                    {projectBillingSummary.openTrips > 0 ? (
-                      <Chip
-                        label={`${projectBillingSummary.openTrips} open trip${projectBillingSummary.openTrips === 1 ? "" : "s"}`}
-                        color="warning"
-                        variant="outlined"
-                        size="small"
-                      />
-                    ) : (
-                      <Chip label="No open trips" color="success" variant="outlined" size="small" />
-                    )}
-                  </Stack>
-
-                  <Typography variant="body2" color="text.secondary">
-                    {projectOfficeStatusHelper(projectOfficeStatus)}
-                  </Typography>
-
-                  {projectFieldWorkLocked ? (
-                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
-                      This project is locked from normal scheduling and trip edits. Reopen active work if additional field work or corrections are needed.
-                    </Alert>
-                  ) : null}
-
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 2,
-                      gridTemplateColumns: {
-                        xs: "1fr",
-                        sm: "repeat(2, minmax(0, 1fr))",
-                        lg: "repeat(4, minmax(0, 1fr))",
-                      },
-                    }}
-                  >
-                    <InfoField label="Office Status" value={formatProjectOfficeStatus(projectOfficeStatus)} />
-                    <InfoField
-                      label="Trip Review"
-                      value={`${projectBillingSummary.completedTrips}/${projectBillingSummary.totalTrips} completed`}
-                    />
-                    <InfoField
-                      label="Labor Captured"
-                      value={`${projectBillingSummary.totalLaborHours.toFixed(2)}h`}
-                    />
-                    <InfoField
-                      label="Time Entries"
-                      value={
-                        projectBillingSummary.completedTrips === 0
-                          ? "No completed trips"
-                          : projectBillingSummary.needsTimeEntryReview
-                            ? "Needs review"
-                            : "Synced"
-                      }
-                    />
-                    <InfoField
-                      label="Ready To Invoice"
-                      value={(project as any).readyToInvoiceAt ? formatDateTime((project as any).readyToInvoiceAt) : "—"}
-                    />
-                    <InfoField
-                      label="Invoice #"
-                      value={(project as any).invoiceNumber || "—"}
-                    />
-                    <InfoField
-                      label="Invoice Date"
-                      value={(project as any).invoiceDate || "—"}
-                    />
-                    <InfoField
-                      label="Invoiced At"
-                      value={(project as any).invoicedAt ? formatDateTime((project as any).invoicedAt) : "—"}
-                    />
-                  </Box>
-                </Stack>
-              </SectionCard>
-
               <SectionCard
                 title="Project Basics"
-                subtitle="Customer, project name, type, description, and active status."
+                subtitle="Customer, project details, bid status, pricing, and stage billing breakdown."
                 icon={<InfoRoundedIcon color="primary" />}
                 action={
                   canEditProject ? (
@@ -6236,138 +6023,269 @@ const invoicedPeriod: ProjectBillingPeriod = {
                   {basicsSaveSuccess ? <Alert severity="success">{basicsSaveSuccess}</Alert> : null}
 
                   {editingBasics ? (
-                    <Box
-                      sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: {
-                          xs: "1fr",
-                          md: "repeat(2, minmax(0, 1fr))",
-                        },
-                      }}
-                    >
-                      <Autocomplete
-                        options={customers}
-                        loading={customersLoading}
-                        value={selectedCustomerFromDraft}
-                        onChange={(_, value) =>
-                          setBasicsDraft((prev) => ({
-                            ...prev,
-                            customerId: value?.id || "",
-                          }))
-                        }
-                        filterOptions={(options, state) => {
-                          const q = state.inputValue.trim().toLowerCase();
-                          if (!q) return options.slice(0, 25);
-                          return options
-                            .filter((opt) =>
-                              `${opt.displayName} ${opt.phonePrimary || ""}`
-                                .toLowerCase()
-                                .includes(q),
-                            )
-                            .slice(0, 25);
+                    <>
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            md: "repeat(2, minmax(0, 1fr))",
+                          },
                         }}
-                        getOptionLabel={(option) => option.displayName || ""}
-                        isOptionEqualToValue={(option, value) => option.id === value.id}
-                        renderInput={(params) => (
-                          <TextField
-                            {...params}
-                            label="Customer / Contractor"
-                            placeholder="Search customer by name or phone..."
-                          />
-                        )}
-                      />
-
-                      <TextField
-                        label="Project Name"
-                        value={basicsDraft.projectName}
-                        onChange={(e) =>
-                          setBasicsDraft((prev) => ({
-                            ...prev,
-                            projectName: e.target.value,
-                          }))
-                        }
-                        fullWidth
-                      />
-
-                      <TextField
-                        select
-                        label="Project Type"
-                        value={basicsDraft.projectType}
-                        onChange={(e) =>
-                          setBasicsDraft((prev) => ({
-                            ...prev,
-                            projectType: e.target.value as EditableProjectType,
-                          }))
-                        }
-                        fullWidth
                       >
-                        <MenuItem value="new_construction">New Construction</MenuItem>
-                        <MenuItem value="remodel">Remodel</MenuItem>
-                        <MenuItem value="time_materials">Time + Materials</MenuItem>
-                        <MenuItem value="other">Other</MenuItem>
-                      </TextField>
-
-                      <Box sx={{ display: "flex", alignItems: "center" }}>
-                        <FormControlLabel
-                          control={
-                            <Switch
-                              checked={basicsDraft.active}
-                              onChange={(e) =>
-                                setBasicsDraft((prev) => ({
-                                  ...prev,
-                                  active: e.target.checked,
-                                }))
-                              }
-                            />
+                        <Autocomplete
+                          options={customers}
+                          loading={customersLoading}
+                          value={selectedCustomerFromDraft}
+                          onChange={(_, value) =>
+                            setBasicsDraft((prev) => ({
+                              ...prev,
+                              customerId: value?.id || "",
+                            }))
                           }
-                          label={basicsDraft.active ? "Project is active" : "Project is inactive"}
+                          filterOptions={(options, state) => {
+                            const q = state.inputValue.trim().toLowerCase();
+                            if (!q) return options.slice(0, 25);
+                            return options
+                              .filter((opt) =>
+                                `${opt.displayName} ${opt.phonePrimary || ""}`
+                                  .toLowerCase()
+                                  .includes(q),
+                              )
+                              .slice(0, 25);
+                          }}
+                          getOptionLabel={(option) => option.displayName || ""}
+                          isOptionEqualToValue={(option, value) => option.id === value.id}
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              label="Customer / Contractor"
+                              placeholder="Search customer by name or phone..."
+                            />
+                          )}
                         />
-                      </Box>
 
-                      <Box sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}>
                         <TextField
-                          label="Description"
-                          value={basicsDraft.description}
+                          label="Project Name"
+                          value={basicsDraft.projectName}
                           onChange={(e) =>
                             setBasicsDraft((prev) => ({
                               ...prev,
-                              description: e.target.value,
+                              projectName: e.target.value,
                             }))
                           }
-                          multiline
-                          minRows={4}
                           fullWidth
                         />
+
+                        <TextField
+                          select
+                          label="Project Type"
+                          value={basicsDraft.projectType}
+                          onChange={(e) =>
+                            setBasicsDraft((prev) => ({
+                              ...prev,
+                              projectType: e.target.value as EditableProjectType,
+                            }))
+                          }
+                          fullWidth
+                        >
+                          <MenuItem value="new_construction">New Construction</MenuItem>
+                          <MenuItem value="remodel">Remodel</MenuItem>
+                          <MenuItem value="time_materials">Time + Materials</MenuItem>
+                          <MenuItem value="other">Other</MenuItem>
+                        </TextField>
+
+                        <Box sx={{ display: "flex", alignItems: "center" }}>
+                          <FormControlLabel
+                            control={
+                              <Switch
+                                checked={basicsDraft.active}
+                                onChange={(e) =>
+                                  setBasicsDraft((prev) => ({
+                                    ...prev,
+                                    active: e.target.checked,
+                                  }))
+                                }
+                              />
+                            }
+                            label={basicsDraft.active ? "Project is active" : "Project is inactive"}
+                          />
+                        </Box>
+
+                        <FormControl fullWidth>
+                          <InputLabel>Bid Status</InputLabel>
+                          <Select
+                            label="Bid Status"
+                            value={basicsDraft.bidStatus}
+                            onChange={(e) =>
+                              setBasicsDraft((prev) => ({
+                                ...prev,
+                                bidStatus: e.target.value as Project["bidStatus"],
+                              }))
+                            }
+                            {...selectMenuProps()}
+                          >
+                            <MenuItem value="draft">Draft</MenuItem>
+                            <MenuItem value="submitted">Submitted</MenuItem>
+                            <MenuItem value="won">Won</MenuItem>
+                            <MenuItem value="lost">Lost</MenuItem>
+                          </Select>
+                        </FormControl>
+
+                        <TextField
+                          label="Total Bid Amount"
+                          type="number"
+                          inputProps={{ min: 0, step: "0.01" }}
+                          value={basicsDraft.totalBidAmount}
+                          onChange={(e) =>
+                            setBasicsDraft((prev) => ({
+                              ...prev,
+                              totalBidAmount: e.target.value,
+                            }))
+                          }
+                          fullWidth
+                        />
+
+                        <Box sx={{ gridColumn: { xs: "1 / -1", md: "1 / -1" } }}>
+                          <TextField
+                            label="Description"
+                            value={basicsDraft.description}
+                            onChange={(e) =>
+                              setBasicsDraft((prev) => ({
+                                ...prev,
+                                description: e.target.value,
+                              }))
+                            }
+                            multiline
+                            minRows={4}
+                            fullWidth
+                          />
+                        </Box>
                       </Box>
-                    </Box>
+
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          p: 2,
+                          borderRadius: 4,
+                          bgcolor: alpha(theme.palette.primary.main, 0.03),
+                        }}
+                      >
+                        <Stack spacing={1.5}>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Bid Breakdown Preview
+                          </Typography>
+
+                          {basicsDraft.projectType !== "time_materials" ? (
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gap: 1.5,
+                                gridTemplateColumns: {
+                                  xs: "1fr",
+                                  md: "repeat(3, minmax(0, 1fr))",
+                                },
+                              }}
+                            >
+                              <InfoField
+                                label="Rough-In"
+                                value={formatCurrency(previewStageAmounts.roughIn)}
+                              />
+                              <InfoField
+                                label="Top-Out / Vent"
+                                value={formatCurrency(previewStageAmounts.topOutVent)}
+                              />
+                              <InfoField
+                                label="Trim / Finish"
+                                value={formatCurrency(previewStageAmounts.trimFinish)}
+                              />
+                            </Box>
+                          ) : (
+                            <Alert severity="info" variant="outlined">
+                              Time + Materials does not use fixed stage bid splits.
+                            </Alert>
+                          )}
+                        </Stack>
+                      </Paper>
+                    </>
                   ) : (
-                    <Box
-                      sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: {
-                          xs: "1fr",
-                          sm: "repeat(2, minmax(0, 1fr))",
-                        },
-                      }}
-                    >
-                      <InfoField label="Customer / Contractor" value={project.customerDisplayName || "—"} />
-                      <InfoField label="Project Name" value={project.projectName || "—"} />
-                      <InfoField label="Project Type" value={formatProjectType(project.projectType)} />
-                      <InfoField label="Status" value={project.active ? "Active" : "Inactive"} />
-                      <Box sx={{ gridColumn: { xs: "1 / -1", sm: "1 / -1" } }}>
-                        <InfoField label="Description" value={project.description || "—"} />
+                    <Stack spacing={2}>
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 2,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            sm: "repeat(2, minmax(0, 1fr))",
+                            lg: "repeat(3, minmax(0, 1fr))",
+                          },
+                        }}
+                      >
+                        <InfoField label="Customer / Contractor" value={project.customerDisplayName || "—"} />
+                        <InfoField label="Project Name" value={project.projectName || "—"} />
+                        <InfoField label="Project Type" value={formatProjectType(project.projectType)} />
+                        <InfoField label="Status" value={project.active ? "Active" : "Inactive"} />
+                        <InfoField label="Bid Status" value={formatBidStatus(project.bidStatus)} />
+                        <InfoField label="Total Bid" value={formatCurrency(project.totalBidAmount)} />
+                        <Box sx={{ gridColumn: { xs: "1 / -1", lg: "1 / -1" } }}>
+                          <InfoField label="Description" value={project.description || "—"} />
+                        </Box>
                       </Box>
-                    </Box>
+
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          p: 2,
+                          borderRadius: 1,
+                          bgcolor: alpha(theme.palette.primary.main, 0.03),
+                        }}
+                      >
+                        <Stack spacing={1.5}>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Bid Breakdown
+                          </Typography>
+
+                          {project.projectType !== "time_materials" ? (
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gap: 1.5,
+                                gridTemplateColumns: {
+                                  xs: "1fr",
+                                  md: "repeat(3, minmax(0, 1fr))",
+                                },
+                              }}
+                            >
+                              <InfoField
+                                label="Rough-In"
+                                value={formatCurrency(project.roughIn?.billedAmount || 0)}
+                              />
+                              <InfoField
+                                label="Top-Out / Vent"
+                                value={formatCurrency(project.topOutVent?.billedAmount || 0)}
+                              />
+                              <InfoField
+                                label="Trim / Finish"
+                                value={formatCurrency(project.trimFinish?.billedAmount || 0)}
+                              />
+                            </Box>
+                          ) : (
+                            <Alert severity="info" variant="outlined">
+                              Time + Materials does not use fixed stage bid splits.
+                            </Alert>
+                          )}
+                        </Stack>
+                      </Paper>
+                    </Stack>
                   )}
                 </Stack>
               </SectionCard>
 
               <SectionCard
-                title="Job Site & Bid"
-                subtitle="Address, bid status, and total bid."
-                icon={<HomeWorkRoundedIcon color="primary" />}
+                title="Job Site"
+                subtitle="Address-first layout with Google map preview and a smart maps handoff for the field."
+                icon={<MapRoundedIcon color="primary" />}
                 action={
                   canEditProject ? (
                     editingAddressBid ? (
@@ -6518,98 +6436,192 @@ const invoicedPeriod: ProjectBillingPeriod = {
                           }}
                           fullWidth
                         />
-
-                        <FormControl fullWidth>
-                          <InputLabel>Bid Status</InputLabel>
-                          <Select
-                            label="Bid Status"
-                            value={addressBidDraft.bidStatus}
-                            onChange={(e) =>
-                              setAddressBidDraft((prev) => ({
-                                ...prev,
-                                bidStatus: e.target.value as any,
-                              }))
-                            }
-                            {...selectMenuProps()}
-                          >
-                            <MenuItem value="draft">Draft</MenuItem>
-                            <MenuItem value="submitted">Submitted</MenuItem>
-                            <MenuItem value="won">Won</MenuItem>
-                            <MenuItem value="lost">Lost</MenuItem>
-                          </Select>
-                        </FormControl>
-
-                        <TextField
-                          label="Total Bid Amount"
-                          type="number"
-                          inputProps={{ min: 0, step: "0.01" }}
-                          value={addressBidDraft.totalBidAmount}
-                          onChange={(e) =>
-                            setAddressBidDraft((prev) => ({
-                              ...prev,
-                              totalBidAmount: e.target.value,
-                            }))
-                          }
-                          fullWidth
-                        />
-                      </Box>
-
-                      <Box
-                        sx={{
-                          display: "grid",
-                          gap: 1.5,
-                          gridTemplateColumns: {
-                            xs: "1fr",
-                            md:
-                              project.projectType === "time_materials"
-                                ? "1fr"
-                                : "repeat(3, minmax(0, 1fr))",
-                          },
-                        }}
-                      >
-                        {project.projectType !== "time_materials" ? (
-                          <>
-                            <InfoField
-                              label="Rough-In Preview"
-                              value={formatCurrency(previewStageAmounts.roughIn)}
-                            />
-                            <InfoField
-                              label="Top-Out / Vent Preview"
-                              value={formatCurrency(previewStageAmounts.topOutVent)}
-                            />
-                            <InfoField
-                              label="Trim / Finish Preview"
-                              value={formatCurrency(previewStageAmounts.trimFinish)}
-                            />
-                          </>
-                        ) : (
-                          <Alert severity="info" variant="outlined">
-                            Time + Materials does not use stage billing splits.
-                          </Alert>
-                        )}
                       </Box>
                     </>
-                  ) : (
+                  ) : null}
+
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        lg: "minmax(0, 1.5fr) minmax(320px, 0.9fr)",
+                      },
+                    }}
+                  >
                     <Box
                       sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: {
-                          xs: "1fr",
-                          sm: "repeat(2, minmax(0, 1fr))",
-                        },
+                        position: "relative",
+                        minHeight: { xs: 260, md: 340 },
+                        borderRadius: 1,
+                        overflow: "hidden",
+                        border: `1px solid ${theme.palette.divider}`,
+                        bgcolor: alpha(theme.palette.primary.main, 0.04),
                       }}
                     >
-                      <InfoField label="Address 1" value={project.serviceAddressLine1 || "—"} />
-                      <InfoField label="Address 2" value={project.serviceAddressLine2 || "—"} />
-                      <InfoField
-                        label="City / State / ZIP"
-                        value={`${project.serviceCity || "—"}, ${project.serviceState || "—"} ${project.servicePostalCode || ""}`}
-                      />
-                      <InfoField label="Bid Status" value={formatBidStatus(project.bidStatus)} />
-                      <InfoField label="Total Bid" value={formatCurrency(project.totalBidAmount)} />
+                      {locationPreviewEmbedSrc ? (
+                        <Box
+                          component="iframe"
+                          title="Job site map preview"
+                          src={locationPreviewEmbedSrc}
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            width: "100%",
+                            height: "100%",
+                            border: 0,
+                          }}
+                        />
+                      ) : (
+                        <Stack
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="center"
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            px: 3,
+                            textAlign: "center",
+                          }}
+                        >
+                          <MapRoundedIcon color="primary" sx={{ fontSize: 40 }} />
+                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                            Map preview unavailable
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Save a complete address to show the Google map preview here.
+                          </Typography>
+                        </Stack>
+                      )}
+
+                      {locationPreviewAddress ? (
+                        <Box
+                          sx={{
+                            position: "absolute",
+                            left: 16,
+                            right: 16,
+                            bottom: 16,
+                          }}
+                        >
+                          <Paper
+                            elevation={6}
+                            sx={{
+                              p: 1.5,
+                              borderRadius: 1,
+                              backgroundColor: alpha(theme.palette.background.paper, 0.92),
+                              backdropFilter: "blur(10px)",
+                            }}
+                          >
+                            <Stack spacing={0.4}>
+                              <Typography variant="overline" sx={{ lineHeight: 1 }}>
+                                Job Site
+                              </Typography>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                {locationPreviewLine1 || "No address"}
+                              </Typography>
+                              {locationPreviewLine2 ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  {locationPreviewLine2}
+                                </Typography>
+                              ) : null}
+                              {locationPreviewCityStatePostal ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  {locationPreviewCityStatePostal}
+                                </Typography>
+                              ) : null}
+                            </Stack>
+                          </Paper>
+                        </Box>
+                      ) : null}
                     </Box>
-                  )}
+
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2.25,
+                        borderRadius: 1,
+                        height: "100%",
+                      }}
+                    >
+                      <Stack spacing={1.5} height="100%">
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Box
+                            sx={{
+                              width: 40,
+                              height: 40,
+                              borderRadius: "50%",
+                              display: "grid",
+                              placeItems: "center",
+                              bgcolor: alpha(theme.palette.primary.main, 0.12),
+                              color: "primary.main",
+                              flex: "0 0 auto",
+                            }}
+                          >
+                            <HomeWorkRoundedIcon fontSize="small" />
+                          </Box>
+                          <Box>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                              Location Details
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Cleaner job-site view with a direct maps handoff.
+                            </Typography>
+                          </Box>
+                        </Stack>
+
+                        <Divider />
+
+                        <Box>
+                          <Typography variant="body1" sx={{ fontWeight: 700 }}>
+                            {locationPreviewLine1 || "No address saved"}
+                          </Typography>
+                          {locationPreviewLine2 ? (
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                              {locationPreviewLine2}
+                            </Typography>
+                          ) : null}
+                          {locationPreviewCityStatePostal ? (
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                              {locationPreviewCityStatePostal}
+                            </Typography>
+                          ) : null}
+                        </Box>
+
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          <Button
+                            variant="contained"
+                            startIcon={<OpenInNewRoundedIcon />}
+                            onClick={openLocationInPreferredMaps}
+                            disabled={!locationPreviewAddress}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Open in Maps
+                          </Button>
+
+                          {locationPreviewGoogleMapsUrl ? (
+                            <Button
+                              component="a"
+                              href={locationPreviewGoogleMapsUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              variant="outlined"
+                              startIcon={<MapRoundedIcon />}
+                              sx={{ borderRadius: 99 }}
+                            >
+                              Open Web Map
+                            </Button>
+                          ) : null}
+                        </Stack>
+
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: "auto" }}>
+                          Uses Google Maps for the embedded preview. The main button opens Apple Maps on iPhone/iPad and Google Maps elsewhere.
+                        </Typography>
+                      </Stack>
+                    </Paper>
+                  </Box>
                 </Stack>
               </SectionCard>
 
@@ -6835,6 +6847,156 @@ const invoicedPeriod: ProjectBillingPeriod = {
                 </Stack>
               </SectionCard>
 
+                            <SectionCard
+                title="Project Closeout & Billing"
+                subtitle="Track field completion, office review, invoice readiness, and final project closure."
+                icon={<PaidRoundedIcon color="primary" />}
+                action={
+                  canUpdateProjectOfficeStatus ? (
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {projectOfficeStatus === "active_work" ? (
+                        <>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("field_complete")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Mark Field Complete
+                          </Button>
+                          <Button
+                            variant="contained"
+                            onClick={() => openProjectOfficeDialog("ready_to_invoice")}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Mark Ready to Invoice
+                          </Button>
+                        </>
+                      ) : null}
+
+                      {projectOfficeStatus === "field_complete" ? (
+                        <>
+                          <Button
+                            variant="contained"
+                            onClick={() => openProjectOfficeDialog("ready_to_invoice")}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Mark Ready to Invoice
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("active_work")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Reopen Active Work
+                          </Button>
+                        </>
+                      ) : null}
+
+                      {projectOfficeStatus === "ready_to_invoice" ? (
+                        <>
+                          <Button
+                            variant="contained"
+                            onClick={() => openProjectOfficeDialog("invoiced")}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Mark Invoiced
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => openProjectOfficeDialog("active_work")}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Reopen Active Work
+                          </Button>
+                        </>
+                      ) : null}
+                    </Stack>
+                  ) : null
+                }
+              >
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip
+                      label={formatProjectOfficeStatus(projectOfficeStatus)}
+                      color={projectOfficeStatusColor(projectOfficeStatus)}
+                      variant="filled"
+                      sx={{ fontWeight: 800 }}
+                    />
+                    {projectFieldWorkLocked ? (
+                      <Chip label={projectOfficeLocked ? "Locked history" : "Field work locked"} variant="outlined" size="small" />
+                    ) : null}
+                    {projectBillingSummary.openTrips > 0 ? (
+                      <Chip
+                        label={`${projectBillingSummary.openTrips} open trip${projectBillingSummary.openTrips === 1 ? "" : "s"}`}
+                        color="warning"
+                        variant="outlined"
+                        size="small"
+                      />
+                    ) : (
+                      <Chip label="No open trips" color="success" variant="outlined" size="small" />
+                    )}
+                  </Stack>
+
+                  <Typography variant="body2" color="text.secondary">
+                    {projectOfficeStatusHelper(projectOfficeStatus)}
+                  </Typography>
+
+                  {projectFieldWorkLocked ? (
+                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                      This project is locked from normal scheduling and trip edits. Reopen active work if additional field work or corrections are needed.
+                    </Alert>
+                  ) : null}
+
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(2, minmax(0, 1fr))",
+                        lg: "repeat(4, minmax(0, 1fr))",
+                      },
+                    }}
+                  >
+                    <InfoField label="Office Status" value={formatProjectOfficeStatus(projectOfficeStatus)} />
+                    <InfoField
+                      label="Trip Review"
+                      value={`${projectBillingSummary.completedTrips}/${projectBillingSummary.totalTrips} completed`}
+                    />
+                    <InfoField
+                      label="Labor Captured"
+                      value={`${projectBillingSummary.totalLaborHours.toFixed(2)}h`}
+                    />
+                    <InfoField
+                      label="Time Entries"
+                      value={
+                        projectBillingSummary.completedTrips === 0
+                          ? "No completed trips"
+                          : projectBillingSummary.needsTimeEntryReview
+                            ? "Needs review"
+                            : "Synced"
+                      }
+                    />
+                    <InfoField
+                      label="Ready To Invoice"
+                      value={(project as any).readyToInvoiceAt ? formatDateTime((project as any).readyToInvoiceAt) : "—"}
+                    />
+                    <InfoField
+                      label="Invoice #"
+                      value={(project as any).invoiceNumber || "—"}
+                    />
+                    <InfoField
+                      label="Invoice Date"
+                      value={(project as any).invoiceDate || "—"}
+                    />
+                    <InfoField
+                      label="Invoiced At"
+                      value={(project as any).invoicedAt ? formatDateTime((project as any).invoicedAt) : "—"}
+                    />
+                  </Box>
+                </Stack>
+              </SectionCard>
+
               {hasStages ? (
                 <SectionCard
                   title="Stages"
@@ -6898,7 +7060,7 @@ const invoicedPeriod: ProjectBillingPeriod = {
                           variant="outlined"
                           sx={{
                             p: { xs: 2, sm: 2.5 },
-                            borderRadius: 4,
+                            borderRadius: 1,
                             bgcolor: alpha(theme.palette.primary.main, 0.03),
                           }}
                         >
@@ -7185,7 +7347,7 @@ const invoicedPeriod: ProjectBillingPeriod = {
                           variant="outlined"
                           sx={{
                             p: { xs: 2, sm: 2.5 },
-                            borderRadius: 4,
+                            borderRadius: 1,
                           }}
                         >
                           <Stack spacing={2}>
@@ -7332,7 +7494,7 @@ const invoicedPeriod: ProjectBillingPeriod = {
                         </Tabs>
 
                         {activeTmBillingTabData ? (
-                          <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 1 }}>
+                          <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 4 }}>
                             <Stack spacing={2}>
                               <Stack
                                 direction={{ xs: "column", sm: "row" }}
@@ -7354,7 +7516,12 @@ const invoicedPeriod: ProjectBillingPeriod = {
                                 </Box>
                                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                                   <Chip
-label={activeTmBillingTabData.isCurrentOpen ? "Open" : formatBillingPeriodStatus(activeTmBillingTabData.period?.status)}                                    color={
+                                    label={
+                                      activeTmBillingTabData.isCurrentOpen
+                                        ? "Open"
+                                        : formatBillingPeriodStatus(activeTmBillingTabData.period?.status)
+                                    }
+                                    color={
                                       activeTmBillingTabData.isCurrentOpen
                                         ? "primary"
                                         : activeTmBillingTabData.period?.status === "invoiced"
@@ -7541,7 +7708,7 @@ label={activeTmBillingTabData.isCurrentOpen ? "Open" : formatBillingPeriodStatus
                             <Card
                               key={`${file.name}-${index}`}
                               sx={{
-                                borderRadius: 3,
+                                borderRadius: 1,
                                 boxShadow: "none",
                                 border: `1px solid ${theme.palette.divider}`,
                               }}
@@ -7594,7 +7761,7 @@ label={activeTmBillingTabData.isCurrentOpen ? "Open" : formatBillingPeriodStatus
                         <Card
                           key={file.path || `${file.name}-${file.uploadedAt}`}
                           sx={{
-                            borderRadius: 3,
+                            borderRadius: 1,
                             boxShadow: "none",
                             border: `1px solid ${theme.palette.divider}`,
                           }}
