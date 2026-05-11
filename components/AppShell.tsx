@@ -122,6 +122,10 @@ type TripDoc = {
   actualEndAt?: string | null;
   pauseBlocks?: PauseBlock[] | null;
   updatedAt?: string | null;
+  closeout?: {
+    needsMoreWork?: string | boolean | null;
+  } | null;
+  needsMoreTime?: boolean | null;
 };
 
 type ActiveTripCard = {
@@ -322,6 +326,24 @@ function normalizeTripStatus(status?: string | null) {
   const s = safeTrim(status).toLowerCase();
   if (s === "completed") return "complete";
   return s;
+}
+
+function tripNeedsMoreWork(trip?: TripDoc | null) {
+  if (!trip) return false;
+
+  const closeoutValue = safeTrim(trip.closeout?.needsMoreWork).toLowerCase();
+  if (closeoutValue === "yes" || closeoutValue === "true") return true;
+
+  if (typeof trip.needsMoreTime === "boolean") {
+    return trip.needsMoreTime;
+  }
+
+  return false;
+}
+
+function isProjectOfficeClosedish(status?: string | null) {
+  const s = safeTrim(status).toLowerCase();
+  return s === "field_complete" || s === "invoiced" || s === "closed";
 }
 
 function stageLabel(stageKey?: string | null) {
@@ -1871,12 +1893,16 @@ export default function AppShell({
 
   const [followUpTicketIds, setFollowUpTicketIds] = useState<string[]>([]);
   const [readyToBillTicketIds, setReadyToBillTicketIds] = useState<string[]>([]);
+  const [scheduledFollowUpServiceTicketIds, setScheduledFollowUpServiceTicketIds] = useState<string[]>([]);
+  const [projectFollowUpIds, setProjectFollowUpIds] = useState<string[]>([]);
+  const [projectReadyToInvoiceIds, setProjectReadyToInvoiceIds] = useState<string[]>([]);
   const [newUntouchedServiceTicketCount, setNewUntouchedServiceTicketCount] = useState(0);
 
   useEffect(() => {
     if (!showDashboard) {
       setFollowUpTicketIds([]);
       setReadyToBillTicketIds([]);
+      setScheduledFollowUpServiceTicketIds([]);
       return;
     }
 
@@ -1908,9 +1934,149 @@ export default function AppShell({
       () => setReadyToBillTicketIds([])
     );
 
+    const unsubScheduledServiceTrips = onSnapshot(
+      query(
+        collection(db, "trips"),
+        where("type", "==", "service"),
+        where("active", "==", true),
+        limit(1000)
+      ),
+      (snap) => {
+        const ids = new Set<string>();
+
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          const ticketId = safeTrim(data.link?.serviceTicketId);
+          if (!ticketId) return;
+
+          const status = normalizeTripStatus(data.status);
+          if (status === "cancelled" || status === "complete") return;
+
+          ids.add(ticketId);
+        });
+
+        setScheduledFollowUpServiceTicketIds(Array.from(ids));
+      },
+      () => setScheduledFollowUpServiceTicketIds([])
+    );
+
     return () => {
       unsubFollowUp();
       unsubReady();
+      unsubScheduledServiceTrips();
+    };
+  }, [showDashboard]);
+
+  useEffect(() => {
+    if (!showDashboard) {
+      setProjectFollowUpIds([]);
+      setProjectReadyToInvoiceIds([]);
+      return;
+    }
+
+    const projectsMap = new Map<string, any>();
+    const tripsByProject = new Map<string, TripDoc[]>();
+
+    function recomputeProjectAttention() {
+      const readyIds = new Set<string>();
+      const followUpIds = new Set<string>();
+
+      for (const [projectId, projectDoc] of projectsMap.entries()) {
+        const officeStatus =
+          safeTrim(projectDoc?.projectOfficeStatus).toLowerCase() || "active_work";
+
+        if (officeStatus === "ready_to_invoice") {
+          readyIds.add(projectId);
+        }
+
+        if (officeStatus === "invoiced" || officeStatus === "closed") {
+          continue;
+        }
+
+        const projectRequestedMoreWork =
+          projectDoc?.additionalTripRequested === true ||
+          safeTrim(projectDoc?.additionalTripRequested).toLowerCase() === "true";
+
+        const trips = (tripsByProject.get(projectId) || []).filter(
+          (trip) => normalizeTripStatus(trip.status) !== "cancelled"
+        );
+
+        const hasFlaggedTrip = trips
+          .filter((trip) => normalizeTripStatus(trip.status) === "complete")
+          .some((trip) => tripNeedsMoreWork(trip));
+
+        if (projectRequestedMoreWork || hasFlaggedTrip) {
+          followUpIds.add(projectId);
+        }
+      }
+
+      setProjectReadyToInvoiceIds(Array.from(readyIds));
+      setProjectFollowUpIds(Array.from(followUpIds));
+    }
+
+    const unsubProjects = onSnapshot(
+      collection(db, "projects"),
+      (snap) => {
+        projectsMap.clear();
+
+        snap.docs.forEach((ds) => {
+          projectsMap.set(ds.id, ds.data() as any);
+        });
+
+        recomputeProjectAttention();
+      },
+      () => {
+        setProjectFollowUpIds([]);
+        setProjectReadyToInvoiceIds([]);
+      }
+    );
+
+    const unsubTrips = onSnapshot(
+      query(collection(db, "trips"), limit(2000)),
+      (snap) => {
+        tripsByProject.clear();
+
+        snap.docs.forEach((ds) => {
+          const d = ds.data() as any;
+          const projectId = safeTrim(d.link?.projectId);
+          if (!projectId) return;
+
+          const list = tripsByProject.get(projectId) || [];
+          list.push({
+            id: ds.id,
+            active: typeof d.active === "boolean" ? d.active : true,
+            status: d.status ?? undefined,
+            type: d.type ?? undefined,
+            date: d.date ?? undefined,
+            timeWindow: d.timeWindow ?? undefined,
+            startTime: d.startTime ?? undefined,
+            endTime: d.endTime ?? undefined,
+            crew: d.crew ?? null,
+            crewConfirmed: d.crewConfirmed ?? null,
+            link: d.link ?? null,
+            timerState: d.timerState ?? null,
+            actualStartAt: d.actualStartAt ?? null,
+            actualEndAt: d.actualEndAt ?? null,
+            pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
+            updatedAt: d.updatedAt ?? null,
+            closeout: d.closeout ?? null,
+            needsMoreTime:
+              typeof d.needsMoreTime === "boolean" ? d.needsMoreTime : null,
+          });
+          tripsByProject.set(projectId, list);
+        });
+
+        recomputeProjectAttention();
+      },
+      () => {
+        setProjectFollowUpIds([]);
+        setProjectReadyToInvoiceIds([]);
+      }
+    );
+
+    return () => {
+      unsubProjects();
+      unsubTrips();
     };
   }, [showDashboard]);
 
@@ -1940,9 +2106,26 @@ export default function AppShell({
     return () => unsub();
   }, []);
 
+  const visibleFollowUpTicketIds = useMemo(() => {
+    if (scheduledFollowUpServiceTicketIds.length === 0) return followUpTicketIds;
+
+    const scheduledSet = new Set(scheduledFollowUpServiceTicketIds);
+    return followUpTicketIds.filter((id) => !scheduledSet.has(id));
+  }, [followUpTicketIds, scheduledFollowUpServiceTicketIds]);
+
   const dashboardAttentionCount = useMemo(() => {
-    return new Set([...followUpTicketIds, ...readyToBillTicketIds]).size;
-  }, [followUpTicketIds, readyToBillTicketIds]);
+    return (
+      visibleFollowUpTicketIds.length +
+      readyToBillTicketIds.length +
+      projectFollowUpIds.length +
+      projectReadyToInvoiceIds.length
+    );
+  }, [
+    visibleFollowUpTicketIds,
+    readyToBillTicketIds,
+    projectFollowUpIds,
+    projectReadyToInvoiceIds,
+  ]);
 
   const topNav: NavEntry[] = [
     ...(showDashboard

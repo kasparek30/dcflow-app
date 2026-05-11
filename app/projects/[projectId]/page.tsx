@@ -593,7 +593,10 @@ function buildGoogleMapsEmbedSrc(address: string, apiKey: string) {
   const cleanAddress = safeTrim(address);
   const cleanKey = safeTrim(apiKey);
   if (!cleanAddress || !cleanKey) return "";
-  return `https://www.google.com/maps/embed/v1/place?key=${encodeURIComponent(cleanKey)}&q=${encodeURIComponent(cleanAddress)}&zoom=16`;
+
+  return `https://www.google.com/maps/embed/v1/place?key=${encodeURIComponent(
+    cleanKey,
+  )}&q=${encodeURIComponent(cleanAddress)}&zoom=17&maptype=satellite`;
 }
 
 function buildGoogleMapsSearchUrl(address: string) {
@@ -6496,46 +6499,6 @@ if (nextStatus === "active_work") {
                           </Typography>
                         </Stack>
                       )}
-
-                      {locationPreviewAddress ? (
-                        <Box
-                          sx={{
-                            position: "absolute",
-                            left: 16,
-                            right: 16,
-                            bottom: 16,
-                          }}
-                        >
-                          <Paper
-                            elevation={6}
-                            sx={{
-                              p: 1.5,
-                              borderRadius: 1,
-                              backgroundColor: alpha(theme.palette.background.paper, 0.92),
-                              backdropFilter: "blur(10px)",
-                            }}
-                          >
-                            <Stack spacing={0.4}>
-                              <Typography variant="overline" sx={{ lineHeight: 1 }}>
-                                Job Site
-                              </Typography>
-                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                                {locationPreviewLine1 || "No address"}
-                              </Typography>
-                              {locationPreviewLine2 ? (
-                                <Typography variant="body2" color="text.secondary">
-                                  {locationPreviewLine2}
-                                </Typography>
-                              ) : null}
-                              {locationPreviewCityStatePostal ? (
-                                <Typography variant="body2" color="text.secondary">
-                                  {locationPreviewCityStatePostal}
-                                </Typography>
-                              ) : null}
-                            </Stack>
-                          </Paper>
-                        </Box>
-                      ) : null}
                     </Box>
 
                     <Paper
@@ -6591,15 +6554,6 @@ if (nextStatus === "active_work") {
                         </Box>
 
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          <Button
-                            variant="contained"
-                            startIcon={<OpenInNewRoundedIcon />}
-                            onClick={openLocationInPreferredMaps}
-                            disabled={!locationPreviewAddress}
-                            sx={{ borderRadius: 99, boxShadow: "none" }}
-                          >
-                            Open in Maps
-                          </Button>
 
                           {locationPreviewGoogleMapsUrl ? (
                             <Button

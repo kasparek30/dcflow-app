@@ -1,3 +1,4 @@
+
 // app/dashboard/page.tsx
 "use client";
 
@@ -84,6 +85,11 @@ type TripLink = {
   projectStageKey?: string | null;
 };
 
+type PauseBlock = {
+  startAt?: string | null;
+  endAt?: string | null;
+};
+
 type TripDocLite = {
   id: string;
   active?: boolean | null;
@@ -97,6 +103,31 @@ type TripDocLite = {
   updatedAt?: string | null;
   crew?: TripCrew | null;
   link?: TripLink | null;
+};
+
+type ProjectTripDocLite = TripDocLite & {
+  completedAt?: string | null;
+  startedAt?: string | null;
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
+  pauseBlocks?: PauseBlock[] | null;
+  notes?: string | null;
+  materialsSummary?: string | null;
+  materialsUsedToday?: string | null;
+  closeout?: {
+    outcome?: string | null;
+    needsMoreWork?: "yes" | "no" | string | null;
+    hoursWorkedToday?: number | null;
+    workNotes?: string | null;
+    materialsUsedToday?: string | null;
+    savedAt?: string | null;
+    savedByName?: string | null;
+  } | null;
+  billingPeriodId?: string | null;
+  billingPeriodSequence?: number | null;
+  billingPeriodLabel?: string | null;
+  billingPeriodStatus?: string | null;
+  readyToBillAt?: string | null;
 };
 
 type ActiveWorkItem = {
@@ -125,6 +156,84 @@ type MarkerEntry = {
   infoHtml: string;
 };
 
+type ProjectOfficeStatus =
+  | "active_work"
+  | "field_complete"
+  | "ready_to_invoice"
+  | "invoiced"
+  | "closed";
+
+type ProjectBillingPeriodStatus = "open" | "ready_to_bill" | "invoiced";
+
+type ProjectBillingPeriodLite = {
+  id: string;
+  sequence: number;
+  label?: string | null;
+  status?: ProjectBillingPeriodStatus | string | null;
+  readyToBillAt?: string | null;
+  readyToBillByUid?: string | null;
+  readyToBillByName?: string | null;
+  totalHours?: number | null;
+  materialsCount?: number | null;
+  tripCount?: number | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  invoicedAt?: string | null;
+  invoiceNumber?: string | null;
+  invoiceDate?: string | null;
+};
+
+type DashboardProjectDoc = {
+  id: string;
+  active?: boolean | null;
+  projectName?: string | null;
+  customerDisplayName?: string | null;
+  projectType?: string | null;
+  serviceAddressLine1?: string | null;
+  serviceCity?: string | null;
+  serviceState?: string | null;
+  servicePostalCode?: string | null;
+  projectOfficeStatus?: ProjectOfficeStatus | string | null;
+  fieldCompletedAt?: string | null;
+  readyToInvoiceAt?: string | null;
+  readyToInvoiceByName?: string | null;
+  currentBillingPeriodId?: string | null;
+  billingPeriods?: ProjectBillingPeriodLite[] | null;
+  invoiceNumber?: string | null;
+};
+
+type ProjectFollowUpItem = {
+  projectId: string;
+  href: string;
+  projectName: string;
+  customerDisplayName: string;
+  projectTypeLabel: string;
+  stageLabel: string;
+  addressLine: string;
+  flaggedTripDate: string;
+  flaggedAt?: string | null;
+  flaggedByName: string;
+  workSummary: string;
+  hasScheduledReturn: boolean;
+  hasLaterCompletedWork: boolean;
+};
+
+type ReadyInvoiceProjectItem = {
+  projectId: string;
+  href: string;
+  billingHref: string;
+  projectName: string;
+  customerDisplayName: string;
+  projectTypeLabel: string;
+  billingLabel: string;
+  readyAt?: string | null;
+  readyByName?: string | null;
+  totalHours: number;
+  materialsCount: number;
+  tripCount: number;
+  invoiceNumber?: string | null;
+};
+
 declare global {
   interface Window {
     google?: any;
@@ -138,6 +247,19 @@ function safeTrim(x: unknown) {
 
 function normalizeStatus(status?: string | null) {
   return safeTrim(status).toLowerCase();
+}
+
+function normalizeOfficeStatus(status?: string | null): ProjectOfficeStatus {
+  const normalized = safeTrim(status).toLowerCase();
+  if (
+    normalized === "field_complete" ||
+    normalized === "ready_to_invoice" ||
+    normalized === "invoiced" ||
+    normalized === "closed"
+  ) {
+    return normalized;
+  }
+  return "active_work";
 }
 
 function todayIsoLocal() {
@@ -161,33 +283,52 @@ function isFieldVisibleStatus(status?: string | null, timerState?: string | null
   const normalizedTimer = normalizeStatus(timerState);
 
   return (
-    [
-      "in_progress",
-      "paused",
-      "dispatched",
-      "assigned",
-      "on_site",
-    ].includes(normalized) ||
+    ["in_progress", "paused", "dispatched", "assigned", "on_site"].includes(normalized) ||
     ["running", "paused"].includes(normalizedTimer)
   );
 }
 
 function isFieldVisibleItem(item: ActiveWorkItem) {
-  return isFieldVisibleStatus(item.status, item.timerState) && hasAssignedCrew(item) && hasMappableAddress(item);
+  return (
+    isFieldVisibleStatus(item.status, item.timerState) &&
+    hasAssignedCrew(item) &&
+    hasMappableAddress(item)
+  );
+}
+
+function parseFlexibleDateMs(value?: string | null) {
+  const raw = safeTrim(value);
+  if (!raw) return NaN;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return new Date(`${raw}T12:00:00`).getTime();
+  }
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
 }
 
 function formatWhen(value?: string | null) {
   const raw = safeTrim(value);
   if (!raw) return "—";
 
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return raw;
+  const ms = parseFlexibleDateMs(raw);
+  if (!Number.isFinite(ms)) return raw;
 
-  return d.toLocaleString([], {
+  return new Date(ms).toLocaleString([], {
     month: "numeric",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+  });
+}
+
+function formatDateOnly(value?: string | null) {
+  const raw = safeTrim(value);
+  if (!raw) return "—";
+  const ms = parseFlexibleDateMs(raw);
+  if (!Number.isFinite(ms)) return raw;
+  return new Date(ms).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
   });
 }
 
@@ -203,14 +344,20 @@ function statusSort(a: ActiveWorkItem, b: ActiveWorkItem) {
   return bTs.localeCompare(aTs);
 }
 
-function buildAddress(item: {
-  addressLine1?: string;
-  city?: string;
-  state?: string;
-}) {
+function buildAddress(item: { addressLine1?: string; city?: string; state?: string }) {
   return [safeTrim(item.addressLine1), safeTrim(item.city), safeTrim(item.state)]
     .filter(Boolean)
     .join(", ");
+}
+
+function buildInlineAddress(
+  line1?: string | null,
+  line2?: string | null,
+  city?: string | null,
+  state?: string | null,
+  postal?: string | null,
+) {
+  return [line1, line2, city, state, postal].map(safeTrim).filter(Boolean).join(", ");
 }
 
 function buildAssignedPeople(item: {
@@ -289,14 +436,18 @@ function loadGoogleMapsApi(apiKey: string) {
   }
 
   window.__dcflowGoogleMapsPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-google-maps="dcflow"]') as HTMLScriptElement | null;
+    const existing = document.querySelector(
+      'script[data-google-maps="dcflow"]',
+    ) as HTMLScriptElement | null;
 
     if (existing) {
       existing.addEventListener("load", () => {
         if (window.google?.maps) resolve(window.google);
         else reject(new Error("Google Maps failed to initialize."));
       });
-      existing.addEventListener("error", () => reject(new Error("Google Maps script failed to load.")));
+      existing.addEventListener("error", () =>
+        reject(new Error("Google Maps script failed to load.")),
+      );
       return;
     }
 
@@ -327,6 +478,332 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#039;");
 }
 
+function formatProjectType(projectType?: string | null) {
+  const normalized = safeTrim(projectType).toLowerCase();
+  if (normalized === "new_construction") return "New Construction";
+  if (normalized === "remodel") return "Remodel";
+  if (normalized === "time_materials" || normalized === "time+materials") return "Time + Materials";
+  return "Project";
+}
+
+function stageLabel(stageKey?: string | null) {
+  const key = safeTrim(stageKey);
+  if (key === "roughIn") return "Rough-In";
+  if (key === "topOutVent") return "Top-Out / Vent";
+  if (key === "trimFinish") return "Trim / Finish";
+  if (key === "tm_work") return "T&M Work";
+  return "Project";
+}
+
+function formatProjectOfficeStatus(status?: string | null) {
+  const normalized = normalizeOfficeStatus(status);
+  if (normalized === "active_work") return "Active Work";
+  if (normalized === "field_complete") return "Field Complete";
+  if (normalized === "ready_to_invoice") return "Ready to Invoice";
+  if (normalized === "invoiced") return "Invoiced";
+  return "Closed";
+}
+
+function coerceBillingPeriods(input: unknown): ProjectBillingPeriodLite[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((entry: any) => ({
+      id: safeTrim(entry?.id),
+      sequence: Number(entry?.sequence || 0),
+      label: safeTrim(entry?.label) || undefined,
+      status: safeTrim(entry?.status) || undefined,
+      readyToBillAt: safeTrim(entry?.readyToBillAt) || undefined,
+      readyToBillByUid: safeTrim(entry?.readyToBillByUid) || undefined,
+      readyToBillByName: safeTrim(entry?.readyToBillByName) || undefined,
+      totalHours: Number(entry?.totalHours || 0),
+      materialsCount: Number(entry?.materialsCount || 0),
+      tripCount: Number(entry?.tripCount || 0),
+      dateFrom: safeTrim(entry?.dateFrom) || undefined,
+      dateTo: safeTrim(entry?.dateTo) || undefined,
+      invoicedAt: safeTrim(entry?.invoicedAt) || undefined,
+      invoiceNumber: safeTrim(entry?.invoiceNumber) || undefined,
+      invoiceDate: safeTrim(entry?.invoiceDate) || undefined,
+    }))
+    .filter((entry) => entry.id);
+}
+
+function getReadyBillingPeriod(project: DashboardProjectDoc) {
+  const periods = coerceBillingPeriods(project.billingPeriods);
+  return periods
+    .filter((period) => normalizeStatus(period.status) === "ready_to_bill")
+    .sort((a, b) => (b.sequence || 0) - (a.sequence || 0))[0] || null;
+}
+
+function compareTripSequence(
+  a: Pick<ProjectTripDocLite, "id" | "date" | "startTime">,
+  b: Pick<ProjectTripDocLite, "id" | "date" | "startTime">,
+) {
+  const aKey = `${safeTrim(a.date)}_${safeTrim(a.startTime) || "00:00"}_${safeTrim(a.id)}`;
+  const bKey = `${safeTrim(b.date)}_${safeTrim(b.startTime) || "00:00"}_${safeTrim(b.id)}`;
+  return aKey.localeCompare(bKey);
+}
+
+function getFollowUpFlag(trip?: ProjectTripDocLite | null) {
+  return safeTrim(trip?.closeout?.needsMoreWork).toLowerCase() === "yes";
+}
+
+function getFollowUpWorkSummary(trip?: ProjectTripDocLite | null) {
+  return (
+    safeTrim(trip?.closeout?.workNotes) ||
+    safeTrim(trip?.notes) ||
+    "Field reported more work is still needed."
+  );
+}
+
+function getMaterialsText(trip?: ProjectTripDocLite | null) {
+  return (
+    safeTrim(trip?.closeout?.materialsUsedToday) ||
+    safeTrim(trip?.materialsUsedToday) ||
+    safeTrim(trip?.materialsSummary)
+  );
+}
+
+function parseIsoMs(iso?: string | null) {
+  const ms = iso ? new Date(iso).getTime() : NaN;
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function minutesBetweenMs(aMs: number, bMs: number) {
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return 0;
+  return Math.max(0, Math.round((bMs - aMs) / 60000));
+}
+
+function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null, referenceEndMs?: number) {
+  if (!Array.isArray(pauseBlocks) || pauseBlocks.length === 0) return 0;
+  const endMs = Number.isFinite(referenceEndMs) ? Number(referenceEndMs) : Date.now();
+
+  return pauseBlocks.reduce((sum, block) => {
+    const startMs = parseIsoMs(block?.startAt || null);
+    const stopMs = block?.endAt ? parseIsoMs(block.endAt) : endMs;
+    if (!Number.isFinite(startMs) || !Number.isFinite(stopMs) || stopMs <= startMs) return sum;
+    return sum + minutesBetweenMs(startMs, stopMs);
+  }, 0);
+}
+
+function getTimerDrivenHoursForTrip(trip?: ProjectTripDocLite | null) {
+  if (!trip) return null;
+  const startMs = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
+  const endMs = parseIsoMs(trip.actualEndAt || trip.completedAt || null);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  const grossMinutes = minutesBetweenMs(startMs, endMs);
+  const pausedMinutes = sumPausedMinutes(trip.pauseBlocks || null, endMs);
+  const liveMinutes = Math.max(0, grossMinutes - pausedMinutes);
+  if (liveMinutes <= 0) return null;
+
+  return Math.round((liveMinutes / 60) * 4) / 4;
+}
+
+function getCloseoutHoursForTrip(trip?: ProjectTripDocLite | null) {
+  const direct = Number(trip?.closeout?.hoursWorkedToday || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const timerDriven = getTimerDrivenHoursForTrip(trip);
+  if (Number.isFinite(timerDriven || NaN) && Number(timerDriven) > 0) return Number(timerDriven);
+  return 0;
+}
+
+function buildProjectFollowUpItems(
+  projects: DashboardProjectDoc[],
+  projectTrips: ProjectTripDocLite[],
+) {
+  const projectMap = new Map<string, DashboardProjectDoc>();
+  projects.forEach((project) => {
+    projectMap.set(project.id, project);
+  });
+
+  const flaggedTripsByProject = new Map<string, ProjectTripDocLite>();
+
+  projectTrips
+    .filter((trip) => safeTrim(trip.link?.projectId))
+    .filter((trip) => normalizeStatus(trip.status) === "complete")
+    .filter((trip) => getFollowUpFlag(trip))
+    .forEach((trip) => {
+      const projectId = safeTrim(trip.link?.projectId);
+      const current = flaggedTripsByProject.get(projectId);
+      if (!current) {
+        flaggedTripsByProject.set(projectId, trip);
+        return;
+      }
+
+      const currentStamp =
+        parseFlexibleDateMs(current.closeout?.savedAt) ||
+        parseFlexibleDateMs(current.completedAt) ||
+        parseFlexibleDateMs(current.date) ||
+        0;
+      const nextStamp =
+        parseFlexibleDateMs(trip.closeout?.savedAt) ||
+        parseFlexibleDateMs(trip.completedAt) ||
+        parseFlexibleDateMs(trip.date) ||
+        0;
+
+      if (nextStamp >= currentStamp) {
+        flaggedTripsByProject.set(projectId, trip);
+      }
+    });
+
+  const items: ProjectFollowUpItem[] = [];
+
+  flaggedTripsByProject.forEach((flaggedTrip, projectId) => {
+    const project = projectMap.get(projectId);
+    if (!project) return;
+
+    const officeStatus = normalizeOfficeStatus(project.projectOfficeStatus);
+    if (officeStatus === "closed" || officeStatus === "invoiced") return;
+    if (project.fieldCompletedAt) return;
+
+    const laterTrips = projectTrips.filter((trip) => {
+      if (safeTrim(trip.link?.projectId) !== projectId) return false;
+      if (safeTrim(trip.id) === safeTrim(flaggedTrip.id)) return false;
+      if (normalizeStatus(trip.status) === "cancelled") return false;
+      return compareTripSequence(trip, flaggedTrip) > 0;
+    });
+
+    const hasScheduledReturn = laterTrips.length > 0;
+    const hasLaterCompletedWork = laterTrips.some((trip) =>
+      ["complete", "in_progress", "paused"].includes(normalizeStatus(trip.status)) ||
+      ["running", "paused"].includes(normalizeStatus(trip.timerState))
+    );
+
+    items.push({
+      projectId,
+      href: `/projects/${projectId}`,
+      projectName: safeTrim(project.projectName) || "Project",
+      customerDisplayName: safeTrim(project.customerDisplayName) || "Customer",
+      projectTypeLabel: formatProjectType(project.projectType),
+      stageLabel:
+        safeTrim(flaggedTrip.link?.projectStageKey)
+          ? stageLabel(flaggedTrip.link?.projectStageKey)
+          : safeTrim(project.projectType).toLowerCase() === "time_materials"
+          ? "Time + Materials"
+          : "Project",
+      addressLine: buildInlineAddress(
+        project.serviceAddressLine1,
+        null,
+        project.serviceCity,
+        project.serviceState,
+        project.servicePostalCode,
+      ),
+      flaggedTripDate: safeTrim(flaggedTrip.date) || todayIsoLocal(),
+      flaggedAt:
+        safeTrim(flaggedTrip.closeout?.savedAt) ||
+        safeTrim(flaggedTrip.completedAt) ||
+        safeTrim(flaggedTrip.updatedAt) ||
+        undefined,
+      flaggedByName: safeTrim(flaggedTrip.closeout?.savedByName) || "Field",
+      workSummary: getFollowUpWorkSummary(flaggedTrip),
+      hasScheduledReturn,
+      hasLaterCompletedWork,
+    });
+  });
+
+  return items.sort((a, b) => {
+    if (a.hasScheduledReturn !== b.hasScheduledReturn) {
+      return a.hasScheduledReturn ? 1 : -1;
+    }
+    const aMs = parseFlexibleDateMs(a.flaggedAt || a.flaggedTripDate) || 0;
+    const bMs = parseFlexibleDateMs(b.flaggedAt || b.flaggedTripDate) || 0;
+    return aMs - bMs;
+  });
+}
+
+function buildReadyInvoiceItems(
+  projects: DashboardProjectDoc[],
+  projectTrips: ProjectTripDocLite[],
+) {
+  const items = projects
+    .filter((project) => normalizeOfficeStatus(project.projectOfficeStatus) === "ready_to_invoice")
+    .map((project) => {
+      const readyPeriod = getReadyBillingPeriod(project);
+      const relatedTrips = projectTrips.filter(
+        (trip) => safeTrim(trip.link?.projectId) === safeTrim(project.id),
+      );
+
+      const periodTrips = readyPeriod
+        ? relatedTrips.filter(
+            (trip) => safeTrim(trip.billingPeriodId) === safeTrim(readyPeriod.id),
+          )
+        : relatedTrips.filter((trip) => normalizeStatus(trip.status) === "complete");
+
+      const totalHours = readyPeriod
+        ? Number(readyPeriod.totalHours || 0)
+        : periodTrips.reduce((sum, trip) => sum + getCloseoutHoursForTrip(trip), 0);
+
+      const materialsCount = readyPeriod
+        ? Number(readyPeriod.materialsCount || 0)
+        : periodTrips.reduce((sum, trip) => (getMaterialsText(trip) ? sum + 1 : sum), 0);
+
+      const tripCount = readyPeriod
+        ? Number(readyPeriod.tripCount || 0)
+        : periodTrips.length;
+
+      const billingLabel = readyPeriod
+        ? safeTrim(readyPeriod.label) || `Billing ${readyPeriod.sequence || 1}`
+        : safeTrim(project.projectType).toLowerCase() === "time_materials"
+        ? "Current Billing"
+        : "Project Billing";
+
+      return {
+        projectId: project.id,
+        href: `/projects/${project.id}`,
+        billingHref: `/projects/${project.id}#project-billing`,
+        projectName: safeTrim(project.projectName) || "Project",
+        customerDisplayName: safeTrim(project.customerDisplayName) || "Customer",
+        projectTypeLabel: formatProjectType(project.projectType),
+        billingLabel,
+        readyAt:
+          safeTrim(readyPeriod?.readyToBillAt) ||
+          safeTrim(project.readyToInvoiceAt) ||
+          undefined,
+        readyByName:
+          safeTrim(readyPeriod?.readyToBillByName) ||
+          safeTrim(project.readyToInvoiceByName) ||
+          undefined,
+        totalHours,
+        materialsCount,
+        tripCount,
+        invoiceNumber: safeTrim(project.invoiceNumber) || undefined,
+      } satisfies ReadyInvoiceProjectItem;
+    });
+
+  return items.sort((a, b) => {
+    const aMs = parseFlexibleDateMs(a.readyAt) || 0;
+    const bMs = parseFlexibleDateMs(b.readyAt) || 0;
+    return aMs - bMs;
+  });
+}
+
+function getFieldStatusMeta(status?: string | null, timerState?: string | null) {
+  const normalized = normalizeStatus(status);
+  const normalizedTimer = normalizeStatus(timerState);
+
+  if (normalized === "paused" || normalizedTimer === "paused") {
+    return {
+      label: "Paused",
+      color: "warning" as const,
+      icon: <PauseCircleRoundedIcon sx={{ fontSize: 14 }} />,
+    };
+  }
+
+  if (normalized === "dispatched" || normalized === "assigned" || normalized === "on_site") {
+    return {
+      label: "Assigned Today",
+      color: "info" as const,
+      icon: <AssignmentRoundedIcon sx={{ fontSize: 14 }} />,
+    };
+  }
+
+  return {
+    label: "In Progress",
+    color: "success" as const,
+    icon: <PlayCircleRoundedIcon sx={{ fontSize: 14 }} />,
+    };
+}
+
 function SectionCard({
   title,
   subtitle,
@@ -339,7 +816,7 @@ function SectionCard({
   subtitle: string;
   icon: React.ReactNode;
   count: number;
-  accent: "primary" | "warning" | "neutral";
+  accent: "primary" | "warning" | "neutral" | "success";
   children: React.ReactNode;
 }) {
   return (
@@ -372,12 +849,16 @@ function SectionCard({
                       ? alpha(theme.palette.warning.main, 0.14)
                       : accent === "primary"
                       ? alpha(theme.palette.primary.main, 0.14)
+                      : accent === "success"
+                      ? alpha(theme.palette.success.main, 0.14)
                       : alpha(theme.palette.text.primary, 0.08),
                   color:
                     accent === "warning"
                       ? theme.palette.warning.main
                       : accent === "primary"
                       ? theme.palette.primary.main
+                      : accent === "success"
+                      ? theme.palette.success.main
                       : theme.palette.text.primary,
                 })}
               >
@@ -412,13 +893,7 @@ function SectionCard({
   );
 }
 
-function TicketRow({
-  item,
-  mode,
-}: {
-  item: DashboardTicketItem;
-  mode: "follow_up" | "review";
-}) {
+function TicketRow({ item, mode }: { item: DashboardTicketItem; mode: "follow_up" | "review" }) {
   const address = [safeTrim(item.serviceAddressLine1), safeTrim(item.serviceCity), safeTrim(item.serviceState)]
     .filter(Boolean)
     .join(", ");
@@ -427,11 +902,7 @@ function TicketRow({
     .join(" + ");
 
   return (
-    <Box
-      sx={{
-        py: 1.5,
-      }}
-    >
+    <Box sx={{ py: 1.5 }}>
       <Stack
         direction={{ xs: "column", md: "row" }}
         spacing={1.5}
@@ -453,23 +924,11 @@ function TicketRow({
             />
           </Stack>
 
-          <Typography
-            variant="body1"
-            sx={{
-              mt: 0.5,
-              fontWeight: 600,
-            }}
-          >
+          <Typography variant="body1" sx={{ mt: 0.5, fontWeight: 600 }}>
             {item.issueSummary || "Service Ticket"}
           </Typography>
 
-          <Stack
-            direction="row"
-            spacing={1.5}
-            flexWrap="wrap"
-            useFlexGap
-            sx={{ mt: 0.85 }}
-          >
+          <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.85 }}>
             {address ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
                 <PlaceRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
@@ -514,31 +973,195 @@ function TicketRow({
   );
 }
 
-function getFieldStatusMeta(status?: string | null, timerState?: string | null) {
-  const normalized = normalizeStatus(status);
-  const normalizedTimer = normalizeStatus(timerState);
+function ProjectFollowUpRow({ item }: { item: ProjectFollowUpItem }) {
+  return (
+    <Box sx={{ py: 1.25 }}>
+      <Stack spacing={1.1}>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1.2}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", md: "center" }}
+        >
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="subtitle1" fontWeight={800} noWrap>
+              {item.projectName}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" noWrap>
+              {item.customerDisplayName}
+            </Typography>
+          </Box>
 
-  if (normalized === "paused" || normalizedTimer === "paused") {
-    return {
-      label: "Paused",
-      color: "warning" as const,
-      icon: <PauseCircleRoundedIcon sx={{ fontSize: 14 }} />,
-    };
-  }
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            <Chip
+              size="small"
+              label="Needs Another Day"
+              color="warning"
+              variant="filled"
+              sx={{ fontWeight: 800 }}
+            />
+            <Chip
+              size="small"
+              label={item.hasScheduledReturn ? "Scheduled" : "Unscheduled"}
+              color={item.hasScheduledReturn ? "success" : "warning"}
+              variant="outlined"
+              sx={{ fontWeight: 700 }}
+            />
+          </Stack>
+        </Stack>
 
-  if (normalized === "dispatched" || normalized === "assigned" || normalized === "on_site") {
-    return {
-      label: "Assigned Today",
-      color: "info" as const,
-      icon: <AssignmentRoundedIcon sx={{ fontSize: 14 }} />,
-    };
-  }
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Chip
+            size="small"
+            icon={<ConstructionRoundedIcon sx={{ fontSize: 14 }} />}
+            label={`${item.projectTypeLabel} • ${item.stageLabel}`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+          <Chip
+            size="small"
+            icon={<AccessTimeRoundedIcon sx={{ fontSize: 14 }} />}
+            label={`Flagged ${formatDateOnly(item.flaggedAt || item.flaggedTripDate)} by ${item.flaggedByName}`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+        </Stack>
 
-  return {
-    label: "In Progress",
-    color: "success" as const,
-    icon: <PlayCircleRoundedIcon sx={{ fontSize: 14 }} />,
-  };
+        <Typography variant="body2" color="text.secondary">
+          {item.workSummary}
+        </Typography>
+
+        {item.addressLine ? (
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <PlaceRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+            <Typography variant="body2" color="text.secondary">
+              {item.addressLine}
+            </Typography>
+          </Stack>
+        ) : null}
+
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button
+            component={Link}
+            href={item.href}
+            variant="outlined"
+            color="warning"
+            endIcon={<ArrowForwardRoundedIcon />}
+            sx={{ borderRadius: 999 }}
+          >
+            Open Project
+          </Button>
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
+function ReadyInvoiceProjectRow({ item }: { item: ReadyInvoiceProjectItem }) {
+  return (
+    <Box sx={{ py: 1.25 }}>
+      <Stack spacing={1.1}>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1.2}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", md: "center" }}
+        >
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="subtitle1" fontWeight={800} noWrap>
+              {item.projectName}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" noWrap>
+              {item.customerDisplayName}
+            </Typography>
+          </Box>
+
+          <Chip
+            size="small"
+            label="Ready to Invoice"
+            color="success"
+            variant="filled"
+            sx={{ fontWeight: 800 }}
+          />
+        </Stack>
+
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Chip
+            size="small"
+            icon={<ConstructionRoundedIcon sx={{ fontSize: 14 }} />}
+            label={`${item.projectTypeLabel} • ${item.billingLabel}`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+          <Chip
+            size="small"
+            icon={<AccessTimeRoundedIcon sx={{ fontSize: 14 }} />}
+            label={`Ready ${formatDateOnly(item.readyAt)}${item.readyByName ? ` by ${item.readyByName}` : ""}`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+        </Stack>
+
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Chip
+            size="small"
+            label={`${item.totalHours.toFixed(2)} hrs`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+          <Chip
+            size="small"
+            label={`${item.tripCount} trip${item.tripCount === 1 ? "" : "s"}`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+          <Chip
+            size="small"
+            label={
+              item.materialsCount > 0
+                ? `${item.materialsCount} material note${item.materialsCount === 1 ? "" : "s"}`
+                : "No materials"
+            }
+            color={item.materialsCount > 0 ? "warning" : "default"}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
+          {item.invoiceNumber ? (
+            <Chip
+              size="small"
+              label={`Invoice #${item.invoiceNumber}`}
+              color="success"
+              variant="outlined"
+              sx={{ fontWeight: 700 }}
+            />
+          ) : null}
+        </Stack>
+
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button
+            component={Link}
+            href={item.billingHref}
+            variant="contained"
+            color="success"
+            endIcon={<ArrowForwardRoundedIcon />}
+            sx={{ borderRadius: 999, boxShadow: "none" }}
+          >
+            Open Billing
+          </Button>
+          <Button
+            component={Link}
+            href={item.href}
+            variant="outlined"
+            color="success"
+            endIcon={<ArrowForwardRoundedIcon />}
+            sx={{ borderRadius: 999 }}
+          >
+            Open Project
+          </Button>
+        </Stack>
+      </Stack>
+    </Box>
+  );
 }
 
 function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
@@ -566,7 +1189,13 @@ function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
 
               <Chip
                 size="small"
-                icon={item.itemType === "project" ? <ConstructionRoundedIcon sx={{ fontSize: 14 }} /> : <PlumbingRoundedIcon sx={{ fontSize: 14 }} />}
+                icon={
+                  item.itemType === "project" ? (
+                    <ConstructionRoundedIcon sx={{ fontSize: 14 }} />
+                  ) : (
+                    <PlumbingRoundedIcon sx={{ fontSize: 14 }} />
+                  )
+                }
                 label={item.itemType === "project" ? "Project" : "Service"}
                 variant="outlined"
                 sx={{ fontWeight: 700 }}
@@ -740,12 +1369,7 @@ function AreaSnapshotDialog({
           fullscreenControl: false,
           clickableIcons: false,
           gestureHandling: "greedy",
-          styles: [
-            {
-              featureType: "poi.business",
-              stylers: [{ visibility: "off" }],
-            },
-          ],
+          styles: [{ featureType: "poi.business", stylers: [{ visibility: "off" }] }],
         });
 
         mapInstanceRef.current = map;
@@ -776,11 +1400,7 @@ function AreaSnapshotDialog({
           const marker = new google.maps.Marker({
             map,
             position,
-            label: {
-              text: String(i + 1),
-              color: "#ffffff",
-              fontWeight: "700",
-            },
+            label: { text: String(i + 1), color: "#ffffff", fontWeight: "700" },
             title: item.title || item.subtitle || `Field item ${i + 1}`,
             animation: google.maps.Animation.DROP,
           });
@@ -824,18 +1444,10 @@ function AreaSnapshotDialog({
             setSelectedItemId(item.id);
             if (!infoWindowRef.current) return;
             infoWindowRef.current.setContent(infoHtml);
-            infoWindowRef.current.open({
-              anchor: marker,
-              map,
-            });
+            infoWindowRef.current.open({ anchor: marker, map });
           });
 
-          markersByItemIdRef.current[item.id] = {
-            marker,
-            item,
-            address,
-            infoHtml,
-          };
+          markersByItemIdRef.current[item.id] = { marker, item, address, infoHtml };
         }
 
         if (!isCancelled) {
@@ -845,12 +1457,7 @@ function AreaSnapshotDialog({
             map.setCenter(bounds.getCenter());
             map.setZoom(13);
           } else if (!bounds.isEmpty()) {
-            map.fitBounds(bounds, {
-              top: 72,
-              right: 72,
-              bottom: 72,
-              left: 72,
-            });
+            map.fitBounds(bounds, { top: 72, right: 72, bottom: 72, left: 72 });
           }
 
           if (markerEntries.length > 0) {
@@ -880,7 +1487,7 @@ function AreaSnapshotDialog({
 
   const visibleFieldItems = useMemo(
     () => activeItems.filter(isFieldVisibleItem),
-    [activeItems]
+    [activeItems],
   );
 
   return (
@@ -962,13 +1569,7 @@ function AreaSnapshotDialog({
               backgroundColor: alpha(theme.palette.common.white, 0.03),
             }}
           >
-            <Box
-              ref={mapRef}
-              sx={{
-                position: "absolute",
-                inset: 0,
-              }}
-            />
+            <Box ref={mapRef} sx={{ position: "absolute", inset: 0 }} />
 
             {isLoadingMap ? (
               <Stack
@@ -1024,12 +1625,7 @@ function AreaSnapshotDialog({
                         : "none",
                     }}
                   >
-                    <CardActionArea
-                      onClick={() => openMarkerForItem(item.id, true, true)}
-                      sx={{
-                        borderRadius: 1.2,
-                      }}
-                    >
+                    <CardActionArea onClick={() => openMarkerForItem(item.id, true, true)} sx={{ borderRadius: 1.2 }}>
                       <Box sx={{ px: 1.5, py: 1.35 }}>
                         <Stack spacing={0.8}>
                           <Stack direction="row" justifyContent="space-between" spacing={1}>
@@ -1144,7 +1740,7 @@ function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
   const theme = useTheme();
   const visibleFieldItems = useMemo(
     () => activeItems.filter(isFieldVisibleItem),
-    [activeItems]
+    [activeItems],
   );
   const mapUrl = useMemo(() => buildStaticMapUrl(visibleFieldItems), [visibleFieldItems]);
   const [isExpandedOpen, setIsExpandedOpen] = useState(false);
@@ -1156,160 +1752,78 @@ function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
           borderRadius: 1.2,
           border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
           overflow: "hidden",
-          background: `linear-gradient(135deg, ${alpha(theme.palette.primary.light, 0.16)}, ${alpha(
-            theme.palette.info.light,
-            0.08
-          )})`,
+          backgroundColor: alpha(theme.palette.common.white, 0.03),
         }}
       >
-        <Box
-          sx={{
-            px: 1.5,
-            py: 1,
-            borderBottom: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-          }}
-        >
-          <Typography
-            variant="overline"
-            sx={{ letterSpacing: "0.12em", color: "text.secondary", fontWeight: 800 }}
-          >
-            Area Snapshot
-          </Typography>
-        </Box>
-
         {mapUrl ? (
-          <Box sx={{ position: "relative", height: 148 }}>
+          <Box sx={{ position: "relative" }}>
             <Box
               component="img"
               src={mapUrl}
-              alt="Live field work area snapshot"
+              alt="Active field work area snapshot"
               sx={{
-                width: "100%",
-                height: "100%",
-                objectFit: "cover",
                 display: "block",
-                pointerEvents: "none",
-                userSelect: "none",
+                width: "100%",
+                height: { xs: 180, md: 220 },
+                objectFit: "cover",
               }}
             />
+
+            <Tooltip title="Open larger live field map">
+              <IconButton
+                onClick={() => setIsExpandedOpen(true)}
+                sx={{
+                  position: "absolute",
+                  top: 12,
+                  right: 12,
+                  backgroundColor: alpha(theme.palette.background.paper, 0.86),
+                  backdropFilter: "blur(6px)",
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.12)}`,
+                  "&:hover": {
+                    backgroundColor: alpha(theme.palette.background.paper, 0.95),
+                  },
+                }}
+              >
+                <OpenInFullRoundedIcon />
+              </IconButton>
+            </Tooltip>
 
             <Box
               sx={{
                 position: "absolute",
-                inset: 0,
-                background: "linear-gradient(to top, rgba(0,0,0,0.16), rgba(0,0,0,0.02))",
-                pointerEvents: "none",
+                left: 12,
+                bottom: 12,
+                borderRadius: 999,
+                px: 1.25,
+                py: 0.75,
+                backgroundColor: alpha(theme.palette.background.paper, 0.86),
+                backdropFilter: "blur(6px)",
+                border: `1px solid ${alpha(theme.palette.common.white, 0.12)}`,
               }}
-            />
-
-            <Tooltip title="Expand live map">
-              <IconButton
-                onClick={() => setIsExpandedOpen(true)}
-                aria-label="Expand live field work map"
-                sx={{
-                  position: "absolute",
-                  top: 10,
-                  right: 10,
-                  width: 36,
-                  height: 36,
-                  borderRadius: 2.5,
-                  color: "#fff",
-                  backgroundColor: "rgba(7, 12, 20, 0.58)",
-                  border: `1px solid ${alpha(theme.palette.common.white, 0.18)}`,
-                  backdropFilter: "blur(10px)",
-                  "&:hover": {
-                    backgroundColor: "rgba(7, 12, 20, 0.74)",
-                  },
-                }}
-              >
-                <OpenInFullRoundedIcon sx={{ fontSize: 18 }} />
-              </IconButton>
-            </Tooltip>
+            >
+              <Stack direction="row" spacing={1} alignItems="center">
+                <MyLocationRoundedIcon sx={{ fontSize: 16, color: "primary.main" }} />
+                <Typography variant="caption" sx={{ fontWeight: 800 }}>
+                  {visibleFieldItems.length} live field location{visibleFieldItems.length === 1 ? "" : "s"}
+                </Typography>
+              </Stack>
+            </Box>
           </Box>
         ) : (
           <Box
             sx={{
-              position: "relative",
-              height: 148,
-              backgroundImage: `
-                radial-gradient(circle at 20% 25%, rgba(255,255,255,0.42), transparent 18%),
-                radial-gradient(circle at 72% 62%, rgba(255,255,255,0.28), transparent 20%),
-                linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))
-              `,
+              height: 180,
+              display: "grid",
+              placeItems: "center",
+              px: 2,
+              textAlign: "center",
             }}
           >
-            <Box
-              sx={{
-                position: "absolute",
-                inset: 0,
-                opacity: 0.2,
-                backgroundImage:
-                  "repeating-linear-gradient(135deg, transparent 0 16px, rgba(255,255,255,0.4) 16px 18px)",
-              }}
-            />
-
-            <Box
-              sx={{
-                position: "absolute",
-                top: 30,
-                left: 40,
-                width: 10,
-                height: 10,
-                borderRadius: "50%",
-                backgroundColor: "text.primary",
-                boxShadow: `0 0 0 6px ${alpha(theme.palette.common.white, 0.3)}`,
-              }}
-            />
-
-            <Box
-              sx={{
-                position: "absolute",
-                bottom: 30,
-                right: 54,
-                width: 10,
-                height: 10,
-                borderRadius: "50%",
-                backgroundColor: "text.primary",
-                boxShadow: `0 0 0 6px ${alpha(theme.palette.common.white, 0.3)}`,
-              }}
-            />
-
-            <Tooltip title="Expand live map">
-              <IconButton
-                onClick={() => setIsExpandedOpen(true)}
-                aria-label="Expand live field work map"
-                sx={{
-                  position: "absolute",
-                  top: 10,
-                  right: 10,
-                  width: 36,
-                  height: 36,
-                  borderRadius: 2.5,
-                  color: "#fff",
-                  backgroundColor: "rgba(7, 12, 20, 0.58)",
-                  border: `1px solid ${alpha(theme.palette.common.white, 0.18)}`,
-                  backdropFilter: "blur(10px)",
-                  "&:hover": {
-                    backgroundColor: "rgba(7, 12, 20, 0.74)",
-                  },
-                }}
-              >
-                <OpenInFullRoundedIcon sx={{ fontSize: 18 }} />
-              </IconButton>
-            </Tooltip>
-
-            <Stack
-              spacing={1}
-              sx={{
-                position: "absolute",
-                left: 12,
-                right: 12,
-                bottom: 12,
-              }}
-            >
-              <Alert severity="info" variant="filled" sx={{ borderRadius: 2 }}>
-                Add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to show a real map preview and expanded live map.
-              </Alert>
+            <Stack spacing={1} alignItems="center">
+              <MyLocationRoundedIcon sx={{ color: "text.secondary" }} />
+              <Typography variant="body2" color="text.secondary">
+                Add a Google Maps API key and active field addresses to show the live area snapshot.
+              </Typography>
             </Stack>
           </Box>
         )}
@@ -1318,7 +1832,7 @@ function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
       <AreaSnapshotDialog
         open={isExpandedOpen}
         onClose={() => setIsExpandedOpen(false)}
-        activeItems={visibleFieldItems}
+        activeItems={activeItems}
       />
     </>
   );
@@ -1328,288 +1842,268 @@ export default function DashboardPage() {
   const theme = useTheme();
   const { appUser } = useAuthContext();
 
-  const [followUpTickets, setFollowUpTickets] = useState<DashboardTicketItem[]>([]);
   const [reviewTickets, setReviewTickets] = useState<DashboardTicketItem[]>([]);
+  const [followUpTickets, setFollowUpTickets] = useState<DashboardTicketItem[]>([]);
   const [activeItems, setActiveItems] = useState<ActiveWorkItem[]>([]);
+  const [dashboardProjects, setDashboardProjects] = useState<DashboardProjectDoc[]>([]);
+  const [dashboardProjectTrips, setDashboardProjectTrips] = useState<ProjectTripDocLite[]>([]);
 
   useEffect(() => {
-    const todayIso = todayIsoLocal();
-
-    const followUpQuery = query(
-      collection(db, "serviceTickets"),
-      where("status", "==", "follow_up"),
-      limit(25)
-    );
-
-    const readyToBillQuery = query(
-      collection(db, "serviceTickets"),
-      where("billing.status", "==", "ready_to_bill"),
-      limit(25)
-    );
-
-    const activeTripsQuery = query(
-      collection(db, "trips"),
-      where("date", "==", todayIso),
-      limit(80)
-    );
-
     const unsubFollowUp = onSnapshot(
-      followUpQuery,
+      query(collection(db, "serviceTickets"), where("status", "==", "follow_up"), limit(50)),
       (snap) => {
         const items = snap.docs
           .map((docSnap) => {
-            const d = docSnap.data() as any;
+            const data = docSnap.data() as any;
             return {
               id: docSnap.id,
-              customerDisplayName: d.customerDisplayName ?? "",
-              issueSummary: d.issueSummary ?? "",
-              serviceAddressLine1: d.serviceAddressLine1 ?? "",
-              serviceCity: d.serviceCity ?? "",
-              serviceState: d.serviceState ?? "",
-              updatedAt: d.updatedAt ?? null,
-              assignedTechnicianName: d.assignedTechnicianName ?? "",
-              assignedHelperName: d.assignedHelperName ?? "",
-              status: d.status ?? "",
-            } as DashboardTicketItem;
+              customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+              issueSummary: safeTrim(data.issueSummary) || "Service Ticket",
+              serviceAddressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+              serviceCity: safeTrim(data.serviceCity) || undefined,
+              serviceState: safeTrim(data.serviceState) || undefined,
+              updatedAt: safeTrim(data.updatedAt) || undefined,
+              assignedTechnicianName: safeTrim(data.assignedTechnicianName) || undefined,
+              assignedHelperName: safeTrim(data.assignedHelperName) || undefined,
+              status: safeTrim(data.status) || undefined,
+            } satisfies DashboardTicketItem;
           })
           .sort(ticketSort);
-
         setFollowUpTickets(items);
       },
-      () => setFollowUpTickets([])
+      () => setFollowUpTickets([]),
     );
 
     const unsubReview = onSnapshot(
-      readyToBillQuery,
+      query(
+        collection(db, "serviceTickets"),
+        where("billing.status", "==", "ready_to_bill"),
+        limit(50),
+      ),
       (snap) => {
         const items = snap.docs
           .map((docSnap) => {
-            const d = docSnap.data() as any;
+            const data = docSnap.data() as any;
             return {
               id: docSnap.id,
-              customerDisplayName: d.customerDisplayName ?? "",
-              issueSummary: d.issueSummary ?? "",
-              serviceAddressLine1: d.serviceAddressLine1 ?? "",
-              serviceCity: d.serviceCity ?? "",
-              serviceState: d.serviceState ?? "",
-              updatedAt: d.updatedAt ?? null,
-              assignedTechnicianName: d.assignedTechnicianName ?? "",
-              assignedHelperName: d.assignedHelperName ?? "",
-              readyToBillAt: d.billing?.readyToBillAt ?? null,
-              status: d.status ?? "",
-            } as DashboardTicketItem;
+              customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+              issueSummary: safeTrim(data.issueSummary) || "Service Ticket",
+              serviceAddressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+              serviceCity: safeTrim(data.serviceCity) || undefined,
+              serviceState: safeTrim(data.serviceState) || undefined,
+              updatedAt: safeTrim(data.updatedAt) || undefined,
+              readyToBillAt: safeTrim(data.billing?.readyToBillAt) || undefined,
+              assignedTechnicianName: safeTrim(data.assignedTechnicianName) || undefined,
+              assignedHelperName: safeTrim(data.assignedHelperName) || undefined,
+              status: safeTrim(data.status) || undefined,
+            } satisfies DashboardTicketItem;
           })
           .sort(ticketSort);
-
         setReviewTickets(items);
       },
-      () => setReviewTickets([])
+      () => setReviewTickets([]),
+    );
+
+    const unsubProjects = onSnapshot(
+      query(collection(db, "projects"), limit(300)),
+      (snap) => {
+        const items = snap.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            id: docSnap.id,
+            active: typeof data.active === "boolean" ? data.active : true,
+            projectName: safeTrim(data.projectName) || "Project",
+            customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+            projectType: safeTrim(data.projectType) || "other",
+            serviceAddressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+            serviceCity: safeTrim(data.serviceCity) || undefined,
+            serviceState: safeTrim(data.serviceState) || undefined,
+            servicePostalCode: safeTrim(data.servicePostalCode) || undefined,
+            projectOfficeStatus: safeTrim(data.projectOfficeStatus) || undefined,
+            fieldCompletedAt: safeTrim(data.fieldCompletedAt) || undefined,
+            readyToInvoiceAt: safeTrim(data.readyToInvoiceAt) || undefined,
+            readyToInvoiceByName: safeTrim(data.readyToInvoiceByName) || undefined,
+            currentBillingPeriodId: safeTrim(data.currentBillingPeriodId) || undefined,
+            billingPeriods: coerceBillingPeriods(data.billingPeriods),
+            invoiceNumber: safeTrim(data.invoiceNumber) || undefined,
+          } satisfies DashboardProjectDoc;
+        });
+        setDashboardProjects(items);
+      },
+      () => setDashboardProjects([]),
+    );
+
+    const unsubProjectTrips = onSnapshot(
+      query(collection(db, "trips"), where("type", "==", "project"), limit(1000)),
+      (snap) => {
+        const items = snap.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            id: docSnap.id,
+            active: typeof data.active === "boolean" ? data.active : true,
+            type: data.type ?? "project",
+            status: safeTrim(data.status) || undefined,
+            timerState: safeTrim(data.timerState) || undefined,
+            date: safeTrim(data.date) || undefined,
+            timeWindow: safeTrim(data.timeWindow) || undefined,
+            startTime: safeTrim(data.startTime) || undefined,
+            endTime: safeTrim(data.endTime) || undefined,
+            updatedAt: safeTrim(data.updatedAt) || undefined,
+            crew: data.crew ?? null,
+            link: data.link ?? null,
+            completedAt: safeTrim(data.completedAt) || safeTrim(data.actualEndAt) || undefined,
+            startedAt: safeTrim(data.startedAt) || safeTrim(data.actualStartAt) || undefined,
+            actualStartAt: safeTrim(data.actualStartAt) || undefined,
+            actualEndAt: safeTrim(data.actualEndAt) || undefined,
+            pauseBlocks: Array.isArray(data.pauseBlocks) ? data.pauseBlocks : null,
+            notes: safeTrim(data.notes) || undefined,
+            materialsSummary: safeTrim(data.materialsSummary) || undefined,
+            materialsUsedToday: safeTrim(data.materialsUsedToday) || undefined,
+            closeout: data.closeout ?? null,
+            billingPeriodId: safeTrim(data.billingPeriodId) || undefined,
+            billingPeriodSequence:
+              typeof data.billingPeriodSequence === "number" ? data.billingPeriodSequence : undefined,
+            billingPeriodLabel: safeTrim(data.billingPeriodLabel) || undefined,
+            billingPeriodStatus: safeTrim(data.billingPeriodStatus) || undefined,
+            readyToBillAt: safeTrim(data.readyToBillAt) || undefined,
+          } satisfies ProjectTripDocLite;
+        });
+        setDashboardProjectTrips(items);
+      },
+      () => setDashboardProjectTrips([]),
     );
 
     const unsubActiveTrips = onSnapshot(
-      activeTripsQuery,
+      query(collection(db, "trips"), where("active", "==", true), limit(250)),
       async (snap) => {
-        try {
-          const tripItems: TripDocLite[] = snap.docs
-            .map((docSnap) => {
-              const d = docSnap.data() as any;
-              return {
-                id: docSnap.id,
-                active: typeof d.active === "boolean" ? d.active : true,
-                type: d.type ?? "",
-                status: d.status ?? "",
-                timerState: d.timerState ?? "",
-                date: d.date ?? "",
-                timeWindow: d.timeWindow ?? "",
-                startTime: d.startTime ?? "",
-                endTime: d.endTime ?? "",
-                updatedAt: d.updatedAt ?? null,
-                crew: d.crew ?? null,
-                link: d.link ?? null,
-              } as TripDocLite;
-            })
-            .filter((trip) => trip.active !== false)
-            .filter((trip) => {
-              const s = normalizeStatus(trip.status);
-              const ts = normalizeStatus(trip.timerState);
-              return (
-                ["in_progress", "paused", "dispatched", "assigned", "on_site"].includes(s) ||
-                ["running", "paused"].includes(ts)
-              );
-            });
+        const visibleTrips = snap.docs
+          .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
+          .filter((trip) => isFieldVisibleStatus(trip.status, trip.timerState));
 
-          const serviceIds = Array.from(
-            new Set(
-              tripItems
-                .map((trip) => safeTrim(trip.link?.serviceTicketId))
-                .filter(Boolean)
-            )
-          );
+        const items = await Promise.all(
+          visibleTrips.map(async (trip) => {
+            const type = safeTrim(trip.type).toLowerCase() === "project" ? "project" : "service";
+            const crew = (trip.crew || {}) as TripCrew;
 
-          const projectIds = Array.from(
-            new Set(
-              tripItems
-                .map((trip) => safeTrim(trip.link?.projectId))
-                .filter(Boolean)
-            )
-          );
-
-          const [serviceDocs, projectDocs] = await Promise.all([
-            Promise.all(
-              serviceIds.map(async (id) => {
-                try {
-                  const snap = await getDoc(doc(db, "serviceTickets", id));
-                  if (!snap.exists()) return null;
-                  const d = snap.data() as any;
-                  return {
-                    id,
-                    customerDisplayName: d.customerDisplayName ?? "",
-                    issueSummary: d.issueSummary ?? "",
-                    serviceAddressLine1: d.serviceAddressLine1 ?? "",
-                    serviceCity: d.serviceCity ?? "",
-                    serviceState: d.serviceState ?? "",
-                  };
-                } catch {
-                  return null;
-                }
-              })
-            ),
-            Promise.all(
-              projectIds.map(async (id) => {
-                try {
-                  const snap = await getDoc(doc(db, "projects", id));
-                  if (!snap.exists()) return null;
-                  const d = snap.data() as any;
-                  return {
-                    id,
-                    name: d.name ?? d.projectName ?? "Project",
-                    serviceAddressLine1: d.serviceAddressLine1 ?? d.addressLine1 ?? "",
-                    serviceCity: d.serviceCity ?? d.city ?? "",
-                    serviceState: d.serviceState ?? d.state ?? "",
-                  };
-                } catch {
-                  return null;
-                }
-              })
-            ),
-          ]);
-
-          const serviceMap = Object.fromEntries(
-            serviceDocs.filter(Boolean).map((x: any) => [x.id, x])
-          ) as Record<
-            string,
-            {
-              id: string;
-              customerDisplayName: string;
-              issueSummary: string;
-              serviceAddressLine1?: string;
-              serviceCity?: string;
-              serviceState?: string;
-            }
-          >;
-
-          const projectMap = Object.fromEntries(
-            projectDocs.filter(Boolean).map((x: any) => [x.id, x])
-          ) as Record<
-            string,
-            {
-              id: string;
-              name: string;
-              serviceAddressLine1?: string;
-              serviceCity?: string;
-              serviceState?: string;
-            }
-          >;
-
-          const activeRows: ActiveWorkItem[] = tripItems
-            .map((trip) => {
-              const type = normalizeStatus(trip.type) === "project" ? "project" : "service";
-              const serviceTicketId = safeTrim(trip.link?.serviceTicketId);
-              const projectId = safeTrim(trip.link?.projectId);
-
-              if (type === "project" && projectId) {
-                const project = projectMap[projectId];
+            if (type === "service" && safeTrim(trip.link?.serviceTicketId)) {
+              try {
+                const serviceTicketSnap = await getDoc(doc(db, "serviceTickets", safeTrim(trip.link?.serviceTicketId)));
+                const data = serviceTicketSnap.exists() ? (serviceTicketSnap.data() as any) : {};
 
                 return {
-                  id: trip.id,
+                  id: `service_${trip.id}`,
                   tripId: trip.id,
-                  itemType: "project",
-                  href: `/projects/${projectId}`,
-                  title: safeTrim(project?.name) || "Project Trip",
-                  subtitle: safeTrim(project?.name) || "Project",
-                  addressLine1: project?.serviceAddressLine1 ?? "",
-                  city: project?.serviceCity ?? "",
-                  state: project?.serviceState ?? "",
-                  updatedAt: trip.updatedAt ?? null,
-                  status: trip.status ?? "",
-                  timerState: trip.timerState ?? "",
-                  assignedTechnicianName: trip.crew?.primaryTechName ?? "",
-                  assignedHelperName: trip.crew?.helperName ?? "",
-                  secondaryTechnicianName: trip.crew?.secondaryTechName ?? "",
-                  secondaryHelperName: trip.crew?.secondaryHelperName ?? "",
-                } as ActiveWorkItem;
+                  itemType: "service" as const,
+                  href: `/service-tickets/${safeTrim(trip.link?.serviceTicketId)}`,
+                  title: safeTrim(data.customerDisplayName) || "Service Ticket",
+                  subtitle: safeTrim(data.issueSummary) || "Service Work",
+                  addressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+                  city: safeTrim(data.serviceCity) || undefined,
+                  state: safeTrim(data.serviceState) || undefined,
+                  updatedAt: safeTrim(trip.updatedAt || data.updatedAt) || undefined,
+                  status: safeTrim(trip.status) || undefined,
+                  timerState: safeTrim(trip.timerState) || undefined,
+                  assignedTechnicianName:
+                    safeTrim(crew.primaryTechName) || safeTrim(data.assignedTechnicianName) || undefined,
+                  assignedHelperName:
+                    safeTrim(crew.helperName) || safeTrim(data.assignedHelperName) || undefined,
+                  secondaryTechnicianName: safeTrim(crew.secondaryTechName) || undefined,
+                  secondaryHelperName: safeTrim(crew.secondaryHelperName) || undefined,
+                } satisfies ActiveWorkItem;
+              } catch {
+                return null;
               }
+            }
 
-              const ticket = serviceMap[serviceTicketId];
+            if (type === "project" && safeTrim(trip.link?.projectId)) {
+              try {
+                const projectSnap = await getDoc(doc(db, "projects", safeTrim(trip.link?.projectId)));
+                const data = projectSnap.exists() ? (projectSnap.data() as any) : {};
+                const projectName = safeTrim(data.projectName) || "Project Trip";
+                const customerDisplayName = safeTrim(data.customerDisplayName) || "Project";
 
-              return {
-                id: trip.id,
-                tripId: trip.id,
-                itemType: "service",
-                href: serviceTicketId ? `/service-tickets/${serviceTicketId}` : "/service-tickets",
-                title: safeTrim(ticket?.issueSummary) || "Service Ticket",
-                subtitle: safeTrim(ticket?.customerDisplayName) || "Customer",
-                addressLine1: ticket?.serviceAddressLine1 ?? "",
-                city: ticket?.serviceCity ?? "",
-                state: ticket?.serviceState ?? "",
-                updatedAt: trip.updatedAt ?? null,
-                status: trip.status ?? "",
-                timerState: trip.timerState ?? "",
-                assignedTechnicianName: trip.crew?.primaryTechName ?? "",
-                assignedHelperName: trip.crew?.helperName ?? "",
-                secondaryTechnicianName: trip.crew?.secondaryTechName ?? "",
-                secondaryHelperName: trip.crew?.secondaryHelperName ?? "",
-              } as ActiveWorkItem;
-            })
-            .filter(isFieldVisibleItem)
-            .sort(statusSort);
+                return {
+                  id: `project_${trip.id}`,
+                  tripId: trip.id,
+                  itemType: "project" as const,
+                  href: `/projects/${safeTrim(trip.link?.projectId)}`,
+                  title: projectName,
+                  subtitle: `${customerDisplayName}${safeTrim(trip.link?.projectStageKey) ? ` • ${stageLabel(trip.link?.projectStageKey)}` : ""}`,
+                  addressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+                  city: safeTrim(data.serviceCity) || undefined,
+                  state: safeTrim(data.serviceState) || undefined,
+                  updatedAt: safeTrim(trip.updatedAt || data.updatedAt) || undefined,
+                  status: safeTrim(trip.status) || undefined,
+                  timerState: safeTrim(trip.timerState) || undefined,
+                  assignedTechnicianName: safeTrim(crew.primaryTechName) || undefined,
+                  assignedHelperName: safeTrim(crew.helperName) || undefined,
+                  secondaryTechnicianName: safeTrim(crew.secondaryTechName) || undefined,
+                  secondaryHelperName: safeTrim(crew.secondaryHelperName) || undefined,
+                } satisfies ActiveWorkItem;
+              } catch {
+                return null;
+              }
+            }
 
-          setActiveItems(activeRows);
-        } catch {
-          setActiveItems([]);
-        }
+            return null;
+          }),
+        );
+
+        setActiveItems((items.filter(Boolean) as ActiveWorkItem[]).sort(statusSort));
       },
-      () => setActiveItems([])
+      () => setActiveItems([]),
     );
 
     return () => {
       unsubFollowUp();
       unsubReview();
+      unsubProjects();
+      unsubProjectTrips();
       unsubActiveTrips();
     };
   }, []);
 
+  const projectFollowUps = useMemo(
+    () => buildProjectFollowUpItems(dashboardProjects, dashboardProjectTrips),
+    [dashboardProjects, dashboardProjectTrips],
+  );
+
+  const readyInvoiceProjects = useMemo(
+    () => buildReadyInvoiceItems(dashboardProjects, dashboardProjectTrips),
+    [dashboardProjects, dashboardProjectTrips],
+  );
+
+  const projectAttentionCount = projectFollowUps.length + readyInvoiceProjects.length;
+
   const attentionCount = useMemo(() => {
     return new Set([
-      ...followUpTickets.map((x) => x.id),
-      ...reviewTickets.map((x) => x.id),
+      ...followUpTickets.map((x) => `ticket_fu_${x.id}`),
+      ...reviewTickets.map((x) => `ticket_rev_${x.id}`),
+      ...projectFollowUps.map((x) => `project_fu_${x.projectId}`),
+      ...readyInvoiceProjects.map((x) => `project_bill_${x.projectId}`),
     ]).size;
-  }, [followUpTickets, reviewTickets]);
+  }, [followUpTickets, reviewTickets, projectFollowUps, readyInvoiceProjects]);
 
   const visibleCardCount = useMemo(() => {
-    return reviewTickets.length + followUpTickets.length + activeItems.length;
-  }, [reviewTickets.length, followUpTickets.length, activeItems.length]);
+    return (
+      reviewTickets.length +
+      followUpTickets.length +
+      activeItems.length +
+      projectFollowUps.length +
+      readyInvoiceProjects.length
+    );
+  }, [
+    reviewTickets.length,
+    followUpTickets.length,
+    activeItems.length,
+    projectFollowUps.length,
+    readyInvoiceProjects.length,
+  ]);
 
   return (
     <ProtectedPage
       fallbackTitle="Dashboard"
-      allowedRoles={[
-        "admin",
-        "dispatcher",
-        "manager",
-        "billing",
-        "office_display",
-      ]}
+      allowedRoles={["admin", "dispatcher", "manager", "billing", "office_display"]}
     >
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
@@ -1622,7 +2116,12 @@ export default function DashboardPage() {
                 backgroundColor: "background.paper",
               }}
             >
-              <CardContent sx={{ p: { xs: 2.25, md: 3 }, "&:last-child": { pb: { xs: 2.25, md: 3 } } }}>
+              <CardContent
+                sx={{
+                  p: { xs: 2.25, md: 3 },
+                  "&:last-child": { pb: { xs: 2.25, md: 3 } },
+                }}
+              >
                 <Stack
                   direction={{ xs: "column", md: "row" }}
                   spacing={2}
@@ -1659,6 +2158,14 @@ export default function DashboardPage() {
                         variant={activeItems.length > 0 ? "filled" : "outlined"}
                         sx={{ borderRadius: 999, fontWeight: 800 }}
                       />
+
+                      <Chip
+                        label={`${projectAttentionCount} project queue${projectAttentionCount === 1 ? "" : "s"}`}
+                        size="small"
+                        color={projectAttentionCount > 0 ? "info" : "default"}
+                        variant={projectAttentionCount > 0 ? "filled" : "outlined"}
+                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                      />
                     </Stack>
 
                     <Box>
@@ -1680,8 +2187,8 @@ export default function DashboardPage() {
                         sx={{ mt: 1, maxWidth: 940 }}
                       >
                         This dashboard keeps office action items front and center while also giving
-                        dispatch a compact view of live field work, current assignments, and active
-                        trip status across service and project work.
+                        dispatch a compact view of live field work, project follow-ups, billing-ready
+                        projects, current assignments, and active trip status across service and project work.
                       </Typography>
                     </Box>
                   </Stack>
@@ -1704,6 +2211,7 @@ export default function DashboardPage() {
                 Nice — there are no current office attention items or active field jobs showing right now.
               </Alert>
             ) : null}
+
 
             <Box
               sx={{
@@ -1733,7 +2241,7 @@ export default function DashboardPage() {
                 {followUpTickets.length > 0 ? (
                   <SectionCard
                     title="Follow-Up Needed"
-                    subtitle="Tickets that still have billable context but are waiting on the next action."
+                    subtitle="Service tickets that still need a return trip, scheduling, or next-step action."
                     icon={<AutorenewRoundedIcon />}
                     count={followUpTickets.length}
                     accent="warning"
@@ -1746,7 +2254,7 @@ export default function DashboardPage() {
                   </SectionCard>
                 ) : null}
 
-                {attentionCount > 0 ? (
+                {reviewTickets.length === 0 && followUpTickets.length === 0 ? (
                   <Card
                     elevation={0}
                     sx={{
@@ -1755,28 +2263,21 @@ export default function DashboardPage() {
                       backgroundColor: "background.paper",
                     }}
                   >
-                    <CardContent sx={{ p: { xs: 2, md: 2.5 }, "&:last-child": { pb: { xs: 2, md: 2.5 } } }}>
-                      <Stack
-                        direction={{ xs: "column", md: "row" }}
-                        spacing={2}
-                        justifyContent="space-between"
-                        alignItems={{ xs: "flex-start", md: "center" }}
-                      >
-                        <Box>
-                          <Typography variant="h6" fontWeight={800}>
-                            Attention summary
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                            Needs Review: {reviewTickets.length} • Follow-Up Needed: {followUpTickets.length}
-                          </Typography>
-                        </Box>
+                    <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <Stack spacing={1.25}>
+                        <Typography variant="h6" fontWeight={800}>
+                          Service workflow is clear
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          There are no current service tickets in the office review or follow-up queues.
+                        </Typography>
 
                         <Button
                           component={Link}
                           href="/service-tickets"
                           variant="contained"
                           startIcon={<ReceiptLongRoundedIcon />}
-                          sx={{ borderRadius: 999 }}
+                          sx={{ borderRadius: 999, alignSelf: "flex-start" }}
                         >
                           Manage Service Workflow
                         </Button>
@@ -1829,6 +2330,8 @@ export default function DashboardPage() {
                       { label: "Active Now", value: activeItems.length },
                       { label: "Needs Review", value: reviewTickets.length },
                       { label: "Follow-Up", value: followUpTickets.length },
+                      { label: "Project Follow-Ups", value: projectFollowUps.length },
+                      { label: "Ready To Invoice", value: readyInvoiceProjects.length },
                       { label: "Attention Total", value: attentionCount },
                     ].map((item) => (
                       <Box
@@ -1860,6 +2363,116 @@ export default function DashboardPage() {
                 </SectionCard>
               </Stack>
             </Box>
+
+            {(projectFollowUps.length > 0 || readyInvoiceProjects.length > 0) ? (
+              <SectionCard
+                title="Projects Attention Center"
+                subtitle="Project follow-ups from field closeouts and billing-ready projects that need office action."
+                icon={<ConstructionRoundedIcon />}
+                count={projectAttentionCount}
+                accent="warning"
+              >
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                    gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" },
+                  }}
+                >
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 1.2,
+                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                      backgroundColor: alpha(theme.palette.common.white, 0.02),
+                    }}
+                  >
+                    <CardContent sx={{ p: 2 }}>
+                      <Stack spacing={1.5}>
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <AutorenewRoundedIcon color="warning" />
+                            <Box>
+                              <Typography variant="subtitle1" fontWeight={800}>
+                                Project Follow-Ups
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                “Needs another day” signals from completed project trip closeouts.
+                              </Typography>
+                            </Box>
+                          </Stack>
+                          <Chip
+                            size="small"
+                            label={projectFollowUps.length}
+                            color={projectFollowUps.length > 0 ? "warning" : "default"}
+                            variant={projectFollowUps.length > 0 ? "filled" : "outlined"}
+                            sx={{ fontWeight: 800 }}
+                          />
+                        </Stack>
+
+                        {projectFollowUps.length === 0 ? (
+                          <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
+                            No project follow-ups need attention right now.
+                          </Alert>
+                        ) : (
+                          <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                            {projectFollowUps.map((item) => (
+                              <ProjectFollowUpRow key={item.projectId} item={item} />
+                            ))}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 1.2,
+                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                      backgroundColor: alpha(theme.palette.common.white, 0.02),
+                    }}
+                  >
+                    <CardContent sx={{ p: 2 }}>
+                      <Stack spacing={1.5}>
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <ReceiptLongRoundedIcon color="success" />
+                            <Box>
+                              <Typography variant="subtitle1" fontWeight={800}>
+                                Ready to Invoice Projects
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Current project billing work that is ready for office invoicing.
+                              </Typography>
+                            </Box>
+                          </Stack>
+                          <Chip
+                            size="small"
+                            label={readyInvoiceProjects.length}
+                            color={readyInvoiceProjects.length > 0 ? "success" : "default"}
+                            variant={readyInvoiceProjects.length > 0 ? "filled" : "outlined"}
+                            sx={{ fontWeight: 800 }}
+                          />
+                        </Stack>
+
+                        {readyInvoiceProjects.length === 0 ? (
+                          <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
+                            No projects are waiting to be invoiced right now.
+                          </Alert>
+                        ) : (
+                          <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                            {readyInvoiceProjects.map((item) => (
+                              <ReadyInvoiceProjectRow key={item.projectId} item={item} />
+                            ))}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Box>
+              </SectionCard>
+            ) : null}
           </Stack>
         </Box>
       </AppShell>
