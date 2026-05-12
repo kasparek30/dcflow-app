@@ -79,7 +79,6 @@ import {
   canResumeTrip,
   canStartTrip,
   formatLifecycleTripStatus,
-  getManualTicketStatusError,
   hasInProgressTrips,
   hasOpenTrips,
   isTicketTerminal,
@@ -270,6 +269,54 @@ type DispatchConflictSummary = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normalizeDateLike(value: any): string | null {
+  if (!value) return null;
+
+  if (typeof value === "string") return value;
+
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? value.toISOString() : null;
+  }
+
+  if (typeof value === "number") {
+    const date = new Date(value);
+    const time = date.getTime();
+    return Number.isFinite(time) ? date.toISOString() : null;
+  }
+
+  if (typeof value?.toDate === "function") {
+    try {
+      const date = value.toDate();
+      const time = date?.getTime?.();
+      return Number.isFinite(time) ? date.toISOString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const seconds = Number(value?.seconds);
+  const nanoseconds = Number(value?.nanoseconds || 0);
+  if (Number.isFinite(seconds)) {
+    const date = new Date(seconds * 1000 + Math.floor(nanoseconds / 1000000));
+    const time = date.getTime();
+    return Number.isFinite(time) ? date.toISOString() : null;
+  }
+
+  return null;
+}
+
+function normalizeBillingPacket(value: any): BillingPacket | null {
+  if (!value || typeof value !== "object") return null;
+
+  return {
+    ...value,
+    readyToBillAt: normalizeDateLike(value.readyToBillAt),
+    qboSyncedAt: normalizeDateLike(value.qboSyncedAt),
+    updatedAt: normalizeDateLike(value.updatedAt) || nowIso(),
+  } as BillingPacket;
 }
 
 function isoTodayLocal() {
@@ -485,9 +532,9 @@ function buildBillingPacketFromResolvedTrips(args: {
   trips: TripDoc[];
   fallbackUpdatedAt: string;
 }) {
-  const completedTrips = args.trips
-    .filter((trip) => trip.active !== false)
-    .filter((trip) => normalizeTripStatus(trip.status) === "complete");
+  const completedTrips = args.trips.filter(
+    (trip) => normalizeTripStatus(trip.status) === "complete"
+  );
 
   const resolvedTrips = completedTrips.filter(
     (trip) => String(trip.outcome || "").trim().toLowerCase() === "resolved"
@@ -522,9 +569,13 @@ function buildBillingPacketFromResolvedTrips(args: {
   );
 
   const latestResolvedTrip = [...resolvedTrips].sort((a, b) => {
-    const aTime = Date.parse(String(a.readyToBillAt || a.updatedAt || ""));
-    const bTime = Date.parse(String(b.readyToBillAt || b.updatedAt || ""));
-    return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+    const timeDiff = getTripSortTime(b) - getTripSortTime(a);
+    if (timeDiff !== 0) return timeDiff;
+
+    const dateDiff = String(b.date || "").localeCompare(String(a.date || ""));
+    if (dateDiff !== 0) return dateDiff;
+
+    return String(b.id || "").localeCompare(String(a.id || ""));
   })[0];
 
   return {
@@ -702,6 +753,104 @@ function isRunningTripRecord(tripLike: {
   const status = normalizeTripStatus(tripLike.status);
   const timerState = String(tripLike.timerState || "").trim().toLowerCase();
   return status === "in_progress" && timerState === "running";
+}
+
+function getTripSortTime(
+  trip: Pick<
+    TripDoc,
+    | "actualEndAt"
+    | "readyToBillAt"
+    | "updatedAt"
+    | "date"
+    | "endTime"
+    | "startTime"
+    | "id"
+  >
+) {
+  const directTime = Date.parse(
+    String(trip.actualEndAt || trip.readyToBillAt || trip.updatedAt || "")
+  );
+
+  if (Number.isFinite(directTime)) {
+    return directTime;
+  }
+
+  const date = String(trip.date || "").trim();
+  const time = String(trip.endTime || trip.startTime || "00:00").trim();
+
+  const dateTime = Date.parse(`${date}T${time || "00:00"}:00`);
+  if (Number.isFinite(dateTime)) {
+    return dateTime;
+  }
+
+  return 0;
+}
+
+function getLatestCompletedTripForLifecycle(trips: TripDoc[]) {
+  const completedTrips = trips.filter(
+    (trip) => normalizeTripStatus(trip.status) === "complete"
+  );
+
+  return (
+    [...completedTrips].sort((a, b) => {
+      const timeDiff = getTripSortTime(b) - getTripSortTime(a);
+      if (timeDiff !== 0) return timeDiff;
+
+      const dateDiff = String(b.date || "").localeCompare(String(a.date || ""));
+      if (dateDiff !== 0) return dateDiff;
+
+      const startDiff = String(b.startTime || "").localeCompare(
+        String(a.startTime || "")
+      );
+      if (startDiff !== 0) return startDiff;
+
+      return String(b.id || "").localeCompare(String(a.id || ""));
+    })[0] || null
+  );
+}
+
+function getLocalManualTicketStatusError(args: {
+  nextStatus: TicketStatus;
+  currentStatus: TicketStatus;
+  trips: TripDoc[];
+}) {
+  const nextStatus = String(args.nextStatus || "").trim().toLowerCase();
+
+  if (nextStatus === "invoiced") {
+    return "Use the billing packet to mark this ticket invoiced.";
+  }
+
+  if (nextStatus === "completed") {
+    const openTrips = args.trips
+      .filter((trip) => trip.active !== false)
+      .filter((trip) => {
+        const status = normalizeTripStatus(trip.status);
+        return status === "planned" || status === "in_progress";
+      });
+
+    if (openTrips.length > 0) {
+      return "Completed cannot be set while this ticket still has an open trip.";
+    }
+
+    const latestCompletedTrip = getLatestCompletedTripForLifecycle(args.trips);
+
+    if (!latestCompletedTrip) {
+      return "Completed cannot be set until this ticket has a completed trip.";
+    }
+
+    const latestOutcome = String(
+      latestCompletedTrip.outcome ||
+        (latestCompletedTrip.readyToBillAt ? "resolved" : "")
+    )
+      .trim()
+      .toLowerCase();
+
+    if (latestOutcome === "follow_up") {
+      return "Completed cannot be set because the latest completed trip outcome is Follow Up.";
+    }
+  }
+
+  return "";
 }
 
 function normalizeTripTimerState(trip?: TripDoc | null) {
@@ -1553,7 +1702,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           active: d.active ?? true,
           createdAt: d.createdAt ?? undefined,
           updatedAt: d.updatedAt ?? undefined,
-          billing: d.billing ?? null,
+          billing: normalizeBillingPacket(d.billing),
         };
 
         setTicket(nextTicket);
@@ -1799,8 +1948,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       notes: trip.notes ?? null,
       cancelReason: trip.cancelReason ?? null,
       timerState: trip.timerState ?? "not_started",
-      actualStartAt: trip.actualStartAt ?? null,
-      actualEndAt: trip.actualEndAt ?? null,
+      actualStartAt: normalizeDateLike(trip.actualStartAt),
+      actualEndAt: normalizeDateLike(trip.actualEndAt),
       startedByUid: trip.startedByUid ?? null,
       endedByUid: trip.endedByUid ?? null,
       pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
@@ -1814,8 +1963,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       materials: Array.isArray(trip.materials) ? trip.materials : [],
       noMaterialsUsed: Boolean(trip.noMaterialsUsed),
       outcome: trip.outcome ?? null,
-      readyToBillAt: trip.readyToBillAt ?? null,
-      updatedAt: trip.updatedAt ?? undefined,
+      readyToBillAt: normalizeDateLike(trip.readyToBillAt),
+      updatedAt: normalizeDateLike(trip.updatedAt) ?? undefined,
       updatedByUid: trip.updatedByUid ?? null,
     } as TripDoc;
   }
@@ -2484,7 +2633,7 @@ Supply line`}
       }
 
       const nextStatus = ticketStatusEdit as TicketStatus;
-      const guard = getManualTicketStatusError({
+      const guard = getLocalManualTicketStatusError({
         nextStatus,
         currentStatus: ticket.status,
         trips,
@@ -3993,6 +4142,71 @@ Supply line`}
     }
   }
 
+  async function handleResyncBillingPacket() {
+    if (!ticket?.id || !canBill) return;
+
+    if (ticket.status === "invoiced") {
+      setBillingErr("Invoiced tickets are locked and billing packet cannot be resynced.");
+      return;
+    }
+
+    setBillingErr("");
+    setBillingOk("");
+    setBillingSaving(true);
+
+    try {
+      const now = nowIso();
+      const nextBilling = buildBillingPacketFromResolvedTrips({
+        trips,
+        fallbackUpdatedAt: now,
+      });
+
+      if (!nextBilling) {
+        throw new Error(
+          "No completed resolved trip was found. Complete the latest trip as Resolved before creating a billing packet."
+        );
+      }
+
+      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+        billing: nextBilling,
+        status: "completed",
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      });
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              billing: nextBilling,
+              status: "completed",
+              updatedAt: now,
+            }
+          : prev
+      );
+
+      setTicketStatusEdit("completed");
+      setBillingMaterialsSummaryEdit(
+        String(nextBilling.materialsSummary || "").trim() ||
+          buildMaterialsSummaryFromLines(nextBilling.materials)
+      );
+      setBillingMaterialsAmountEdit(
+        typeof nextBilling.materialsAmount === "number" &&
+          Number.isFinite(nextBilling.materialsAmount)
+          ? String(nextBilling.materialsAmount)
+          : ""
+      );
+
+      setBillingOk("Billing packet resynced and set to Ready to Bill.");
+    } catch (err: unknown) {
+      setBillingErr(
+        err instanceof Error ? err.message : "Failed to resync billing packet."
+      );
+    } finally {
+      setBillingSaving(false);
+    }
+  }
+
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
     if (!ticket?.id || !canBill) return;
     if (ticket.status === "invoiced") {
@@ -5188,10 +5402,27 @@ Supply line`}
 
                 <Section title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
                   {!ticket.billing ? (
-                    <Alert severity="info" variant="outlined">
-                      No billing packet yet. It appears after a trip is completed as{" "}
-                      <strong>Resolved — Ready to Bill</strong>.
-                    </Alert>
+                    <Stack spacing={1.5}>
+                      <Alert severity="info" variant="outlined">
+                        No billing packet yet. It appears after a trip is completed as{" "}
+                        <strong>Resolved — Ready to Bill</strong>.
+                      </Alert>
+
+                      {canBill ? (
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                          <Button
+                            variant="contained"
+                            onClick={handleResyncBillingPacket}
+                            disabled={billingSaving || isInvoicedTicket}
+                          >
+                            {billingSaving ? "Resyncing..." : "Resync Billing Packet"}
+                          </Button>
+                        </Stack>
+                      ) : null}
+
+                      {billingErr ? <Alert severity="error">{billingErr}</Alert> : null}
+                      {billingOk ? <Alert severity="success">{billingOk}</Alert> : null}
+                    </Stack>
                   ) : (
                     <Stack spacing={2}>
                       {ticket.billing.status === "creating_invoice" ? (
