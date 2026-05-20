@@ -20,6 +20,10 @@ import {
   Button,
   Card,
   Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Chip,
   Divider,
   FormControl,
@@ -28,6 +32,7 @@ import {
   InputLabel,
   MenuItem,
   Select,
+  Snackbar,
   Stack,
   TextField,
   Typography,
@@ -47,11 +52,14 @@ import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
+import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
+import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { formatTimeRange12h } from "../../../src/lib/time-format";
+import { generatePurchaseOrderForTrip } from "../../../src/lib/purchase-orders";
 
 type TripCrew = {
   primaryTechUid?: string | null;
@@ -195,6 +203,12 @@ type PtoRequestLite = {
   status: string;
   notes?: string | null;
   active?: boolean;
+};
+
+type GeneratedPoDialogState = {
+  open: boolean;
+  poCode: string;
+  tripId: string;
 };
 
 function isoTodayLocal() {
@@ -541,6 +555,14 @@ async function startServiceTripFromMyDay(args: {
   return result;
 }
 
+function canGeneratePoForServiceTrip(item: MyDayItem) {
+  const isService = String(item.tripType || "").toLowerCase() === "service";
+  if (!isService) return false;
+
+  const status = String(item.status || "").toLowerCase().trim();
+  return status !== "complete" && status !== "completed" && status !== "cancelled";
+}
+
 function SectionHeader({
   title,
   subtitle,
@@ -624,6 +646,13 @@ export default function TechnicianMyDayPage() {
   const [holiday, setHoliday] = useState<CompanyHoliday | null>(null);
   const [companyEvents, setCompanyEvents] = useState<CompanyEvent[]>([]);
   const [currentPto, setCurrentPto] = useState<PtoRequestLite | null>(null);
+  const [poBusyTripId, setPoBusyTripId] = useState("");
+  const [generatedPoDialog, setGeneratedPoDialog] = useState<GeneratedPoDialogState>({
+    open: false,
+    poCode: "",
+    tripId: "",
+  });
+  const [poSnackbar, setPoSnackbar] = useState("");
 
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
@@ -1270,6 +1299,135 @@ export default function TechnicianMyDayPage() {
     }
   }
 
+  async function copyPoCode(poCode: string) {
+    const clean = String(poCode || "").trim().toUpperCase();
+    if (!clean) return;
+
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(clean);
+        setPoSnackbar(`Copied PO #${clean}`);
+      }
+    } catch {
+      setPoSnackbar(`PO #${clean}`);
+    }
+  }
+
+  async function handleGeneratePo(item: MyDayItem) {
+    if (!canGeneratePoForServiceTrip(item)) return;
+
+    setPoBusyTripId(item.id);
+    setError("");
+
+    try {
+      const record = await generatePurchaseOrderForTrip({
+        db,
+        tripId: item.id,
+        requestedByUid: myUid || null,
+        requestedByName: myName || null,
+      });
+
+      setGeneratedPoDialog({
+        open: true,
+        poCode: record.poCode,
+        tripId: item.id,
+      });
+
+      void copyPoCode(record.poCode);
+    } catch (e: any) {
+      setError(e?.message || "Failed to generate PO number.");
+    } finally {
+      setPoBusyTripId("");
+    }
+  }
+
+  function renderServiceFooter(item: MyDayItem, isCompleted: boolean, canStartService: boolean) {
+    const canGeneratePo = canGeneratePoForServiceTrip(item);
+
+    if (isCompleted) {
+      return (
+        <Typography variant="caption" color="text.secondary">
+          Service trip complete — open the service ticket for full details if needed.
+        </Typography>
+      );
+    }
+
+    if (canStartService) {
+      return (
+        <Stack spacing={1.25}>
+          <Button
+            variant="contained"
+            fullWidth
+            startIcon={<PlayArrowRoundedIcon />}
+            disabled={startBusyTripId === item.id}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleStartServiceFromCard(item);
+            }}
+            sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+          >
+            {startBusyTripId === item.id ? "Starting..." : "Start Work"}
+          </Button>
+
+          {canGeneratePo ? (
+            <Button
+              type="button"
+              variant="outlined"
+              fullWidth
+              startIcon={<ReceiptLongRoundedIcon />}
+              disabled={poBusyTripId === item.id}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleGeneratePo(item);
+              }}
+              sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+            >
+              {poBusyTripId === item.id ? "Generating..." : "Generate PO#"}
+            </Button>
+          ) : null}
+        </Stack>
+      );
+    }
+
+    if (canGeneratePo) {
+      return (
+        <Stack spacing={1.25}>
+          <Typography variant="caption" color="text.secondary">
+            {item.isPaused
+              ? "Paused trip — generate a PO if materials are needed."
+              : item.isActive
+                ? "Active trip — generate a PO if materials are needed."
+                : "Scheduled trip — generate a PO before the supply run if materials are needed."}
+          </Typography>
+
+          <Button
+            type="button"
+            variant="contained"
+            fullWidth
+            startIcon={<ReceiptLongRoundedIcon />}
+            disabled={poBusyTripId === item.id}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleGeneratePo(item);
+            }}
+            sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+          >
+            {poBusyTripId === item.id ? "Generating..." : "Generate PO#"}
+          </Button>
+        </Stack>
+      );
+    }
+
+    return (
+      <Typography variant="caption" color="text.secondary">
+        Open the service ticket for full details and workflow actions.
+      </Typography>
+    );
+  }
+
   const holidayBlocks = Boolean(holiday?.scheduleBlocked);
 
   return (
@@ -1285,6 +1443,73 @@ export default function TechnicianMyDayPage() {
       ]}
     >
       <AppShell appUser={appUser}>
+        <Dialog
+          open={generatedPoDialog.open}
+          onClose={() =>
+            setGeneratedPoDialog({ open: false, poCode: "", tripId: "" })
+          }
+          fullWidth
+          maxWidth="xs"
+        >
+          <DialogTitle>Generated PO#</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2} alignItems="center" sx={{ py: 1 }}>
+              <Typography variant="body2" color="text.secondary" textAlign="center">
+                Give this code to the supplier. It has already been copied when supported by this device.
+              </Typography>
+
+              <Box
+                sx={{
+                  width: "100%",
+                  borderRadius: 3,
+                  p: 2.25,
+                  textAlign: "center",
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+                }}
+              >
+                <Typography
+                  sx={{
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                    fontSize: { xs: 34, sm: 40 },
+                    fontWeight: 900,
+                    letterSpacing: "0.12em",
+                    lineHeight: 1.05,
+                  }}
+                >
+                  {generatedPoDialog.poCode}
+                </Typography>
+              </Box>
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button
+              type="button"
+              variant="outlined"
+              startIcon={<ContentCopyRoundedIcon />}
+              onClick={() => copyPoCode(generatedPoDialog.poCode)}
+            >
+              Copy
+            </Button>
+            <Button
+              type="button"
+              variant="contained"
+              onClick={() =>
+                setGeneratedPoDialog({ open: false, poCode: "", tripId: "" })
+              }
+            >
+              Done
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Snackbar
+          open={Boolean(poSnackbar)}
+          autoHideDuration={2400}
+          message={poSnackbar}
+          onClose={() => setPoSnackbar("")}
+        />
+
         <Box sx={{ width: "100%", maxWidth: 1240, mx: "auto" }}>
           <Stack spacing={3}>
             <Box sx={{ px: { xs: 0.25, md: 0.5 }, pt: { xs: 0.5, md: 0.75 } }}>
@@ -1810,35 +2035,7 @@ export default function TechnicianMyDayPage() {
                                   </Typography>
                                 )
                               ) : isService ? (
-                                item.isActive ? (
-                                  <Typography variant="caption" color="text.secondary">
-                                    {item.isPaused
-                                      ? "Paused trip — open the service ticket to resume or finish."
-                                      : "Active trip — open the service ticket for quick actions."}
-                                  </Typography>
-                                ) : isCompleted ? (
-                                  <Typography variant="caption" color="text.secondary">
-                                    Service trip complete — open the service ticket for full details if needed.
-                                  </Typography>
-                                ) : canStartService ? (
-                                  <Button
-                                    variant="contained"
-                                    fullWidth
-                                    startIcon={<PlayArrowRoundedIcon />}
-                                    disabled={startBusyTripId === item.id}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      handleStartServiceFromCard(item);
-                                    }}
-                                  >
-                                    {startBusyTripId === item.id ? "Starting..." : "Start Work"}
-                                  </Button>
-                                ) : (
-                                  <Typography variant="caption" color="text.secondary">
-                                    Open the service ticket for full details and workflow actions.
-                                  </Typography>
-                                )
+                                renderServiceFooter(item, isCompleted, canStartService)
                               ) : undefined
                             }
                             onClick={() => {

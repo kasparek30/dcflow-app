@@ -1,3 +1,4 @@
+// src/types/project.ts
 export type ProjectBidStatus = "draft" | "submitted" | "won" | "lost";
 
 export type ProjectStageStatus =

@@ -63,6 +63,7 @@ import DispatchAvailabilityPlanner, {
 } from "../../../components/DispatchAvailabilityPlanner";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import { reserveNextServiceTicketNumber } from "../../../src/lib/purchase-orders";
 import { normalizeCompanyHoliday } from "../../../src/lib/trip-availability";
 import type { ServiceAddress } from "../../../src/types/customer";
 
@@ -1814,6 +1815,7 @@ export default function NewServiceTicketPage() {
     try {
       const timestamp = nowIso();
       const estimatedDurationMinutes = Math.round(hours * 60);
+      const ticketNumberInfo = await reserveNextServiceTicketNumber(db);
 
       const ticketRef = doc(collection(db, "serviceTickets"));
       const batch = writeBatch(db);
@@ -1854,6 +1856,9 @@ export default function NewServiceTicketPage() {
       batch.set(ticketRef, {
         customerId: selectedCustomer.id,
         customerDisplayName: selectedCustomer.displayName,
+        ticketNumber: ticketNumberInfo.ticketNumber,
+        ticketCode: ticketNumberInfo.ticketCode,
+        nextPoIndex: 0,
 
         serviceAddressId: chosenAddress.isBillingFallback ? null : chosenAddress.id,
         serviceAddressLabel: chosenAddress.label ?? null,

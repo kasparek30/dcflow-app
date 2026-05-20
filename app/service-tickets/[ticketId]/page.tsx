@@ -62,6 +62,10 @@ import AddressAutocompleteField from "../../../components/AddressAutocompleteFie
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
+import PictureAsPdfRoundedIcon from "@mui/icons-material/PictureAsPdfRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import CloudDownloadRoundedIcon from "@mui/icons-material/CloudDownloadRounded";
+import { getDownloadURL, getStorage, ref } from "firebase/storage";
 import {
   type CompanyHolidayLite,
   type CrewMemberSelection,
@@ -85,6 +89,7 @@ import {
   normalizeTripStatus,
 } from "../../../src/lib/service-ticket-lifecycle";
 import type { AppUser } from "../../../src/types/app-user";
+import { generatePurchaseOrderForTrip } from "../../../src/lib/purchase-orders";
 import type {
   ServiceTicket,
   ServiceTicketStatus,
@@ -116,10 +121,23 @@ type PauseBlock = {
 };
 
 type TripMaterial = {
+  id?: string;
   name: string;
   qty: number;
   unit?: string;
   notes?: string;
+  imported?: boolean;
+  source?: "manual" | "supplier_invoice";
+  poCode?: string;
+  supplierName?: string | null;
+  supplierInvoiceNumber?: string | null;
+  supplierInvoiceId?: string;
+  supplierLineKey?: string;
+  supplierSku?: string | null;
+  unitCost?: number | null;
+  lineTotal?: number | null;
+  reviewStatus?: "pending" | "edited" | "approved";
+  importedAt?: string;
 };
 
 type DispatchOverrideInfo = {
@@ -209,6 +227,40 @@ type TicketWithBilling = ServiceTicket & {
   billing?: BillingPacket | null;
 };
 
+type PurchaseOrderAttachment = {
+  id: string;
+  filename: string;
+  contentType?: string;
+  size?: number;
+  storagePath?: string;
+  downloadUrl?: string;
+  uploadedAt?: string;
+};
+
+type PurchaseOrderLite = {
+  id: string;
+  poCode: string;
+  poIndex?: number;
+  poSuffix?: string;
+  status: "open" | "matched" | "cancelled" | "closed" | string;
+  serviceTicketId: string;
+  tripId: string;
+  requestedByUid?: string | null;
+  requestedByName?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  vendorName?: string | null;
+  matchedInvoiceId?: string | null;
+  matchedAttachmentIds?: string[];
+  invoiceEmailMessageId?: string | null;
+  invoiceEmailSubject?: string | null;
+  invoiceEmailFrom?: string | null;
+  invoiceEmailMatchedAt?: string | null;
+  invoiceAttachmentCount?: number;
+  invoicePdfAttachmentCount?: number;
+  matchedAttachments?: PurchaseOrderAttachment[];
+};
+
 type TechnicianOption = {
   uid: string;
   displayName: string;
@@ -265,6 +317,17 @@ type DispatchConflictSummary = {
   hardMessages: string[];
   softMessages: string[];
   softTripIds: string[];
+};
+
+type ServiceTicketActivityEntry = {
+  id: string;
+  type?: string;
+  title?: string;
+  description?: string | null;
+  details?: string[];
+  createdAt?: string;
+  createdByName?: string | null;
+  createdByRole?: string | null;
 };
 
 function nowIso() {
@@ -325,6 +388,20 @@ function isoTodayLocal() {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function formatActivityDate(value?: string) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function hhmmLocal(d: Date) {
@@ -424,6 +501,51 @@ function formatBillingPacketStatus(value?: string) {
   }
 }
 
+function formatPurchaseOrderStatus(value?: string) {
+  switch (String(value || "open").toLowerCase()) {
+    case "matched":
+      return "Matched";
+    case "closed":
+      return "Closed";
+    case "cancelled":
+      return "Cancelled";
+    case "open":
+    default:
+      return "Open";
+  }
+}
+
+function getPurchaseOrderTone(
+  value?: string
+): "default" | "success" | "warning" | "error" | "info" {
+  const v = String(value || "open").toLowerCase();
+  if (v === "matched" || v === "closed") return "success";
+  if (v === "cancelled") return "error";
+  return "warning";
+}
+
+function formatPurchaseOrderDate(value?: string) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function canGeneratePoForTripDetail(trip?: TripDoc | null) {
+  if (!trip) return false;
+  if (String(trip.type || "").toLowerCase() !== "service") return false;
+
+  const status = String(trip.status || "").toLowerCase().trim();
+  return status !== "complete" && status !== "completed" && status !== "cancelled";
+}
+
 function getBillingTone(
   value?: string
 ): "default" | "success" | "warning" | "error" | "info" {
@@ -457,6 +579,14 @@ function formatSingleMaterialLine(material?: TripMaterial | null) {
   return line;
 }
 
+function getImportedMaterialChips(materials?: TripMaterial[] | null) {
+  const items = Array.isArray(materials) ? materials : [];
+
+  return items.filter(
+    (material) => material?.imported || material?.source === "supplier_invoice"
+  );
+}
+
 function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
   return items.map((m) => formatSingleMaterialLine(m)).filter(Boolean).join(", ");
@@ -467,15 +597,29 @@ function materialLinesToText(materials?: TripMaterial[] | null) {
   return items.map((m) => formatSingleMaterialLine(m)).filter(Boolean).join("\n");
 }
 
-function parseMaterialsText(value?: string) {
-  return String(value || "")
+function parseMaterialsText(value?: string, existingMaterials?: TripMaterial[] | null) {
+  const existingImported = (Array.isArray(existingMaterials) ? existingMaterials : []).filter(
+    (material) => material?.imported || material?.source === "supplier_invoice"
+  );
+
+  const manualLines = String(value || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
+    .filter(Boolean);
+
+  const importedLineText = new Set(
+    existingImported.map((material) => formatSingleMaterialLine(material).trim())
+  );
+
+  const manualMaterials = manualLines
+    .filter((line) => !importedLineText.has(line))
     .map((line) => ({
       name: line,
       qty: 1,
+      source: "manual" as const,
     } satisfies TripMaterial));
+
+  return [...existingImported, ...manualMaterials];
 }
 
 function getPreviewText(value?: string | null, maxLength = 220) {
@@ -611,12 +755,15 @@ function validateTripMaterialsCapture(args: {
   noMaterialsUsed: boolean;
 }) {
   const cleaned = (args.materials || [])
-    .map((m) => ({
-      name: String(m.name || "").trim(),
-      qty: Number(m.qty),
-      unit: String(m.unit || "").trim(),
-      notes: String(m.notes || "").trim(),
-    }))
+    .map((m) =>
+      stripUndefined({
+        ...m,
+        name: String(m.name || "").trim(),
+        qty: Number(m.qty),
+        unit: String(m.unit || "").trim() || undefined,
+        notes: String(m.notes || "").trim() || undefined,
+      })
+    )
     .filter((m) => m.name);
 
   for (const m of cleaned) {
@@ -1457,6 +1604,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
+  const [activityEntries, setActivityEntries] = useState<ServiceTicketActivityEntry[]>([]);
 
   const isInvoicedTicket = ticket?.status === "invoiced";
 
@@ -1482,6 +1630,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     useState("");
 
   const [trips, setTrips] = useState<TripDoc[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderLite[]>([]);
+  const [poGenerating, setPoGenerating] = useState(false);
+  const [poError, setPoError] = useState("");
+  const [poOk, setPoOk] = useState("");
   const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>(
     {}
   );
@@ -1713,7 +1865,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
 
-        const [usersSnap, profilesSnap, tripSnap, ptoSnap, holidaySnap] = await Promise.all([
+          const [
+            usersSnap,
+            profilesSnap,
+            tripSnap,
+            ptoSnap,
+            holidaySnap,
+            purchaseOrderSnap,
+            activitySnap,
+          ] = await Promise.all([
           getDocs(collection(db, "users")),
           getDocs(collection(db, "employeeProfiles")),
           getDocs(
@@ -1726,6 +1886,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           ),
           getDocs(collection(db, "ptoRequests")),
           getDocs(collection(db, "companyHolidays")),
+          getDocs(
+            query(
+              collection(db, "purchaseOrders"),
+              where("serviceTicketId", "==", id),
+              orderBy("createdAt", "asc")
+            )
+          ),
+          getDocs(
+            query(
+              collection(db, "serviceTickets", id, "activity"),
+              orderBy("createdAt", "desc")
+            )
+          ),
         ]);
 
         setTechnicians(
@@ -1776,6 +1949,82 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           holidaySnap.docs
             .map((ds) => normalizeCompanyHoliday(ds.data(), ds.id))
             .filter((holiday): holiday is CompanyHolidayLite => Boolean(holiday))
+        );
+
+        setPurchaseOrders(
+          purchaseOrderSnap.docs
+            .map((ds) => {
+              const po = ds.data() as any;
+              return {
+                id: ds.id,
+                poCode: String(po.poCode || ds.id).toUpperCase(),
+                poIndex: typeof po.poIndex === "number" ? po.poIndex : undefined,
+                poSuffix: po.poSuffix ?? undefined,
+                status: po.status || "open",
+                serviceTicketId: String(po.serviceTicketId || id),
+                tripId: String(po.tripId || ""),
+                requestedByUid: po.requestedByUid ?? null,
+                requestedByName: po.requestedByName ?? null,
+                createdAt: normalizeDateLike(po.createdAt) ?? undefined,
+                updatedAt: normalizeDateLike(po.updatedAt) ?? undefined,
+                vendorName: po.vendorName ?? null,
+                matchedInvoiceId: po.matchedInvoiceId ?? null,
+                matchedAttachmentIds: Array.isArray(po.matchedAttachmentIds)
+                  ? po.matchedAttachmentIds
+                  : [],
+                invoiceEmailMessageId: po.invoiceEmailMessageId ?? null,
+                                invoiceEmailSubject: po.invoiceEmailSubject ?? null,
+                invoiceEmailFrom: po.invoiceEmailFrom ?? null,
+                invoiceEmailMatchedAt: normalizeDateLike(po.invoiceEmailMatchedAt),
+                invoiceAttachmentCount:
+                  typeof po.invoiceAttachmentCount === "number"
+                    ? po.invoiceAttachmentCount
+                    : undefined,
+                invoicePdfAttachmentCount:
+                  typeof po.invoicePdfAttachmentCount === "number"
+                    ? po.invoicePdfAttachmentCount
+                    : undefined,
+                matchedAttachments: Array.isArray(po.matchedAttachments)
+                  ? po.matchedAttachments.map((attachment: any) => ({
+                      id: String(attachment.id || ""),
+                      filename: String(attachment.filename || "Invoice PDF"),
+                      contentType: attachment.contentType ?? undefined,
+                      size:
+                        typeof attachment.size === "number"
+                          ? attachment.size
+                          : undefined,
+                      storagePath: attachment.storagePath ?? undefined,
+                      downloadUrl: attachment.downloadUrl ?? undefined,
+                      uploadedAt: normalizeDateLike(attachment.uploadedAt) ?? undefined,
+                    }))
+                  : [],
+              } satisfies PurchaseOrderLite;
+            })
+            .sort((a, b) => {
+              const ai = Number.isFinite(Number(a.poIndex)) ? Number(a.poIndex) : 9999;
+              const bi = Number.isFinite(Number(b.poIndex)) ? Number(b.poIndex) : 9999;
+              if (ai !== bi) return ai - bi;
+              return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+            })
+        );
+
+        setActivityEntries(
+          activitySnap.docs.map((ds) => {
+            const activity = ds.data() as any;
+
+            return {
+              id: ds.id,
+              type: String(activity.type || ""),
+              title: String(activity.title || "Activity"),
+              description: activity.description ?? null,
+              details: Array.isArray(activity.details)
+                ? activity.details.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+                : [],
+              createdAt: normalizeDateLike(activity.createdAt) ?? undefined,
+              createdByName: activity.createdByName ?? null,
+              createdByRole: activity.createdByRole ?? null,
+            };
+          })
         );
 
         const nextTrips = tripSnap.docs.map((ds) => mapTripLikeFromDoc(ds));
@@ -2395,6 +2644,27 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     Boolean(mobileFinishTrip && tripActionSaving[mobileFinishTrip.id]) ||
     isInvoicedTicket;
 
+  const eligibleTripForPo = useMemo(() => {
+    const candidates = trips.filter((trip) => canGeneratePoForTripDetail(trip));
+
+    const runningOrPaused = candidates.find((trip) => {
+      const timerState = normalizeTripTimerState(trip);
+      return timerState === "running" || timerState === "paused";
+    });
+
+    if (runningOrPaused) return runningOrPaused;
+
+    return (
+      [...candidates].sort((a, b) => {
+        const aKey = `${a.date || "9999-99-99"}_${a.startTime || "99:99"}_${a.id}`;
+        const bKey = `${b.date || "9999-99-99"}_${b.startTime || "99:99"}_${b.id}`;
+        return aKey.localeCompare(bKey);
+      })[0] || null
+    );
+  }, [trips]);
+
+  const canGeneratePoFromTicket = Boolean(eligibleTripForPo) && !isInvoicedTicket;
+
   useEffect(() => {
     if (!inProgressTrip) return;
     const id = window.setInterval(() => setLiveNowMs(Date.now()), 1000);
@@ -2466,6 +2736,31 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           <Typography variant="subtitle1" fontWeight={700}>
             Materials Used
           </Typography>
+
+          {getImportedMaterialChips(tripMaterials[tripId]).length > 0 ? (
+  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+    {getImportedMaterialChips(tripMaterials[tripId]).map((material, index) => (
+      <Chip
+        key={material.supplierLineKey || material.id || index}
+        size="small"
+        color={material.reviewStatus === "pending" ? "warning" : "success"}
+        variant="outlined"
+        label={[
+          "Imported",
+          material.supplierName || "Supplier",
+          material.supplierInvoiceNumber
+            ? `Invoice #${material.supplierInvoiceNumber}`
+            : "",
+          material.poCode ? `PO ${material.poCode}` : "",
+          material.reviewStatus === "pending" ? "Needs Review" : "",
+        ]
+          .filter(Boolean)
+          .join(" • ")}
+        sx={{ borderRadius: 99, fontWeight: 700 }}
+      />
+    ))}
+  </Stack>
+) : null}
 
           <FormControlLabel
             control={
@@ -3383,7 +3678,7 @@ Supply line`}
       }
 
       const materialsText = String(tripMaterialsText[trip.id] || "").trim();
-      const mats = parseMaterialsText(materialsText);
+      const mats = parseMaterialsText(materialsText, tripMaterials[trip.id]);
       const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
       const materialCheck = validateTripMaterialsCapture({
         materials: mats,
@@ -4087,6 +4382,95 @@ Supply line`}
       window.location.reload();
     } catch (err: any) {
       alert(err?.message || "Failed to claim ticket.");
+    }
+  }
+
+  async function copyPurchaseOrderCode(poCode: string) {
+    const clean = String(poCode || "").trim().toUpperCase();
+    if (!clean) return;
+
+    try {
+      await navigator.clipboard.writeText(clean);
+    } catch {
+      // Non-blocking clipboard fallback.
+    }
+  }
+
+  async function openPurchaseOrderAttachment(attachment: PurchaseOrderAttachment) {
+  const storagePath = String(attachment.storagePath || "").trim();
+
+  if (!storagePath) {
+    alert("This invoice PDF is missing its storage path.");
+    return;
+  }
+
+  try {
+    const storage = getStorage();
+    const fileRef = ref(storage, storagePath);
+    const url = await getDownloadURL(fileRef);
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (err) {
+    console.error("Failed to open invoice PDF:", err);
+    alert("Could not open invoice PDF. Check Firebase Storage permissions.");
+  }
+}
+
+
+  async function handleGeneratePoFromTicket() {
+    if (!eligibleTripForPo || !ticket?.id || !canGeneratePoFromTicket) return;
+
+    setPoGenerating(true);
+    setPoError("");
+    setPoOk("");
+
+    try {
+      const record = await generatePurchaseOrderForTrip({
+        db,
+        tripId: eligibleTripForPo.id,
+        requestedByUid: myUid || null,
+        requestedByName: appUser?.displayName || null,
+      });
+
+      const nextPo: PurchaseOrderLite = {
+        id: record.poCode,
+        poCode: record.poCode,
+        poIndex: record.poIndex,
+        poSuffix: record.poSuffix,
+        status: record.status,
+        serviceTicketId: record.serviceTicketId,
+        tripId: record.tripId,
+        requestedByUid: record.requestedByUid,
+        requestedByName: record.requestedByName,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        vendorName: record.vendorName,
+        matchedInvoiceId: record.matchedInvoiceId,
+        matchedAttachmentIds: record.matchedAttachmentIds,
+        invoiceEmailMessageId: record.invoiceEmailMessageId,
+        invoiceEmailSubject: null,
+        invoiceEmailFrom: null,
+        invoiceEmailMatchedAt: null,
+        invoiceAttachmentCount: 0,
+        invoicePdfAttachmentCount: 0,
+        matchedAttachments: [],
+      };
+
+      setPurchaseOrders((prev) =>
+        [nextPo, ...prev.filter((po) => po.id !== nextPo.id)].sort((a, b) => {
+          const ai = Number.isFinite(Number(a.poIndex)) ? Number(a.poIndex) : 9999;
+          const bi = Number.isFinite(Number(b.poIndex)) ? Number(b.poIndex) : 9999;
+          if (ai !== bi) return ai - bi;
+          return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+        })
+      );
+
+      await copyPurchaseOrderCode(record.poCode);
+      setPoOk(`Generated PO #${record.poCode}.`);
+    } catch (err: unknown) {
+      setPoError(err instanceof Error ? err.message : "Failed to generate PO number.");
+    } finally {
+      setPoGenerating(false);
     }
   }
 
@@ -5400,6 +5784,272 @@ Supply line`}
                   </Stack>
                 </Section>
 
+                <Section title="Purchase Orders" icon={<ReceiptLongRoundedIcon color="primary" />}>
+                  <Stack spacing={2}>
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1.25}
+                      alignItems={{ xs: "stretch", sm: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Alert severity="info" variant="outlined" sx={{ flex: 1 }}>
+                        PO codes are stored here as the permanent ticket record. Future email invoice matching will attach supplier PDFs and parsed material line items to these PO records.
+                      </Alert>
+
+                      <Button
+                        type="button"
+                        variant="contained"
+                        startIcon={<ReceiptLongRoundedIcon />}
+                        onClick={handleGeneratePoFromTicket}
+                        disabled={!canGeneratePoFromTicket || poGenerating}
+                        sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800, whiteSpace: "nowrap" }}
+                      >
+                        {poGenerating ? "Generating..." : "Generate PO#"}
+                      </Button>
+                    </Stack>
+
+                    {!eligibleTripForPo && !isInvoicedTicket ? (
+                      <Alert severity="warning" variant="outlined">
+                        Add or open a scheduled/in-progress trip before generating a PO for this ticket.
+                      </Alert>
+                    ) : null}
+
+                    {poError ? <Alert severity="error">{poError}</Alert> : null}
+                    {poOk ? <Alert severity="success">{poOk}</Alert> : null}
+
+                    {purchaseOrders.length === 0 ? (
+                      <Typography variant="body2" color="text.secondary">
+                        No PO codes have been generated for this service ticket yet.
+                      </Typography>
+                    ) : (
+                      <Stack spacing={1.25}>
+{purchaseOrders.map((po) => {
+  const invoiceAttachments = Array.isArray(po.matchedAttachments)
+    ? po.matchedAttachments.filter((attachment) =>
+        String(attachment.downloadUrl || "").trim()
+      )
+    : [];
+
+  const attachmentCount = invoiceAttachments.length;
+
+  const hasInvoice = Boolean(
+    po.matchedInvoiceId ||
+      po.invoiceEmailMessageId ||
+      attachmentCount > 0
+  );
+
+  return (
+                            <Paper
+                              key={po.id}
+                              variant="outlined"
+                              sx={{
+                                p: 1.5,
+                                borderRadius: 2,
+                                bgcolor: alpha(theme.palette.primary.main, 0.025),
+                              }}
+                            >
+                              <Stack spacing={1.25}>
+                                <Stack
+                                  direction={{ xs: "column", sm: "row" }}
+                                  spacing={1}
+                                  alignItems={{ xs: "flex-start", sm: "center" }}
+                                  justifyContent="space-between"
+                                >
+                                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                    <Typography
+                                      sx={{
+                                        fontFamily:
+                                          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                                        fontWeight: 900,
+                                        letterSpacing: "0.08em",
+                                        fontSize: "1.05rem",
+                                      }}
+                                    >
+                                      {po.poCode}
+                                    </Typography>
+
+                                    <Chip
+                                      size="small"
+                                      label={formatPurchaseOrderStatus(po.status)}
+                                      color={getPurchaseOrderTone(po.status)}
+                                      variant="outlined"
+                                      sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                    />
+
+                                    {hasInvoice ? (
+                                      <Chip
+                                        size="small"
+                                        label={attachmentCount > 0 ? `Invoice matched • ${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}` : "Invoice matched"}
+                                        color="success"
+                                        variant="filled"
+                                        sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                      />
+                                    ) : null}
+                                  </Stack>
+
+                                  <Button
+                                    type="button"
+                                    size="small"
+                                    variant="text"
+                                    startIcon={<ContentCopyRoundedIcon />}
+                                    onClick={() => copyPurchaseOrderCode(po.poCode)}
+                                    sx={{ borderRadius: 999, fontWeight: 700 }}
+                                  >
+                                    Copy
+                                  </Button>
+                                </Stack>
+
+                                <Stack spacing={0.35}>
+                                  <Typography variant="body2" color="text.secondary">
+                                    Generated {formatPurchaseOrderDate(po.createdAt)}
+                                    {po.requestedByName ? ` by ${po.requestedByName}` : ""}
+                                  </Typography>
+
+                                  {po.vendorName ? (
+                                    <Typography variant="body2" color="text.secondary">
+                                      Vendor: <strong>{po.vendorName}</strong>
+                                    </Typography>
+                                  ) : null}
+
+                                  {po.tripId ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      Trip: {po.tripId}
+                                    </Typography>
+                                  ) : null}
+                                                                    {po.invoiceEmailSubject ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      Email: {po.invoiceEmailSubject}
+                                    </Typography>
+                                  ) : null}
+
+                                  {po.invoiceEmailMatchedAt ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      Matched: {formatPurchaseOrderDate(po.invoiceEmailMatchedAt)}
+                                    </Typography>
+                                  ) : null}
+                                </Stack>
+
+                                <Divider />
+
+                                <Stack spacing={1}>
+                                  <Stack
+                                    direction="row"
+                                    spacing={1}
+                                    alignItems="center"
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                  >
+                                    <PictureAsPdfRoundedIcon
+                                      sx={{
+                                        fontSize: 18,
+                                        color:
+                                          attachmentCount > 0
+                                            ? "success.main"
+                                            : "text.secondary",
+                                      }}
+                                    />
+
+                                    <Typography variant="subtitle2" fontWeight={800}>
+                                      Invoice PDF
+                                    </Typography>
+
+                                    <Chip
+                                      size="small"
+                                      color={attachmentCount > 0 ? "success" : "default"}
+                                      variant={attachmentCount > 0 ? "filled" : "outlined"}
+                                      label={
+                                        attachmentCount > 0
+                                          ? `${attachmentCount} PDF${attachmentCount === 1 ? "" : "s"} saved`
+                                          : "No PDF saved yet"
+                                      }
+                                      sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                    />
+                                  </Stack>
+
+                                  {attachmentCount > 0 ? (
+                                    <Stack spacing={1}>
+                                      {invoiceAttachments.map((attachment, index) => (
+                                        <Paper
+                                          key={attachment.id || `${po.poCode}-attachment-${index}`}
+                                          variant="outlined"
+                                          sx={{
+                                            p: 1.25,
+                                            borderRadius: 1.5,
+                                            bgcolor: alpha(theme.palette.success.main, 0.045),
+                                          }}
+                                        >
+                                          <Stack
+                                            direction={{ xs: "column", sm: "row" }}
+                                            spacing={1}
+                                            alignItems={{ xs: "stretch", sm: "center" }}
+                                            justifyContent="space-between"
+                                          >
+                                            <Box sx={{ minWidth: 0 }}>
+                                              <Typography
+                                                variant="body2"
+                                                fontWeight={800}
+                                                sx={{
+                                                  overflow: "hidden",
+                                                  textOverflow: "ellipsis",
+                                                  whiteSpace: "nowrap",
+                                                }}
+                                              >
+                                                {attachment.filename || "Invoice PDF"}
+                                              </Typography>
+
+                                              <Typography variant="caption" color="text.secondary">
+                                                {attachment.uploadedAt
+                                                  ? `Uploaded ${formatPurchaseOrderDate(
+                                                      attachment.uploadedAt
+                                                    )}`
+                                                  : "Saved invoice attachment"}
+                                              </Typography>
+                                            </Box>
+
+                                            <Stack direction="row" spacing={1}>
+                                              <Button
+                                                type="button"
+                                                size="small"
+                                                variant="contained"
+                                                startIcon={<OpenInNewRoundedIcon />}
+                                                onClick={() => openPurchaseOrderAttachment(attachment)}
+                                                sx={{ borderRadius: 999, fontWeight: 800 }}
+                                              >
+                                                Open PDF
+                                              </Button>
+
+                                              <Button
+                                                component="a"
+                                                href={attachment.downloadUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                size="small"
+                                                variant="outlined"
+                                                startIcon={<CloudDownloadRoundedIcon />}
+                                                sx={{ borderRadius: 999, fontWeight: 800 }}
+                                              >
+                                                Download
+                                              </Button>
+                                            </Stack>
+                                          </Stack>
+                                        </Paper>
+                                      ))}
+                                    </Stack>
+                                  ) : (
+                                    <Alert severity="info" variant="outlined">
+                                      No supplier invoice PDF has been attached to this PO yet.
+                                    </Alert>
+                                  )}
+                                </Stack>
+                              </Stack>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    )}
+                  </Stack>
+                </Section>
+
                 <Section title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
                   {!ticket.billing ? (
                     <Stack spacing={1.5}>
@@ -5616,19 +6266,95 @@ Supply line`}
                   )}
                 </Section>
 
-                <Section title="System" icon={<BuildRoundedIcon color="primary" />}>
-                  <Stack spacing={0.5}>
-                    <Typography variant="body2">
-                      <strong>Active:</strong> {String(ticket.active)}
+<Section title="System Activity" icon={<BuildRoundedIcon color="primary" />}>
+  <Stack spacing={1.5}>
+    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+      <Stack spacing={0.5}>
+        <Typography variant="body2">
+          <strong>Active:</strong> {String(ticket.active)}
+        </Typography>
+        <Typography variant="body2">
+          <strong>Created At:</strong> {ticket.createdAt || "—"}
+        </Typography>
+        <Typography variant="body2">
+          <strong>Updated At:</strong> {ticket.updatedAt || "—"}
+        </Typography>
+      </Stack>
+    </Paper>
+
+    <Divider />
+
+    <Typography variant="subtitle1" fontWeight={800}>
+      Activity Log
+    </Typography>
+
+    {activityEntries.length === 0 ? (
+      <Alert severity="info" variant="outlined">
+        No system activity has been logged for this service ticket yet.
+      </Alert>
+    ) : (
+      <Stack spacing={1}>
+        {activityEntries.map((entry) => (
+          <Paper
+            key={entry.id}
+            variant="outlined"
+            sx={{
+              p: 1.25,
+              borderRadius: 1,
+              bgcolor: alpha(theme.palette.primary.main, 0.025),
+            }}
+          >
+            <Stack spacing={0.75}>
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", sm: "center" }}
+              >
+                <Typography variant="subtitle2" fontWeight={800}>
+                  {entry.title || "Activity"}
+                </Typography>
+
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={formatActivityDate(entry.createdAt)}
+                  sx={{ borderRadius: 1, fontWeight: 700 }}
+                />
+              </Stack>
+
+              {entry.description ? (
+                <Typography variant="body2" color="text.secondary">
+                  {entry.description}
+                </Typography>
+              ) : null}
+
+              {entry.details?.length ? (
+                <Stack spacing={0.35}>
+                  {entry.details.slice(0, 8).map((detail, index) => (
+                    <Typography
+                      key={`${entry.id}-detail-${index}`}
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: "block" }}
+                    >
+                      • {detail}
                     </Typography>
-                    <Typography variant="body2">
-                      <strong>Created At:</strong> {ticket.createdAt || "—"}
-                    </Typography>
-                    <Typography variant="body2">
-                      <strong>Updated At:</strong> {ticket.updatedAt || "—"}
-                    </Typography>
-                  </Stack>
-                </Section>
+                  ))}
+                </Stack>
+              ) : null}
+
+              <Typography variant="caption" color="text.secondary">
+                Logged by {entry.createdByName || "System"}
+                {entry.createdByRole ? ` • ${entry.createdByRole}` : ""}
+              </Typography>
+            </Stack>
+          </Paper>
+        ))}
+      </Stack>
+    )}
+  </Stack>
+</Section>
               </Stack>
             </Box>
 
