@@ -374,6 +374,39 @@ async function getExistingSupplierInvoiceStatus(invoiceId: string) {
   };
 }
 
+async function getExistingSupplierInvoiceByUid(uid: number | string | null) {
+  const cleanUid = cleanText(uid);
+  if (!cleanUid) {
+    return {
+      exists: false,
+      invoiceId: "",
+      status: "",
+    };
+  }
+
+  const snap = await adminFirestore
+    .collection("supplierInvoiceInbox")
+    .where("uid", "==", Number.isFinite(Number(cleanUid)) ? Number(cleanUid) : cleanUid)
+    .limit(1)
+    .get();
+
+  if (snap.empty) {
+    return {
+      exists: false,
+      invoiceId: "",
+      status: "",
+    };
+  }
+
+  const doc = snap.docs[0];
+
+  return {
+    exists: true,
+    invoiceId: doc.id,
+    status: cleanText(doc.data()?.status),
+  };
+}
+
 async function areAllPoEmailMatchesAlreadyProcessed(args: {
   poCodes: string[];
   messageId: string;
@@ -462,8 +495,8 @@ export async function scanPoInbox(): Promise<PoInboxScanResult> {
         let subject = cleanText(envelope.subject);
         let from = envelopeAddressToText(envelope.from);
         let messageId =
-          cleanText(envelope.messageId) ||
-          `${lightMessage.uid || "unknown"}-${Date.now()}`;
+          cleanText(envelope.messageId) || `uid_${lightMessage.uid || "unknown"}`;
+
         let detectedPoCodes = extractPoCodes([subject, from].join("\n"));
 
         try {
@@ -491,6 +524,47 @@ export async function scanPoInbox(): Promise<PoInboxScanResult> {
             });
             continue;
           }
+
+          const supplierByUid = await getExistingSupplierInvoiceByUid(
+  lightMessage.uid || null
+);
+
+if (
+  supplierByUid.exists &&
+  isFinalSupplierInvoiceStatus(supplierByUid.status)
+) {
+  result.skipped += 1;
+  result.debug.scannedEmails.push({
+    uid: lightMessage.uid || null,
+    subject,
+    from,
+    messageId,
+    detectedPoCodes,
+    reason: `Skipped: supplier invoice already finalized by UID as ${supplierByUid.invoiceId}.`,
+  });
+  continue;
+}
+
+if (
+  supplierByUid.exists &&
+  shouldRetrySupplierInvoiceOcr(supplierByUid.status)
+) {
+  const ocrRun = await runSupplierInvoiceOcr(supplierByUid.invoiceId);
+  result.supplierInvoiceOcrRuns.push(ocrRun);
+
+  result.skipped += 1;
+  result.debug.scannedEmails.push({
+    uid: lightMessage.uid || null,
+    subject,
+    from,
+    messageId,
+    detectedPoCodes,
+    reason: `Retried supplier invoice OCR by UID as ${supplierByUid.invoiceId}. ${formatOcrStatusText(
+      ocrRun
+    )}`,
+  });
+  continue;
+}
 
           if (
             detectedPoCodes.length > 0 &&
@@ -542,7 +616,7 @@ export async function scanPoInbox(): Promise<PoInboxScanResult> {
           messageId =
             cleanText(parsed.messageId) ||
             messageId ||
-            `${lightMessage.uid || "unknown"}-${Date.now()}`;
+            `uid_${lightMessage.uid || "unknown"}`;
 
           const allAttachments = parsed.attachments || [];
           const pdfAttachments = allAttachments.filter(isPdfAttachment);
