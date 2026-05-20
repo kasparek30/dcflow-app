@@ -425,11 +425,21 @@ async function areAllPoEmailMatchesAlreadyProcessed(args: {
   return true;
 }
 
-export async function scanPoInbox(): Promise<PoInboxScanResult> {
+export async function scanPoInbox(options?: {
+  scanLimit?: number;
+  maxFullMessagesPerRun?: number;
+  targetSubjectContains?: string | null;
+}): Promise<PoInboxScanResult> {
   const mailboxName = "INBOX";
 
-  // Larger window is safe now because we only fetch full email source when needed.
-  const scanLimit = 50;
+const scanLimit = Math.max(1, Math.min(Number(options?.scanLimit || 50), 100));
+const maxFullMessagesPerRun = Math.max(
+  1,
+  Math.min(Number(options?.maxFullMessagesPerRun || 5), 10)
+);
+const targetSubjectContains = cleanText(options?.targetSubjectContains).toLowerCase();
+
+let fullMessagesFetched = 0;
 
   const client = new ImapFlow({
     host: requiredEnv("PO_INBOX_HOST"),
@@ -592,6 +602,22 @@ if (
             from,
           });
 
+          if (
+  targetSubjectContains &&
+  !subject.toLowerCase().includes(targetSubjectContains)
+) {
+  result.skipped += 1;
+  result.debug.scannedEmails.push({
+    uid: lightMessage.uid || null,
+    subject,
+    from,
+    messageId,
+    detectedPoCodes,
+    reason: `Skipped targeted scan: subject does not include "${targetSubjectContains}".`,
+  });
+  continue;
+}
+
           if (detectedPoCodes.length === 0 && !likelySupplierInvoice) {
             result.skipped += 1;
             result.debug.scannedEmails.push({
@@ -605,6 +631,21 @@ if (
             });
             continue;
           }
+
+          if (fullMessagesFetched >= maxFullMessagesPerRun) {
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid: lightMessage.uid || null,
+              subject,
+              from,
+              messageId,
+              detectedPoCodes,
+              reason: `Skipped: full message processing limit reached for this scan (${maxFullMessagesPerRun}).`,
+            });
+            continue;
+          }
+
+          fullMessagesFetched += 1;
 
           const parsed = await fetchAndParseFullMessage({
             client,

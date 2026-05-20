@@ -25,7 +25,16 @@ export async function GET(req: Request) {
       return unauthorized();
     }
 
-    const result = await scanPoInbox();
+    const url = new URL(req.url);
+
+const result = await scanPoInbox({
+  scanLimit: Number(url.searchParams.get("limit") || 50),
+  maxFullMessagesPerRun: Number(url.searchParams.get("maxFull") || 5),
+  targetSubjectContains:
+    url.searchParams.get("invoice") ||
+    url.searchParams.get("subject") ||
+    null,
+});
 
     return NextResponse.json({
       ok: true,
