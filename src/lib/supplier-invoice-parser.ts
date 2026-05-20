@@ -40,6 +40,13 @@ function clean(value: string | null | undefined) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function overlapsAnySpan(index: number, length: number, spans: Array<{ start: number; end: number }>) {
+  const start = index;
+  const end = index + length;
+
+  return spans.some((span) => start < span.end && end > span.start);
+}
+
 function parseFarmersLineItems(flat: string) {
   const items: ParsedSupplierInvoiceLineItem[] = [];
 
@@ -51,76 +58,80 @@ function parseFarmersLineItems(flat: string) {
 
   const stopSection = lineSection.split("I understand that")[0] || lineSection;
 
-  const patterns = [
-    // Full format:
-    // 1 1 1 EA 5149729 8X1-1.4 CABINET SCREW 12.99 1 11.691 /EA 11.69
-    /(\d+)\s+(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]+\.[0-9]{2})\s+(\d+)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi,
+  const occupiedSpans: Array<{ start: number; end: number }> = [];
 
-    // Short Farmers format:
-    // 1 5 EA 8111486 1/2 CPVC CAP .69 5 0.621 /EA 3.11
-    /(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi,
-  ];
+  // Full Farmers format:
+  // 2 1 1 EA 7059157 BLUE CLASSIC CHALK REEL & CHALK 7.99 1 7.191 /EA 7.19CN
+  const fullPattern =
+    /(\d+)\s+(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
 
-  for (const pattern of patterns) {
-    for (const match of stopSection.matchAll(pattern)) {
-      if (match.length === 12) {
-        items.push({
-          lineNumber: toNumber(match[1]),
-          shippedQty: toNumber(match[2]),
-          orderedQty: toNumber(match[3]),
-          unitOfMeasure: match[4] || null,
-          sku: match[5] || null,
-          description: clean(match[6]),
-          suggestedPrice: toNumber(match[7]),
-          units: toNumber(match[8]),
-          unitPrice: toNumber(match[9]),
-          pricePer: match[10] || null,
-          extension: toNumber(match[11]),
-          rawLine: clean(match[0]),
-        });
-      }
+  for (const match of stopSection.matchAll(fullPattern)) {
+    const index = match.index ?? -1;
+    const raw = clean(match[0]);
 
-      if (match.length === 11) {
-        items.push({
-          lineNumber: toNumber(match[1]),
-          shippedQty: toNumber(match[2]),
-          orderedQty: toNumber(match[2]),
-          unitOfMeasure: match[3] || null,
-          sku: match[4] || null,
-          description: clean(match[5]),
-          suggestedPrice: toNumber(match[6]),
-          units: toNumber(match[7]),
-          unitPrice: toNumber(match[8]),
-          pricePer: match[9] || null,
-          extension: toNumber(match[10]),
-          rawLine: clean(match[0]),
-        });
-      }
+    if (index >= 0) {
+      occupiedSpans.push({
+        start: index,
+        end: index + match[0].length,
+      });
     }
+
+    items.push({
+      lineNumber: toNumber(match[1]),
+      shippedQty: toNumber(match[2]),
+      orderedQty: toNumber(match[3]),
+      unitOfMeasure: match[4] || null,
+      sku: match[5] || null,
+      description: clean(match[6]),
+      suggestedPrice: toNumber(match[7]),
+      units: toNumber(match[8]),
+      unitPrice: toNumber(match[9]),
+      pricePer: match[10] || null,
+      extension: toNumber(match[11]),
+      rawLine: raw,
+    });
   }
 
-  const seen = new Set<string>();
+  // Short Farmers format:
+  // 1 5 EA 8111486 1/2 CPVC CAP .69 5 0.621 /EA 3.11
+  //
+  // Important:
+  // This can accidentally match inside a full-format row, so we skip matches
+  // that overlap a previously matched full-format row.
+  const shortPattern =
+    /(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
 
-  return items.filter((item) => {
-    const key = [
-      item.lineNumber,
-      item.sku,
-      item.description,
-      item.extension,
-      item.rawLine,
-    ].join("__");
+  for (const match of stopSection.matchAll(shortPattern)) {
+    const index = match.index ?? -1;
 
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+    if (index >= 0 && overlapsAnySpan(index, match[0].length, occupiedSpans)) {
+      continue;
+    }
+
+    items.push({
+      lineNumber: toNumber(match[1]),
+      shippedQty: toNumber(match[2]),
+      orderedQty: toNumber(match[2]),
+      unitOfMeasure: match[3] || null,
+      sku: match[4] || null,
+      description: clean(match[5]),
+      suggestedPrice: toNumber(match[6]),
+      units: toNumber(match[7]),
+      unitPrice: toNumber(match[8]),
+      pricePer: match[9] || null,
+      extension: toNumber(match[10]),
+      rawLine: clean(match[0]),
+    });
+  }
+
+  return items;
 }
 
 export function parseSupplierInvoiceText(text: string): ParsedSupplierInvoice {
   const source = String(text || "");
   const flat = clean(source);
 
-  const poCode = flat.match(/\bS\d{3,}[A-Z]{1,2}\b/i)?.[0]?.toUpperCase() || null;
+  const poCode = flat.match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/i)?.[0]?.toUpperCase() || null;
 
   const invoiceNumber =
     flat.match(/INVOICE:\s*([0-9]+)/i)?.[1] ||
