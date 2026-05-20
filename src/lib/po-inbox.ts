@@ -284,7 +284,7 @@ async function saveUnmatchedSupplierInvoice(args: {
 
 export async function scanPoInbox(): Promise<PoInboxScanResult> {
   const mailboxName = "INBOX";
-  const scanLimit = 10;
+  const scanLimit = 5;
 
   const client = new ImapFlow({
     host: requiredEnv("PO_INBOX_HOST"),
@@ -596,11 +596,13 @@ export async function scanPoInbox(): Promise<PoInboxScanResult> {
       lock.release();
     }
   } finally {
-    try {
-      await client.logout();
-    } catch (err) {
-      console.warn("PO inbox logout warning:", err);
-    }
+      try {
+        if ((client as any).usable !== false) {
+          await client.logout();
+        }
+      } catch (err) {
+        console.warn("PO inbox logout warning:", err);
+      }
   }
 
   return result;
