@@ -1,5 +1,6 @@
 // src/lib/ocr.ts
 import vision from "@google-cloud/vision";
+import { PDFDocument } from "pdf-lib";
 import { extractText, getDocumentProxy } from "unpdf";
 
 function getPrivateKeyFromEnv(raw?: string) {
@@ -82,4 +83,52 @@ export async function extractTextFromPdfBuffer(buffer: Buffer) {
   }
 
   return "";
+}
+
+export async function splitPdfIntoSinglePageBuffers(buffer: Buffer) {
+  const sourcePdf = await PDFDocument.load(buffer, {
+    ignoreEncryption: true,
+  } as any);
+
+  const pageCount = sourcePdf.getPageCount();
+
+  if (pageCount <= 1) {
+    return [Buffer.from(buffer)];
+  }
+
+  const pages: Buffer[] = [];
+
+  for (let i = 0; i < pageCount; i += 1) {
+    const pagePdf = await PDFDocument.create();
+    const [copiedPage] = await pagePdf.copyPages(sourcePdf, [i]);
+    pagePdf.addPage(copiedPage);
+
+    const bytes = await pagePdf.save();
+    pages.push(Buffer.from(bytes));
+  }
+
+  return pages;
+}
+
+export async function extractTextFromPdfBufferByPage(buffer: Buffer) {
+  const pageBuffers = await splitPdfIntoSinglePageBuffers(buffer);
+
+  const pages: Array<{
+    pageNumber: number;
+    text: string;
+    buffer: Buffer;
+  }> = [];
+
+  for (let i = 0; i < pageBuffers.length; i += 1) {
+    const pageBuffer = pageBuffers[i];
+    const text = await extractTextFromPdfBuffer(pageBuffer);
+
+    pages.push({
+      pageNumber: i + 1,
+      text,
+      buffer: pageBuffer,
+    });
+  }
+
+  return pages;
 }

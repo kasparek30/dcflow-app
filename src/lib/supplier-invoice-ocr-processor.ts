@@ -1,7 +1,10 @@
 // src/lib/supplier-invoice-ocr-processor.ts
 import { FieldValue } from "firebase-admin/firestore";
 import { adminFirestore, adminStorageBucket } from "./firebase-admin";
-import { extractTextFromPdfBuffer } from "./ocr";
+import {
+  extractTextFromPdfBuffer,
+  splitPdfIntoSinglePageBuffers,
+} from "./ocr";
 import { parseSupplierInvoiceText } from "./supplier-invoice-parser";
 import { importSupplierMaterialsToTrip } from "./import-supplier-materials-to-trip";
 
@@ -19,10 +22,117 @@ type SavedAttachment = {
   extractedMeta?: Record<string, unknown> | null;
 };
 
+type LinkableInvoiceAttachment = {
+  poCode: string;
+  attachment: SavedAttachment;
+  ocrText: string;
+  parsedInvoice: ReturnType<typeof parseSupplierInvoiceText> | null;
+  sourceKind: "standard_pdf" | "moore_batch_page";
+  pageNumber?: number | null;
+};
+
+function clean(value: unknown) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
 function extractPoCodes(text: string) {
   const source = String(text || "").toUpperCase();
   const matches = source.match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/g) || [];
   return Array.from(new Set(matches));
+}
+
+function safeFilePart(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 140);
+}
+
+function buildDownloadUrl(bucketName: string, storagePath: string) {
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
+    bucketName
+  )}/o/${encodeURIComponent(storagePath)}?alt=media`;
+}
+
+function isMooreInvoiceText(text: string, parsed?: ReturnType<typeof parseSupplierInvoiceText> | null) {
+  const source = String(text || "").toUpperCase();
+  return parsed?.vendorName === "MOORE SUPPLY" || source.includes("MOORE SUPPLY");
+}
+
+async function purchaseOrderExists(poCode: string) {
+  const poSnap = await adminFirestore.collection("purchaseOrders").doc(poCode).get();
+  return poSnap.exists;
+}
+
+async function saveMoorePageAttachmentToPurchaseOrderStorage(args: {
+  poCode: string;
+  invoiceId: string;
+  sourceAttachment: SavedAttachment;
+  pageNumber: number;
+  pageBuffer: Buffer;
+  pageText: string;
+  parsedInvoice: ReturnType<typeof parseSupplierInvoiceText> | null;
+}) {
+  const now = new Date().toISOString();
+  const bucket = adminStorageBucket;
+  const bucketName = bucket.name;
+
+  const invoiceNumber = clean(args.parsedInvoice?.invoiceNumber) || `page-${args.pageNumber}`;
+  const baseFilename =
+    safeFilePart(`moore_${invoiceNumber}_PO_${args.poCode}_page_${args.pageNumber}.pdf`) ||
+    `moore_PO_${args.poCode}_page_${args.pageNumber}.pdf`;
+
+  const sourceId =
+    safeFilePart(args.sourceAttachment.id || args.sourceAttachment.filename || args.invoiceId) ||
+    "moore_batch";
+
+  const attachmentId =
+    safeFilePart(`${args.invoiceId}_${args.poCode}_page_${args.pageNumber}_${invoiceNumber}`) ||
+    `${args.poCode}_page_${args.pageNumber}_${Date.now()}`;
+
+  const storagePath = `purchaseOrders/${args.poCode}/invoices/${sourceId}_${attachmentId}_${baseFilename}`;
+  const file = bucket.file(storagePath);
+
+  await file.save(args.pageBuffer, {
+    resumable: false,
+    metadata: {
+      contentType: "application/pdf",
+      metadata: {
+        ownerCode: args.poCode,
+        messageId: String(args.invoiceId || ""),
+        sourceSupplierInvoiceId: args.invoiceId,
+        sourceAttachmentId: String(args.sourceAttachment.id || ""),
+        sourceAttachmentFilename: String(args.sourceAttachment.filename || ""),
+        vendorName: "MOORE SUPPLY",
+        invoiceNumber,
+        pageNumber: String(args.pageNumber),
+        uploadedAt: now,
+      },
+    },
+  });
+
+  return {
+    id: attachmentId,
+    filename: baseFilename,
+    contentType: "application/pdf",
+    size: args.pageBuffer.length,
+    storagePath,
+    downloadUrl: buildDownloadUrl(bucketName, storagePath),
+    uploadedAt: now,
+    ocrText: args.pageText.length > 50000 ? args.pageText.slice(0, 50000) : args.pageText,
+    parsedInvoice: args.parsedInvoice,
+    extractedMeta: {
+      extractionMethod: "native_unpdf",
+      ocrStatus: args.pageText ? "complete" : "empty",
+      ocrProcessedAt: now,
+      sourceSupplierInvoiceId: args.invoiceId,
+      sourceAttachmentId: args.sourceAttachment.id || null,
+      supplierParser: "moore_batch_page",
+      pageNumber: args.pageNumber,
+      matchedPoCode: args.poCode,
+    },
+  } as SavedAttachment;
 }
 
 async function appendAttachmentToPurchaseOrder(args: {
@@ -65,7 +175,10 @@ async function appendAttachmentToPurchaseOrder(args: {
       parsedInvoice: args.parsedInvoice,
       extractedMeta: {
         ...(args.attachment.extractedMeta || {}),
-        extractionMethod: "native_unpdf",
+        extractionMethod:
+          String(args.attachment.extractedMeta?.supplierParser || "") === "moore_batch_page"
+            ? "native_unpdf_page_split"
+            : "native_unpdf",
         ocrStatus: args.ocrText ? "complete" : "empty",
         ocrProcessedAt: now,
         sourceSupplierInvoiceId: args.invoiceId,
@@ -98,6 +211,7 @@ async function appendAttachmentToPurchaseOrder(args: {
       invoicePdfAttachmentCount: nextAttachments.length,
       matchedAttachments: nextAttachments,
       matchedAttachmentIds: nextAttachments.map((a: any) => String(a.id || "")),
+      matchedInvoiceId: args.invoiceId,
       supplierInvoiceInboxIds: FieldValue.arrayUnion(args.invoiceId),
       parsedInvoice: args.parsedInvoice,
       parsedInvoiceNumber: args.parsedInvoice?.invoiceNumber || null,
@@ -135,8 +249,12 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
   let processed = 0;
   let failed = 0;
   let linked = 0;
+
   const detectedPoCodes = new Set<string>();
+  const matchedPoCodes = new Set<string>();
   const updatedAttachments: SavedAttachment[] = [];
+  const linkableAttachments: LinkableInvoiceAttachment[] = [];
+
   let parsedInvoice: ReturnType<typeof parseSupplierInvoiceText> | null = null;
 
   for (const attachment of attachments) {
@@ -158,27 +276,131 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
 
     try {
       const [buffer] = await adminStorageBucket.file(storagePath).download();
-      const ocrText = await extractTextFromPdfBuffer(buffer);
-      const poCodes = extractPoCodes(ocrText);
+      const fullText = await extractTextFromPdfBuffer(buffer);
+      const fullParsed = parseSupplierInvoiceText(fullText);
+      parsedInvoice = fullParsed;
 
-      const parsed = parseSupplierInvoiceText(ocrText);
-      parsedInvoice = parsed;
+      const contextText = [
+        invoice.emailFrom || "",
+        invoice.emailSubject || "",
+        attachment.filename || "",
+        fullText,
+      ].join("\n");
+
+      const isMoore = isMooreInvoiceText(contextText, fullParsed);
+
+      if (isMoore) {
+        const pageBuffers = await splitPdfIntoSinglePageBuffers(buffer);
+        let mooreMatchedPageCount = 0;
+        let mooreDetectedPagePoCount = 0;
+
+        for (let pageIndex = 0; pageIndex < pageBuffers.length; pageIndex += 1) {
+          const pageNumber = pageIndex + 1;
+          const pageBuffer = pageBuffers[pageIndex];
+
+          const pageText = await extractTextFromPdfBuffer(pageBuffer);
+          const pageParsed = parseSupplierInvoiceText(pageText);
+          const pagePoCodes = Array.from(
+            new Set([
+              ...extractPoCodes(pageText),
+              pageParsed.poCode || "",
+            ].filter(Boolean))
+          );
+
+          pagePoCodes.forEach((code) => detectedPoCodes.add(code));
+
+          if (pagePoCodes.length === 0) {
+            continue;
+          }
+
+          mooreDetectedPagePoCount += 1;
+
+          for (const poCode of pagePoCodes) {
+            if (!(await purchaseOrderExists(poCode))) {
+              continue;
+            }
+
+            const pageAttachment = await saveMoorePageAttachmentToPurchaseOrderStorage({
+              poCode,
+              invoiceId,
+              sourceAttachment: attachment,
+              pageNumber,
+              pageBuffer,
+              pageText,
+              parsedInvoice: pageParsed,
+            });
+
+            linkableAttachments.push({
+              poCode,
+              attachment: pageAttachment,
+              ocrText: pageText,
+              parsedInvoice: pageParsed,
+              sourceKind: "moore_batch_page",
+              pageNumber,
+            });
+
+            mooreMatchedPageCount += 1;
+            break;
+          }
+        }
+
+        updatedAttachments.push({
+          ...attachment,
+          ocrText: fullText.length > 50000 ? fullText.slice(0, 50000) : fullText,
+          parsedInvoice: fullParsed,
+          extractedMeta: {
+            ...(attachment.extractedMeta || {}),
+            extractionMethod: "native_unpdf",
+            ocrStatus: fullText ? "complete" : "empty",
+            ocrProcessedAt: now,
+            supplierParser: "moore_batch",
+            pageCount: pageBuffers.length,
+            detectedPoCodes: Array.from(detectedPoCodes),
+            mooreDetectedPagePoCount,
+            mooreMatchedPageCount,
+            note:
+              "Moore batch PDFs are split by page. Only pages with a matching DCFlow PO are attached to purchase orders.",
+          },
+        });
+
+        processed += pageBuffers.length;
+        continue;
+      }
+
+      const poCodes = Array.from(
+        new Set([
+          ...extractPoCodes(fullText),
+          fullParsed.poCode || "",
+        ].filter(Boolean))
+      );
 
       poCodes.forEach((code) => detectedPoCodes.add(code));
-      if (parsed.poCode) detectedPoCodes.add(parsed.poCode);
 
-      updatedAttachments.push({
+      const updatedAttachment: SavedAttachment = {
         ...attachment,
-        ocrText: ocrText.length > 50000 ? ocrText.slice(0, 50000) : ocrText,
-        parsedInvoice: parsed,
+        ocrText: fullText.length > 50000 ? fullText.slice(0, 50000) : fullText,
+        parsedInvoice: fullParsed,
         extractedMeta: {
           ...(attachment.extractedMeta || {}),
           extractionMethod: "native_unpdf",
-          ocrStatus: ocrText ? "complete" : "empty",
+          ocrStatus: fullText ? "complete" : "empty",
           ocrProcessedAt: now,
-          detectedPoCodes: Array.from(new Set([...poCodes, parsed.poCode].filter(Boolean))),
+          detectedPoCodes: poCodes,
         },
-      });
+      };
+
+      updatedAttachments.push(updatedAttachment);
+
+      for (const poCode of poCodes) {
+        linkableAttachments.push({
+          poCode,
+          attachment: updatedAttachment,
+          ocrText: fullText,
+          parsedInvoice: fullParsed,
+          sourceKind: "standard_pdf",
+          pageNumber: null,
+        });
+      }
 
       processed += 1;
     } catch (err) {
@@ -196,41 +418,49 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
     }
   }
 
-  const poCodes = Array.from(detectedPoCodes);
-
   let matchedPoCode: string | null = null;
   let linkReason: string | null = null;
   let materialImport: Awaited<ReturnType<typeof importSupplierMaterialsToTrip>> | null =
     null;
+  const materialImports: Array<{
+    poCode: string;
+    result: Awaited<ReturnType<typeof importSupplierMaterialsToTrip>>;
+  }> = [];
 
-  if (poCodes.length > 0 && updatedAttachments.length > 0) {
-    for (const poCode of poCodes) {
-      const linkResult = await appendAttachmentToPurchaseOrder({
-        poCode,
-        invoiceId,
-        invoiceData: invoice,
-        attachment: updatedAttachments[0],
-        ocrText: String(updatedAttachments[0].ocrText || ""),
-        parsedInvoice,
+  for (const item of linkableAttachments) {
+    const linkResult = await appendAttachmentToPurchaseOrder({
+      poCode: item.poCode,
+      invoiceId,
+      invoiceData: invoice,
+      attachment: item.attachment,
+      ocrText: item.ocrText,
+      parsedInvoice: item.parsedInvoice,
+    });
+
+    if (linkResult.ok) {
+      if (!matchedPoCode) matchedPoCode = item.poCode;
+      matchedPoCodes.add(item.poCode);
+      linked += 1;
+      linkReason = linkResult.reason;
+
+      const importResult = await importSupplierMaterialsToTrip({
+        poCode: item.poCode,
+        supplierInvoiceId: invoiceId,
+        parsedInvoice: item.parsedInvoice,
       });
 
-      if (linkResult.ok) {
-        matchedPoCode = poCode;
-        linked += 1;
-        linkReason = linkResult.reason;
-
-        materialImport = await importSupplierMaterialsToTrip({
-          poCode,
-          supplierInvoiceId: invoiceId,
-          parsedInvoice,
-        });
-
-        break;
-      }
-
+      materialImport = importResult;
+      materialImports.push({
+        poCode: item.poCode,
+        result: importResult,
+      });
+    } else {
       linkReason = linkResult.reason;
     }
   }
+
+  const poCodes = Array.from(detectedPoCodes);
+  const matchedPoCodeList = Array.from(matchedPoCodes);
 
   const nextStatus = matchedPoCode
     ? "matched"
@@ -244,11 +474,13 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
       attachments: updatedAttachments,
       detectedPoCodes: poCodes,
       matchedPoCode,
+      matchedPoCodes: matchedPoCodeList,
       parsedInvoice,
       parsedInvoiceNumber: parsedInvoice?.invoiceNumber || null,
       parsedInvoiceTotal: parsedInvoice?.total ?? null,
       parsedLineItems: parsedInvoice?.lineItems || [],
       materialImport,
+      materialImports,
       ocrProcessedAt: now,
       linkReason,
       updatedAt: now,
@@ -263,6 +495,7 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
     failed,
     detectedPoCodes: poCodes,
     matchedPoCode,
+    matchedPoCodes: matchedPoCodeList,
     linked,
     status: nextStatus,
     linkReason,
@@ -270,5 +503,6 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
     parsedInvoiceTotal: parsedInvoice?.total ?? null,
     parsedLineItemCount: parsedInvoice?.lineItems.length || 0,
     materialImport,
+    materialImports,
   };
 }
