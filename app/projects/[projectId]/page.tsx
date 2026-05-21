@@ -81,12 +81,18 @@ import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import WorkRoundedIcon from "@mui/icons-material/WorkRounded";
+import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
+import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
 
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import {
+  generatePurchaseOrderForProjectTrip,
+  type PurchaseOrderRecord,
+} from "../../../src/lib/purchase-orders";
 import {
   queueProjectTripTimeEntryWrites,
   upsertProjectTripTimeEntriesForCrew,
@@ -160,6 +166,7 @@ type PlanFileMeta = {
 
 type ProjectActivityType =
   | "project_updated"
+  | "purchase_order_created"
   | "trip_created"
   | "trip_updated"
   | "trip_cancelled"
@@ -254,6 +261,32 @@ type TripDoc = {
   createdByUid?: string | null;
   updatedAt?: string;
   updatedByUid?: string | null;
+};
+
+type PurchaseOrderAttachment = {
+  id?: string;
+  filename?: string;
+  contentType?: string;
+  size?: number;
+  storagePath?: string;
+  downloadUrl?: string;
+  uploadedAt?: string;
+  parsedInvoice?: any;
+  extractedMeta?: Record<string, unknown> | null;
+};
+
+type ProjectPurchaseOrder = PurchaseOrderRecord & {
+  matchedAttachments?: PurchaseOrderAttachment[];
+  invoiceAttachmentCount?: number | null;
+  invoicePdfAttachmentCount?: number | null;
+  parsedInvoiceNumber?: string | null;
+  parsedInvoiceTotal?: number | null;
+  parsedLineItems?: any[];
+  importedMaterialCount?: number;
+  supplierMaterialsImportedAt?: string | null;
+  invoiceEmailSubject?: string | null;
+  invoiceEmailFrom?: string | null;
+  invoiceEmailMatchedAt?: string | null;
 };
 
 type TripModalMode = "create" | "edit";
@@ -773,6 +806,42 @@ function formatTripScheduleLine(t: TripDoc) {
   return `${formatTripDate(t.date)} • ${formatTripWindow(String(t.timeWindow || "all_day"))} • ${t.startTime || "--:--"}–${t.endTime || "--:--"}`;
 }
 
+function formatPoStatus(status?: string | null) {
+  const s = safeTrim(status).toLowerCase();
+  if (s === "matched") return "Matched";
+  if (s === "cancelled") return "Cancelled";
+  if (s === "closed") return "Closed";
+  return "Open";
+}
+
+function poStatusColor(
+  status?: string | null,
+): "default" | "primary" | "success" | "warning" | "error" {
+  const s = safeTrim(status).toLowerCase();
+  if (s === "matched") return "success";
+  if (s === "open") return "primary";
+  if (s === "cancelled") return "error";
+  if (s === "closed") return "default";
+  return "default";
+}
+
+function getPoMatchedAttachments(po?: ProjectPurchaseOrder | null) {
+  return Array.isArray(po?.matchedAttachments) ? po.matchedAttachments : [];
+}
+
+function getLatestPoAttachment(po?: ProjectPurchaseOrder | null) {
+  const attachments = getPoMatchedAttachments(po);
+  return attachments[attachments.length - 1] || null;
+}
+
+function formatPoTripContext(po: ProjectPurchaseOrder) {
+  if (po.projectStageKey === "roughIn") return "Rough-In";
+  if (po.projectStageKey === "topOutVent") return "Top-Out / Vent";
+  if (po.projectStageKey === "trimFinish") return "Trim / Finish";
+  if (po.billingPeriodLabel) return po.billingPeriodLabel;
+  return "Project Trip";
+}
+
 function windowToTimes(window: string) {
   const w = String(window || "").toLowerCase();
   if (w === "am") return { start: "08:00", end: "12:00" };
@@ -854,6 +923,7 @@ function activityTypeColor(
     case "trip_paused":
     case "trip_cancelled":
       return "warning";
+    case "purchase_order_created":
     case "trip_created":
     case "trip_updated":
     case "trip_started":
@@ -871,6 +941,8 @@ function activityTypeColor(
 
 function activityTypeLabel(type: ProjectActivityType) {
   switch (type) {
+    case "purchase_order_created":
+      return "Purchase Order Created";
     case "attachment_added":
       return "Attachment Added";
     case "attachment_removed":
@@ -1110,6 +1182,13 @@ export default function ProjectDetailPage() {
   const [tripsError, setTripsError] = useState("");
   const [projectTrips, setProjectTrips] = useState<TripDoc[]>([]);
 
+  const [purchaseOrdersLoading, setPurchaseOrdersLoading] = useState(true);
+  const [purchaseOrdersError, setPurchaseOrdersError] = useState("");
+  const [purchaseOrders, setPurchaseOrders] = useState<ProjectPurchaseOrder[]>([]);
+  const [poActionBusyTripId, setPoActionBusyTripId] = useState<string | null>(null);
+  const [poActionError, setPoActionError] = useState("");
+  const [poActionSuccess, setPoActionSuccess] = useState("");
+
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityError, setActivityError] = useState("");
   const [activityLogs, setActivityLogs] = useState<ProjectActivityEntry[]>([]);
@@ -1327,6 +1406,32 @@ const canMarkTmReadyToBill =
   }, [projectTrips]);
 
   const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
+
+  const purchaseOrdersByTrip = useMemo(() => {
+  const map = new Map<string, ProjectPurchaseOrder[]>();
+
+  for (const po of purchaseOrders) {
+    const tripId = safeTrim(po.tripId);
+    if (!tripId) continue;
+
+    const existing = map.get(tripId) || [];
+    existing.push(po);
+    map.set(tripId, existing);
+  }
+
+  for (const [, items] of map) {
+    items.sort((a, b) =>
+      `${a.createdAt || ""}_${a.poCode}`.localeCompare(`${b.createdAt || ""}_${b.poCode}`),
+    );
+  }
+
+  return map;
+}, [purchaseOrders]);
+
+  const projectPoPrefixPreview = useMemo(() => {
+    if (isTmProject) return "T";
+    return "P";
+  }, [isTmProject]);
 
   const projectBillingSummary = useMemo(() => {
     const summary = getProjectBillingSummary(projectTrips, project);
@@ -2019,6 +2124,68 @@ const canMarkTmReadyToBill =
     }
 
     loadProjectTrips();
+  }, [projectId]);
+
+    useEffect(() => {
+    if (!projectId) return;
+
+    async function loadProjectPurchaseOrders() {
+      setPurchaseOrdersLoading(true);
+      setPurchaseOrdersError("");
+
+      try {
+        const snap = await getDocs(
+          query(collection(db, "purchaseOrders"), where("projectId", "==", projectId)),
+        );
+
+        const items: ProjectPurchaseOrder[] = snap.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            ...(data as PurchaseOrderRecord),
+            poCode: data.poCode || docSnap.id,
+            matchedAttachments: Array.isArray(data.matchedAttachments)
+              ? data.matchedAttachments
+              : [],
+            invoiceAttachmentCount:
+              typeof data.invoiceAttachmentCount === "number"
+                ? data.invoiceAttachmentCount
+                : null,
+            invoicePdfAttachmentCount:
+              typeof data.invoicePdfAttachmentCount === "number"
+                ? data.invoicePdfAttachmentCount
+                : null,
+            parsedInvoiceNumber: data.parsedInvoiceNumber ?? null,
+            parsedInvoiceTotal:
+              typeof data.parsedInvoiceTotal === "number"
+                ? data.parsedInvoiceTotal
+                : null,
+            parsedLineItems: Array.isArray(data.parsedLineItems)
+              ? data.parsedLineItems
+              : [],
+            importedMaterialCount:
+              typeof data.importedMaterialCount === "number"
+                ? data.importedMaterialCount
+                : 0,
+            supplierMaterialsImportedAt: data.supplierMaterialsImportedAt ?? null,
+            invoiceEmailSubject: data.invoiceEmailSubject ?? null,
+            invoiceEmailFrom: data.invoiceEmailFrom ?? null,
+            invoiceEmailMatchedAt: data.invoiceEmailMatchedAt ?? null,
+          } as ProjectPurchaseOrder;
+        });
+
+        items.sort((a, b) =>
+          `${b.createdAt || ""}_${b.poCode}`.localeCompare(`${a.createdAt || ""}_${a.poCode}`),
+        );
+
+        setPurchaseOrders(items);
+      } catch (err: any) {
+        setPurchaseOrdersError(err?.message || "Failed to load project purchase orders.");
+      } finally {
+        setPurchaseOrdersLoading(false);
+      }
+    }
+
+    loadProjectPurchaseOrders();
   }, [projectId]);
 
   useEffect(() => {
@@ -4661,6 +4828,119 @@ if (nextStatus === "active_work") {
     }
   }
 
+    async function copyPoCode(poCode: string) {
+    const code = safeTrim(poCode).toUpperCase();
+    if (!code) return;
+
+    try {
+      await navigator.clipboard.writeText(code);
+      setPoActionSuccess(`✅ Copied ${code}.`);
+    } catch {
+      setPoActionSuccess("");
+      alert(`PO Code: ${code}`);
+    }
+  }
+
+  async function openProjectPoPdf(po: ProjectPurchaseOrder) {
+    const attachment = getLatestPoAttachment(po);
+
+    if (!attachment) {
+      alert("No invoice PDF is attached to this PO yet.");
+      return;
+    }
+
+    try {
+      let url = safeTrim(attachment.downloadUrl);
+
+      if (!url && attachment.storagePath) {
+        const storage = getStorage();
+        url = await getDownloadURL(storageRef(storage, attachment.storagePath));
+      }
+
+      if (!url) {
+        throw new Error("This attachment is missing a download URL/storage path.");
+      }
+
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err: any) {
+      alert(err?.message || "Failed to open invoice PDF.");
+    }
+  }
+
+  async function generateProjectPoForTrip(t: TripDoc) {
+    if (!project) return;
+
+    if (!canEditProject) {
+      alert("Only Admin/Dispatcher/Manager can generate project POs.");
+      return;
+    }
+
+    if (projectFieldWorkLocked || isFrozenTmBillingTrip(t)) {
+      alert("This project/trip is locked for billing. Reopen it before generating another PO.");
+      return;
+    }
+
+    const status = safeTrim(t.status).toLowerCase();
+    if (status === "complete" || status === "completed" || status === "cancelled" || t.active === false) {
+      alert("PO numbers cannot be generated for completed or cancelled trips.");
+      return;
+    }
+
+    const existingForTrip = purchaseOrdersByTrip.get(t.id) || [];
+    if (existingForTrip.length > 0) {
+      const ok = window.confirm(
+        `This trip already has ${existingForTrip.length} PO${existingForTrip.length === 1 ? "" : "s"}.\n\nCreate another PO for this trip?`,
+      );
+      if (!ok) return;
+    }
+
+    setPoActionBusyTripId(t.id);
+    setPoActionError("");
+    setPoActionSuccess("");
+
+    try {
+      const record = await generatePurchaseOrderForProjectTrip({
+        db,
+        tripId: t.id,
+        requestedByUid: myUid || null,
+        requestedByName: actorDisplayName || null,
+      });
+
+      const nextPo = {
+        ...(record as ProjectPurchaseOrder),
+        matchedAttachments: [],
+        invoiceAttachmentCount: 0,
+        invoicePdfAttachmentCount: 0,
+        parsedLineItems: [],
+        importedMaterialCount: 0,
+      };
+
+      setPurchaseOrders((prev) =>
+        [nextPo, ...prev.filter((item) => item.poCode !== nextPo.poCode)].sort((a, b) =>
+          `${b.createdAt || ""}_${b.poCode}`.localeCompare(`${a.createdAt || ""}_${a.poCode}`),
+        ),
+      );
+
+      setPoActionSuccess(`✅ Project PO ${record.poCode} generated.`);
+
+      void recordProjectActivity({
+        type: "purchase_order_created",
+        title: "Project PO created",
+        description: `${record.poCode} generated for ${formatPoTripContext(nextPo)}.`,
+        details: [
+          `PO: ${record.poCode}`,
+          `Trip: ${formatTripScheduleLine(t)}`,
+          `Source: ${formatPoTripContext(nextPo)}`,
+          `Requested by: ${actorDisplayName}`,
+        ],
+      });
+    } catch (err: any) {
+      setPoActionError(err?.message || "Failed to generate project PO.");
+    } finally {
+      setPoActionBusyTripId(null);
+    }
+  }
+
   function TripActionRow({ t }: { t: TripDoc }) {
     const canOperate = canCurrentUserOperateTrip(t);
     const canView = canCurrentUserViewTrip(t);
@@ -4888,6 +5168,8 @@ if (nextStatus === "active_work") {
     const cancelled = t.status === "cancelled" || t.active === false;
     const busy = tripActionBusyId === t.id || closeoutModal.saving;
     const noteValue = tripNoteDrafts[t.id] ?? t.notes ?? "";
+    const tripPurchaseOrders = purchaseOrdersByTrip.get(t.id) || [];
+    const poBusy = poActionBusyTripId === t.id;
 
     const crew = t.crew || {};
     const tech = crew.primaryTechName || "Unassigned";
@@ -4962,6 +5244,82 @@ if (nextStatus === "active_work") {
             </Stack>
 
             <TripActionRow t={t} />
+
+                        <Paper
+              variant="outlined"
+              sx={{
+                p: 1.5,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.primary.main, 0.025),
+              }}
+            >
+              <Stack spacing={1.25}>
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1}
+                  justifyContent="space-between"
+                  alignItems={{ xs: "stretch", sm: "center" }}
+                >
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                      Purchase Orders
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {isTmProject
+                        ? "T&M project POs use T### codes."
+                        : "Bid project POs use P### codes."}
+                    </Typography>
+                  </Box>
+
+                  {canEditProject && String(t.status || "").toLowerCase() !== "complete" && !cancelled ? (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<ReceiptLongRoundedIcon />}
+                      onClick={() => generateProjectPoForTrip(t)}
+                      disabled={poBusy || projectFieldWorkLocked || isFrozenTmBillingTrip(t)}
+                      sx={{ borderRadius: 99 }}
+                    >
+                      {poBusy ? "Generating..." : `Generate PO #`}
+                    </Button>
+                  ) : null}
+                </Stack>
+
+                {tripPurchaseOrders.length > 0 ? (
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    {tripPurchaseOrders.map((po) => {
+                      const attachment = getLatestPoAttachment(po);
+                      return (
+                        <Chip
+                          key={po.poCode}
+                          label={`${po.poCode} • ${formatPoStatus(po.status)}`}
+                          color={poStatusColor(po.status)}
+                          variant={po.status === "matched" ? "filled" : "outlined"}
+                          icon={<ReceiptLongRoundedIcon />}
+                          onClick={() => copyPoCode(po.poCode)}
+                          onDelete={
+                            attachment
+                              ? () => {
+                                  void openProjectPoPdf(po);
+                                }
+                              : undefined
+                          }
+                          deleteIcon={attachment ? <OpenInNewRoundedIcon /> : undefined}
+                          sx={{
+                            borderRadius: 99,
+                            fontWeight: 800,
+                          }}
+                        />
+                      );
+                    })}
+                  </Stack>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    No POs generated for this trip yet.
+                  </Typography>
+                )}
+              </Stack>
+            </Paper>
 
             {String(t.status || "").toLowerCase() === "complete" &&
             (t.closeout || (typeof t.closeoutHours === "number" && t.closeoutHours > 0)) ? (
@@ -6797,6 +7155,124 @@ if (nextStatus === "active_work") {
                         <InfoField label="Internal Notes" value={project.internalNotes || "—"} />
                       </Box>
                     </Box>
+                  )}
+                </Stack>
+              </SectionCard>
+
+                            <SectionCard
+                title="Project Purchase Orders"
+                subtitle="Project POs generated from project trips. Bid projects use P###. Time + Materials projects use T###."
+                icon={<ReceiptLongRoundedIcon color="primary" />}
+              >
+                <Stack spacing={2}>
+                  {poActionError ? <Alert severity="error">{poActionError}</Alert> : null}
+                  {poActionSuccess ? <Alert severity="success">{poActionSuccess}</Alert> : null}
+                  {purchaseOrdersError ? <Alert severity="error">{purchaseOrdersError}</Alert> : null}
+
+                  {purchaseOrdersLoading ? (
+                    <Typography color="text.secondary">Loading project purchase orders...</Typography>
+                  ) : purchaseOrders.length === 0 ? (
+                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                      No project POs have been generated yet. Generate a PO from a project trip card when material is being ordered for this project.
+                    </Alert>
+                  ) : (
+                    <Stack spacing={1.5}>
+                      {purchaseOrders.map((po) => {
+                        const attachment = getLatestPoAttachment(po);
+                        const matched = safeTrim(po.status).toLowerCase() === "matched";
+
+                        return (
+                          <Paper
+                            key={po.poCode}
+                            variant="outlined"
+                            sx={{
+                              p: 2,
+                              borderRadius: 1,
+                              bgcolor: matched
+                                ? alpha(theme.palette.success.main, 0.04)
+                                : "background.paper",
+                            }}
+                          >
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={1.5}
+                              justifyContent="space-between"
+                              alignItems={{ xs: "stretch", md: "center" }}
+                            >
+                              <Stack spacing={0.75}>
+                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                  <Chip
+                                    icon={<ReceiptLongRoundedIcon />}
+                                    label={po.poCode}
+                                    color="primary"
+                                    variant="filled"
+                                    size="small"
+                                    sx={{ fontWeight: 900 }}
+                                  />
+                                  <Chip
+                                    label={formatPoStatus(po.status)}
+                                    color={poStatusColor(po.status)}
+                                    variant={matched ? "filled" : "outlined"}
+                                    size="small"
+                                  />
+                                  <Chip
+                                    label={formatPoTripContext(po)}
+                                    variant="outlined"
+                                    size="small"
+                                  />
+                                </Stack>
+
+                                <Typography variant="body2" color="text.secondary">
+                                  Trip ID:{" "}
+                                  <Box component="span" sx={{ fontFamily: "monospace" }}>
+                                    {po.tripId}
+                                  </Box>
+                                </Typography>
+
+                                {po.parsedInvoiceNumber ? (
+                                  <Typography variant="body2" color="text.secondary">
+                                    Invoice #{po.parsedInvoiceNumber}
+                                    {typeof po.parsedInvoiceTotal === "number"
+                                      ? ` • ${formatCurrency(po.parsedInvoiceTotal)}`
+                                      : ""}
+                                  </Typography>
+                                ) : null}
+
+                                {typeof po.importedMaterialCount === "number" && po.importedMaterialCount > 0 ? (
+                                  <Typography variant="caption" color="text.secondary">
+                                    Imported materials: {po.importedMaterialCount}
+                                  </Typography>
+                                ) : null}
+                              </Stack>
+
+                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  startIcon={<ContentCopyRoundedIcon />}
+                                  onClick={() => copyPoCode(po.poCode)}
+                                  sx={{ borderRadius: 99 }}
+                                >
+                                  Copy PO
+                                </Button>
+
+                                {attachment ? (
+                                  <Button
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<OpenInNewRoundedIcon />}
+                                    onClick={() => openProjectPoPdf(po)}
+                                    sx={{ borderRadius: 99 }}
+                                  >
+                                    Open PDF
+                                  </Button>
+                                ) : null}
+                              </Stack>
+                            </Stack>
+                          </Paper>
+                        );
+                      })}
+                    </Stack>
                   )}
                 </Stack>
               </SectionCard>

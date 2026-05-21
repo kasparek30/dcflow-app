@@ -81,6 +81,8 @@ export async function importSupplierMaterialsToTrip(args: {
   const po = poSnap.data() as any;
   const tripId = clean(po.tripId);
   const serviceTicketId = clean(po.serviceTicketId);
+  const projectId = clean(po.projectId);
+  const sourceType = clean(po.sourceType).toLowerCase();
 
   if (!tripId) {
     return { imported: 0, skipped: 0, reason: `PO ${poCode} is missing tripId.` };
@@ -163,11 +165,17 @@ export async function importSupplierMaterialsToTrip(args: {
 
   if (nextMaterialsToAppend.length === 0) {
     const billingResync = serviceTicketId
-      ? await resyncServiceTicketBillingFromTrips({ serviceTicketId })
-      : {
-          resynced: false,
-          reason: "PO is missing serviceTicketId; billing packet was not resynced.",
-        };
+  ? await resyncServiceTicketBillingFromTrips({ serviceTicketId })
+  : projectId
+    ? {
+        resynced: false,
+        reason:
+          "Project PO materials were appended to the trip. Project billing resync is not automated yet.",
+      }
+    : {
+        resynced: false,
+        reason: "PO is missing serviceTicketId/projectId; billing packet was not resynced.",
+      };
 
     if (serviceTicketId) {
       await safelyRecordActivity({
@@ -208,6 +216,8 @@ export async function importSupplierMaterialsToTrip(args: {
       skipped,
       tripId,
       serviceTicketId: serviceTicketId || null,
+      projectId: projectId || null,
+      sourceType: sourceType || null,
       billingResync,
       reason: "No new supplier materials to append.",
     };
@@ -235,10 +245,16 @@ export async function importSupplierMaterialsToTrip(args: {
   );
 
   const billingResync = serviceTicketId
-    ? await resyncServiceTicketBillingFromTrips({ serviceTicketId })
+  ? await resyncServiceTicketBillingFromTrips({ serviceTicketId })
+  : projectId
+    ? {
+        resynced: false,
+        reason:
+          "Project PO materials were appended to the trip. Project billing resync is not automated yet.",
+      }
     : {
         resynced: false,
-        reason: "PO is missing serviceTicketId; billing packet was not resynced.",
+        reason: "PO is missing serviceTicketId/projectId; billing packet was not resynced.",
       };
 
   if (serviceTicketId) {
@@ -285,6 +301,8 @@ export async function importSupplierMaterialsToTrip(args: {
     skipped,
     tripId,
     serviceTicketId: serviceTicketId || null,
+    projectId: projectId || null,
+    sourceType: sourceType || null,
     billingResync,
     reason: "Supplier materials appended to trip.",
   };

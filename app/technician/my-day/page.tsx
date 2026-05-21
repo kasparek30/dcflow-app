@@ -59,7 +59,10 @@ import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { formatTimeRange12h } from "../../../src/lib/time-format";
-import { generatePurchaseOrderForTrip } from "../../../src/lib/purchase-orders";
+import {
+  generatePurchaseOrderForProjectTrip,
+  generatePurchaseOrderForTrip,
+} from "../../../src/lib/purchase-orders";
 
 type TripCrew = {
   primaryTechUid?: string | null;
@@ -555,12 +558,20 @@ async function startServiceTripFromMyDay(args: {
   return result;
 }
 
-function canGeneratePoForServiceTrip(item: MyDayItem) {
-  const isService = String(item.tripType || "").toLowerCase() === "service";
-  if (!isService) return false;
+function canGeneratePoForTrip(item: MyDayItem) {
+  const tripType = String(item.tripType || "").toLowerCase().trim();
+  if (tripType !== "service" && tripType !== "project") return false;
 
   const status = String(item.status || "").toLowerCase().trim();
   return status !== "complete" && status !== "completed" && status !== "cancelled";
+}
+
+function canGeneratePoForServiceTrip(item: MyDayItem) {
+  return String(item.tripType || "").toLowerCase().trim() === "service" && canGeneratePoForTrip(item);
+}
+
+function canGeneratePoForProjectTrip(item: MyDayItem) {
+  return String(item.tripType || "").toLowerCase().trim() === "project" && canGeneratePoForTrip(item);
 }
 
 function SectionHeader({
@@ -1313,33 +1324,46 @@ export default function TechnicianMyDayPage() {
     }
   }
 
-  async function handleGeneratePo(item: MyDayItem) {
-    if (!canGeneratePoForServiceTrip(item)) return;
+async function handleGeneratePo(item: MyDayItem) {
+  if (!canGeneratePoForTrip(item)) return;
 
-    setPoBusyTripId(item.id);
-    setError("");
+  const allowed = whoUid === myUid || canViewOtherEmployees;
+  if (!allowed) return;
 
-    try {
-      const record = await generatePurchaseOrderForTrip({
-        db,
-        tripId: item.id,
-        requestedByUid: myUid || null,
-        requestedByName: myName || null,
-      });
+  const tripType = String(item.tripType || "").toLowerCase().trim();
 
-      setGeneratedPoDialog({
-        open: true,
-        poCode: record.poCode,
-        tripId: item.id,
-      });
+  setPoBusyTripId(item.id);
+  setError("");
 
-      void copyPoCode(record.poCode);
-    } catch (e: any) {
-      setError(e?.message || "Failed to generate PO number.");
-    } finally {
-      setPoBusyTripId("");
-    }
+  try {
+    const record =
+      tripType === "project"
+        ? await generatePurchaseOrderForProjectTrip({
+            db,
+            tripId: item.id,
+            requestedByUid: myUid || null,
+            requestedByName: myName || null,
+          })
+        : await generatePurchaseOrderForTrip({
+            db,
+            tripId: item.id,
+            requestedByUid: myUid || null,
+            requestedByName: myName || null,
+          });
+
+    setGeneratedPoDialog({
+      open: true,
+      poCode: record.poCode,
+      tripId: item.id,
+    });
+
+    void copyPoCode(record.poCode);
+  } catch (e: any) {
+    setError(e?.message || "Failed to generate PO number.");
+  } finally {
+    setPoBusyTripId("");
   }
+}
 
   function renderServiceFooter(item: MyDayItem, isCompleted: boolean, canStartService: boolean) {
     const canGeneratePo = canGeneratePoForServiceTrip(item);
@@ -1427,6 +1451,93 @@ export default function TechnicianMyDayPage() {
       </Typography>
     );
   }
+
+  function renderProjectFooter(item: MyDayItem, isCompleted: boolean, canStartProject: boolean) {
+  const canGeneratePo = canGeneratePoForProjectTrip(item);
+
+  if (isCompleted) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        Project trip complete — hours are saved during closeout and will appear in{" "}
+        <strong>Time Entries</strong>.
+      </Typography>
+    );
+  }
+
+  if (canStartProject) {
+    return (
+      <Stack spacing={1.25}>
+        <Button
+          variant="contained"
+          fullWidth
+          startIcon={<PlayArrowRoundedIcon />}
+          disabled={startBusyTripId === item.id}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleStartProjectFromCard(item);
+          }}
+        >
+          {startBusyTripId === item.id ? "Starting..." : "Start Work"}
+        </Button>
+
+        {canGeneratePo ? (
+          <Button
+            type="button"
+            variant="outlined"
+            fullWidth
+            startIcon={<ReceiptLongRoundedIcon />}
+            disabled={poBusyTripId === item.id}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleGeneratePo(item);
+            }}
+            sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+          >
+            {poBusyTripId === item.id ? "Generating..." : "Generate PO#"}
+          </Button>
+        ) : null}
+      </Stack>
+    );
+  }
+
+  if (canGeneratePo) {
+    return (
+      <Stack spacing={1.25}>
+        <Typography variant="caption" color="text.secondary">
+          {item.isPaused
+            ? "Paused project trip — generate a PO if materials are needed."
+            : item.isActive
+              ? "Active project trip — generate a PO if materials are needed."
+              : "Project trip — generate a PO before the supply run if materials are needed."}
+        </Typography>
+
+        <Button
+          type="button"
+          variant="contained"
+          fullWidth
+          startIcon={<ReceiptLongRoundedIcon />}
+          disabled={poBusyTripId === item.id}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleGeneratePo(item);
+          }}
+          sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+        >
+          {poBusyTripId === item.id ? "Generating..." : "Generate PO#"}
+        </Button>
+      </Stack>
+    );
+  }
+
+  return (
+    <Typography variant="caption" color="text.secondary">
+      Open the project for full details and workflow actions.
+    </Typography>
+  );
+}
 
   const holidayBlocks = Boolean(holiday?.scheduleBlocked);
 
@@ -2006,34 +2117,7 @@ export default function TechnicianMyDayPage() {
                             }
                             footer={
                               isProject ? (
-                                item.isActive ? (
-                                  <Typography variant="caption" color="text.secondary">
-                                    Project trip active — use the bottom trip dock or open the project for details.
-                                  </Typography>
-                                ) : isCompleted ? (
-                                  <Typography variant="body2" color="text.secondary">
-                                    Project trip complete — hours are saved during closeout and will appear in{" "}
-                                    <strong>Time Entries</strong>.
-                                  </Typography>
-                                ) : canStartProject ? (
-                                  <Button
-                                    variant="contained"
-                                    fullWidth
-                                    startIcon={<PlayArrowRoundedIcon />}
-                                    disabled={startBusyTripId === item.id}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      handleStartProjectFromCard(item);
-                                    }}
-                                  >
-                                    {startBusyTripId === item.id ? "Starting..." : "Start Work"}
-                                  </Button>
-                                ) : (
-                                  <Typography variant="caption" color="text.secondary">
-                                    Open the project for full details and workflow actions.
-                                  </Typography>
-                                )
+                                renderProjectFooter(item, isCompleted, canStartProject)
                               ) : isService ? (
                                 renderServiceFooter(item, isCompleted, canStartService)
                               ) : undefined

@@ -21,7 +21,7 @@ type SavedAttachment = {
 
 function extractPoCodes(text: string) {
   const source = String(text || "").toUpperCase();
-  const matches = source.match(/\bS\d{3,}[A-Z]{1,2}\b/g) || [];
+  const matches = source.match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/g) || [];
   return Array.from(new Set(matches));
 }
 
