@@ -4438,7 +4438,7 @@ Supply line`}
         poIndex: record.poIndex,
         poSuffix: record.poSuffix,
         status: record.status,
-        serviceTicketId: record.serviceTicketId,
+        serviceTicketId: record.serviceTicketId || ticketId,
         tripId: record.tripId,
         requestedByUid: record.requestedByUid,
         requestedByName: record.requestedByName,
