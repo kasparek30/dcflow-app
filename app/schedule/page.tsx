@@ -1,3 +1,4 @@
+// app/schedule/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -150,6 +151,14 @@ type ProjectSummary = {
 type TechFilterValue = "ALL" | "UNASSIGNED" | string;
 type AddTripType = "service" | "project";
 type SlotKey = "am" | "pm";
+type MeetingRoleFilter =
+  | "all"
+  | "technician"
+  | "helper"
+  | "apprentice"
+  | "manager"
+  | "dispatcher"
+  | "admin";
 
 type CompanyHoliday = {
   id: string;
@@ -225,6 +234,16 @@ const MEETING_ELIGIBLE_ROLES = [
   "admin",
 ] as const;
 
+const MEETING_ROLE_FILTERS: Array<{ value: MeetingRoleFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "technician", label: "Techs" },
+  { value: "helper", label: "Helpers" },
+  { value: "apprentice", label: "Apprentices" },
+  { value: "manager", label: "Managers" },
+  { value: "dispatcher", label: "Dispatch" },
+  { value: "admin", label: "Admins" },
+];
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -274,6 +293,18 @@ function formatDow(d: Date) {
 
 function formatShort(d: Date) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function formatDateLong(iso: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return "Choose a date";
+
+  const d = fromIsoDate(iso);
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function nowIso() {
@@ -355,6 +386,21 @@ function isTechOnTrip(t: TripDoc, techUid: string) {
   const primary = String(t.crew?.primaryTechUid || "").trim();
   const secondary = String(t.crew?.secondaryTechUid || "").trim();
   return primary === uid || secondary === uid;
+}
+
+function isEmployeeOnTrip(t: TripDoc, employeeUid: string) {
+  const uid = String(employeeUid || "").trim();
+  if (!uid) return false;
+
+  return [
+    t.crew?.primaryTechUid,
+    t.crew?.helperUid,
+    t.crew?.secondaryTechUid,
+    t.crew?.secondaryHelperUid,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .includes(uid);
 }
 
 function tripRowUids(t: TripDoc): string[] {
@@ -615,6 +661,40 @@ function eventBlocksSlot(e: CompanyEvent, slot: SlotKey) {
 
   const [slotStart, slotEnd] = slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
   return stMin < slotEnd && etMin > slotStart;
+}
+
+function selectedSlotsForWindow(windowValue: string, startTime?: string | null, endTime?: string | null): SlotKey[] {
+  const w = String(windowValue || "").toLowerCase();
+  if (w === "all_day") return ["am", "pm"];
+  if (w === "am" || w === "pm") return [w];
+
+  const stMin = minutesFromHHMM(String(startTime || "")) ?? null;
+  const etMin = minutesFromHHMM(String(endTime || "")) ?? null;
+  if (stMin == null || etMin == null || etMin <= stMin) return ["am", "pm"];
+
+  const slots: SlotKey[] = [];
+  if (stMin < SLOT_AM_END && etMin > SLOT_AM_START) slots.push("am");
+  if (stMin < SLOT_PM_END && etMin > SLOT_PM_START) slots.push("pm");
+
+  return slots.length ? slots : ["am", "pm"];
+}
+
+function tripBlocksMeetingWindow(
+  t: TripDoc,
+  windowValue: string,
+  startTime?: string | null,
+  endTime?: string | null
+) {
+  return selectedSlotsForWindow(windowValue, startTime, endTime).some((slot) => tripBlocksSlot(t, slot));
+}
+
+function eventBlocksMeetingWindow(
+  e: CompanyEvent,
+  windowValue: string,
+  startTime?: string | null,
+  endTime?: string | null
+) {
+  return selectedSlotsForWindow(windowValue, startTime, endTime).some((slot) => eventBlocksSlot(e, slot));
 }
 
 function looksApprovedPto(d: any) {
@@ -998,6 +1078,7 @@ export default function SchedulePage() {
   const [meetIncludeAll, setMeetIncludeAll] = useState(true);
   const [meetAppliesToUids, setMeetAppliesToUids] = useState<string[]>([]);
   const [meetAttendeeSearch, setMeetAttendeeSearch] = useState("");
+  const [meetRoleFilter, setMeetRoleFilter] = useState<MeetingRoleFilter>("all");
   const [meetSaving, setMeetSaving] = useState(false);
   const [meetErr, setMeetErr] = useState("");
   const [meetMsg, setMeetMsg] = useState("");
@@ -1009,13 +1090,108 @@ export default function SchedulePage() {
 
   const filteredMeetingEmployees = useMemo(() => {
     const q = meetAttendeeSearch.trim().toLowerCase();
-    if (!q) return meetingEmployees;
 
     return meetingEmployees.filter((employee) => {
+      if (meetRoleFilter !== "all" && normalizeRole(employee.role) !== meetRoleFilter) return false;
+
+      if (!q) return true;
+
       const haystack = `${employee.displayName} ${employee.role} ${formatRoleLabel(employee.role)}`.toLowerCase();
       return haystack.includes(q);
     });
-  }, [meetingEmployees, meetAttendeeSearch]);
+  }, [meetingEmployees, meetAttendeeSearch, meetRoleFilter]);
+
+  const selectedMeetingEmployees = useMemo(() => {
+    const selected = new Set(meetAppliesToUids);
+    return meetingEmployees.filter((employee) => selected.has(employee.uid));
+  }, [meetingEmployees, meetAppliesToUids]);
+
+  const meetingConflictSummary = useMemo(() => {
+    const empty = { hardMessages: [] as string[], softMessages: [] as string[], conflictEmployeeUids: [] as string[] };
+    if (!meetOpen || !/^\d{4}-\d{2}-\d{2}$/.test(String(meetDateIso || ""))) return empty;
+
+    const attendeeUids = uniqueTrimmedStrings(meetAppliesToUids).filter((uid) =>
+      allMeetingEmployeeUids.includes(uid)
+    );
+    if (attendeeUids.length === 0) return empty;
+
+    const hard = new Set<string>();
+    const soft = new Set<string>();
+    const conflictUids = new Set<string>();
+
+    const holiday = holidayByDate[meetDateIso];
+    if (holiday) {
+      hard.add(`That date is a company holiday (${holiday.name}).`);
+      attendeeUids.forEach((uid) => conflictUids.add(uid));
+    }
+
+    const employeeMap = new Map<string, EmployeeOption>(meetingEmployees.map((employee) => [employee.uid, employee]));
+
+    for (const uid of attendeeUids) {
+      const employee = employeeMap.get(uid);
+      const name = employee?.displayName || uid;
+      const role = employee?.role || "employee";
+
+      const pto = ptoByUidByDate[uid]?.[meetDateIso];
+      if (pto) {
+        soft.add(`${name} has approved PTO on ${formatDateLong(meetDateIso)}.`);
+        conflictUids.add(uid);
+      }
+
+      const overlappingTrips = trips.filter(
+        (trip) =>
+          trip.active !== false &&
+          normalizeStatus(trip.status) !== "cancelled" &&
+          String(trip.date || "").trim() === meetDateIso &&
+          isEmployeeOnTrip(trip, uid) &&
+          tripBlocksMeetingWindow(trip, meetWindow, meetStart, meetEnd)
+      );
+
+      for (const trip of overlappingTrips) {
+        const detail = formatTimeRangeForCard(trip);
+        if (isInProgressStatus(trip.status)) {
+          hard.add(`${name} already has an in-progress trip during this meeting window (${detail}).`);
+        } else if (isPlannedStatus(trip.status)) {
+          soft.add(`${name} already has a planned trip during this meeting window (${detail}).`);
+        }
+        conflictUids.add(uid);
+      }
+
+      const overlappingEvents = (eventsByDate[meetDateIso] || []).filter(
+        (event) =>
+          event.id !== editingMeetId &&
+          event.active !== false &&
+          event.blocksSchedule !== false &&
+          eventAppliesToUid(event, uid, role) &&
+          eventBlocksMeetingWindow(event, meetWindow, meetStart, meetEnd)
+      );
+
+      for (const event of overlappingEvents) {
+        soft.add(`${name} already has ${meetingChipLabel(event)} on the schedule.`);
+        conflictUids.add(uid);
+      }
+    }
+
+    return {
+      hardMessages: Array.from(hard),
+      softMessages: Array.from(soft),
+      conflictEmployeeUids: Array.from(conflictUids),
+    };
+  }, [
+    meetOpen,
+    meetDateIso,
+    meetAppliesToUids,
+    allMeetingEmployeeUids,
+    holidayByDate,
+    meetingEmployees,
+    ptoByUidByDate,
+    trips,
+    meetWindow,
+    meetStart,
+    meetEnd,
+    eventsByDate,
+    editingMeetId,
+  ]);
 
   const addSlotConflicts = useMemo(() => {
     if (!addOpen || !addTechUid || !addDateIso) {
@@ -1384,6 +1560,7 @@ export default function SchedulePage() {
     setMeetIncludeAll(true);
     setMeetAppliesToUids(allMeetingEmployeeUids);
     setMeetAttendeeSearch("");
+    setMeetRoleFilter("all");
     setMeetErr("");
     setMeetMsg("");
   }
@@ -1834,6 +2011,10 @@ export default function SchedulePage() {
 
     if (holidayByDate[dateIso]) return setMeetErr(`That date is a company holiday (${holidayByDate[dateIso].name}).`);
 
+    if (meetingConflictSummary.hardMessages.length > 0) {
+      return setMeetErr(meetingConflictSummary.hardMessages[0]);
+    }
+
     if (meetWindow === "custom") {
       const st = String(meetStart || "").trim();
       const et = String(meetEnd || "").trim();
@@ -1972,7 +2153,10 @@ export default function SchedulePage() {
       const v = (url.searchParams.get("view") || "").toLowerCase();
       const d = (url.searchParams.get("date") || "").trim();
 
-      if (v === "day" || v === "week" || v === "month") setView(v);
+      if (v === "day" || v === "week" || v === "month") {
+        setView(v);
+        if (v === "day" && !d) setAnchorIso(todayIsoLocal());
+      }
       if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
 
       const hide = url.searchParams.get("hideCompleted");
@@ -1995,9 +2179,13 @@ export default function SchedulePage() {
     try {
       const url = new URL(window.location.href);
       const v = (url.searchParams.get("view") || "").toLowerCase();
-      if (!v) setView("day");
+      if (!v) {
+        setView("day");
+        setAnchorIso(todayIsoLocal());
+      }
     } catch {
       setView("day");
+      setAnchorIso(todayIsoLocal());
     }
 
     didApplyMobileDefaultRef.current = true;
@@ -2522,9 +2710,7 @@ export default function SchedulePage() {
     d.setHours(0, 0, 0, 0);
 
     if (view === "day") {
-      let cur = d;
-      while (isWeekend(cur)) cur = addDays(cur, 1);
-      setAnchorIso(toIsoDate(cur));
+      setAnchorIso(toIsoDate(d));
       return;
     }
     if (view === "month") {
@@ -2547,6 +2733,16 @@ export default function SchedulePage() {
     if (view !== "month") return [];
     return monthCalendarWorkWeeks(anchorDate);
   }, [view, anchorDate]);
+
+  function switchScheduleView(nextView: ViewMode) {
+    setView(nextView);
+
+    if (nextView === "day") {
+      setAnchorIso(todayIsoLocal());
+    }
+  }
+
+  const todayButtonLabel = view === "day" ? "Today" : view === "week" ? "This Week" : "This Month";
 
   const titleText = useMemo(() => {
     if (view === "day") {
@@ -2792,7 +2988,7 @@ export default function SchedulePage() {
                   </IconButton>
 
                   <Button variant="outlined" onClick={goToday} startIcon={<TodayRoundedIcon />}>
-                    Today
+                    {todayButtonLabel}
                   </Button>
 
                   <IconButton onClick={goNext} sx={{ borderRadius: 1.5 }}>
@@ -2814,7 +3010,7 @@ export default function SchedulePage() {
                   exclusive
                   value={view}
                   onChange={(_, next) => {
-                    if (next) setView(next as ViewMode);
+                    if (next) switchScheduleView(next as ViewMode);
                   }}
                   size="small"
                 >
@@ -2931,7 +3127,7 @@ export default function SchedulePage() {
                     component={Paper}
                     variant="outlined"
                     sx={{
-                      borderRadius: 2,
+                      borderRadius: 1,
                       boxShadow: "none",
                     }}
                   >
@@ -2960,6 +3156,7 @@ export default function SchedulePage() {
                               }
 
                               const iso = toIsoDate(cellDate);
+                              const isTodayCell = iso === todayIso;
                               const dayTrips = filteredTrips.filter((trip) => String(trip.date || "") === iso);
                               const holiday = holidayByDate[iso];
                               const ptoNames = ptoNamesByDate[iso] || [];
@@ -2971,18 +3168,34 @@ export default function SchedulePage() {
                                   sx={{
                                     verticalAlign: "top",
                                     height: 180,
-                                    bgcolor: holiday
-                                      ? alpha(theme.palette.warning.main, 0.08)
-                                      : ptoNames.length
-                                        ? alpha(theme.palette.secondary.main, 0.08)
-                                        : meets.length
-                                          ? alpha(theme.palette.success.main, 0.06)
-                                          : "transparent",
+                                    bgcolor: isTodayCell
+                                      ? alpha(theme.palette.primary.main, 0.12)
+                                      : holiday
+                                        ? alpha(theme.palette.warning.main, 0.08)
+                                        : ptoNames.length
+                                          ? alpha(theme.palette.secondary.main, 0.08)
+                                          : meets.length
+                                            ? alpha(theme.palette.success.main, 0.06)
+                                            : "transparent",
+                                    boxShadow: isTodayCell
+                                      ? `inset 0 0 0 2px ${alpha(theme.palette.primary.main, 0.72)}`
+                                      : undefined,
                                   }}
                                 >
                                   <Stack spacing={1}>
-                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                      <Typography variant="subtitle2">{cellDate.getDate()}</Typography>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                                      <Stack direction="row" spacing={0.75} alignItems="center">
+                                        <Typography variant="subtitle2">{cellDate.getDate()}</Typography>
+                                        {isTodayCell ? (
+                                          <Chip
+                                            size="small"
+                                            label="Today"
+                                            color="primary"
+                                            variant="filled"
+                                            sx={{ height: 22, borderRadius: 1.5, fontWeight: 700 }}
+                                          />
+                                        ) : null}
+                                      </Stack>
                                       <Typography variant="caption" color="text.secondary">
                                         {iso}
                                       </Typography>
@@ -3080,22 +3293,43 @@ export default function SchedulePage() {
                   <Stack spacing={1.5}>
                     {daysForWeekOrDay.map((d) => {
                       const iso = toIsoDate(d);
+                      const isTodayCell = iso === todayIso;
                       const holiday = holidayByDate[iso];
 
                       return (
-                        <Card key={iso} elevation={0} sx={{ borderRadius: 2.5 }}>
+                        <Card
+                          key={iso}
+                          elevation={0}
+                          sx={{
+                            borderRadius: 1,
+                            border: isTodayCell ? `2px solid ${alpha(theme.palette.primary.main, 0.72)}` : undefined,
+                            bgcolor: isTodayCell ? alpha(theme.palette.primary.main, 0.08) : undefined,
+                          }}
+                        >
                           <Box sx={{ px: { xs: 2, md: 2.5 }, pt: { xs: 2, md: 2.5 }, pb: 1.5 }}>
                             <Stack spacing={1}>
-                              <Typography
-                                variant="h6"
-                                sx={{
-                                  fontSize: { xs: "1rem", md: "1.05rem" },
-                                  fontWeight: 800,
-                                  letterSpacing: "-0.02em",
-                                }}
-                              >
-                                {formatDow(d)} • {iso}
-                              </Typography>
+                              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                <Typography
+                                  variant="h6"
+                                  sx={{
+                                    fontSize: { xs: "1rem", md: "1.05rem" },
+                                    fontWeight: 800,
+                                    letterSpacing: "-0.02em",
+                                  }}
+                                >
+                                  {formatDow(d)} • {iso}
+                                </Typography>
+
+                                {isTodayCell ? (
+                                  <Chip
+                                    size="small"
+                                    label="Today"
+                                    color="primary"
+                                    variant="filled"
+                                    sx={{ height: 22, borderRadius: 1.5, fontWeight: 700 }}
+                                  />
+                                ) : null}
+                              </Stack>
 
                               <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
                                 {renderHolidayBadge(iso)}
@@ -3140,15 +3374,18 @@ export default function SchedulePage() {
                                     key={`${rowKey}_${iso}`}
                                     variant="outlined"
                                     sx={{
-                                      borderRadius: 2,
+                                      borderRadius: 1,
                                       boxShadow: "none",
-                                      bgcolor: holiday
-                                        ? alpha(theme.palette.warning.main, 0.08)
-                                        : pto
-                                          ? alpha(theme.palette.secondary.main, 0.08)
-                                          : availability.meetings.length
-                                            ? alpha(theme.palette.success.main, 0.05)
-                                            : "background.paper",
+                                      bgcolor: isTodayCell
+                                        ? alpha(theme.palette.primary.main, 0.08)
+                                        : holiday
+                                          ? alpha(theme.palette.warning.main, 0.08)
+                                          : pto
+                                            ? alpha(theme.palette.secondary.main, 0.08)
+                                            : availability.meetings.length
+                                              ? alpha(theme.palette.success.main, 0.05)
+                                              : "background.paper",
+                                      borderColor: isTodayCell ? alpha(theme.palette.primary.main, 0.72) : undefined,
                                     }}
                                   >
                                     <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
@@ -3233,7 +3470,7 @@ export default function SchedulePage() {
                         component={Paper}
                         variant="outlined"
                         sx={{
-                          borderRadius: 2,
+                          borderRadius: 1,
                           boxShadow: "none",
                         }}
                       >
@@ -3244,6 +3481,7 @@ export default function SchedulePage() {
 
                               {daysForWeekOrDay.map((d) => {
                                 const iso = toIsoDate(d);
+                                const isTodayCell = iso === todayIso;
                                 const holiday = holidayByDate[iso];
                                 return (
                                   <TableCell
@@ -3251,13 +3489,29 @@ export default function SchedulePage() {
                                     sx={{
                                       minWidth: 260,
                                       fontWeight: 600,
-                                      bgcolor: holiday
-                                        ? alpha(theme.palette.warning.main, 0.08)
-                                        : alpha("#FFFFFF", 0.02),
+                                      bgcolor: isTodayCell
+                                        ? alpha(theme.palette.primary.main, 0.12)
+                                        : holiday
+                                          ? alpha(theme.palette.warning.main, 0.08)
+                                          : alpha("#FFFFFF", 0.02),
+                                      boxShadow: isTodayCell
+                                        ? `inset 0 0 0 2px ${alpha(theme.palette.primary.main, 0.72)}`
+                                        : undefined,
                                     }}
                                   >
                                     <Stack spacing={0.75}>
-                                      <Typography variant="subtitle2">{formatDow(d)}</Typography>
+                                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                                        <Typography variant="subtitle2">{formatDow(d)}</Typography>
+                                        {isTodayCell ? (
+                                          <Chip
+                                            size="small"
+                                            label="Today"
+                                            color="primary"
+                                            variant="filled"
+                                            sx={{ height: 22, borderRadius: 1.5, fontWeight: 700 }}
+                                          />
+                                        ) : null}
+                                      </Stack>
                                       <Typography variant="caption" color="text.secondary">
                                         {iso}
                                       </Typography>
@@ -3297,6 +3551,7 @@ export default function SchedulePage() {
 
                                     {daysForWeekOrDay.map((d) => {
                                       const iso = toIsoDate(d);
+                                      const isTodayCell = iso === todayIso;
                                       const cellTrips = grid.get(rowKey)?.get(iso) || [];
                                       const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
                                       const holiday = holidayByDate[iso];
@@ -3329,13 +3584,18 @@ export default function SchedulePage() {
                                           key={`${r.key}_${iso}`}
                                           sx={{
                                             verticalAlign: "top",
-                                            bgcolor: holiday
-                                              ? alpha(theme.palette.warning.main, 0.08)
-                                              : pto
-                                                ? alpha(theme.palette.secondary.main, 0.08)
-                                                : availability.meetings.length
-                                                  ? alpha(theme.palette.success.main, 0.05)
-                                                  : "transparent",
+                                            bgcolor: isTodayCell
+                                              ? alpha(theme.palette.primary.main, 0.08)
+                                              : holiday
+                                                ? alpha(theme.palette.warning.main, 0.08)
+                                                : pto
+                                                  ? alpha(theme.palette.secondary.main, 0.08)
+                                                  : availability.meetings.length
+                                                    ? alpha(theme.palette.success.main, 0.05)
+                                                    : "transparent",
+                                            boxShadow: isTodayCell
+                                              ? `inset 0 0 0 2px ${alpha(theme.palette.primary.main, 0.72)}`
+                                              : undefined,
                                           }}
                                         >
                                           <Stack spacing={1}>
@@ -3464,7 +3724,7 @@ export default function SchedulePage() {
                 }}
               />
 
-              <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+              <Paper variant="outlined" sx={{ borderRadius: 1, overflow: "hidden" }}>
                 <Box
                   sx={{
                     px: 1.5,
@@ -3645,10 +3905,32 @@ export default function SchedulePage() {
           </DialogActions>
         </Dialog>
 
-        <Dialog open={meetOpen} onClose={closeMeetingModal} fullWidth maxWidth="sm">
-          <DialogTitle>{editingMeetId ? "Edit Company Meeting" : "Schedule Company Meeting"}</DialogTitle>
+        <Dialog
+          open={meetOpen}
+          onClose={closeMeetingModal}
+          fullScreen={isMobile}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: {
+              borderRadius: isMobile ? 0 : 1,
+              maxHeight: isMobile ? "100%" : "calc(100% - 64px)",
+            },
+          }}
+        >
+          <DialogTitle
+            sx={{
+              position: isMobile ? "sticky" : "static",
+              top: 0,
+              zIndex: 2,
+              bgcolor: "background.paper",
+              borderBottom: isMobile ? `1px solid ${alpha("#FFFFFF", 0.1)}` : "none",
+            }}
+          >
+            {editingMeetId ? "Edit Company Meeting" : "Schedule Company Meeting"}
+          </DialogTitle>
 
-          <DialogContent dividers>
+          <DialogContent dividers sx={{ pb: isMobile ? 2 : undefined }}>
             <Stack spacing={2}>
               <Typography variant="body2" color="text.secondary">
                 This meeting will appear on Schedule and My Day for the selected employees only.
@@ -3657,13 +3939,19 @@ export default function SchedulePage() {
               {meetErr ? <Alert severity="error">{meetErr}</Alert> : null}
               {meetMsg ? <Alert severity="success">{meetMsg}</Alert> : null}
 
-              <TextField
-                label="Date"
-                value={meetDateIso}
-                onChange={(e) => setMeetDateIso(e.target.value)}
-                disabled={meetSaving}
-                placeholder="YYYY-MM-DD"
-              />
+              <Stack spacing={1}>
+                <TextField
+                  label="Date"
+                  type="date"
+                  value={meetDateIso}
+                  onChange={(e) => setMeetDateIso(e.target.value)}
+                  disabled={meetSaving}
+                  fullWidth
+                  required
+                  InputLabelProps={{ shrink: true }}
+                  helperText={meetDateIso ? formatDateLong(meetDateIso) : "Choose a date from the calendar picker."}
+                />
+              </Stack>
 
               <TextField
                 label="Title"
@@ -3671,6 +3959,7 @@ export default function SchedulePage() {
                 onChange={(e) => setMeetTitle(e.target.value)}
                 disabled={meetSaving}
                 placeholder="Weekly Safety Meeting"
+                required
               />
 
               <FormControl fullWidth>
@@ -3692,19 +3981,25 @@ export default function SchedulePage() {
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
                   <TextField
                     label="Start"
+                    type="time"
                     value={meetStart}
                     onChange={(e) => setMeetStart(e.target.value)}
                     disabled={meetSaving}
-                    placeholder="HH:mm"
                     fullWidth
+                    required
+                    InputLabelProps={{ shrink: true }}
+                    inputProps={{ step: 300 }}
                   />
                   <TextField
                     label="End"
+                    type="time"
                     value={meetEnd}
                     onChange={(e) => setMeetEnd(e.target.value)}
                     disabled={meetSaving}
-                    placeholder="HH:mm"
                     fullWidth
+                    required
+                    InputLabelProps={{ shrink: true }}
+                    inputProps={{ step: 300 }}
                   />
                 </Stack>
               ) : null}
@@ -3727,7 +4022,7 @@ export default function SchedulePage() {
                 placeholder="Anything everyone should know…"
               />
 
-              <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+              <Paper variant="outlined" sx={{ borderRadius: 1, overflow: "hidden" }}>
                 <Box sx={{ px: 1.5, py: 1.25, borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}` }}>
                   <Stack spacing={1.25}>
                     <Stack
@@ -3740,6 +4035,7 @@ export default function SchedulePage() {
                       <Chip
                         size="small"
                         label={`${meetAppliesToUids.length} selected`}
+                        color={meetAppliesToUids.length === 0 ? "warning" : "default"}
                         variant="outlined"
                         sx={{ borderRadius: 1.5 }}
                       />
@@ -3759,7 +4055,7 @@ export default function SchedulePage() {
                           disabled={meetSaving || allMeetingEmployeeUids.length === 0}
                         />
                       }
-                      label="Include all active employees"
+                      label="Invite all active employees"
                     />
 
                     <TextField
@@ -3790,6 +4086,7 @@ export default function SchedulePage() {
                   ) : (
                     filteredMeetingEmployees.map((employee) => {
                       const checked = meetAppliesToUids.includes(employee.uid);
+                      const hasConflict = meetingConflictSummary.conflictEmployeeUids.includes(employee.uid);
                       return (
                         <Box
                           key={employee.uid}
@@ -3797,6 +4094,7 @@ export default function SchedulePage() {
                             px: 1.5,
                             py: 1.1,
                             borderBottom: `1px solid ${alpha("#FFFFFF", 0.06)}`,
+                            bgcolor: hasConflict ? alpha(theme.palette.warning.main, 0.08) : "transparent",
                           }}
                         >
                           <FormControlLabel
@@ -3831,6 +4129,61 @@ export default function SchedulePage() {
                 </Box>
               </Paper>
 
+              <Paper variant="outlined" sx={{ borderRadius: 1, p: 1.5 }}>
+                <Stack spacing={1}>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <Typography variant="subtitle2">Schedule check</Typography>
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={meetingConflictSummary.hardMessages.length ? "error" : meetingConflictSummary.softMessages.length ? "warning" : "success"}
+                      label={
+                        meetingConflictSummary.hardMessages.length
+                          ? `${meetingConflictSummary.hardMessages.length} blocker(s)`
+                          : meetingConflictSummary.softMessages.length
+                            ? `${meetingConflictSummary.softMessages.length} warning(s)`
+                            : "No conflicts found"
+                      }
+                      sx={{ borderRadius: 1.5 }}
+                    />
+                  </Stack>
+
+                  <Typography variant="caption" color="text.secondary">
+                    {meetDateIso ? formatDateLong(meetDateIso) : "Choose a date"} • {formatWindowLabel(meetWindow)}
+                    {meetWindow === "custom" ? ` • ${formatTime12h(meetStart)}–${formatTime12h(meetEnd)}` : ""}
+                  </Typography>
+
+                  {meetingConflictSummary.hardMessages.length === 0 && meetingConflictSummary.softMessages.length === 0 ? (
+                    <Alert severity="success" variant="outlined">
+                      No PTO, meeting, holiday, or trip conflicts found for the selected employees.
+                    </Alert>
+                  ) : null}
+
+                  {meetingConflictSummary.hardMessages.slice(0, 4).map((message) => (
+                    <Alert key={message} severity="error" variant="outlined">
+                      {message}
+                    </Alert>
+                  ))}
+
+                  {meetingConflictSummary.softMessages.slice(0, 5).map((message) => (
+                    <Alert key={message} severity="warning" variant="outlined">
+                      {message}
+                    </Alert>
+                  ))}
+
+                  {meetingConflictSummary.hardMessages.length + meetingConflictSummary.softMessages.length > 5 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      +{meetingConflictSummary.hardMessages.length + meetingConflictSummary.softMessages.length - 5} more schedule warning(s).
+                    </Typography>
+                  ) : null}
+                </Stack>
+              </Paper>
+
               <FormControlLabel
                 control={
                   <Checkbox
@@ -3850,7 +4203,18 @@ export default function SchedulePage() {
             </Stack>
           </DialogContent>
 
-          <DialogActions sx={{ justifyContent: "space-between" }}>
+          <DialogActions
+            sx={{
+              justifyContent: "space-between",
+              position: isMobile ? "sticky" : "static",
+              bottom: 0,
+              zIndex: 2,
+              bgcolor: "background.paper",
+              borderTop: isMobile ? `1px solid ${alpha("#FFFFFF", 0.1)}` : "none",
+              px: isMobile ? 2 : undefined,
+              py: isMobile ? 1.5 : undefined,
+            }}
+          >
             <Box>
               {editingMeetId ? (
                 <Button
@@ -3868,7 +4232,11 @@ export default function SchedulePage() {
               <Button onClick={closeMeetingModal} disabled={meetSaving}>
                 Cancel
               </Button>
-              <Button onClick={submitMeeting} disabled={meetSaving} variant="contained">
+              <Button
+                onClick={submitMeeting}
+                disabled={meetSaving || meetingConflictSummary.hardMessages.length > 0}
+                variant="contained"
+              >
                 {meetSaving ? "Saving…" : editingMeetId ? "Save Changes" : "Schedule Meeting"}
               </Button>
             </Stack>
