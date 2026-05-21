@@ -16,6 +16,11 @@ export type ProjectOfficeStatus =
 
 export type ProjectBillingPeriodStatus = "open" | "ready_to_bill" | "invoiced";
 
+export type ProjectStageBillingStatus =
+  | "not_ready"
+  | "ready_to_bill"
+  | "invoiced";
+
 export type ProjectBillingPeriod = {
   id: string;
   sequence: number;
@@ -61,6 +66,33 @@ export type ProjectStage = {
   billedAmount: number;
 
   staffing?: StageStaffing;
+
+  /**
+   * Stage-level billing lifecycle for staged projects.
+   *
+   * Safe default:
+   * - If missing and billed === true, treat as "invoiced".
+   * - If missing and billed !== true, treat as "not_ready".
+   */
+  billingStatus?: ProjectStageBillingStatus;
+
+  /**
+   * Ready to bill means the stage is complete enough for the office to invoice
+   * that stage without closing the whole project.
+   */
+  readyToBillAt?: string;
+  readyToBillByUid?: string;
+  readyToBillByName?: string;
+
+  /**
+   * Invoiced means this stage billing has been recorded/sent.
+   */
+  invoicedAt?: string;
+  invoicedByUid?: string;
+  invoicedByName?: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  invoiceNotes?: string;
 };
 
 export type Project = {

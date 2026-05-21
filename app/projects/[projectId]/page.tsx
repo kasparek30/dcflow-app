@@ -344,6 +344,19 @@ type TmInvoiceDialogState = {
   error: string;
 };
 
+type StageBillingAction = "ready_to_bill" | "invoiced" | "reopen";
+
+type StageBillingDialogState = {
+  open: boolean;
+  stageKey: StageKey | null;
+  action: StageBillingAction | null;
+  invoiceNumber: string;
+  invoiceDate: string;
+  invoiceNotes: string;
+  saving: boolean;
+  error: string;
+};
+
 type BasicsDraft = {
   customerId: string;
   projectName: string;
@@ -466,6 +479,19 @@ function emptyTmInvoiceDialog(): TmInvoiceDialogState {
   return {
     open: false,
     periodId: null,
+    invoiceNumber: "",
+    invoiceDate: toIsoDate(new Date()),
+    invoiceNotes: "",
+    saving: false,
+    error: "",
+  };
+}
+
+function emptyStageBillingDialog(): StageBillingDialogState {
+  return {
+    open: false,
+    stageKey: null,
+    action: null,
     invoiceNumber: "",
     invoiceDate: toIsoDate(new Date()),
     invoiceNotes: "",
@@ -765,6 +791,45 @@ function buildStageBilledAmounts(projectType: EditableProjectType, totalBid: num
     topOutVent: 0,
     trimFinish: 0,
   };
+}
+
+function getStageBillingStatus(stage?: any): "not_ready" | "ready_to_bill" | "invoiced" {
+  const raw = safeTrim(stage?.billingStatus).toLowerCase();
+  if (raw === "invoiced") return "invoiced";
+  if (raw === "ready_to_bill") return "ready_to_bill";
+  if (stage?.billed === true) return "invoiced";
+  return "not_ready";
+}
+
+function formatStageBillingStatus(status: "not_ready" | "ready_to_bill" | "invoiced") {
+  if (status === "invoiced") return "Invoiced";
+  if (status === "ready_to_bill") return "Ready to Bill";
+  return "Not Ready";
+}
+
+function stageBillingStatusColor(
+  status: "not_ready" | "ready_to_bill" | "invoiced",
+): "default" | "success" | "warning" {
+  if (status === "invoiced") return "success";
+  if (status === "ready_to_bill") return "warning";
+  return "default";
+}
+
+function getStageBillingMeta(projectType?: string | null, stageKey?: StageKey | null) {
+  const type = safeTrim(projectType).toLowerCase();
+
+  if (type === "new_construction") {
+    if (stageKey === "roughIn") return { sequence: 1, total: 3, percent: 25, label: "Billing 1" };
+    if (stageKey === "topOutVent") return { sequence: 2, total: 3, percent: 50, label: "Billing 2" };
+    if (stageKey === "trimFinish") return { sequence: 3, total: 3, percent: 25, label: "Billing 3" };
+  }
+
+  if (type === "remodel") {
+    if (stageKey === "roughIn") return { sequence: 1, total: 2, percent: 50, label: "Billing 1" };
+    if (stageKey === "trimFinish") return { sequence: 2, total: 2, percent: 50, label: "Billing 2" };
+  }
+
+  return { sequence: 0, total: 0, percent: 0, label: "Stage Billing" };
 }
 
 function formatFileSize(bytes?: number) {
@@ -1213,6 +1278,7 @@ export default function ProjectDetailPage() {
   const [closeoutDetailsTripId, setCloseoutDetailsTripId] = useState<string | null>(null);
   const [projectOfficeDialog, setProjectOfficeDialog] = useState<ProjectOfficeDialogState>(emptyProjectOfficeDialog());
   const [tmInvoiceDialog, setTmInvoiceDialog] = useState<TmInvoiceDialogState>(emptyTmInvoiceDialog());
+  const [stageBillingDialog, setStageBillingDialog] = useState<StageBillingDialogState>(emptyStageBillingDialog());
   const [activeTmBillingTab, setActiveTmBillingTab] = useState<string>("current");
   const [tripActionBusyId, setTripActionBusyId] = useState<string | null>(null);
   const [tripNoteDrafts, setTripNoteDrafts] = useState<Record<string, string>>({});
@@ -1314,8 +1380,14 @@ export default function ProjectDetailPage() {
   );
   const projectOfficeLocked = projectOfficeStatus === "invoiced" || projectOfficeStatus === "closed";
   const projectFieldWorkLocked = projectOfficeLocked || projectOfficeStatus === "field_complete";
-const canUpdateProjectOfficeStatus = canEditProject && !isTmProject;
-const canCloseProject = canEditProject && projectOfficeStatus === "invoiced";
+  const projectHasStageBilling = getEnabledStages(project?.projectType || "").length > 0;
+  const stagedProjectBillingComplete =
+    projectHasStageBilling &&
+    getEnabledStages(project?.projectType || "").every((stageKey) =>
+      getStageBillingStatus((project as any)?.[stageKey]) === "invoiced",
+    );
+const canUpdateProjectOfficeStatus = canEditProject && !isTmProject && !projectHasStageBilling;
+const canCloseProject = canEditProject && (projectOfficeStatus === "invoiced" || stagedProjectBillingComplete);
 const canReopenClosedProject = canEditProject && projectOfficeStatus === "closed";
 
 const canMarkTmReadyToBill =
@@ -1476,17 +1548,26 @@ const canMarkTmReadyToBill =
       isCurrentOpen: boolean;
     }>;
 
-    const frozenTabs = tmBillingPeriods.map((period) => {
-      const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === period.id);
-      return {
-        key: period.id,
-        label: buildBillingTabLabel(period, false),
-        period,
-        trips: periodTrips,
-        summary: summarizeBillingPeriodTrips(periodTrips),
-        isCurrentOpen: false,
-      };
-    });
+    const frozenTabs = tmBillingPeriods
+      .filter((period) => period.status !== "open")
+      .map((period) => {
+        const periodTrips = projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) === period.id);
+        return {
+          key: period.id,
+          label: buildBillingTabLabel(period, false),
+          period,
+          trips: periodTrips,
+          summary: summarizeBillingPeriodTrips(periodTrips),
+          isCurrentOpen: false,
+        };
+      });
+
+    const shouldShowCurrentPeriod =
+      projectOfficeStatus !== "invoiced" && projectOfficeStatus !== "closed";
+
+    if (!shouldShowCurrentPeriod) {
+      return frozenTabs;
+    }
 
     const currentTrips = unbilledCompletedTmTrips;
     return [
@@ -1500,7 +1581,7 @@ const canMarkTmReadyToBill =
       },
       ...frozenTabs,
     ];
-  }, [isTmProject, tmBillingPeriods, currentOpenTmPeriod, unbilledCompletedTmTrips, projectTrips]);
+  }, [isTmProject, tmBillingPeriods, currentOpenTmPeriod, unbilledCompletedTmTrips, projectTrips, projectOfficeStatus]);
 
   const activeTmBillingTabData = useMemo(() => {
     if (!tmBillingTabs.length) return null;
@@ -1678,14 +1759,40 @@ const canMarkTmReadyToBill =
     return Boolean(myUid) && isUidOnTripCrew(myUid, t.crew || null);
   }
 
+  function getProjectStage(stageKey?: StageKey | null) {
+    if (!project || !stageKey) return null;
+    if (stageKey === "roughIn") return project.roughIn;
+    if (stageKey === "topOutVent") return project.topOutVent;
+    return project.trimFinish;
+  }
+
+  function getProjectStageBillingStatus(stageKey?: StageKey | null) {
+    return getStageBillingStatus(getProjectStage(stageKey));
+  }
+
+  function isFrozenStageBilling(stageKey?: StageKey | null) {
+    if (!projectHasStageBilling || !stageKey) return false;
+    const status = getProjectStageBillingStatus(stageKey);
+    return status === "ready_to_bill" || status === "invoiced";
+  }
+
   function isFrozenTmBillingTrip(t: TripDoc) {
     if (!isTmProject) return false;
     const status = safeTrim(t.billingPeriodStatus).toLowerCase();
     return status === "ready_to_bill" || status === "invoiced";
   }
 
+  function isFrozenStageBillingTrip(t: TripDoc) {
+    const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
+    return Boolean(stageKey) && isFrozenStageBilling(stageKey as StageKey);
+  }
+
+  function isFrozenProjectBillingTrip(t: TripDoc) {
+    return isFrozenTmBillingTrip(t) || isFrozenStageBillingTrip(t);
+  }
+
   function canCurrentUserEditTrip(t: TripDoc) {
-    if (projectFieldWorkLocked || isFrozenTmBillingTrip(t)) return false;
+    if (projectFieldWorkLocked || isFrozenProjectBillingTrip(t)) return false;
     if (canEditProject) return true;
     if (String(t.status || "").toLowerCase() === "complete") return false;
     if (!isFieldRole) return false;
@@ -1693,7 +1800,7 @@ const canMarkTmReadyToBill =
   }
 
   function canCurrentUserOperateTrip(t: TripDoc) {
-    if (projectFieldWorkLocked || isFrozenTmBillingTrip(t)) return false;
+    if (projectFieldWorkLocked || isFrozenProjectBillingTrip(t)) return false;
     if (canEditProject) return true;
     if (String(t.status || "").toLowerCase() === "complete") return false;
     if (!isFieldRole) return false;
@@ -2980,6 +3087,10 @@ const canMarkTmReadyToBill =
       alert("This project is field-complete, invoiced, or closed. Reopen active work before scheduling or changing trips.");
       return;
     }
+    if (isFrozenStageBilling(stageKey)) {
+      alert(`${stageLabel(stageKey)} is already ready to bill or invoiced. Reopen that stage billing before scheduling or changing trips.`);
+      return;
+    }
     if (!canEditProject) return;
 
     const start =
@@ -3160,6 +3271,10 @@ const canMarkTmReadyToBill =
     if (!project) return;
     if (projectFieldWorkLocked) {
       alert("This project is field-complete, invoiced, or closed. Reopen active work before scheduling or changing trips.");
+      return;
+    }
+    if (isFrozenStageBilling(stageKey)) {
+      alert(`${stageLabel(stageKey)} is already ready to bill or invoiced. Reopen that stage billing before scheduling or changing trips.`);
       return;
     }
     if (!canEditProject) {
@@ -3347,6 +3462,10 @@ const canMarkTmReadyToBill =
       alert("This project is field-complete, invoiced, or closed. Reopen active work before scheduling or changing trips.");
       return;
     }
+    if (stageKey && isFrozenStageBilling(stageKey)) {
+      alert(`${stageLabel(stageKey)} is already ready to bill or invoiced. Reopen that stage billing before scheduling or changing trips.`);
+      return;
+    }
 
     const defaults =
       stageKey && hasStages
@@ -3483,6 +3602,10 @@ const canMarkTmReadyToBill =
 
       if (mode === "create") {
         const stageKey = tripModal.stageKey;
+
+        if (hasStages && stageKey && isFrozenStageBilling(stageKey)) {
+          throw new Error(`${stageLabel(stageKey)} is already ready to bill or invoiced. Reopen that stage billing before scheduling or changing trips.`);
+        }
 
         if (hasStages && stageKey) {
           const id = makeProjectTripId(project.id, stageKey, date);
@@ -4058,6 +4181,156 @@ if (Object.keys(cleanProjectPatch).length > 1) {
       }));
     } finally {
       setTripActionBusyId(null);
+    }
+  }
+
+  function summarizeStageBillingTrips(stageKey: StageKey) {
+    const trips = tripsByStage[stageKey] || [];
+    const relevantTrips = trips.filter((trip) => {
+      const status = safeTrim(trip.status).toLowerCase();
+      return status !== "cancelled" && trip.active !== false;
+    });
+    const completedTrips = relevantTrips.filter((trip) => safeTrim(trip.status).toLowerCase() === "complete");
+    const openTrips = relevantTrips.filter((trip) => safeTrim(trip.status).toLowerCase() !== "complete");
+    const totalHours = completedTrips.reduce((sum, trip) => sum + getCloseoutHours(trip)!, 0);
+    const materialsCount = completedTrips.reduce((sum, trip) => {
+      return getTripMaterialsSummary(trip) ? sum + 1 : sum;
+    }, 0);
+    const needsTimeEntryReview = completedTrips.some((trip) => {
+      const closeout = (trip.closeout || {}) as any;
+      return safeTrim(closeout.timeEntrySyncStatus) !== "synced";
+    });
+
+    return {
+      totalTrips: relevantTrips.length,
+      completedTrips: completedTrips.length,
+      openTrips: openTrips.length,
+      totalHours: Number(totalHours.toFixed(2)),
+      materialsCount,
+      needsTimeEntryReview,
+    };
+  }
+
+  function openStageBillingDialog(stageKey: StageKey, action: StageBillingAction) {
+    if (!project || !canEditProject) return;
+    const stage = getProjectStage(stageKey) as any;
+    setStageBillingDialog({
+      open: true,
+      stageKey,
+      action,
+      invoiceNumber: safeTrim(stage?.invoiceNumber || ""),
+      invoiceDate: safeTrim(stage?.invoiceDate || toIsoDate(new Date())),
+      invoiceNotes: safeTrim(stage?.invoiceNotes || ""),
+      saving: false,
+      error: "",
+    });
+  }
+
+  function closeStageBillingDialog() {
+    if (stageBillingDialog.saving) return;
+    setStageBillingDialog(emptyStageBillingDialog());
+  }
+
+  async function saveStageBillingStatus() {
+    if (!project || !stageBillingDialog.stageKey || !stageBillingDialog.action || !canEditProject) return;
+
+    const stageKey = stageBillingDialog.stageKey;
+    const action = stageBillingDialog.action;
+    const currentStage = getProjectStage(stageKey) as any;
+    if (!currentStage) return;
+
+    const invoiceDate = safeTrim(stageBillingDialog.invoiceDate);
+    const invoiceNumber = safeTrim(stageBillingDialog.invoiceNumber);
+    const invoiceNotes = safeTrim(stageBillingDialog.invoiceNotes);
+
+    if (action === "invoiced" && !invoiceDate) {
+      setStageBillingDialog((prev) => ({ ...prev, error: "Invoice date is required." }));
+      return;
+    }
+
+    setStageBillingDialog((prev) => ({ ...prev, saving: true, error: "" }));
+
+    try {
+      const now = nowIso();
+      const previousStatus = getStageBillingStatus(currentStage);
+      const billingMeta = getStageBillingMeta(project.projectType, stageKey);
+      const fallbackAmounts = buildStageBilledAmounts(
+        project.projectType as EditableProjectType,
+        Number(project.totalBidAmount || 0),
+      );
+      const fallbackAmount = Number((fallbackAmounts as any)[stageKey] || 0);
+      const nextStage: Record<string, any> = {
+        ...(currentStage || {}),
+      };
+
+      if (action === "ready_to_bill") {
+        nextStage.billingStatus = "ready_to_bill";
+        nextStage.readyToBillAt = now;
+        nextStage.readyToBillByUid = myUid || null;
+        nextStage.readyToBillByName = actorDisplayName || null;
+        nextStage.billed = false;
+        nextStage.billedAmount = Number(nextStage.billedAmount || fallbackAmount || 0);
+      }
+
+      if (action === "invoiced") {
+        nextStage.billingStatus = "invoiced";
+        nextStage.readyToBillAt = nextStage.readyToBillAt || now;
+        nextStage.readyToBillByUid = nextStage.readyToBillByUid || myUid || null;
+        nextStage.readyToBillByName = nextStage.readyToBillByName || actorDisplayName || null;
+        nextStage.invoicedAt = now;
+        nextStage.invoicedByUid = myUid || null;
+        nextStage.invoicedByName = actorDisplayName || null;
+        nextStage.invoiceNumber = invoiceNumber || null;
+        nextStage.invoiceDate = invoiceDate;
+        nextStage.invoiceNotes = invoiceNotes || null;
+        nextStage.billed = true;
+        nextStage.billedAmount = Number(nextStage.billedAmount || fallbackAmount || 0);
+      }
+
+      if (action === "reopen") {
+        nextStage.billingStatus = "not_ready";
+        nextStage.readyToBillAt = null;
+        nextStage.readyToBillByUid = null;
+        nextStage.readyToBillByName = null;
+        nextStage.invoicedAt = null;
+        nextStage.invoicedByUid = null;
+        nextStage.invoicedByName = null;
+        nextStage.invoiceNumber = null;
+        nextStage.invoiceDate = null;
+        nextStage.invoiceNotes = null;
+        nextStage.billed = false;
+      }
+
+      const patch = stripUndefinedDeep({
+        [stageKey]: nextStage,
+        active: true,
+        projectOfficeStatus: projectOfficeStatus === "closed" ? "active_work" : projectOfficeStatus,
+        updatedAt: now,
+      });
+
+      await updateDoc(doc(db, "projects", project.id), patch as any);
+      mergeProjectState(patch);
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: `${stageLabel(stageKey)} billing updated`,
+        description: `${formatStageBillingStatus(previousStatus)} → ${formatStageBillingStatus(getStageBillingStatus(nextStage))}`,
+        details: [
+          `${billingMeta.label}${billingMeta.percent ? ` • ${billingMeta.percent}%` : ""}`,
+          `Updated by: ${actorDisplayName}`,
+          ...(action === "invoiced" && invoiceNumber ? [`Invoice #: ${invoiceNumber}`] : []),
+          ...(action === "invoiced" && invoiceDate ? [`Invoice date: ${invoiceDate}`] : []),
+          ...(invoiceNotes ? [`Invoice notes: ${invoiceNotes}`] : []),
+        ],
+      });
+
+      setStageBillingDialog(emptyStageBillingDialog());
+    } catch (err: any) {
+      setStageBillingDialog((prev) => ({
+        ...prev,
+        saving: false,
+        error: err?.message || "Failed to update stage billing.",
+      }));
     }
   }
 
@@ -4875,7 +5148,7 @@ if (nextStatus === "active_work") {
       return;
     }
 
-    if (projectFieldWorkLocked || isFrozenTmBillingTrip(t)) {
+    if (projectFieldWorkLocked || isFrozenProjectBillingTrip(t)) {
       alert("This project/trip is locked for billing. Reopen it before generating another PO.");
       return;
     }
@@ -5042,7 +5315,7 @@ if (nextStatus === "active_work") {
                           </MenuItem>
 
                           <MenuItem
-                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenTmBillingTrip(t) || tripActionBusyId === t.id}
+                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenProjectBillingTrip(t) || tripActionBusyId === t.id}
                             onClick={() => {
                               closeCompletedTripMenu();
                               void syncProjectTripTimeEntries(t);
@@ -5055,7 +5328,7 @@ if (nextStatus === "active_work") {
                           </MenuItem>
 
                           <MenuItem
-                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenTmBillingTrip(t) || tripActionBusyId === t.id}
+                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenProjectBillingTrip(t) || tripActionBusyId === t.id}
                             onClick={() => {
                               closeCompletedTripMenu();
                               void applyTripLifecycleAction(t, "reopen");
@@ -5070,7 +5343,7 @@ if (nextStatus === "active_work") {
                           <Divider />
 
                           <MenuItem
-                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenTmBillingTrip(t) || tripActionBusyId === t.id}
+                            disabled={!canEditProject || projectFieldWorkLocked || isFrozenProjectBillingTrip(t) || tripActionBusyId === t.id}
                             onClick={() => {
                               closeCompletedTripMenu();
                               void removeTrip(t);
@@ -5277,7 +5550,7 @@ if (nextStatus === "active_work") {
                       variant="outlined"
                       startIcon={<ReceiptLongRoundedIcon />}
                       onClick={() => generateProjectPoForTrip(t)}
-                      disabled={poBusy || projectFieldWorkLocked || isFrozenTmBillingTrip(t)}
+                      disabled={poBusy || projectFieldWorkLocked || isFrozenProjectBillingTrip(t)}
                       sx={{ borderRadius: 99 }}
                     >
                       {poBusy ? "Generating..." : `Generate PO #`}
@@ -6100,6 +6373,112 @@ if (nextStatus === "active_work") {
               sx={{ borderRadius: 99, boxShadow: "none" }}
             >
               {projectOfficeDialog.saving ? "Saving..." : "Confirm"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={stageBillingDialog.open}
+          onClose={stageBillingDialog.saving ? undefined : closeStageBillingDialog}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: { borderRadius: 1 },
+          }}
+        >
+          <DialogTitle sx={{ fontWeight: 900 }}>
+            {stageBillingDialog.stageKey && stageBillingDialog.action === "ready_to_bill"
+              ? `Mark ${stageLabel(stageBillingDialog.stageKey)} Ready to Bill`
+              : stageBillingDialog.stageKey && stageBillingDialog.action === "invoiced"
+                ? `Record ${stageLabel(stageBillingDialog.stageKey)} Invoice`
+                : stageBillingDialog.stageKey && stageBillingDialog.action === "reopen"
+                  ? `Reopen ${stageLabel(stageBillingDialog.stageKey)} Billing`
+                  : "Update Stage Billing"}
+          </DialogTitle>
+          <DialogContent dividers>
+            {stageBillingDialog.stageKey ? (
+              <Stack spacing={2}>
+                <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                  This updates only the selected stage billing status. The overall project remains active until all required stages are invoiced and the project is closed.
+                </Alert>
+
+                <Paper variant="outlined" sx={{ p: 2, borderRadius: 1 }}>
+                  <Stack spacing={0.75}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                      {stageLabel(stageBillingDialog.stageKey)}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {(() => {
+                        const meta = getStageBillingMeta(project?.projectType, stageBillingDialog.stageKey);
+                        return `${meta.label}${meta.total ? ` of ${meta.total}` : ""}${meta.percent ? ` • ${meta.percent}% of bid` : ""}`;
+                      })()}
+                    </Typography>
+                  </Stack>
+                </Paper>
+
+                {stageBillingDialog.action === "ready_to_bill" ? (
+                  <Typography variant="body2" color="text.secondary">
+                    This freezes this stage for office billing review. Stage trips and closeouts remain viewable, but normal trip edits should be reopened before changes are made.
+                  </Typography>
+                ) : null}
+
+                {stageBillingDialog.action === "invoiced" ? (
+                  <Stack spacing={2}>
+                    <Typography variant="body2" color="text.secondary">
+                      Record the invoice information for this stage only.
+                    </Typography>
+                    <TextField
+                      label="Invoice #"
+                      value={stageBillingDialog.invoiceNumber}
+                      onChange={(e) =>
+                        setStageBillingDialog((prev) => ({ ...prev, invoiceNumber: e.target.value }))
+                      }
+                      fullWidth
+                    />
+                    <TextField
+                      label="Invoice Date"
+                      type="date"
+                      value={stageBillingDialog.invoiceDate}
+                      onChange={(e) =>
+                        setStageBillingDialog((prev) => ({ ...prev, invoiceDate: e.target.value }))
+                      }
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                    />
+                    <TextField
+                      label="Invoice Notes"
+                      value={stageBillingDialog.invoiceNotes}
+                      onChange={(e) =>
+                        setStageBillingDialog((prev) => ({ ...prev, invoiceNotes: e.target.value }))
+                      }
+                      multiline
+                      minRows={3}
+                      fullWidth
+                    />
+                  </Stack>
+                ) : null}
+
+                {stageBillingDialog.action === "reopen" ? (
+                  <Typography variant="body2" color="text.secondary">
+                    This reopens the selected stage billing status so office staff can make corrections. It does not delete trips or closeouts.
+                  </Typography>
+                ) : null}
+
+                {stageBillingDialog.error ? <Alert severity="error">{stageBillingDialog.error}</Alert> : null}
+              </Stack>
+            ) : null}
+          </DialogContent>
+          <DialogActions sx={{ px: 3, py: 2 }}>
+            <Button onClick={closeStageBillingDialog} disabled={stageBillingDialog.saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              onClick={saveStageBillingStatus}
+              disabled={stageBillingDialog.saving}
+              sx={{ borderRadius: 99, boxShadow: "none" }}
+            >
+              {stageBillingDialog.saving ? "Saving..." : "Confirm"}
             </Button>
           </DialogActions>
         </Dialog>
@@ -7279,7 +7658,7 @@ if (nextStatus === "active_work") {
 
                             <SectionCard
                 title="Project Closeout & Billing"
-                subtitle="Track field completion, office review, invoice readiness, and final project closure."
+                subtitle={projectHasStageBilling ? "Stage-based projects bill one stage at a time. Use each stage tab to mark Ready to Bill or Invoiced." : "Track field completion, office review, invoice readiness, and final project closure."}
                 icon={<PaidRoundedIcon color="primary" />}
                 action={
                   canUpdateProjectOfficeStatus ? (
@@ -7368,8 +7747,49 @@ if (nextStatus === "active_work") {
                   </Stack>
 
                   <Typography variant="body2" color="text.secondary">
-                    {projectOfficeStatusHelper(projectOfficeStatus)}
+                    {projectHasStageBilling
+                      ? "This is an overview for the whole project. New Construction and Remodel billing actions live on each stage tab so one stage can be billed without closing the project."
+                      : projectOfficeStatusHelper(projectOfficeStatus)}
                   </Typography>
+
+                  {projectHasStageBilling ? (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 1.5,
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          md: `repeat(${Math.max(1, getEnabledStages(project.projectType).length)}, minmax(0, 1fr))`,
+                        },
+                      }}
+                    >
+                      {getEnabledStages(project.projectType).map((stageKey) => {
+                        const stage = (project as any)[stageKey];
+                        const status = getStageBillingStatus(stage);
+                        const meta = getStageBillingMeta(project.projectType, stageKey);
+                        return (
+                          <Paper key={stageKey} variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+                            <Stack spacing={0.75}>
+                              <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                  {stageLabel(stageKey)}
+                                </Typography>
+                                <Chip
+                                  label={formatStageBillingStatus(status)}
+                                  color={stageBillingStatusColor(status)}
+                                  variant={status === "not_ready" ? "outlined" : "filled"}
+                                  size="small"
+                                />
+                              </Stack>
+                              <Typography variant="caption" color="text.secondary">
+                                {meta.label}{meta.percent ? ` • ${meta.percent}%` : ""}
+                              </Typography>
+                            </Stack>
+                          </Paper>
+                        );
+                      })}
+                    </Box>
+                  ) : null}
 
                   {projectFieldWorkLocked ? (
                     <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
@@ -7433,7 +7853,7 @@ if (nextStatus === "active_work") {
                   subtitle="Stage details and stage trips are managed together."
                   icon={<ConstructionRoundedIcon color="primary" />}
                   action={
-                    canEditProject && !projectFieldWorkLocked ? (
+                    canEditProject && !projectFieldWorkLocked && !isFrozenStageBilling(activeStageTab) ? (
                       <>
                         <Button
                           variant="outlined"
@@ -7483,6 +7903,12 @@ if (nextStatus === "active_work") {
                     const effSecondaryHelper = effective.secondaryHelper
                       ? findHelperName(effective.secondaryHelper)
                       : "—";
+                    const activeStage = getProjectStage(activeStageTab) as any;
+                    const activeStageBillingStatus = getStageBillingStatus(activeStage);
+                    const activeStageBillingMeta = getStageBillingMeta(project.projectType, activeStageTab);
+                    const activeStageBillingSummary = summarizeStageBillingTrips(activeStageTab);
+                    const activeStageBillingAmount = Number(activeStage?.billedAmount || (previewStageAmounts as any)[activeStageTab] || 0);
+                    const activeStageBillingFrozen = isFrozenStageBilling(activeStageTab);
 
                     return (
                       <Stack spacing={2}>
@@ -7778,6 +8204,134 @@ if (nextStatus === "active_work") {
                           sx={{
                             p: { xs: 2, sm: 2.5 },
                             borderRadius: 1,
+                            bgcolor: alpha(theme.palette.warning.main, 0.035),
+                          }}
+                        >
+                          <Stack spacing={2}>
+                            <Stack
+                              direction={{ xs: "column", md: "row" }}
+                              spacing={1.5}
+                              justifyContent="space-between"
+                              alignItems={{ xs: "flex-start", md: "center" }}
+                            >
+                              <Box>
+                                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                  <PaidRoundedIcon color="primary" />
+                                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                    Stage Billing
+                                  </Typography>
+                                  <Chip
+                                    label={formatStageBillingStatus(activeStageBillingStatus)}
+                                    color={stageBillingStatusColor(activeStageBillingStatus)}
+                                    variant={activeStageBillingStatus === "not_ready" ? "outlined" : "filled"}
+                                    size="small"
+                                  />
+                                </Stack>
+                                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                                  {activeStageBillingMeta.label}{activeStageBillingMeta.total ? ` of ${activeStageBillingMeta.total}` : ""}
+                                  {activeStageBillingMeta.percent ? ` • ${activeStageBillingMeta.percent}% of bid` : ""}
+                                </Typography>
+                              </Box>
+
+                              {canEditProject ? (
+                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                  {activeStageBillingStatus === "not_ready" ? (
+                                    <Button
+                                      variant="contained"
+                                      color="warning"
+                                      onClick={() => openStageBillingDialog(activeStageTab, "ready_to_bill")}
+                                      disabled={activeStage.status !== "complete"}
+                                      sx={{ borderRadius: 99, boxShadow: "none" }}
+                                    >
+                                      Mark Ready to Bill
+                                    </Button>
+                                  ) : null}
+
+                                  {activeStageBillingStatus === "ready_to_bill" ? (
+                                    <>
+                                      <Button
+                                        variant="contained"
+                                        color="success"
+                                        onClick={() => openStageBillingDialog(activeStageTab, "invoiced")}
+                                        sx={{ borderRadius: 99, boxShadow: "none" }}
+                                      >
+                                        Record Invoiced
+                                      </Button>
+                                      <Button
+                                        variant="outlined"
+                                        onClick={() => openStageBillingDialog(activeStageTab, "reopen")}
+                                        sx={{ borderRadius: 99 }}
+                                      >
+                                        Reopen Stage Billing
+                                      </Button>
+                                    </>
+                                  ) : null}
+
+                                  {activeStageBillingStatus === "invoiced" ? (
+                                    <Button
+                                      variant="outlined"
+                                      onClick={() => openStageBillingDialog(activeStageTab, "reopen")}
+                                      sx={{ borderRadius: 99 }}
+                                    >
+                                      Reopen Stage Billing
+                                    </Button>
+                                  ) : null}
+                                </Stack>
+                              ) : null}
+                            </Stack>
+
+                            {activeStage.status !== "complete" && activeStageBillingStatus === "not_ready" ? (
+                              <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+                                Complete this stage before marking it ready to bill.
+                              </Alert>
+                            ) : null}
+
+                            {activeStageBillingFrozen ? (
+                              <Alert severity="warning" variant="outlined" sx={{ borderRadius: 1 }}>
+                                This stage billing is frozen. Reopen stage billing before changing trips or closeouts for this stage.
+                              </Alert>
+                            ) : null}
+
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gap: 2,
+                                gridTemplateColumns: {
+                                  xs: "1fr",
+                                  sm: "repeat(2, minmax(0, 1fr))",
+                                  lg: "repeat(4, minmax(0, 1fr))",
+                                },
+                              }}
+                            >
+                              <InfoField label="Base Amount" value={formatCurrency(activeStageBillingAmount)} />
+                              <InfoField label="Completed Trips" value={`${activeStageBillingSummary.completedTrips}/${activeStageBillingSummary.totalTrips}`} />
+                              <InfoField label="Labor Captured" value={`${activeStageBillingSummary.totalHours.toFixed(2)}h`} />
+                              <InfoField label="Materials Notes" value={activeStageBillingSummary.materialsCount} />
+                              <InfoField
+                                label="Time Entries"
+                                value={
+                                  activeStageBillingSummary.completedTrips === 0
+                                    ? "No completed trips"
+                                    : activeStageBillingSummary.needsTimeEntryReview
+                                      ? "Needs review"
+                                      : "Synced"
+                                }
+                              />
+                              <InfoField
+                                label="Ready To Bill"
+                                value={activeStage?.readyToBillAt ? formatDateTime(activeStage.readyToBillAt) : "—"}
+                              />
+                              <InfoField label="Invoice #" value={activeStage?.invoiceNumber || "—"} />
+                              <InfoField label="Invoice Date" value={activeStage?.invoiceDate || "—"} />
+                            </Box>
+                          </Stack>
+                        </Paper>
+
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: { xs: 2, sm: 2.5 },
+                            borderRadius: 1,
                           }}
                         >
                           <Stack spacing={2}>
@@ -7799,7 +8353,7 @@ if (nextStatus === "active_work") {
                                 />
                               </Stack>
 
-                              {canEditProject && !projectFieldWorkLocked ? (
+                              {canEditProject && !projectFieldWorkLocked && !activeStageBillingFrozen ? (
                                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                   <Button
                                     variant="outlined"
@@ -7849,45 +8403,15 @@ if (nextStatus === "active_work") {
                       subtitle="Freeze accumulated completed trips and materials into billing periods without itemizing every line for the field crew."
                       icon={<PaidRoundedIcon color="primary" />}
                       action={
-                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          {canMarkTmFieldComplete ? (
-                            <Button
-                              variant="outlined"
-                              onClick={() => void markTmProjectFieldComplete()}
-                              sx={{ borderRadius: 99 }}
-                            >
-                              Mark Field Complete
-                            </Button>
-                          ) : null}
-                          {canMarkTmReadyToBill ? (
-                            <Button
-                              variant="contained"
-                              color="warning"
-                              onClick={() => void markTmCurrentPeriodReadyToBill()}
-                              sx={{ borderRadius: 99, boxShadow: "none" }}
-                            >
-                              Ready To Bill Current Period
-                            </Button>
-                          ) : null}
-                          {canInvoiceTmPeriods && activeTmBillingTabData?.period?.status === "ready_to_bill" ? (
-                            <Button
-                              variant="outlined"
-                              onClick={() => openTmInvoiceDialog(activeTmBillingTabData.period!.id)}
-                              sx={{ borderRadius: 99 }}
-                            >
-                              Record Invoiced
-                            </Button>
-                          ) : null}
-                          {canInvoiceTmPeriods && activeTmBillingTabData?.period?.status === "ready_to_bill" ? (
-                            <Button
-                              variant="outlined"
-                              onClick={() => void reopenTmBillingPeriod(activeTmBillingTabData.period!.id)}
-                              sx={{ borderRadius: 99 }}
-                            >
-                              Reopen Frozen Period
-                            </Button>
-                          ) : null}
-                        </Stack>
+                        canMarkTmFieldComplete ? (
+                          <Button
+                            variant="outlined"
+                            onClick={() => void markTmProjectFieldComplete()}
+                            sx={{ borderRadius: 99 }}
+                          >
+                            Mark Field Complete
+                          </Button>
+                        ) : null
                       }
                     >
                       <Stack spacing={2}>
@@ -7965,6 +8489,45 @@ if (nextStatus === "active_work") {
                                     <Chip label={`Invoice #${activeTmBillingTabData.period.invoiceNumber}`} size="small" variant="outlined" />
                                   ) : null}
                                 </Stack>
+                              </Stack>
+
+                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                {activeTmBillingTabData.isCurrentOpen && canMarkTmReadyToBill ? (
+                                  <Button
+                                    variant="contained"
+                                    color="warning"
+                                    onClick={() => void markTmCurrentPeriodReadyToBill()}
+                                    disabled={activeTmBillingTabData.summary.tripCount === 0}
+                                    sx={{ borderRadius: 99, boxShadow: "none" }}
+                                  >
+                                    Mark Current Period Ready to Bill
+                                  </Button>
+                                ) : null}
+
+                                {!activeTmBillingTabData.isCurrentOpen &&
+                                activeTmBillingTabData.period?.status === "ready_to_bill" &&
+                                canInvoiceTmPeriods ? (
+                                  <Button
+                                    variant="contained"
+                                    color="success"
+                                    onClick={() => openTmInvoiceDialog(activeTmBillingTabData.period!.id)}
+                                    sx={{ borderRadius: 99, boxShadow: "none" }}
+                                  >
+                                    Record Invoiced
+                                  </Button>
+                                ) : null}
+
+                                {!activeTmBillingTabData.isCurrentOpen &&
+                                activeTmBillingTabData.period?.status === "ready_to_bill" &&
+                                canInvoiceTmPeriods ? (
+                                  <Button
+                                    variant="outlined"
+                                    onClick={() => void reopenTmBillingPeriod(activeTmBillingTabData.period!.id)}
+                                    sx={{ borderRadius: 99 }}
+                                  >
+                                    Reopen Frozen Period
+                                  </Button>
+                                ) : null}
                               </Stack>
 
                               <Box
