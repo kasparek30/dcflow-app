@@ -26,6 +26,12 @@ type CollectorDebugEntry = {
 };
 
 export type SupplierInvoiceCollectionResult = {
+  mode: "bootstrap" | "scan";
+  initialized: boolean;
+  checkpointStartUid: number | null;
+  checkpointEndUid: number | null;
+  highestMailboxUid: number | null;
+  newUidCount: number;
   checked: number;
   eligible: number;
   saved: number;
@@ -33,20 +39,26 @@ export type SupplierInvoiceCollectionResult = {
   skipped: number;
   errors: string[];
   pendingInvoiceIds: string[];
+  message: string;
   debug: {
     scannedMailbox: string;
     totalMessageCount: number;
     scannedUidCount: number;
-    scannedUids: Array<number | string>;
+    scannedUids: number[];
     scannedEmails: CollectorDebugEntry[];
   };
 };
 
+const CHECKPOINT_COLLECTION = "systemCounters";
+const CHECKPOINT_DOCUMENT = "supplierInvoiceCollector";
+
 function requiredEnv(name: string) {
   const value = process.env[name];
+
   if (!value) {
     throw new Error(`Missing required env variable: ${name}`);
   }
+
   return value;
 }
 
@@ -66,22 +78,27 @@ function safeFilePart(value: string) {
     .slice(0, 120);
 }
 
-function clampNumber(
-  value: number | string | undefined,
+function readPositiveInteger(
+  value: number | string | undefined | null,
   fallback: number,
   min: number,
   max: number,
 ) {
   const n = Number(value);
+
   if (!Number.isFinite(n)) return fallback;
+
   return Math.max(min, Math.min(Math.floor(n), max));
 }
 
-function getLatestUidSubset(uids: number[], limit: number) {
-  return [...uids]
-    .filter((uid) => Number.isFinite(Number(uid)))
-    .sort((a, b) => Number(a) - Number(b))
-    .slice(-limit);
+function readOptionalUid(value: number | string | undefined | null) {
+  if (value === null || value === undefined || value === "") return null;
+
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n < 0) return null;
+
+  return Math.floor(n);
 }
 
 function isPdfAttachment(attachment: Attachment) {
@@ -106,13 +123,14 @@ function envelopeAddressToText(value: unknown) {
       const email = cleanText(address?.address);
 
       if (name && email) return `${name} <${email}>`;
+
       return name || email;
     })
     .filter(Boolean)
     .join(", ");
 }
 
-function isLikelySupportedSupplierInvoiceEmail(args: {
+function isSupportedSupplierInvoiceEmail(args: {
   subject: string;
   from: string;
 }) {
@@ -131,10 +149,43 @@ function isLikelySupportedSupplierInvoiceEmail(args: {
 
   const moore =
     from.includes("mooresupply") ||
+    from.includes("moore supply") ||
     from.includes("billtrust.com") ||
     subject.includes("moore supply");
 
   return invoiceLike && (farmers || moore);
+}
+
+function makeBaseResult(args?: {
+  mode?: "bootstrap" | "scan";
+  initialized?: boolean;
+  checkpointStartUid?: number | null;
+  checkpointEndUid?: number | null;
+  message?: string;
+}): SupplierInvoiceCollectionResult {
+  return {
+    mode: args?.mode || "scan",
+    initialized: args?.initialized || false,
+    checkpointStartUid: args?.checkpointStartUid ?? null,
+    checkpointEndUid: args?.checkpointEndUid ?? null,
+    highestMailboxUid: null,
+    newUidCount: 0,
+    checked: 0,
+    eligible: 0,
+    saved: 0,
+    alreadySaved: 0,
+    skipped: 0,
+    errors: [],
+    pendingInvoiceIds: [],
+    message: args?.message || "",
+    debug: {
+      scannedMailbox: "INBOX",
+      totalMessageCount: 0,
+      scannedUidCount: 0,
+      scannedUids: [],
+      scannedEmails: [],
+    },
+  };
 }
 
 async function parseEmailSource(source: Buffer): Promise<ParsedMail> {
@@ -143,16 +194,12 @@ async function parseEmailSource(source: Buffer): Promise<ParsedMail> {
 
 async function fetchAndParseFullMessage(args: {
   client: ImapFlow;
-  uid: number | string | null;
+  uid: number;
 }) {
-  const uid = Number(args.uid);
-
-  if (!Number.isFinite(uid)) {
-    throw new Error("Cannot fetch full email without a valid UID.");
-  }
+  console.log(`[supplier-collector] Fetching full source for UID ${args.uid}.`);
 
   const fetched = (await args.client.fetchOne(
-    uid,
+    args.uid,
     {
       uid: true,
       source: true,
@@ -161,30 +208,20 @@ async function fetchAndParseFullMessage(args: {
   )) as any;
 
   if (!fetched?.source) {
-    throw new Error("Fetched email source was empty.");
+    throw new Error(`Fetched email source was empty for UID ${args.uid}.`);
   }
 
-  return parseEmailSource(fetched.source);
+  const parsed = await parseEmailSource(fetched.source);
+
+  console.log(`[supplier-collector] Parsed full source for UID ${args.uid}.`);
+
+  return parsed;
 }
 
-async function findExistingSupplierInvoiceByUid(uid: number | string | null) {
-  const cleanUid = cleanText(uid);
-
-  if (!cleanUid) {
-    return {
-      exists: false,
-      invoiceId: "",
-      status: "",
-    };
-  }
-
-  const queryValue = Number.isFinite(Number(cleanUid))
-    ? Number(cleanUid)
-    : cleanUid;
-
+async function findExistingSupplierInvoiceByUid(uid: number) {
   const snap = await adminFirestore
     .collection("supplierInvoiceInbox")
-    .where("uid", "==", queryValue)
+    .where("uid", "==", uid)
     .limit(1)
     .get();
 
@@ -214,11 +251,11 @@ async function savePdfAttachments(args: {
   const bucket = adminStorageBucket;
   const bucketName = bucket.name;
 
-  const pdfs = args.attachments.filter(isPdfAttachment);
+  const pdfAttachments = args.attachments.filter(isPdfAttachment);
   const saved: SavedSupplierAttachment[] = [];
 
-  for (let index = 0; index < pdfs.length; index += 1) {
-    const attachment = pdfs[index];
+  for (let index = 0; index < pdfAttachments.length; index += 1) {
+    const attachment = pdfAttachments[index];
 
     const originalName =
       cleanText(attachment.filename) ||
@@ -231,11 +268,15 @@ async function savePdfAttachments(args: {
       safeFilePart(args.messageId) || `message-${Date.now()}`;
 
     const attachmentId = `${safeMessageId}_${index + 1}_${filename}`;
-    const storagePath = `supplierInvoiceInbox/${args.invoiceId}/attachments/${attachmentId}`;
 
-    const file = bucket.file(storagePath);
+    const storagePath =
+      `supplierInvoiceInbox/${args.invoiceId}/attachments/${attachmentId}`;
 
-    await file.save(attachment.content, {
+    console.log(
+      `[supplier-collector] Saving PDF ${index + 1}/${pdfAttachments.length} for ${args.invoiceId}.`,
+    );
+
+    await bucket.file(storagePath).save(attachment.content, {
       resumable: false,
       metadata: {
         contentType: attachment.contentType || "application/pdf",
@@ -272,7 +313,7 @@ async function savePendingSupplierInvoice(args: {
   subject: string;
   from: string;
   messageId: string;
-  uid: number | string | null;
+  uid: number;
   attachments: Attachment[];
 }) {
   const invoiceId = safeProcessedEmailId("supplier_invoice", args.messageId);
@@ -311,7 +352,7 @@ async function savePendingSupplierInvoice(args: {
     emailSubject: args.subject || null,
     emailFrom: args.from || null,
     messageId: args.messageId,
-    uid: args.uid ?? null,
+    uid: args.uid,
     detectedPoCodes: [],
     matchedPoCode: null,
     matchedPoCodes: [],
@@ -335,7 +376,7 @@ async function savePendingSupplierInvoice(args: {
         messageId: args.messageId,
         subject: args.subject,
         from: args.from,
-        uid: args.uid ?? null,
+        uid: args.uid,
         attachmentCount: args.attachments.length,
         pdfAttachmentCount: savedAttachments.length,
         collectionStatus: "ocr_pending",
@@ -352,19 +393,106 @@ async function savePendingSupplierInvoice(args: {
   };
 }
 
-export async function collectSupplierInvoiceInbox(options?: {
-  scanLimit?: number;
-  maxNewInvoicesPerRun?: number;
-}): Promise<SupplierInvoiceCollectionResult> {
-  const mailboxName = "INBOX";
+async function writeCheckpoint(args: {
+  lastScannedUid: number;
+  initialized?: boolean;
+}) {
+  const now = new Date().toISOString();
 
-  const scanLimit = clampNumber(options?.scanLimit, 100, 1, 200);
-  const maxNewInvoicesPerRun = clampNumber(
-    options?.maxNewInvoicesPerRun,
-    3,
+  await adminFirestore
+    .collection(CHECKPOINT_COLLECTION)
+    .doc(CHECKPOINT_DOCUMENT)
+    .set(
+      {
+        lastScannedUid: args.lastScannedUid,
+        updatedAt: now,
+        ...(args.initialized
+          ? {
+              initializedAt: now,
+              initializedBy: "bootstrap_route",
+            }
+          : {
+              lastSuccessfulAdvanceAt: now,
+            }),
+      },
+      { merge: true },
+    );
+}
+
+export async function collectSupplierInvoiceInbox(options?: {
+  bootstrapUid?: number | string | null;
+  maxMessagesPerRun?: number | string;
+  maxNewInvoicesPerRun?: number | string;
+}): Promise<SupplierInvoiceCollectionResult> {
+  const bootstrapUid = readOptionalUid(options?.bootstrapUid);
+
+  const checkpointRef = adminFirestore
+    .collection(CHECKPOINT_COLLECTION)
+    .doc(CHECKPOINT_DOCUMENT);
+
+  const checkpointSnap = await checkpointRef.get();
+  const existingCheckpointUid = checkpointSnap.exists
+    ? readOptionalUid(checkpointSnap.data()?.lastScannedUid)
+    : null;
+
+  /*
+   * Bootstrap is deliberately a no-scan action.
+   * It establishes where future automation begins without touching old email.
+   */
+  if (bootstrapUid !== null) {
+    if (existingCheckpointUid !== null) {
+      return makeBaseResult({
+        mode: "bootstrap",
+        initialized: false,
+        checkpointStartUid: existingCheckpointUid,
+        checkpointEndUid: existingCheckpointUid,
+        message: `Checkpoint already exists at UID ${existingCheckpointUid}; it was not changed.`,
+      });
+    }
+
+    await writeCheckpoint({
+      lastScannedUid: bootstrapUid,
+      initialized: true,
+    });
+
+    return makeBaseResult({
+      mode: "bootstrap",
+      initialized: true,
+      checkpointStartUid: bootstrapUid,
+      checkpointEndUid: bootstrapUid,
+      message: `Supplier invoice collector initialized at UID ${bootstrapUid}. Only newer emails will be collected automatically.`,
+    });
+  }
+
+  if (existingCheckpointUid === null) {
+    throw new Error(
+      "Supplier invoice collector is not initialized. Run the collector once with bootstrapUid=149 before enabling scheduled collection.",
+    );
+  }
+
+  const maxMessagesPerRun = readPositiveInteger(
+    options?.maxMessagesPerRun,
     1,
-    10,
+    1,
+    5,
   );
+
+  const maxNewInvoicesPerRun = readPositiveInteger(
+    options?.maxNewInvoicesPerRun,
+    1,
+    1,
+    2,
+  );
+
+  const result = makeBaseResult({
+    mode: "scan",
+    initialized: true,
+    checkpointStartUid: existingCheckpointUid,
+    checkpointEndUid: existingCheckpointUid,
+    message: "Supplier invoice scan completed.",
+  });
+
+  const mailboxName = "INBOX";
 
   const client = new ImapFlow({
     host: requiredEnv("PO_INBOX_HOST"),
@@ -377,22 +505,9 @@ export async function collectSupplierInvoiceInbox(options?: {
     logger: false,
   });
 
-  const result: SupplierInvoiceCollectionResult = {
-    checked: 0,
-    eligible: 0,
-    saved: 0,
-    alreadySaved: 0,
-    skipped: 0,
-    errors: [],
-    pendingInvoiceIds: [],
-    debug: {
-      scannedMailbox: mailboxName,
-      totalMessageCount: 0,
-      scannedUidCount: 0,
-      scannedUids: [],
-      scannedEmails: [],
-    },
-  };
+  console.log(
+    `[supplier-collector] Starting scan after UID ${existingCheckpointUid}.`,
+  );
 
   await client.connect();
 
@@ -411,84 +526,113 @@ export async function collectSupplierInvoiceInbox(options?: {
         ? allUidsRaw
             .map((uid) => Number(uid))
             .filter((uid) => Number.isFinite(uid))
+            .sort((a, b) => a - b)
         : [];
 
-      const latestUids = getLatestUidSubset(allUids, scanLimit);
+      result.highestMailboxUid =
+        allUids.length > 0 ? allUids[allUids.length - 1] : existingCheckpointUid;
 
-      result.debug.scannedUidCount = latestUids.length;
-      result.debug.scannedUids = latestUids;
+      const newUids = allUids.filter((uid) => uid > existingCheckpointUid);
 
-      if (latestUids.length === 0) {
+      result.newUidCount = newUids.length;
+
+      const selectedUids = newUids.slice(0, maxMessagesPerRun);
+
+      result.debug.scannedUidCount = selectedUids.length;
+      result.debug.scannedUids = selectedUids;
+
+      if (selectedUids.length === 0) {
+        result.message = `No new mailbox messages found after UID ${existingCheckpointUid}.`;
         return result;
       }
 
-      for await (const lightMessage of client.fetch(latestUids, {
-        uid: true,
-        envelope: true,
-        flags: true,
-      })) {
+      let lastAdvancedUid = existingCheckpointUid;
+
+      for (const uid of selectedUids) {
         result.checked += 1;
 
-        const envelope = (lightMessage as any).envelope || {};
-
-        let subject = cleanText(envelope.subject);
-        let from = envelopeAddressToText(envelope.from);
-        let messageId =
-          cleanText(envelope.messageId) ||
-          `uid_${lightMessage.uid || "unknown"}`;
-
-        if (
-          !isLikelySupportedSupplierInvoiceEmail({
-            subject,
-            from,
-          })
-        ) {
-          result.skipped += 1;
-          result.debug.scannedEmails.push({
-            uid: lightMessage.uid || null,
-            subject,
-            from,
-            messageId,
-            reason: "Skipped: not a supported Farmers/Moore supplier invoice email.",
-          });
-          continue;
-        }
-
-        result.eligible += 1;
-
-        const existingByUid = await findExistingSupplierInvoiceByUid(
-          lightMessage.uid || null,
-        );
-
-        if (existingByUid.exists) {
-          result.alreadySaved += 1;
-          result.debug.scannedEmails.push({
-            uid: lightMessage.uid || null,
-            subject,
-            from,
-            messageId,
-            reason: `Skipped: supplier invoice already collected as ${existingByUid.invoiceId} with status ${existingByUid.status || "unknown"}.`,
-          });
-          continue;
-        }
-
-        if (result.saved >= maxNewInvoicesPerRun) {
-          result.skipped += 1;
-          result.debug.scannedEmails.push({
-            uid: lightMessage.uid || null,
-            subject,
-            from,
-            messageId,
-            reason:
-              "Skipped this run: maximum new supplier invoices already collected.",
-          });
-          continue;
-        }
+        let subject = "";
+        let from = "";
+        let messageId = `uid_${uid}`;
+        let shouldAdvanceCheckpoint = false;
+        let shouldStopRun = false;
 
         try {
+          console.log(`[supplier-collector] Reading envelope for UID ${uid}.`);
+
+          const lightMessage = (await client.fetchOne(
+            uid,
+            {
+              uid: true,
+              envelope: true,
+              flags: true,
+            },
+            { uid: true },
+          )) as any;
+
+          const envelope = lightMessage?.envelope || {};
+
+          subject = cleanText(envelope.subject);
+          from = envelopeAddressToText(envelope.from);
+          messageId = cleanText(envelope.messageId) || `uid_${uid}`;
+
+          if (
+            !isSupportedSupplierInvoiceEmail({
+              subject,
+              from,
+            })
+          ) {
+            result.skipped += 1;
+            shouldAdvanceCheckpoint = true;
+
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: "Skipped: not a supported Farmers/Moore supplier invoice email.",
+            });
+
+            continue;
+          }
+
+          result.eligible += 1;
+
+          const existingByUid = await findExistingSupplierInvoiceByUid(uid);
+
+          if (existingByUid.exists) {
+            result.alreadySaved += 1;
+            shouldAdvanceCheckpoint = true;
+
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: `Skipped: supplier invoice already collected as ${existingByUid.invoiceId} with status ${existingByUid.status || "unknown"}.`,
+            });
+
+            continue;
+          }
+
+          if (result.saved >= maxNewInvoicesPerRun) {
+            result.skipped += 1;
+            shouldStopRun = true;
+
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: "Deferred: maximum new supplier invoices collected this run.",
+            });
+
+            continue;
+          }
+
           const parsed = await fetchAndParseFullMessage({
             client,
-            uid: lightMessage.uid || null,
+            uid,
           });
 
           subject = cleanText(parsed.subject) || subject;
@@ -496,20 +640,23 @@ export async function collectSupplierInvoiceInbox(options?: {
           messageId =
             cleanText(parsed.messageId) ||
             messageId ||
-            `uid_${lightMessage.uid || "unknown"}`;
+            `uid_${uid}`;
 
           const attachments = parsed.attachments || [];
           const pdfAttachments = attachments.filter(isPdfAttachment);
 
           if (pdfAttachments.length === 0) {
             result.skipped += 1;
+            shouldAdvanceCheckpoint = true;
+
             result.debug.scannedEmails.push({
-              uid: lightMessage.uid || null,
+              uid,
               subject,
               from,
               messageId,
               reason: "Skipped: supported supplier email had no PDF attachment.",
             });
+
             continue;
           }
 
@@ -517,38 +664,40 @@ export async function collectSupplierInvoiceInbox(options?: {
             subject,
             from,
             messageId,
-            uid: lightMessage.uid || null,
+            uid,
             attachments,
           });
 
           if (!saved.created) {
             result.alreadySaved += 1;
+            shouldAdvanceCheckpoint = true;
+
             result.debug.scannedEmails.push({
-              uid: lightMessage.uid || null,
+              uid,
               subject,
               from,
               messageId,
               reason: `Skipped: supplier invoice already exists as ${saved.invoiceId}.`,
             });
+
             continue;
           }
 
           result.saved += 1;
           result.pendingInvoiceIds.push(saved.invoiceId);
+          shouldAdvanceCheckpoint = true;
 
           result.debug.scannedEmails.push({
-            uid: lightMessage.uid || null,
+            uid,
             subject,
             from,
             messageId,
             reason: `Collected ${saved.pdfAttachmentCount} PDF attachment(s) into ${saved.invoiceId}; awaiting OCR processing.`,
           });
 
-          if (lightMessage.uid) {
-            await client.messageFlagsAdd(lightMessage.uid, ["\\Seen"], {
-              uid: true,
-            });
-          }
+          await client.messageFlagsAdd(uid, ["\\Seen"], {
+            uid: true,
+          });
         } catch (err) {
           const message =
             err instanceof Error
@@ -556,16 +705,36 @@ export async function collectSupplierInvoiceInbox(options?: {
               : "Failed to collect supplier invoice email.";
 
           result.errors.push(message);
+          shouldStopRun = true;
 
           result.debug.scannedEmails.push({
-            uid: lightMessage.uid || null,
+            uid,
             subject,
             from,
             messageId,
             reason: `Collection error: ${message}`,
           });
+        } finally {
+          if (shouldAdvanceCheckpoint) {
+            await writeCheckpoint({
+              lastScannedUid: uid,
+            });
+
+            lastAdvancedUid = uid;
+            result.checkpointEndUid = uid;
+
+            console.log(`[supplier-collector] Advanced checkpoint to UID ${uid}.`);
+          }
+        }
+
+        if (shouldStopRun) {
+          break;
         }
       }
+
+      result.checkpointEndUid = lastAdvancedUid;
+
+      return result;
     } finally {
       lock.release();
     }
@@ -578,6 +747,4 @@ export async function collectSupplierInvoiceInbox(options?: {
       console.warn("Supplier invoice collector logout warning:", err);
     }
   }
-
-  return result;
 }

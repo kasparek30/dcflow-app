@@ -12,6 +12,16 @@ function unauthorized() {
   );
 }
 
+function readOptionalNumber(value: string | null) {
+  if (value === null || value === "") return null;
+
+  const n = Number(value);
+
+  if (!Number.isFinite(n)) return null;
+
+  return Math.floor(n);
+}
+
 function readNumberParam(
   value: string | null,
   fallback: number,
@@ -43,23 +53,20 @@ export async function GET(req: Request) {
 
     const url = new URL(req.url);
 
-    const scanLimit = readNumberParam(
-      url.searchParams.get("limit"),
-      100,
-      1,
-      200,
-    );
-
-    const maxNewInvoicesPerRun = readNumberParam(
-      url.searchParams.get("maxNew"),
-      3,
-      1,
-      10,
-    );
-
     const result = await collectSupplierInvoiceInbox({
-      scanLimit,
-      maxNewInvoicesPerRun,
+      bootstrapUid: readOptionalNumber(url.searchParams.get("bootstrapUid")),
+      maxMessagesPerRun: readNumberParam(
+        url.searchParams.get("maxMessages"),
+        1,
+        1,
+        5,
+      ),
+      maxNewInvoicesPerRun: readNumberParam(
+        url.searchParams.get("maxNew"),
+        1,
+        1,
+        2,
+      ),
     });
 
     return NextResponse.json({
