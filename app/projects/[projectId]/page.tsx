@@ -5123,20 +5123,18 @@ if (nextStatus === "active_work") {
     }
 
     try {
-      let url = safeTrim(attachment.downloadUrl);
+      const storagePath = safeTrim(attachment.storagePath);
 
-      if (!url && attachment.storagePath) {
-        const storage = getStorage();
-        url = await getDownloadURL(storageRef(storage, attachment.storagePath));
+      if (!storagePath) {
+        throw new Error("This invoice PDF is missing its Firebase Storage path.");
       }
 
-      if (!url) {
-        throw new Error("This attachment is missing a download URL/storage path.");
-      }
+      const storage = getStorage();
+      const url = await getDownloadURL(storageRef(storage, storagePath));
 
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (err: any) {
-      alert(err?.message || "Failed to open invoice PDF.");
+      alert(err?.message || "Could not open invoice PDF. Check Firebase Storage permissions.");
     }
   }
 

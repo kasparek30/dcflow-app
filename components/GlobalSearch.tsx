@@ -40,7 +40,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../src/lib/firebase";
 
-type GlobalSearchResultType = "project" | "customer" | "serviceTicket";
+type GlobalSearchResultType = "project" | "customer" | "serviceTicket" | "purchaseOrder";
 
 type GlobalSearchResult = {
   id: string;
@@ -111,6 +111,29 @@ function getBestServiceTicketSortMs(data: DocumentData) {
   );
 }
 
+function getBestPurchaseOrderSortMs(data: DocumentData) {
+  return (
+    parseSearchDateMs(data.invoiceEmailMatchedAt) ||
+    parseSearchDateMs(data.supplierMaterialsImportedAt) ||
+    parseSearchDateMs(data.matchedAt) ||
+    parseSearchDateMs(data.updatedAt) ||
+    parseSearchDateMs(data.createdAt) ||
+    0
+  );
+}
+
+function formatCurrency(value: unknown) {
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount)) return "";
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
 function formatProjectType(value: unknown) {
   const raw = normalizeSearchText(value);
 
@@ -158,12 +181,14 @@ function compactJoin(parts: Array<string | null | undefined>, separator = " • 
 function resultTypeLabel(type: GlobalSearchResultType) {
   if (type === "project") return "Project";
   if (type === "customer") return "Customer";
+  if (type === "purchaseOrder") return "Purchase Order";
   return "Ticket";
 }
 
 function resultGroupTitle(type: GlobalSearchResultType) {
   if (type === "project") return "Projects";
   if (type === "customer") return "Customers";
+  if (type === "purchaseOrder") return "Purchase Orders";
   return "Service Tickets";
 }
 
@@ -347,6 +372,99 @@ return {
 };
 }
 
+function buildPurchaseOrderResult(
+  id: string,
+  data: DocumentData,
+  projectRowsById: Map<string, DocumentData>,
+  ticketRowsById: Map<string, DocumentData>
+): GlobalSearchResult {
+  const poCode =
+    safeTrim(data.poCode || data.poNumber || data.purchaseOrderNumber || id).toUpperCase() ||
+    id.toUpperCase();
+
+  const projectId = safeTrim(data.projectId || data.link?.projectId);
+  const serviceTicketId = safeTrim(data.serviceTicketId || data.link?.serviceTicketId);
+  const projectData = projectId ? projectRowsById.get(projectId) : undefined;
+  const ticketData = serviceTicketId ? ticketRowsById.get(serviceTicketId) : undefined;
+
+  const projectName = safeTrim(projectData?.projectName);
+  const projectCustomerName = safeTrim(projectData?.customerDisplayName);
+  const ticketCustomerName = safeTrim(ticketData?.customerDisplayName);
+  const ticketIssueSummary =
+    safeTrim(ticketData?.issueSummary) || safeTrim(ticketData?.issueDetails);
+
+  const projectContext = projectId
+    ? compactJoin([projectName || "Project", projectCustomerName])
+    : "";
+  const ticketContext = serviceTicketId
+    ? compactJoin([ticketCustomerName || "Service Ticket", ticketIssueSummary])
+    : "";
+
+  const invoiceNumber = safeTrim(data.parsedInvoiceNumber || data.invoiceNumber);
+  const invoiceTotal =
+    data.parsedInvoiceTotal !== null && data.parsedInvoiceTotal !== undefined
+      ? formatCurrency(data.parsedInvoiceTotal)
+      : "";
+  const status = formatStatus(
+    safeTrim(data.status) || (invoiceNumber || data.matchedAttachments?.length ? "matched" : "open")
+  );
+
+  const sourceLabel = projectId
+    ? "Project PO"
+    : serviceTicketId
+      ? "Service Ticket PO"
+      : "Purchase Order";
+
+  const subtitle = compactJoin([
+    sourceLabel,
+    projectContext || ticketContext,
+    invoiceNumber ? `Invoice #${invoiceNumber}` : "",
+    invoiceTotal,
+  ]);
+
+  const href = projectId
+    ? `/projects/${projectId}`
+    : serviceTicketId
+      ? `/service-tickets/${serviceTicketId}`
+      : "/projects";
+
+  const searchableText = [
+    id,
+    poCode,
+    data.poNumber,
+    data.purchaseOrderNumber,
+    data.status,
+    status,
+    data.tripId,
+    data.projectId,
+    data.serviceTicketId,
+    data.projectStageKey,
+    data.billingPeriodLabel,
+    projectName,
+    projectCustomerName,
+    ticketCustomerName,
+    ticketIssueSummary,
+    invoiceNumber,
+    invoiceTotal,
+    data.invoiceEmailSubject,
+    data.invoiceEmailFrom,
+  ]
+    .map(safeTrim)
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    id,
+    type: "purchaseOrder",
+    title: poCode,
+    subtitle: subtitle || sourceLabel,
+    statusLabel: status || undefined,
+    href,
+    searchableText,
+    sortMs: getBestPurchaseOrderSortMs(data),
+  };
+}
+
 function matchesSearch(result: GlobalSearchResult, search: string) {
   const haystack = normalizeSearchText(result.searchableText);
   const needle = normalizeSearchText(search);
@@ -426,11 +544,15 @@ async function loadCollectionInPages(
 }
 
 async function loadGlobalSearchResults() {
-  const [projectRows, customerRows, ticketRows] = await Promise.all([
+  const [projectRows, customerRows, ticketRows, purchaseOrderRows] = await Promise.all([
     loadCollectionInPages("projects", 500, 1500),
     loadCollectionInPages("customers", 500, 10000),
     loadCollectionInPages("serviceTickets", 500, 3000),
+    loadCollectionInPages("purchaseOrders", 500, 3000),
   ]);
+
+  const projectRowsById = new Map(projectRows.map((row) => [row.id, row.data]));
+  const ticketRowsById = new Map(ticketRows.map((row) => [row.id, row.data]));
 
   const projects = projectRows.map((row) => buildProjectResult(row.id, row.data));
   const customers = customerRows.map((row) =>
@@ -439,8 +561,11 @@ async function loadGlobalSearchResults() {
   const serviceTickets = ticketRows.map((row) =>
     buildServiceTicketResult(row.id, row.data)
   );
+  const purchaseOrders = purchaseOrderRows.map((row) =>
+    buildPurchaseOrderResult(row.id, row.data, projectRowsById, ticketRowsById)
+  );
 
-  return [...projects, ...customers, ...serviceTickets];
+  return [...purchaseOrders, ...projects, ...customers, ...serviceTickets];
 }
 
 export default function GlobalSearch() {
@@ -517,6 +642,7 @@ export default function GlobalSearch() {
   const groupedResults = useMemo(() => {
     if (!canSearch) {
       return {
+        purchaseOrders: [],
         projects: [],
         customers: [],
         serviceTickets: [],
@@ -533,12 +659,16 @@ const matches = allResults
       return scoreDiff;
     }
 
-    if (a.type === "serviceTicket" && b.type === "serviceTicket") {
+    if (a.type === b.type && (a.type === "serviceTicket" || a.type === "purchaseOrder")) {
       return (b.sortMs || 0) - (a.sortMs || 0);
     }
 
     return 0;
   });
+
+    const purchaseOrders = matches
+      .filter((result) => result.type === "purchaseOrder")
+      .slice(0, MAX_RESULTS_PER_GROUP);
 
     const projects = matches
       .filter((result) => result.type === "project")
@@ -553,10 +683,15 @@ const matches = allResults
       .slice(0, MAX_RESULTS_PER_GROUP);
 
     return {
+      purchaseOrders,
       projects,
       customers,
       serviceTickets,
-      total: projects.length + customers.length + serviceTickets.length,
+      total:
+        purchaseOrders.length +
+        projects.length +
+        customers.length +
+        serviceTickets.length,
     };
   }, [allResults, canSearch, trimmedInput]);
 
@@ -610,6 +745,10 @@ const matches = allResults
       normalized.includes("ready") ||
       normalized.includes("follow") ||
       normalized.includes("new");
+    const isSuccess =
+      normalized.includes("matched") ||
+      normalized.includes("invoiced") ||
+      normalized.includes("closed");
 
     return (
       <Chip
@@ -621,10 +760,16 @@ const matches = allResults
           fontSize: 11,
           fontWeight: 800,
           flexShrink: 0,
-          backgroundColor: isAttention
-            ? alpha(theme.palette.warning.main, 0.12)
-            : alpha(theme.palette.text.primary, 0.055),
-          color: isAttention ? "warning.main" : "text.secondary",
+          backgroundColor: isSuccess
+            ? alpha(theme.palette.success.main, 0.14)
+            : isAttention
+              ? alpha(theme.palette.warning.main, 0.12)
+              : alpha(theme.palette.text.primary, 0.055),
+          color: isSuccess
+            ? "success.main"
+            : isAttention
+              ? "warning.main"
+              : "text.secondary",
         }}
       />
     );
@@ -829,9 +974,9 @@ backgroundColor:
           onBlur={() => {
             window.setTimeout(() => setFocused(false), 120);
           }}
-          placeholder="Search projects, customers, tickets..."
+          placeholder="Search projects, customers, tickets, PO#..."
           inputProps={{
-            "aria-label": "Search projects, customers, and service tickets",
+            "aria-label": "Search projects, customers, service tickets, and purchase orders",
           }}
           sx={{
             flex: 1,
@@ -984,7 +1129,7 @@ backgroundColor:
                   sx={{ display: "block", mt: 0.1 }}
                   noWrap
                 >
-                  Projects, customers, and service tickets
+                  Projects, customers, service tickets, and purchase orders
                 </Typography>
               </Box>
 
@@ -1027,7 +1172,7 @@ backgroundColor:
                       Search across DCFlow
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Try a customer name, address, project, ticket issue, or record ID.
+                      Try a customer name, address, project, ticket issue, PO#, or record ID.
                     </Typography>
                   </Box>
                 </Stack>
@@ -1045,7 +1190,7 @@ backgroundColor:
                     Loading searchable records
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Pulling projects, customers, and service tickets...
+                    Pulling projects, customers, service tickets, and purchase orders...
                   </Typography>
                 </Box>
               </Stack>
@@ -1064,11 +1209,20 @@ backgroundColor:
                   No results found
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Try another customer name, project, address, ticket issue, or record ID.
+                  Try another customer name, project, address, ticket issue, PO#, or record ID.
                 </Typography>
               </Box>
             ) : (
               <Stack spacing={1.25}>
+                {renderGroup("purchaseOrder", groupedResults.purchaseOrders)}
+
+                {groupedResults.purchaseOrders.length > 0 &&
+                (groupedResults.projects.length > 0 ||
+                  groupedResults.customers.length > 0 ||
+                  groupedResults.serviceTickets.length > 0) ? (
+                  <Divider />
+                ) : null}
+
                 {renderGroup("project", groupedResults.projects)}
 
                 {groupedResults.projects.length > 0 &&

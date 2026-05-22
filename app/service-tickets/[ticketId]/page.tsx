@@ -16,6 +16,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import {
   Alert,
@@ -222,9 +223,22 @@ type BillingPacket = {
   updatedAt: string;
 };
 
+type FollowUpClosure = {
+  status: "closed_without_return_visit";
+  reasonCode: string;
+  reasonLabel: string;
+  note: string;
+  sourceTripId: string | null;
+  closedAt: string;
+  closedByUid: string | null;
+  closedByName: string | null;
+  closedByRole: string | null;
+};
+
 type TicketWithBilling = ServiceTicket & {
   serviceAddressId?: string | null;
   billing?: BillingPacket | null;
+  followUpClosure?: FollowUpClosure | null;
 };
 
 type PurchaseOrderAttachment = {
@@ -380,6 +394,46 @@ function normalizeBillingPacket(value: any): BillingPacket | null {
     qboSyncedAt: normalizeDateLike(value.qboSyncedAt),
     updatedAt: normalizeDateLike(value.updatedAt) || nowIso(),
   } as BillingPacket;
+}
+
+const FOLLOW_UP_CLOSURE_REASONS = [
+  {
+    code: "customer_declined",
+    label: "Customer declined additional service",
+  },
+  {
+    code: "other_contractor",
+    label: "Customer had another contractor complete work",
+  },
+  {
+    code: "issue_no_longer_requires_service",
+    label: "Customer reports issue no longer requires service",
+  },
+  {
+    code: "unable_to_proceed",
+    label: "Unable to proceed / customer unresponsive",
+  },
+  {
+    code: "other",
+    label: "Other",
+  },
+] as const;
+
+function normalizeFollowUpClosure(value: any): FollowUpClosure | null {
+  if (!value || typeof value !== "object") return null;
+  if (String(value.status || "").trim() !== "closed_without_return_visit") return null;
+
+  return {
+    status: "closed_without_return_visit",
+    reasonCode: String(value.reasonCode || "other"),
+    reasonLabel: String(value.reasonLabel || "Other"),
+    note: String(value.note || ""),
+    sourceTripId: value.sourceTripId ? String(value.sourceTripId) : null,
+    closedAt: normalizeDateLike(value.closedAt) || nowIso(),
+    closedByUid: value.closedByUid ? String(value.closedByUid) : null,
+    closedByName: value.closedByName ? String(value.closedByName) : null,
+    closedByRole: value.closedByRole ? String(value.closedByRole) : null,
+  };
 }
 
 function isoTodayLocal() {
@@ -750,6 +804,75 @@ function buildBillingPacketFromResolvedTrips(args: {
   };
 }
 
+function buildBillingPacketFromClosedFollowUp(args: {
+  trips: TripDoc[];
+  fallbackUpdatedAt: string;
+  reasonLabel: string;
+  closureNote: string;
+}) {
+  const completedTrips = args.trips.filter(
+    (trip) => normalizeTripStatus(trip.status) === "complete"
+  );
+
+  const latestCompletedTrip = getLatestCompletedTripForLifecycle(args.trips);
+  const latestOutcome = String(latestCompletedTrip?.outcome || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    completedTrips.length === 0 ||
+    !latestCompletedTrip ||
+    latestOutcome !== "follow_up"
+  ) {
+    return null;
+  }
+
+  const totalHours = completedTrips.reduce(
+    (sum, trip) => sum + getStoredOrComputedBillableHours(trip),
+    0
+  );
+
+  const materials = mergeTripMaterials(completedTrips);
+  const materialsSummary = buildMaterialsSummaryFromLines(materials) || null;
+
+  const uniqueWorkNotes = Array.from(
+    new Set(
+      completedTrips
+        .map((trip) => String(trip.workNotes || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  return {
+    status: "ready_to_bill" as const,
+    readyToBillAt: args.fallbackUpdatedAt,
+    readyToBillTripId: latestCompletedTrip.id,
+    resolutionNotes: [
+      `Follow-up closed without return visit — ${args.reasonLabel}.`,
+      args.closureNote.trim(),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    workNotes: uniqueWorkNotes.join("\n\n") || null,
+    labor: {
+      totalHours: roundToHalf(totalHours),
+      byCrew: [],
+    },
+    materials,
+    materialsSummary,
+    materialsAmount: null,
+    photos: [],
+    invoiceSource: null,
+    qboInvoiceId: null,
+    qboDocNumber: null,
+    qboInvoiceUrl: null,
+    qboSyncedAt: null,
+    qboInvoiceStatus: null,
+    invoiceError: null,
+    updatedAt: args.fallbackUpdatedAt,
+  };
+}
+
 function validateTripMaterialsCapture(args: {
   materials: TripMaterial[];
   noMaterialsUsed: boolean;
@@ -993,7 +1116,7 @@ function getLocalManualTicketStatusError(args: {
       .toLowerCase();
 
     if (latestOutcome === "follow_up") {
-      return "Completed cannot be set because the latest completed trip outcome is Follow Up.";
+      return "The latest completed trip requires Follow Up. If the customer no longer needs a return visit, use “Close Follow-Up — Ready to Bill” in the Billing Packet section.";
     }
   }
 
@@ -1728,6 +1851,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [billingOk, setBillingOk] = useState("");
   const [billingMaterialsSummaryEdit, setBillingMaterialsSummaryEdit] = useState("");
   const [billingMaterialsAmountEdit, setBillingMaterialsAmountEdit] = useState("");
+  const [showCloseFollowUpDialog, setShowCloseFollowUpDialog] = useState(false);
+  const [closeFollowUpReason, setCloseFollowUpReason] = useState("customer_declined");
+  const [closeFollowUpNote, setCloseFollowUpNote] = useState("");
+  const [closeFollowUpSaving, setCloseFollowUpSaving] = useState(false);
+  const [closeFollowUpErr, setCloseFollowUpErr] = useState("");
 
   const helperCandidates = useMemo(() => {
     const items = employeeProfiles
@@ -1855,6 +1983,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           createdAt: d.createdAt ?? undefined,
           updatedAt: d.updatedAt ?? undefined,
           billing: normalizeBillingPacket(d.billing),
+          followUpClosure: normalizeFollowUpClosure(d.followUpClosure),
         };
 
         setTicket(nextTicket);
@@ -2664,6 +2793,32 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }, [trips]);
 
   const canGeneratePoFromTicket = Boolean(eligibleTripForPo) && !isInvoicedTicket;
+
+  const latestCompletedTripForLifecycle = useMemo(
+    () => getLatestCompletedTripForLifecycle(trips),
+    [trips]
+  );
+
+  const latestCompletedOutcome = String(
+    latestCompletedTripForLifecycle?.outcome ||
+      (latestCompletedTripForLifecycle?.readyToBillAt ? "resolved" : "")
+  )
+    .trim()
+    .toLowerCase();
+
+  const hasOpenTicketTrips = useMemo(
+    () => trips.some((trip) => isOpenTripRecord(trip)),
+    [trips]
+  );
+
+  const canCloseFollowUpWithoutReturnVisit =
+    Boolean(ticket) &&
+    canBill &&
+    !isInvoicedTicket &&
+    ticket?.status === "follow_up" &&
+    latestCompletedOutcome === "follow_up" &&
+    !hasOpenTicketTrips &&
+    ticket?.billing?.status !== "ready_to_bill";
 
   useEffect(() => {
     if (!inProgressTrip) return;
@@ -4526,6 +4681,166 @@ Supply line`}
     }
   }
 
+  function openCloseFollowUpDialog() {
+    setCloseFollowUpReason("customer_declined");
+    setCloseFollowUpNote("");
+    setCloseFollowUpErr("");
+    setShowCloseFollowUpDialog(true);
+  }
+
+  function closeCloseFollowUpDialog() {
+    if (closeFollowUpSaving) return;
+    setShowCloseFollowUpDialog(false);
+    setCloseFollowUpErr("");
+  }
+
+  async function handleCloseFollowUpWithoutReturnVisit() {
+    if (!ticket?.id || !canBill) return;
+
+    setCloseFollowUpErr("");
+    setBillingErr("");
+    setBillingOk("");
+
+    if (ticket.status === "invoiced") {
+      setCloseFollowUpErr("Invoiced tickets are locked and cannot be changed.");
+      return;
+    }
+
+    const closureNote = closeFollowUpNote.trim();
+    if (!closureNote) {
+      setCloseFollowUpErr("Office note is required before sending this ticket to billing.");
+      return;
+    }
+
+    const reason =
+      FOLLOW_UP_CLOSURE_REASONS.find((item) => item.code === closeFollowUpReason) ||
+      FOLLOW_UP_CLOSURE_REASONS[FOLLOW_UP_CLOSURE_REASONS.length - 1];
+
+    const latestCompletedTrip = getLatestCompletedTripForLifecycle(trips);
+    const latestOutcome = String(latestCompletedTrip?.outcome || "")
+      .trim()
+      .toLowerCase();
+
+    if (!latestCompletedTrip || latestOutcome !== "follow_up") {
+      setCloseFollowUpErr(
+        "This action is only available when the latest completed trip outcome is Follow Up."
+      );
+      return;
+    }
+
+    if (hasOpenTrips(trips)) {
+      setCloseFollowUpErr(
+        "An open follow-up trip exists. Complete or cancel that trip before sending this ticket to billing."
+      );
+      return;
+    }
+
+    setCloseFollowUpSaving(true);
+
+    try {
+      const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
+      if (remoteOpenTrips.length > 0) {
+        throw new Error(
+          "An open follow-up trip exists in Firestore. Complete or cancel it before sending this ticket to billing."
+        );
+      }
+
+      const now = nowIso();
+      const nextBilling = buildBillingPacketFromClosedFollowUp({
+        trips,
+        fallbackUpdatedAt: now,
+        reasonLabel: reason.label,
+        closureNote,
+      });
+
+      if (!nextBilling) {
+        throw new Error(
+          "Unable to create the billing packet because a completed Follow-Up trip could not be confirmed."
+        );
+      }
+
+      const followUpClosure: FollowUpClosure = {
+        status: "closed_without_return_visit",
+        reasonCode: reason.code,
+        reasonLabel: reason.label,
+        note: closureNote,
+        sourceTripId: latestCompletedTrip.id,
+        closedAt: now,
+        closedByUid: myUid || null,
+        closedByName: appUser?.displayName || null,
+        closedByRole: appUser?.role || null,
+      };
+
+      const activityRef = doc(collection(db, "serviceTickets", ticket.id, "activity"));
+      const activityEntry: ServiceTicketActivityEntry = {
+        id: activityRef.id,
+        type: "follow_up_closed_without_return_visit",
+        title: "Follow-Up Closed — Ready to Bill",
+        description:
+          "No return trip was performed. Existing completed trip labor and materials were sent to billing.",
+        details: [
+          `Reason: ${reason.label}`,
+          `Office note: ${closureNote}`,
+          `Source trip: ${latestCompletedTrip.id}`,
+        ],
+        createdAt: now,
+        createdByName: appUser?.displayName || "System",
+        createdByRole: appUser?.role || null,
+      };
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "serviceTickets", ticket.id), {
+        status: "completed",
+        billing: nextBilling,
+        followUpClosure,
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      });
+      batch.set(activityRef, {
+        type: activityEntry.type,
+        title: activityEntry.title,
+        description: activityEntry.description,
+        details: activityEntry.details,
+        createdAt: now,
+        createdByUid: myUid || null,
+        createdByName: activityEntry.createdByName,
+        createdByRole: activityEntry.createdByRole,
+      });
+      await batch.commit();
+
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "completed",
+              billing: nextBilling,
+              followUpClosure,
+              updatedAt: now,
+            }
+          : prev
+      );
+      setTicketStatusEdit("completed");
+      setBillingMaterialsSummaryEdit(
+        String(nextBilling.materialsSummary || "").trim() ||
+          buildMaterialsSummaryFromLines(nextBilling.materials)
+      );
+      setBillingMaterialsAmountEdit("");
+      setActivityEntries((prev) => [activityEntry, ...prev]);
+      setShowCloseFollowUpDialog(false);
+      setBillingOk("Follow-up closed without a return visit. Ticket is Ready to Bill.");
+      setCloseFollowUpNote("");
+      setCloseFollowUpReason("customer_declined");
+    } catch (err: unknown) {
+      setCloseFollowUpErr(
+        err instanceof Error
+          ? err.message
+          : "Failed to close follow-up and send this ticket to billing."
+      );
+    } finally {
+      setCloseFollowUpSaving(false);
+    }
+  }
+
   async function handleResyncBillingPacket() {
     if (!ticket?.id || !canBill) return;
 
@@ -4540,14 +4855,23 @@ Supply line`}
 
     try {
       const now = nowIso();
-      const nextBilling = buildBillingPacketFromResolvedTrips({
-        trips,
-        fallbackUpdatedAt: now,
-      });
+      const nextBilling =
+        buildBillingPacketFromResolvedTrips({
+          trips,
+          fallbackUpdatedAt: now,
+        }) ||
+        (ticket.followUpClosure?.status === "closed_without_return_visit"
+          ? buildBillingPacketFromClosedFollowUp({
+              trips,
+              fallbackUpdatedAt: now,
+              reasonLabel: ticket.followUpClosure.reasonLabel,
+              closureNote: ticket.followUpClosure.note,
+            })
+          : null);
 
       if (!nextBilling) {
         throw new Error(
-          "No completed resolved trip was found. Complete the latest trip as Resolved before creating a billing packet."
+          "No billing-ready lifecycle was found. Complete the latest trip as Resolved, or close a Follow-Up without a return visit first."
         );
       }
 
@@ -6051,6 +6375,37 @@ Supply line`}
                 </Section>
 
                 <Section title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
+                  {canCloseFollowUpWithoutReturnVisit ? (
+                    <Alert
+                      severity="warning"
+                      variant="outlined"
+                      sx={{ mb: 2 }}
+                      action={
+                        <Button
+                          color="inherit"
+                          size="small"
+                          variant="outlined"
+                          onClick={openCloseFollowUpDialog}
+                          disabled={billingSaving || closeFollowUpSaving}
+                          sx={{ fontWeight: 800, whiteSpace: "nowrap" }}
+                        >
+                          Close Follow-Up
+                        </Button>
+                      }
+                    >
+                      <strong>Customer no longer needs a return visit?</strong> Close the
+                      follow-up and send the existing completed work to Ready to Bill without
+                      changing the original trip outcome.
+                    </Alert>
+                  ) : null}
+
+                  {ticket.followUpClosure?.status === "closed_without_return_visit" ? (
+                    <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+                      <strong>Follow-up closed without a return visit.</strong>{" "}
+                      {ticket.followUpClosure.reasonLabel}. Note: {ticket.followUpClosure.note}
+                    </Alert>
+                  ) : null}
+
                   {!ticket.billing ? (
                     <Stack spacing={1.5}>
                       <Alert severity="info" variant="outlined">
@@ -6357,6 +6712,71 @@ Supply line`}
 </Section>
               </Stack>
             </Box>
+
+            <Dialog
+              open={showCloseFollowUpDialog}
+              onClose={closeCloseFollowUpDialog}
+              fullWidth
+              maxWidth="sm"
+            >
+              <DialogTitle>Close Follow-Up — Ready to Bill</DialogTitle>
+
+              <DialogContent dividers>
+                <Stack spacing={2} sx={{ pt: 0.5 }}>
+                  <Alert severity="info" variant="outlined">
+                    The completed trip will remain recorded as <strong>Follow-Up</strong>. This
+                    closes the outstanding return visit and creates a billing packet for the
+                    completed labor and materials already recorded.
+                  </Alert>
+
+                  <TextField
+                    select
+                    label="Reason"
+                    value={closeFollowUpReason}
+                    onChange={(e) => setCloseFollowUpReason(e.target.value)}
+                    disabled={closeFollowUpSaving}
+                    required
+                    fullWidth
+                  >
+                    {FOLLOW_UP_CLOSURE_REASONS.map((reason) => (
+                      <MenuItem key={reason.code} value={reason.code}>
+                        {reason.label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+
+                  <TextField
+                    label="Office Note"
+                    value={closeFollowUpNote}
+                    onChange={(e) => setCloseFollowUpNote(e.target.value)}
+                    disabled={closeFollowUpSaving}
+                    required
+                    multiline
+                    minRows={4}
+                    fullWidth
+                    placeholder="Customer called back and stated they no longer need us to return. Bill completed initial trip only."
+                    helperText="Required. This note is preserved in the billing record and activity log."
+                  />
+
+                  {closeFollowUpErr ? (
+                    <Alert severity="error">{closeFollowUpErr}</Alert>
+                  ) : null}
+                </Stack>
+              </DialogContent>
+
+              <DialogActions>
+                <Button onClick={closeCloseFollowUpDialog} disabled={closeFollowUpSaving}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleCloseFollowUpWithoutReturnVisit}
+                  disabled={closeFollowUpSaving || !closeFollowUpNote.trim()}
+                >
+                  {closeFollowUpSaving ? "Sending to Billing..." : "Send to Ready to Bill"}
+                </Button>
+              </DialogActions>
+            </Dialog>
 
             <Dialog
               open={showEditLocationDialog}
