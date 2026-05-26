@@ -118,6 +118,8 @@ type TripDoc = {
   crewConfirmed?: TripCrew | null;
   link?: TripLink | null;
   timerState?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
   actualStartAt?: string | null;
   actualEndAt?: string | null;
   pauseBlocks?: PauseBlock[] | null;
@@ -155,6 +157,19 @@ type ProjectCloseoutTodayResult =
   | "done_today"
   | "stage_complete"
   | "project_complete";
+
+type ProjectCloseoutDecision =
+  | ""
+  | "another_visit"
+  | "stage_complete"
+  | "project_complete";
+
+type ProjectCloseoutCrewHour = {
+  uid: string;
+  name: string;
+  roleLabel: string;
+  hours: string;
+};
 
 type ProjectCloseoutMeta = {
   projectId: string;
@@ -200,42 +215,38 @@ function todayKeyLocal() {
   return `${y}-${m}-${day}`;
 }
 
-function roundQuarter(value: number) {
-  return Math.round(value * 4) / 4;
+function roundProjectTimerMinutesToHours(liveMinutes: number) {
+  if (!Number.isFinite(liveMinutes) || liveMinutes <= 0) return 1;
+
+  const roundedToHalfHour = Math.round(liveMinutes / 30) * 0.5;
+  return Math.max(1, roundedToHalfHour);
 }
 
-function parseTimeToMinutes(hhmm?: string | null) {
+function isValidProjectSavedHours(value: number) {
+  if (!Number.isFinite(value) || value < 1) return false;
+  return Math.abs(value * 2 - Math.round(value * 2)) < 0.001;
+}
+
+function formatElapsedMinutes(totalMinutes: number) {
+  const safeMinutes = Math.max(0, Math.round(Number(totalMinutes) || 0));
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+
+  if (hours > 0 && minutes > 0) return `${hours} hr ${minutes} min`;
+  if (hours > 0) return `${hours} hr`;
+  return `${minutes} min`;
+}
+
+function formatClockTime(hhmm?: string | null) {
   const raw = safeTrim(hhmm);
-  if (!/^\d{2}:\d{2}$/.test(raw)) return null;
-  const [hh, mm] = raw.split(":").map(Number);
-  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
-  return hh * 60 + mm;
-}
+  if (!/^\d{2}:\d{2}$/.test(raw)) return raw || "—";
 
-function suggestedProjectHoursForCloseout(args: {
-  liveMinutes: number;
-  timeWindow?: string;
-  startTime?: string;
-  endTime?: string;
-}) {
-  const { liveMinutes, timeWindow, startTime, endTime } = args;
+  const [hourValue, minuteValue] = raw.split(":").map(Number);
+  if (!Number.isFinite(hourValue) || !Number.isFinite(minuteValue)) return raw;
 
-  if (liveMinutes > 0) {
-    return Math.max(0.25, roundQuarter(liveMinutes / 60));
-  }
-
-  const w = safeTrim(timeWindow).toLowerCase();
-  if (w === "all_day") return 8;
-  if (w === "am") return 4;
-  if (w === "pm") return 4;
-
-  const s = parseTimeToMinutes(startTime);
-  const e = parseTimeToMinutes(endTime);
-  if (s != null && e != null && e > s) {
-    return Math.max(0.25, roundQuarter((e - s) / 60));
-  }
-
-  return 8;
+  const suffix = hourValue >= 12 ? "PM" : "AM";
+  const hour12 = hourValue % 12 || 12;
+  return `${hour12}:${String(minuteValue).padStart(2, "0")} ${suffix}`;
 }
 
 function getPayrollWeekBounds(entryDateIso: string) {
@@ -310,6 +321,45 @@ function findOpenPauseIndex(pauseBlocks?: PauseBlock[] | null) {
   return -1;
 }
 
+function getProjectTripTimerMinutesAt(trip: TripDoc, referenceMs: number) {
+  const startMs = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
+  if (!Number.isFinite(startMs) || !Number.isFinite(referenceMs) || referenceMs < startMs) {
+    return null;
+  }
+
+  const pausedMinutes = sumPausedMinutes(trip.pauseBlocks || null, referenceMs);
+  const grossMinutes = minutesBetweenMs(startMs, referenceMs);
+  return Math.max(0, grossMinutes - pausedMinutes);
+}
+
+function buildProjectCloseoutCrewHours(
+  crew: TripCrew | null | undefined,
+  defaultHours: number
+): ProjectCloseoutCrewHour[] {
+  const rows: ProjectCloseoutCrewHour[] = [];
+  const seen = new Set<string>();
+  const hours = defaultHours.toFixed(2);
+
+  function add(uidValue: unknown, nameValue: unknown, roleLabel: string) {
+    const uid = safeTrim(uidValue);
+    if (!uid || seen.has(uid)) return;
+    seen.add(uid);
+    rows.push({
+      uid,
+      name: safeTrim(nameValue) || "Employee",
+      roleLabel,
+      hours,
+    });
+  }
+
+  add(crew?.primaryTechUid, crew?.primaryTechName, "Tech");
+  add(crew?.helperUid, crew?.helperName, "Helper");
+  add(crew?.secondaryTechUid, crew?.secondaryTechName, "Secondary Tech");
+  add(crew?.secondaryHelperUid, crew?.secondaryHelperName, "Secondary Helper");
+
+  return rows;
+}
+
 function userIsOnCrew(uid: string, crew?: TripCrew | null) {
   const u = safeTrim(uid);
   if (!u) return false;
@@ -379,22 +429,16 @@ function formatTripWindowLabel(
   endTime?: string
 ) {
   const w = safeTrim(timeWindow).toLowerCase();
+  const start = safeTrim(startTime);
+  const end = safeTrim(endTime);
+  const formattedWindow = start && end ? `${formatClockTime(start)}–${formatClockTime(end)}` : "";
 
-  if (w === "all_day") return "All Day";
-  if (w === "am") return "AM";
-  if (w === "pm") return "PM";
-  if (w === "custom") {
-    const s = safeTrim(startTime);
-    const e = safeTrim(endTime);
-    if (s && e) return `${s}-${e}`;
-    return "Custom";
-  }
+  if (w === "all_day") return formattedWindow || "All Day";
+  if (w === "am") return formattedWindow || "Morning";
+  if (w === "pm") return formattedWindow || "Afternoon";
+  if (w === "custom") return formattedWindow || "Custom";
 
-  if (safeTrim(startTime) && safeTrim(endTime)) {
-    return `${safeTrim(startTime)}-${safeTrim(endTime)}`;
-  }
-
-  return "—";
+  return formattedWindow || "—";
 }
 
 function pickLatestTrip(trips: TripDoc[]) {
@@ -553,8 +597,10 @@ function useRealtimeActiveTrip(uid: string) {
         crewConfirmed: d.crewConfirmed ?? null,
         link: d.link ?? null,
         timerState: d.timerState ?? null,
-        actualStartAt: d.actualStartAt ?? null,
-        actualEndAt: d.actualEndAt ?? null,
+        startedAt: d.startedAt ?? d.actualStartAt ?? null,
+        completedAt: d.completedAt ?? d.actualEndAt ?? null,
+        actualStartAt: d.actualStartAt ?? d.startedAt ?? null,
+        actualEndAt: d.actualEndAt ?? d.completedAt ?? null,
         pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
         updatedAt: d.updatedAt ?? null,
       });
@@ -1165,11 +1211,7 @@ export default function AppShell({
 
   const liveMinutes = useMemo(() => {
     if (!activeTrip) return 0;
-    const startMs = parseIsoMs(activeTrip.actualStartAt || null);
-    if (!Number.isFinite(startMs)) return 0;
-    const pausedMins = sumPausedMinutes(activeTrip.pauseBlocks || null, nowMs);
-    const grossMins = minutesBetweenMs(startMs, nowMs);
-    return Math.max(0, grossMins - pausedMins);
+    return getProjectTripTimerMinutesAt(activeTrip, nowMs) ?? 0;
   }, [activeTrip, nowMs]);
 
   const timerState = useMemo(
@@ -1224,11 +1266,19 @@ export default function AppShell({
 
   const [pillActionBusy, setPillActionBusy] = useState(false);
   const [projectCloseoutOpen, setProjectCloseoutOpen] = useState(false);
+  const [projectCloseoutDecision, setProjectCloseoutDecision] =
+    useState<ProjectCloseoutDecision>("");
   const [projectTodayResult, setProjectTodayResult] =
     useState<ProjectCloseoutTodayResult>("done_today");
   const [projectMoreWorkNeeded, setProjectMoreWorkNeeded] =
     useState<"no" | "yes">("no");
-  const [projectHoursWorked, setProjectHoursWorked] = useState("8");
+  const [projectHoursWorked, setProjectHoursWorked] = useState("1.00");
+  const [projectTimerMinutes, setProjectTimerMinutes] = useState(0);
+  const [projectTimerStoppedAt, setProjectTimerStoppedAt] = useState("");
+  const [projectCorrectHoursOpen, setProjectCorrectHoursOpen] = useState(false);
+  const [projectCrewHours, setProjectCrewHours] = useState<ProjectCloseoutCrewHour[]>([]);
+  const [projectOptionalNoteOpen, setProjectOptionalNoteOpen] = useState(false);
+  const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false);
   const [projectCloseoutNotes, setProjectCloseoutNotes] = useState("");
   const [projectMaterialsSummary, setProjectMaterialsSummary] = useState("");
   const [projectRequestedReturnDate, setProjectRequestedReturnDate] = useState("");
@@ -1284,19 +1334,58 @@ export default function AppShell({
     }
   }
 
+  function selectProjectCloseoutDecision(nextDecision: ProjectCloseoutDecision) {
+    setProjectCloseoutDecision(nextDecision);
+    setProjectCloseoutError("");
+
+    if (nextDecision === "another_visit") {
+      setProjectTodayResult("done_today");
+      setProjectMoreWorkNeeded("yes");
+      setProjectOptionalNoteOpen(false);
+      return;
+    }
+
+    setProjectMoreWorkNeeded("no");
+    if (nextDecision === "stage_complete") {
+      setProjectTodayResult("stage_complete");
+      return;
+    }
+    if (nextDecision === "project_complete") {
+      setProjectTodayResult("project_complete");
+      return;
+    }
+
+    setProjectTodayResult("done_today");
+  }
+
   function openProjectCloseoutDialog() {
     if (!activeTrip || !isProjectActiveTrip || !canProjectCloseout) return;
 
-    const suggestedHours = suggestedProjectHoursForCloseout({
-      liveMinutes,
-      timeWindow: activeTrip.timeWindow,
-      startTime: activeTrip.startTime,
-      endTime: activeTrip.endTime,
-    });
+    const timerStoppedAt = nowIso();
+    const timerStoppedMs = parseIsoMs(timerStoppedAt);
+    const elapsedMinutes = getProjectTripTimerMinutesAt(activeTrip, timerStoppedMs);
 
+    if (elapsedMinutes == null) {
+      setProjectDockNotice(
+        "Unable to finish this project trip because its timer start time is missing. Open the trip for review before saving labor hours."
+      );
+      setActiveTripSheetOpen(false);
+      return;
+    }
+
+    const suggestedHours = roundProjectTimerMinutesToHours(elapsedMinutes);
+    const crew = activeTrip.crewConfirmed || activeTrip.crew || null;
+
+    setProjectCloseoutDecision("");
     setProjectTodayResult("done_today");
     setProjectMoreWorkNeeded("no");
-    setProjectHoursWorked(String(suggestedHours));
+    setProjectHoursWorked(suggestedHours.toFixed(2));
+    setProjectTimerMinutes(elapsedMinutes);
+    setProjectTimerStoppedAt(timerStoppedAt);
+    setProjectCorrectHoursOpen(false);
+    setProjectCrewHours(buildProjectCloseoutCrewHours(crew, suggestedHours));
+    setProjectOptionalNoteOpen(false);
+    setProjectMaterialsOpen(false);
     setProjectCloseoutNotes("");
     setProjectMaterialsSummary("");
     setProjectRequestedReturnDate("");
@@ -1315,9 +1404,31 @@ export default function AppShell({
       return;
     }
 
+    if (!projectCloseoutDecision) {
+      setProjectCloseoutError("Select whether another visit is needed before saving.");
+      return;
+    }
+
     const hoursNumber = Number(projectHoursWorked);
-    if (!Number.isFinite(hoursNumber) || hoursNumber <= 0) {
-      setProjectCloseoutError("Hours worked today must be a number greater than 0.");
+    if (!isValidProjectSavedHours(hoursNumber)) {
+      setProjectCloseoutError("Saved project hours must be at least 1.00 hour and use 0.50-hour increments.");
+      return;
+    }
+
+    const crewHoursByUid: Record<string, number> = {};
+    for (const member of projectCrewHours) {
+      const memberHours = Number(member.hours);
+      if (!isValidProjectSavedHours(memberHours)) {
+        setProjectCloseoutError(
+          `${member.name}'s saved hours must be at least 1.00 hour and use 0.50-hour increments.`
+        );
+        return;
+      }
+      crewHoursByUid[member.uid] = memberHours;
+    }
+
+    if (projectCrewHours.length === 0) {
+      setProjectCloseoutError("No assigned crew members were found for this project trip.");
       return;
     }
 
@@ -1327,6 +1438,11 @@ export default function AppShell({
     const closeoutNotes = safeTrim(projectCloseoutNotes);
     const materialsSummary = safeTrim(projectMaterialsSummary);
     const requestedReturnDate = safeTrim(projectRequestedReturnDate);
+
+    if (projectCloseoutDecision === "another_visit" && !closeoutNotes) {
+      setProjectCloseoutError("Please explain what work remains before saving.");
+      return;
+    }
 
     if (
       projectTodayResult === "done_today" &&
@@ -1342,7 +1458,11 @@ export default function AppShell({
     setProjectCloseoutError("");
 
     try {
-      const stamp = nowIso();
+      const stamp = safeTrim(projectTimerStoppedAt) || nowIso();
+      const savedAt = nowIso();
+      const crewHoursAdjusted = projectCrewHours.some(
+        (member) => Number(member.hours) !== hoursNumber
+      );
       const tripRef = doc(db, "trips", activeTrip.id);
       const projectRef = doc(db, "projects", projectId);
 
@@ -1425,9 +1545,13 @@ export default function AppShell({
         completedByUid: myUid || null,
         closeoutDecision: projectTodayResult,
         closeoutNotes: closeoutNotes || null,
-        closeoutAt: stamp,
+        closeoutAt: savedAt,
         closeoutByUid: myUid || null,
         closeoutHours: hoursNumber,
+        crewHoursByUid,
+        crewHoursAdjusted,
+        timerElapsedMinutes: projectTimerMinutes,
+        timerRoundedHours: hoursNumber,
         materialsSummary: materialsSummary || null,
         materialsLoggedAt: materialsSummary ? stamp : null,
         materialsLoggedByUid: materialsSummary ? myUid || null : null,
@@ -1453,17 +1577,17 @@ export default function AppShell({
             : null,
         completedEarly: false,
         cancelledFutureTripCount: 0,
-        updatedAt: stamp,
+        updatedAt: savedAt,
         updatedByUid: myUid || null,
         [`confirmedBy.${myUid}`]: {
-          hours: hoursNumber,
+          hours: crewHoursByUid[myUid] ?? hoursNumber,
           note: closeoutNotes || null,
-          confirmedAt: stamp,
+          confirmedAt: savedAt,
         },
       };
 
       const projectUpdates: Record<string, unknown> = {
-        updatedAt: stamp,
+        updatedAt: savedAt,
       };
 
       if (projectTodayResult === "done_today") {
@@ -1557,9 +1681,10 @@ export default function AppShell({
       tripUpdates.completedEarly = cancelledFutureTripCount > 0;
       tripUpdates.cancelledFutureTripCount = cancelledFutureTripCount;
 
-      await queueProjectTripTimeEntryWrites(batch, {
+      const synced = await queueProjectTripTimeEntryWrites(batch, {
         trip: {
           ...activeTrip,
+          crew: activeTrip.crewConfirmed || activeTrip.crew || null,
           status: "complete",
           timerState: "complete",
           actualEndAt: stamp,
@@ -1569,11 +1694,43 @@ export default function AppShell({
         projectId,
         projectStageKey: projectIdStageKey || null,
         hours: hoursNumber,
+        crewHoursByUid,
         notes: closeoutNotes || null,
         actorUid: myUid || null,
         actorName: myDisplayName || null,
         source: "project_trip_closeout",
       });
+
+      tripUpdates.closeout = {
+        outcome:
+          projectTodayResult === "stage_complete"
+            ? "complete_stage"
+            : projectTodayResult === "project_complete"
+              ? "complete_project"
+              : "done_today",
+        needsMoreWork: projectMoreWorkNeeded,
+        hoursWorkedToday: hoursNumber,
+        timerElapsedMinutes: projectTimerMinutes,
+        crewHoursByUid,
+        crewHours: projectCrewHours.map((member) => ({
+          uid: member.uid,
+          name: member.name,
+          roleLabel: member.roleLabel,
+          hoursWorkedToday: Number(member.hours),
+        })),
+        crewHoursAdjusted,
+        workNotes: closeoutNotes || null,
+        materialsUsedToday: materialsSummary || null,
+        savedAt,
+        savedByUid: myUid || null,
+        savedByName: myDisplayName || null,
+        timeEntrySyncStatus: "synced",
+        timeEntrySyncMode: "automatic_closeout",
+        timeEntryMemberCount: synced.memberCount,
+        timeEntrySyncedAt: savedAt,
+        timeEntrySyncedByUid: myUid || null,
+        timeEntrySyncedByName: myDisplayName || null,
+      };
 
       batch.update(tripRef, tripUpdates);
       batch.update(projectRef, projectUpdates);
@@ -1582,25 +1739,29 @@ export default function AppShell({
 
       setProjectCloseoutOpen(false);
 
+      const loggedHoursText = crewHoursAdjusted
+        ? "Crew labor hours logged with adjustments."
+        : `${hoursNumber.toFixed(2)}h logged for assigned crew.`;
+
       if (projectTodayResult === "done_today") {
         if (projectMoreWorkNeeded === "yes" && nextFutureProjectTrip) {
           setProjectDockNotice(
-            `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. Next scheduled trip: ${nextFutureProjectTripSummary}.`
+            `Saved. ${loggedHoursText} Next scheduled trip: ${nextFutureProjectTripSummary}.`
           );
         } else if (projectMoreWorkNeeded === "yes" && !nextFutureProjectTrip) {
           setProjectDockNotice(
-            `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. Return requested for ${formatDisplayDate(requestedReturnDate)}.`
+            `Saved. ${loggedHoursText} Return requested for ${formatDisplayDate(requestedReturnDate)}.`
           );
         } else {
-          setProjectDockNotice(`Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew.`);
+          setProjectDockNotice(`Saved. ${loggedHoursText}`);
         }
       } else if (projectTodayResult === "stage_complete") {
         setProjectDockNotice(
-          `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${loggedHoursText} Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
         );
       } else {
         setProjectDockNotice(
-          `Saved. ${hoursNumber.toFixed(2)}h logged for assigned crew. ${isTmProject ? "Project marked field complete." : "Project marked field complete."}${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${loggedHoursText} Project marked field complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
         );
       }
     } catch (err: unknown) {
@@ -3070,158 +3231,390 @@ export default function AppShell({
         open={projectCloseoutOpen}
         onClose={projectCloseoutSaving ? undefined : () => setProjectCloseoutOpen(false)}
         fullWidth
-        maxWidth="sm"
-        PaperProps={{ sx: { borderRadius: 4 } }}
+        maxWidth="xs"
+        scroll="paper"
+        PaperProps={{
+          sx: {
+            borderRadius: { xs: 1, sm: 4 },
+            m: { xs: 1.5, sm: 4 },
+            width: { xs: "calc(100% - 24px)", sm: "100%" },
+            maxHeight: { xs: "calc(100dvh - 24px)", sm: "calc(100vh - 64px)" },
+            overflow: "hidden",
+          },
+        }}
       >
-        <DialogTitle>Finish Project Day</DialogTitle>
+        <DialogTitle
+          sx={{
+            px: { xs: 2.5, sm: 3 },
+            py: 2.25,
+            fontWeight: 800,
+            typography: "h5",
+            borderBottom: (muiTheme) => `1px solid ${muiTheme.palette.divider}`,
+          }}
+        >
+          Finish Project Day
+        </DialogTitle>
 
-        <DialogContent dividers>
-          <Stack spacing={2}>
-            <Alert severity="info" variant="outlined">
-              This saves the project closeout and today’s hours together, so the tech does not need to go back to My Day to confirm hours.
-            </Alert>
+        <DialogContent sx={{ px: { xs: 2, sm: 3 }, py: 2.25 }}>
+          <Stack spacing={2.25}>
+            <Box>
+              <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                {projectMeta?.projectName || "Project Trip"}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+                {supportsStageCloseout
+                  ? stageLabel(projectMeta?.stageKey || activeTrip.link?.projectStageKey)
+                  : "Project Trip"}
+                {activeTrip.date ? ` • ${formatDisplayDate(activeTrip.date)}` : ""}
+              </Typography>
+            </Box>
 
-            <RadioGroup
-              value={projectTodayResult}
-              onChange={(e) =>
-                setProjectTodayResult(e.target.value as ProjectCloseoutTodayResult)
-              }
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+              }}
             >
-              <FormControlLabel
-                value="done_today"
-                control={<Radio />}
-                label="Done for today"
-              />
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={1.25} justifyContent="space-between" alignItems="center">
+                  <Box>
+                    <Typography variant="overline" sx={{ display: "block", fontSize: 12, fontWeight: 700, color: "text.secondary" }}>
+                      TODAY&apos;S SAVED HOURS
+                    </Typography>
+                    <Stack direction="row" spacing={0.75} alignItems="baseline" sx={{ mt: 0.3 }}>
+                      <Typography component="div" variant="h4" sx={{ fontWeight: 800, lineHeight: 1 }}>
+                        {Number(projectHoursWorked || 0).toFixed(2)}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        hours
+                      </Typography>
+                    </Stack>
+                  </Box>
 
-              {supportsStageCloseout ? (
-                <FormControlLabel
-                  value="stage_complete"
-                  control={<Radio />}
-                  label={`Complete ${stageLabel(projectMeta?.stageKey || activeTrip.link?.projectStageKey)}`}
-                />
-              ) : null}
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => setProjectCorrectHoursOpen((open) => !open)}
+                    disabled={projectCloseoutSaving}
+                    sx={{ borderRadius: 99, whiteSpace: "nowrap" }}
+                  >
+                    {projectCorrectHoursOpen ? "Done" : "Correct Hours"}
+                  </Button>
+                </Stack>
 
-              <FormControlLabel
-                value="project_complete"
-                control={<Radio />}
-                label={isTmProject ? "No more field work expected" : "Complete entire project"}
-              />
-            </RadioGroup>
+                <Typography variant="body2" color="text.secondary">
+                  From trip timer: {formatElapsedMinutes(projectTimerMinutes)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Rounded to nearest 0.5 hr • 1 hr minimum
+                </Typography>
+              </Stack>
+            </Paper>
 
-            {projectTodayResult === "done_today" ? (
+            {projectCorrectHoursOpen ? (
               <Paper
                 variant="outlined"
                 sx={{
                   p: 2,
                   borderRadius: 3,
-                  bgcolor: alpha(theme.palette.primary.main, 0.03),
+                  bgcolor: alpha(theme.palette.primary.main, 0.025),
                 }}
               >
                 <Stack spacing={1.5}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                    Is more work still needed after today?
-                  </Typography>
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                      Correct Crew Hours
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Only change hours when a crew member&apos;s project time differed today.
+                    </Typography>
+                  </Box>
 
-                  <RadioGroup
-                    value={projectMoreWorkNeeded}
-                    onChange={(e) =>
-                      setProjectMoreWorkNeeded(e.target.value as "no" | "yes")
+                  {projectCrewHours.map((member) => (
+                    <TextField
+                      key={member.uid}
+                      label={`${member.name} • ${member.roleLabel}`}
+                      type="number"
+                      size="small"
+                      inputProps={{ min: 1, step: 0.5 }}
+                      value={member.hours}
+                      onChange={(e) =>
+                        setProjectCrewHours((current) =>
+                          current.map((row) =>
+                            row.uid === member.uid ? { ...row, hours: e.target.value } : row
+                          )
+                        )
+                      }
+                      disabled={projectCloseoutSaving}
+                      helperText="1.00 hr minimum • 0.50 hr increments"
+                      fullWidth
+                    />
+                  ))}
+
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() =>
+                      setProjectCrewHours((current) =>
+                        current.map((member) => ({ ...member, hours: projectHoursWorked }))
+                      )
                     }
+                    disabled={projectCloseoutSaving}
+                    sx={{ alignSelf: "flex-start" }}
                   >
-                    <FormControlLabel value="no" control={<Radio />} label="No" />
-                    <FormControlLabel value="yes" control={<Radio />} label="Yes" />
-                  </RadioGroup>
-
-                  {projectMoreWorkNeeded === "yes" ? (
-                    projectFutureTripsLoading ? (
-                      <Typography variant="body2" color="text.secondary">
-                        Checking future project trips...
-                      </Typography>
-                    ) : nextFutureProjectTrip ? (
-                      <Alert severity="success" variant="outlined">
-                        <Typography sx={{ fontWeight: 700 }}>
-                          Next scheduled trip found
-                        </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.5 }}>
-                          {nextFutureProjectTripSummary}
-                        </Typography>
-                      </Alert>
-                    ) : (
-                      <Stack spacing={1.25}>
-                        <Alert severity="warning" variant="outlined">
-                          No future trip is currently scheduled. Request the return date the customer or contractor wants.
-                        </Alert>
-
-                        <TextField
-                          label="Requested Return Date"
-                          type="date"
-                          value={projectRequestedReturnDate}
-                          onChange={(e) => setProjectRequestedReturnDate(e.target.value)}
-                          InputLabelProps={{ shrink: true }}
-                          disabled={projectCloseoutSaving}
-                          fullWidth
-                        />
-                      </Stack>
-                    )
-                  ) : null}
+                    Reset to Timer Hours
+                  </Button>
                 </Stack>
               </Paper>
             ) : null}
 
-            <TextField
-              label="Hours Worked Today"
-              type="number"
-              inputProps={{ min: 0.25, step: 0.25 }}
-              value={projectHoursWorked}
-              onChange={(e) => setProjectHoursWorked(e.target.value)}
+            <Box>
+              <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: 1 }}>
+                {supportsStageCloseout
+                  ? "Does this stage need another visit?"
+                  : "Does this project need another visit?"}
+              </Typography>
+
+              <RadioGroup
+                value={projectCloseoutDecision}
+                onChange={(e) =>
+                  selectProjectCloseoutDecision(e.target.value as ProjectCloseoutDecision)
+                }
+                sx={{ gap: 1 }}
+              >
+                <Paper
+                  elevation={0}
+                  variant="outlined"
+                  sx={{
+                    px: 1.25,
+                    borderRadius: 3,
+                    bgcolor:
+                      projectCloseoutDecision === "another_visit"
+                        ? alpha(theme.palette.primary.main, 0.08)
+                        : "transparent",
+                    borderColor:
+                      projectCloseoutDecision === "another_visit" ? "primary.main" : "divider",
+                  }}
+                >
+                  <FormControlLabel
+                    value="another_visit"
+                    control={<Radio />}
+                    label="Yes — Another Visit Needed"
+                    sx={{ width: "100%", minHeight: 52, m: 0 }}
+                  />
+                </Paper>
+
+                <Paper
+                  elevation={0}
+                  variant="outlined"
+                  sx={{
+                    px: 1.25,
+                    borderRadius: 3,
+                    bgcolor:
+                      projectCloseoutDecision ===
+                      (supportsStageCloseout ? "stage_complete" : "project_complete")
+                        ? alpha(theme.palette.primary.main, 0.08)
+                        : "transparent",
+                    borderColor:
+                      projectCloseoutDecision ===
+                      (supportsStageCloseout ? "stage_complete" : "project_complete")
+                        ? "primary.main"
+                        : "divider",
+                  }}
+                >
+                  <FormControlLabel
+                    value={supportsStageCloseout ? "stage_complete" : "project_complete"}
+                    control={<Radio />}
+                    label={supportsStageCloseout ? "No — Stage Complete" : "No — Project Work Complete"}
+                    sx={{ width: "100%", minHeight: 52, m: 0 }}
+                  />
+                </Paper>
+              </RadioGroup>
+            </Box>
+
+            {projectCloseoutDecision === "another_visit" ? (
+              <Stack spacing={1.25}>
+                <TextField
+                  label="What work remains?"
+                  required
+                  value={projectCloseoutNotes}
+                  onChange={(e) => setProjectCloseoutNotes(e.target.value)}
+                  multiline
+                  minRows={2}
+                  disabled={projectCloseoutSaving}
+                  placeholder="Type or dictate what needs to be completed next..."
+                  helperText="Required for another visit."
+                  fullWidth
+                />
+
+                {projectFutureTripsLoading ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Checking future project trips...
+                  </Typography>
+                ) : nextFutureProjectTrip ? (
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      px: 1.5,
+                      py: 1.25,
+                      borderRadius: 1,
+                      bgcolor: alpha(theme.palette.success.main, 0.08),
+                      border: `1px solid ${alpha(theme.palette.success.main, 0.28)}`,
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ fontWeight: 700, color: "success.main" }}>
+                      Next scheduled trip found
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {nextFutureProjectTripSummary}
+                    </Typography>
+                  </Paper>
+                ) : (
+                  <Stack spacing={1}>
+                    <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2.5 }}>
+                      No future trip is scheduled. Enter the requested return date.
+                    </Alert>
+                    <TextField
+                      label="Requested Return Date"
+                      type="date"
+                      size="small"
+                      value={projectRequestedReturnDate}
+                      onChange={(e) => setProjectRequestedReturnDate(e.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                      disabled={projectCloseoutSaving}
+                      fullWidth
+                    />
+                  </Stack>
+                )}
+              </Stack>
+            ) : projectCloseoutDecision ? (
+              <Box>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setProjectOptionalNoteOpen((open) => !open)}
+                  disabled={projectCloseoutSaving}
+                  sx={{
+                    alignSelf: "flex-start",
+                    borderRadius: 999,
+                    px: 1.5,
+                    py: 0.5,
+                    minHeight: 34,
+                    borderColor: (theme) => alpha(theme.palette.primary.main, 0.45),
+                    bgcolor: (theme) => alpha(theme.palette.primary.main, 0.025),
+                    "&:hover": {
+                      borderColor: "primary.main",
+                      bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08),
+                    },
+                  }}
+                >
+                  {projectOptionalNoteOpen ? "Remove Optional Note" : "Add Optional Note"}
+                </Button>
+                {projectOptionalNoteOpen ? (
+                  <TextField
+                    label="Completion Note (optional)"
+                    value={projectCloseoutNotes}
+                    onChange={(e) => setProjectCloseoutNotes(e.target.value)}
+                    multiline
+                    minRows={2}
+                    disabled={projectCloseoutSaving}
+                    fullWidth
+                    sx={{ mt: 1 }}
+                  />
+                ) : null}
+              </Box>
+            ) : null}
+
+            <Paper variant="outlined" sx={{ p: 1.75, borderRadius: 1 }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5 }}>
+                Crew Receiving Hours
+              </Typography>
+              {projectCrewHours.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No assigned crew found.
+                </Typography>
+              ) : projectCrewHours.every(
+                  (member) => Number(member.hours || 0) === Number(projectCrewHours[0]?.hours || 0)
+                ) ? (
+                <Typography variant="body2" color="text.secondary">
+                  {projectCrewHours.map((member) => member.name).join(" + ")} will each receive{" "}
+                  <Box component="span" sx={{ color: "text.primary", fontWeight: 700 }}>
+                    {Number(projectCrewHours[0]?.hours || 0).toFixed(2)} hours
+                  </Box>
+                  .
+                </Typography>
+              ) : (
+                <Stack spacing={0.4}>
+                  {projectCrewHours.map((member) => (
+                    <Typography key={member.uid} variant="body2" color="text.secondary">
+                      {member.name} • {member.roleLabel} •{" "}
+                      <Box component="span" sx={{ color: "text.primary", fontWeight: 700 }}>
+                        {Number(member.hours || 0).toFixed(2)} hours
+                      </Box>
+                    </Typography>
+                  ))}
+                </Stack>
+              )}
+            </Paper>
+
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => setProjectMaterialsOpen((open) => !open)}
               disabled={projectCloseoutSaving}
-              fullWidth
-            />
+              sx={{
+                alignSelf: "flex-start",
+                borderRadius: 999,
+                px: 1.5,
+                py: 0.5,
+                minHeight: 34,
+                borderColor: (theme) => alpha(theme.palette.primary.main, 0.45),
+                bgcolor: (theme) => alpha(theme.palette.primary.main, 0.025),
+                "&:hover": {
+                  borderColor: "primary.main",
+                  bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08),
+                },
+              }}
+            >
+              {projectMaterialsOpen ? "Remove Materials Note" : "Add Materials Note (optional)"}
+            </Button>
+            {projectMaterialsOpen ? (
+              <TextField
+                label="Materials Used Today (optional)"
+                value={projectMaterialsSummary}
+                onChange={(e) => setProjectMaterialsSummary(e.target.value)}
+                multiline
+                minRows={2}
+                disabled={projectCloseoutSaving}
+                placeholder="Type or dictate materials used or anything billing should know..."
+                fullWidth
+                sx={{ mt: -1.25 }}
+              />
+            ) : null}
 
-            <Typography variant="caption" color="text.secondary">
-              These hours are populated from the trip timer when available, can be adjusted if needed, and are then saved as project time entries for all assigned crew.
-            </Typography>
-
-            <TextField
-              label="Work Notes"
-              value={projectCloseoutNotes}
-              onChange={(e) => setProjectCloseoutNotes(e.target.value)}
-              multiline
-              minRows={4}
-              disabled={projectCloseoutSaving}
-              placeholder="Type or dictate what was finished today, what remains, or what office should know..."
-              fullWidth
-            />
-
-            <TextField
-              label="Materials Used Today"
-              value={projectMaterialsSummary}
-              onChange={(e) => setProjectMaterialsSummary(e.target.value)}
-              multiline
-              minRows={5}
-              disabled={projectCloseoutSaving}
-              placeholder="Type or dictate materials used, parts picked up, supply house run details, or anything billing should know..."
-              fullWidth
-            />
-
-            <Typography variant="caption" color="text.secondary">
-              Keep materials simple and natural-language. No line items required.
-            </Typography>
-
-            {(projectTodayResult === "stage_complete" ||
-              projectTodayResult === "project_complete") ? (
-              <Alert severity="warning" variant="outlined">
-                Any future scheduled project trips that are no longer needed will be cancelled and kept for history.
+            {(projectCloseoutDecision === "stage_complete" ||
+              projectCloseoutDecision === "project_complete") &&
+            projectFutureTrips.length > 0 ? (
+              <Alert severity="warning" variant="outlined" sx={{ borderRadius: 1 }}>
+                Future scheduled trips that are no longer needed will be cancelled and kept for history.
               </Alert>
             ) : null}
 
-            {projectCloseoutError ? (
-              <Alert severity="error">{projectCloseoutError}</Alert>
-            ) : null}
+            {projectCloseoutError ? <Alert severity="error">{projectCloseoutError}</Alert> : null}
           </Stack>
         </DialogContent>
 
-        <DialogActions>
+        <DialogActions
+          sx={{
+            px: { xs: 2, sm: 3 },
+            py: 1.75,
+            borderTop: (muiTheme) => `1px solid ${muiTheme.palette.divider}`,
+            bgcolor: "background.paper",
+          }}
+        >
           <Button
             onClick={() => setProjectCloseoutOpen(false)}
             disabled={projectCloseoutSaving}
@@ -3234,6 +3627,7 @@ export default function AppShell({
             startIcon={<StopRoundedIcon />}
             onClick={handleSubmitProjectCloseoutFromDock}
             disabled={projectCloseoutSaving}
+            sx={{ borderRadius: 99, boxShadow: "none", px: 2.25 }}
           >
             {projectCloseoutSaving ? "Saving..." : "Save Closeout"}
           </Button>

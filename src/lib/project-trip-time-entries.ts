@@ -38,6 +38,8 @@ type CrewMemberForTimeEntry = {
   crewRole: "primaryTech" | "helper" | "secondaryTech" | "secondaryHelper";
 };
 
+export type ProjectTripCrewHoursByUid = Record<string, number>;
+
 export type ProjectTripTimeEntrySyncResult = {
   memberCount: number;
   createdOrUpdatedEntryIds: string[];
@@ -104,8 +106,7 @@ function uniqueCrewMembers(crew?: TripCrew | null): CrewMemberForTimeEntry[] {
     crewRole: CrewMemberForTimeEntry["crewRole"];
   }) {
     const uid = safeTrim(input.uid);
-    if (!uid) return;
-    if (seen.has(uid)) return;
+    if (!uid || seen.has(uid)) return;
 
     seen.add(uid);
 
@@ -165,6 +166,16 @@ async function resolveUserProfileFallback(member: CrewMemberForTimeEntry) {
   }
 }
 
+function resolveHoursForMember(
+  defaultHours: number,
+  memberUid: string,
+  crewHoursByUid?: ProjectTripCrewHoursByUid | null,
+) {
+  const memberHours = Number(crewHoursByUid?.[memberUid]);
+  if (Number.isFinite(memberHours) && memberHours > 0) return memberHours;
+  return defaultHours;
+}
+
 export async function queueProjectTripTimeEntryWrites(
   batch: WriteBatch,
   args: {
@@ -172,6 +183,7 @@ export async function queueProjectTripTimeEntryWrites(
     projectId?: string | null;
     projectStageKey?: string | null;
     hours: number;
+    crewHoursByUid?: ProjectTripCrewHoursByUid | null;
     notes?: string | null;
     actorUid?: string | null;
     actorName?: string | null;
@@ -198,8 +210,8 @@ export async function queueProjectTripTimeEntryWrites(
     };
   }
 
-  const hours = Number(args.hours);
-  if (!Number.isFinite(hours) || hours <= 0) {
+  const defaultHours = Number(args.hours);
+  if (!Number.isFinite(defaultHours) || defaultHours <= 0) {
     return {
       memberCount: 0,
       createdOrUpdatedEntryIds: [],
@@ -234,6 +246,7 @@ export async function queueProjectTripTimeEntryWrites(
 
   for (const rawMember of crewMembers) {
     const member = await resolveUserProfileFallback(rawMember);
+    const memberHours = resolveHoursForMember(defaultHours, member.uid, args.crewHoursByUid);
 
     const timesheetId = buildWeeklyTimesheetId(member.uid, weekStartDate);
     const timeEntryId = buildProjectTripTimeEntryId(tripId, member.uid);
@@ -293,8 +306,10 @@ export async function queueProjectTripTimeEntryWrites(
         sourceTripId: tripId,
         sourceTripStatus: safeTrim(trip.status) || "complete",
 
-        hours,
-        hoursSource: hours,
+        hours: memberHours,
+        hoursSource: memberHours,
+        defaultTripHours: defaultHours,
+        hoursAdjustedFromTripDefault: Math.abs(memberHours - defaultHours) > 0.001,
         hoursLocked: true,
 
         tripId,
@@ -334,6 +349,7 @@ export async function upsertProjectTripTimeEntriesForCrew(args: {
   projectId?: string | null;
   projectStageKey?: string | null;
   hours: number;
+  crewHoursByUid?: ProjectTripCrewHoursByUid | null;
   notes?: string | null;
   actorUid?: string | null;
   actorName?: string | null;
