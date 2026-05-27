@@ -994,7 +994,7 @@ export default function WeeklyTimesheetPage() {
               elevation={0}
               sx={{
                 p: { xs: 2, md: 3 },
-                borderRadius: 4,
+                borderRadius: 1,
                 border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                 background: `linear-gradient(135deg, ${alpha(
                   theme.palette.primary.main,
@@ -1099,7 +1099,7 @@ export default function WeeklyTimesheetPage() {
               elevation={0}
               sx={{
                 p: { xs: 2, md: 3 },
-                borderRadius: 4,
+                borderRadius: 1,
                 border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                 bgcolor: "background.paper",
               }}
@@ -1229,7 +1229,7 @@ export default function WeeklyTimesheetPage() {
                         elevation={0}
                         sx={{
                           p: { xs: 2, md: 2.25 },
-                          borderRadius: 4,
+                          borderRadius: 1,
                           border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                           overflow: "hidden",
                         }}
@@ -1284,7 +1284,7 @@ export default function WeeklyTimesheetPage() {
                                     elevation={0}
                                     sx={{
                                       p: 2,
-                                      borderRadius: 3,
+                                      borderRadius: 1,
                                       border: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
                                       bgcolor: alpha(theme.palette.background.default, 0.7),
                                     }}
@@ -1376,7 +1376,7 @@ export default function WeeklyTimesheetPage() {
                   elevation={0}
                   sx={{
                     p: { xs: 2, md: 3 },
-                    borderRadius: 4,
+                    borderRadius: 1,
                     border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                   }}
                 >
@@ -1412,7 +1412,7 @@ export default function WeeklyTimesheetPage() {
                           elevation={0}
                           sx={{
                             p: 2,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             border: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
                             bgcolor: alpha(theme.palette.primary.main, 0.035),
                           }}
@@ -1454,7 +1454,7 @@ export default function WeeklyTimesheetPage() {
                   elevation={0}
                   sx={{
                     p: { xs: 2, md: 3 },
-                    borderRadius: 4,
+                    borderRadius: 1,
                     border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                   }}
                 >

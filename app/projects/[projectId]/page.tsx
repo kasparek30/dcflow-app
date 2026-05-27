@@ -1337,7 +1337,7 @@ export default function ProjectDetailPage() {
     typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
 
   const theme = useTheme();
-  const { appUser } = useAuthContext();
+  const { appUser, loading: authLoading } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [projectId, setProjectId] = useState("");
@@ -2025,6 +2025,14 @@ const canMarkTmReadyToBill =
 
   useEffect(() => {
     async function loadProject() {
+      if (authLoading || !appUser) return;
+
+      if (isFieldRole) {
+        setLoading(false);
+        router.replace("/technician/my-day");
+        return;
+      }
+
       if (!routeProjectId) {
         setLoading(false);
         setError("Project not found.");
@@ -2187,10 +2195,15 @@ const canMarkTmReadyToBill =
 
     loadProject();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeProjectId]);
+  }, [routeProjectId, authLoading, appUser, isFieldRole, router]);
 
   useEffect(() => {
     async function loadCustomers() {
+      if (authLoading || !appUser || isFieldRole) {
+        setCustomersLoading(false);
+        return;
+      }
+
       try {
         setCustomersLoading(true);
         setCustomersError("");
@@ -2215,10 +2228,15 @@ const canMarkTmReadyToBill =
     }
 
     loadCustomers();
-  }, []);
+  }, [authLoading, appUser, isFieldRole]);
 
   useEffect(() => {
     async function loadTechnicians() {
+      if (authLoading || !appUser || isFieldRole) {
+        setTechLoading(false);
+        return;
+      }
+
       try {
         const snap = await getDocs(collection(db, "users"));
 
@@ -2244,10 +2262,15 @@ const canMarkTmReadyToBill =
     }
 
     loadTechnicians();
-  }, []);
+  }, [authLoading, appUser, isFieldRole]);
 
   useEffect(() => {
     async function loadProfiles() {
+      if (authLoading || !appUser || isFieldRole) {
+        setProfilesLoading(false);
+        return;
+      }
+
       setProfilesLoading(true);
       setProfilesError("");
 
@@ -2276,7 +2299,7 @@ const canMarkTmReadyToBill =
     }
 
     loadProfiles();
-  }, []);
+  }, [authLoading, appUser, isFieldRole]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -5881,7 +5904,10 @@ if (nextStatus === "active_work") {
   }
 
   return (
-    <ProtectedPage fallbackTitle="Project Detail">
+    <ProtectedPage
+      fallbackTitle="Project Detail"
+      allowedRoles={["admin", "dispatcher", "manager", "billing", "office_display"]}
+    >
       <AppShell appUser={appUser}>
         <Dialog
           open={tripModal.open}

@@ -482,6 +482,7 @@ function pickLatestRejectedNotice(notices: RejectedTimesheetNotice[]) {
 function getMobilePageLabel(pathname: string) {
   if (pathname.startsWith("/dashboard")) return "Dashboard";
   if (pathname.startsWith("/dispatch")) return "Dispatcher Board";
+  if (pathname.startsWith("/technician/project-trips/")) return "Project Trip";
   if (pathname.startsWith("/technician/my-day")) return "My Day";
   if (pathname.startsWith("/schedule")) return "Schedule";
   if (pathname.startsWith("/office-display")) return "Office Display";
@@ -678,7 +679,7 @@ async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
       secondaryLine = "Tap to return";
     }
   } else if (safeTrim(trip.type).toLowerCase() === "project" && projectId) {
-    href = `/projects/${projectId}`;
+    href = `/technician/project-trips/${tripId}`;
     primaryLine = "Project Trip";
     secondaryLine = "Tap to return";
   } else {
@@ -996,8 +997,7 @@ export default function AppShell({
   const showProjects =
     role === "admin" ||
     role === "dispatcher" ||
-    role === "manager" ||
-    role === "technician";
+    role === "manager";
 
   const showWorkload = false;
 

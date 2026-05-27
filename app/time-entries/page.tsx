@@ -1255,7 +1255,7 @@ function TimeEntriesPageContent() {
               gap: 1.5,
             }}
           >
-            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+            <Card variant="outlined" sx={{ borderRadius: 1 }}>
               <CardContent sx={{ p: 2 }}>
                 <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
@@ -1274,7 +1274,7 @@ function TimeEntriesPageContent() {
               </CardContent>
             </Card>
 
-            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+            <Card variant="outlined" sx={{ borderRadius: 1 }}>
               <CardContent sx={{ p: 2 }}>
                 <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
@@ -1293,7 +1293,7 @@ function TimeEntriesPageContent() {
               </CardContent>
             </Card>
 
-            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+            <Card variant="outlined" sx={{ borderRadius: 1 }}>
               <CardContent sx={{ p: 2 }}>
                 <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
@@ -1312,7 +1312,7 @@ function TimeEntriesPageContent() {
               </CardContent>
             </Card>
 
-            <Card variant="outlined" sx={{ borderRadius: 4 }}>
+            <Card variant="outlined" sx={{ borderRadius: 1 }}>
               <CardContent sx={{ p: 2 }}>
                 <Stack spacing={0.75}>
                   <Stack direction="row" alignItems="center" spacing={1}>
@@ -1332,7 +1332,7 @@ function TimeEntriesPageContent() {
             </Card>
           </Box>
 
-          <Card variant="outlined" sx={{ borderRadius: 4 }}>
+          <Card variant="outlined" sx={{ borderRadius: 1 }}>
             <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
               <Stack spacing={2}>
                 <Typography variant="h6" sx={{ fontWeight: 800 }}>
@@ -1454,7 +1454,7 @@ function TimeEntriesPageContent() {
                 const dayAddHref = buildAddEntryHref(day.isoDate);
 
                 return (
-                  <Card key={day.isoDate} variant="outlined" sx={{ borderRadius: 4 }}>
+                  <Card key={day.isoDate} variant="outlined" sx={{ borderRadius: 1 }}>
                     <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                       <Stack spacing={2}>
                         <Stack
@@ -1523,7 +1523,7 @@ function TimeEntriesPageContent() {
                           <Card
                             variant="outlined"
                             sx={{
-                              borderRadius: 3,
+                              borderRadius: 1,
                               borderStyle: "dashed",
                               bgcolor: "background.default",
                             }}
@@ -1570,7 +1570,7 @@ function TimeEntriesPageContent() {
                                 <Card
                                   variant="outlined"
                                   sx={{
-                                    borderRadius: 3,
+                                    borderRadius: 1,
                                     transition: synthetic
                                       ? undefined
                                       : "transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease",

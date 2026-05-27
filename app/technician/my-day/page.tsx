@@ -293,11 +293,16 @@ function formatType(type?: string) {
   return type ? type : "Trip";
 }
 
-function buildHref(trip: Trip) {
+function buildHref(trip: Trip, viewerRole?: string | null) {
   const link = trip.link;
   if (!link) return "/trips";
 
+  const role = normalizeRole(viewerRole);
+  const isFieldCrewRole =
+    role === "technician" || role === "helper" || role === "apprentice";
+
   if (String(trip.type || "").toLowerCase() === "project") {
+    if (isFieldCrewRole) return `/technician/project-trips/${trip.id}`;
     if (link.projectId) return `/projects/${link.projectId}`;
     return `/trips/${trip.id}`;
   }
@@ -670,6 +675,8 @@ export default function TechnicianMyDayPage() {
   const myRole = appUser?.role || "";
   const myName = (appUser as any)?.displayName || (appUser as any)?.name || "Me";
 
+  const isFieldCrewRole =
+    myRole === "technician" || myRole === "helper" || myRole === "apprentice";
   const isHelperRole = myRole === "helper" || myRole === "apprentice";
 
   const canViewOtherEmployees =
@@ -1131,7 +1138,7 @@ export default function TechnicianMyDayPage() {
       })
       .map((trip) => {
         const crew = crewDisplay(trip.crew);
-        const href = buildHref(trip);
+        const href = buildHref(trip, myRole);
 
         const timeText = formatTripTimeLine(trip.timeWindow, trip.startTime, trip.endTime);
 
@@ -1206,7 +1213,7 @@ export default function TechnicianMyDayPage() {
 
     mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     return mapped;
-  }, [visibleTrips, ticketById, projectById, followUpByTicketId, showCompleted]);
+  }, [visibleTrips, ticketById, projectById, followUpByTicketId, showCompleted, myRole]);
 
   const banner = useMemo(() => {
     if (!whoUid) return null;
@@ -1261,7 +1268,11 @@ export default function TechnicianMyDayPage() {
       );
 
       if (res.alreadyStarted) {
-        window.location.href = `/projects/${item.projectId}`;
+        window.location.href = isFieldCrewRole
+          ? `/technician/project-trips/${item.id}`
+          : item.projectId
+            ? `/projects/${item.projectId}`
+            : `/trips/${item.id}`;
       }
     } catch (e: any) {
       setError(e?.message || "Failed to start project work.");

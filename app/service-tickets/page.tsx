@@ -116,7 +116,7 @@ function SectionSurface({ children }: { children: React.ReactNode }) {
     <Card
       elevation={0}
       sx={{
-        borderRadius: 4,
+        borderRadius: 1,
         overflow: "hidden",
         border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
         backgroundColor: "background.paper",
@@ -975,7 +975,7 @@ export default function ServiceTicketsPage() {
                       elevation={0}
                       sx={{
                         height: "100%",
-                        borderRadius: 4,
+                        borderRadius: 1,
                         overflow: "hidden",
                         border:
                           ageInfo?.cardSx.border ||
