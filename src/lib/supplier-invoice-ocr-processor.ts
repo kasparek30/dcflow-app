@@ -158,33 +158,42 @@ async function appendAttachmentToPurchaseOrder(args: {
     : [];
 
   const incomingAttachmentId = String(args.attachment.id || "");
-  const alreadyAttached = existingAttachments.some(
+  const existingAttachmentIndex = existingAttachments.findIndex(
     (existing: any) => String(existing.id || "") === incomingAttachmentId
   );
 
-  if (alreadyAttached) {
-    return { ok: true, reason: "Attachment already linked." };
-  }
-
-  const nextAttachments = [
-    ...existingAttachments,
-    {
-      ...args.attachment,
-      ocrText:
-        args.ocrText.length > 50000 ? args.ocrText.slice(0, 50000) : args.ocrText,
-      parsedInvoice: args.parsedInvoice,
-      extractedMeta: {
-        ...(args.attachment.extractedMeta || {}),
-        extractionMethod:
-          String(args.attachment.extractedMeta?.supplierParser || "") === "moore_batch_page"
-            ? "native_unpdf_page_split"
-            : "native_unpdf",
-        ocrStatus: args.ocrText ? "complete" : "empty",
-        ocrProcessedAt: now,
-        sourceSupplierInvoiceId: args.invoiceId,
-      },
+  const refreshedAttachment = {
+    ...args.attachment,
+    ocrText:
+      args.ocrText.length > 50000 ? args.ocrText.slice(0, 50000) : args.ocrText,
+    parsedInvoice: args.parsedInvoice,
+    extractedMeta: {
+      ...(args.attachment.extractedMeta || {}),
+      extractionMethod:
+        String(args.attachment.extractedMeta?.supplierParser || "") === "moore_batch_page"
+          ? "native_unpdf_page_split"
+          : "native_unpdf",
+      ocrStatus: args.ocrText ? "complete" : "empty",
+      ocrProcessedAt: now,
+      sourceSupplierInvoiceId: args.invoiceId,
     },
-  ];
+  };
+
+  const nextAttachments =
+    existingAttachmentIndex >= 0
+      ? existingAttachments.map((existing: any, index: number) =>
+          index === existingAttachmentIndex
+            ? {
+                ...existing,
+                ...refreshedAttachment,
+                extractedMeta: {
+                  ...(existing.extractedMeta || {}),
+                  ...(refreshedAttachment.extractedMeta || {}),
+                },
+              }
+            : existing
+        )
+      : [...existingAttachments, refreshedAttachment];
 
   await poRef.set(
     {
@@ -206,7 +215,8 @@ async function appendAttachmentToPurchaseOrder(args: {
         String(args.invoiceData.emailFrom || "").trim() ||
         po.invoiceEmailFrom ||
         null,
-      invoiceEmailMatchedAt: now,
+      invoiceEmailMatchedAt: po.invoiceEmailMatchedAt || now,
+      invoiceLastParsedAt: now,
       invoiceAttachmentCount: nextAttachments.length,
       invoicePdfAttachmentCount: nextAttachments.length,
       matchedAttachments: nextAttachments,
@@ -222,7 +232,13 @@ async function appendAttachmentToPurchaseOrder(args: {
     { merge: true }
   );
 
-  return { ok: true, reason: "Attachment linked to PO." };
+  return {
+    ok: true,
+    reason:
+      existingAttachmentIndex >= 0
+        ? "Attachment already linked; parsed invoice refreshed."
+        : "Attachment linked to PO.",
+  };
 }
 
 export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {

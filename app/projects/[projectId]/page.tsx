@@ -311,29 +311,12 @@ type CloseoutOutcome = "done_today" | "complete_stage" | "complete_project";
 
 type CloseoutNeedsWork = "no" | "yes";
 
-type CloseoutDecision = "" | "another_visit" | "stage_complete";
-
-type CloseoutHoursSource = "timer" | "manual_required";
-
-type CloseoutCrewHourDraft = {
-  uid: string;
-  name: string;
-  roleLabel: string;
-  hoursWorkedToday: string;
-};
-
 type TripCloseoutModalState = {
   open: boolean;
   tripId: string | null;
-  decision: CloseoutDecision;
-  calculatedHours: string;
-  timerElapsedMinutes: number | null;
-  timerStoppedAt: string | null;
-  hoursSource: CloseoutHoursSource;
-  crewHours: CloseoutCrewHourDraft[];
-  correctHoursOpen: boolean;
-  showOptionalNote: boolean;
-  showMaterials: boolean;
+  outcome: CloseoutOutcome;
+  needsMoreWork: CloseoutNeedsWork;
+  hoursWorkedToday: string;
   workNotes: string;
   materialsUsedToday: string;
   saving: boolean;
@@ -469,15 +452,9 @@ function emptyCloseoutModal(): TripCloseoutModalState {
   return {
     open: false,
     tripId: null,
-    decision: "",
-    calculatedHours: "",
-    timerElapsedMinutes: null,
-    timerStoppedAt: null,
-    hoursSource: "manual_required",
-    crewHours: [],
-    correctHoursOpen: false,
-    showOptionalNote: false,
-    showMaterials: false,
+    outcome: "done_today",
+    needsMoreWork: "no",
+    hoursWorkedToday: "",
     workNotes: "",
     materialsUsedToday: "",
     saving: false,
@@ -633,56 +610,16 @@ function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null, referenceEndMs?: nu
   }, 0);
 }
 
-function getTripTimerElapsedMinutes(t?: TripDoc | null, referenceEndIso?: string | null) {
+function getTimerDrivenHoursForTrip(t?: TripDoc | null) {
   if (!t) return null;
   const startMs = parseIsoMs(t.actualStartAt || t.startedAt || null);
-  const endMs = parseIsoMs(t.actualEndAt || t.completedAt || referenceEndIso || null);
+  const endMs = parseIsoMs(t.actualEndAt || t.completedAt || null);
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
-
   const grossMinutes = minutesBetweenMs(startMs, endMs);
-  const existingPauseBlocks = Array.isArray(t.pauseBlocks) ? t.pauseBlocks : [];
-  const pauseBlocksForCalculation =
-    String(t.timerState || "").toLowerCase() === "paused" &&
-    t.pausedAt &&
-    !existingPauseBlocks.some((block) => block && !block.endAt)
-      ? [...existingPauseBlocks, { startAt: t.pausedAt, endAt: null }]
-      : existingPauseBlocks;
-  const pausedMinutes = sumPausedMinutes(pauseBlocksForCalculation, endMs);
-  const elapsedMinutes = Math.max(0, grossMinutes - pausedMinutes);
-  return elapsedMinutes > 0 ? elapsedMinutes : null;
-}
-
-function roundProjectHoursFromMinutes(elapsedMinutes?: number | null) {
-  const minutes = Number(elapsedMinutes);
-  if (!Number.isFinite(minutes) || minutes <= 0) return null;
-
-  // Project labor follows service-call rounding: minimum 1 hour,
-  // then nearest 0.5 hour with a 15-minute threshold.
-  const roundedHalfHours = Math.round(minutes / 30) * 0.5;
-  return Math.max(1, roundedHalfHours);
-}
-
-function getTimerDrivenHoursForTrip(t?: TripDoc | null, referenceEndIso?: string | null) {
-  const elapsedMinutes = getTripTimerElapsedMinutes(t, referenceEndIso);
-  const hours = roundProjectHoursFromMinutes(elapsedMinutes);
-  return hours == null ? null : hours.toFixed(2);
-}
-
-function formatElapsedMinutes(minutes?: number | null) {
-  const value = Number(minutes);
-  if (!Number.isFinite(value) || value < 0) return "—";
-  const wholeHours = Math.floor(value / 60);
-  const remainingMinutes = Math.round(value % 60);
-  if (wholeHours === 0) return `${remainingMinutes} min`;
-  if (remainingMinutes === 0) return `${wholeHours} hr`;
-  return `${wholeHours} hr ${remainingMinutes} min`;
-}
-
-function closeOpenPauseBlocks(pauseBlocks: PauseBlock[] | null | undefined, endAt: string) {
-  if (!Array.isArray(pauseBlocks)) return [] as PauseBlock[];
-  return pauseBlocks.map((block) =>
-    block && !block.endAt ? { ...block, endAt } : block,
-  );
+  const pausedMinutes = sumPausedMinutes(t.pauseBlocks || null, endMs);
+  const liveMinutes = Math.max(0, grossMinutes - pausedMinutes);
+  if (liveMinutes <= 0) return null;
+  return (Math.round((liveMinutes / 60) * 4) / 4).toFixed(2);
 }
 
 function normalizeRole(role?: string) {
@@ -907,14 +844,7 @@ function formatDateTime(value?: string) {
   if (!value) return "Unknown";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
+  return date.toLocaleString();
 }
 
 function formatTripWindow(w: string) {
@@ -937,24 +867,8 @@ function formatTripDate(dateIso?: string | null) {
   return `${weekday} • ${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}/${date.getFullYear()}`;
 }
 
-function formatClockTime(value?: string | null) {
-  const raw = safeTrim(value);
-  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
-  if (!match) return raw || "—";
-
-  const hour = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hour) || !Number.isFinite(minutes)) return raw;
-
-  const period = hour >= 12 ? "PM" : "AM";
-  const hour12 = hour % 12 || 12;
-  return `${hour12}:${pad2(minutes)} ${period}`;
-}
-
 function formatTripScheduleLine(t: TripDoc) {
-  const start = formatClockTime(t.startTime);
-  const end = formatClockTime(t.endTime);
-  return `${formatTripDate(t.date)} • Scheduled: ${start}–${end}`;
+  return `${formatTripDate(t.date)} • ${formatTripWindow(String(t.timeWindow || "all_day"))} • ${t.startTime || "--:--"}–${t.endTime || "--:--"}`;
 }
 
 function formatPoStatus(status?: string | null) {
@@ -1049,33 +963,6 @@ function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
     (crew.secondaryTechUid || "") === uid ||
     (crew.secondaryHelperUid || "") === uid
   );
-}
-
-function getCloseoutCrewMembers(crew?: TripCrew | null) {
-  const rows: Array<{ uid: string; name: string; roleLabel: string }> = [];
-  const seen = new Set<string>();
-
-  function add(uid: string | null | undefined, name: string | null | undefined, roleLabel: string) {
-    const cleanUid = safeTrim(uid);
-    if (!cleanUid || seen.has(cleanUid)) return;
-    seen.add(cleanUid);
-    rows.push({
-      uid: cleanUid,
-      name: safeTrim(name) || "Employee",
-      roleLabel,
-    });
-  }
-
-  add(crew?.primaryTechUid, crew?.primaryTechName, "Tech");
-  add(crew?.helperUid, crew?.helperName, "Helper");
-  add(crew?.secondaryTechUid, crew?.secondaryTechName, "Secondary Tech");
-  add(crew?.secondaryHelperUid, crew?.secondaryHelperName, "Secondary Helper");
-
-  return rows;
-}
-
-function isValidProjectHours(value: number) {
-  return Number.isFinite(value) && value >= 1 && Math.abs(value * 2 - Math.round(value * 2)) < 0.001;
 }
 
 function statusChipColor(
@@ -1337,7 +1224,7 @@ export default function ProjectDetailPage() {
     typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
 
   const theme = useTheme();
-  const { appUser, loading: authLoading } = useAuthContext();
+  const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [projectId, setProjectId] = useState("");
@@ -1366,6 +1253,7 @@ export default function ProjectDetailPage() {
   const [poActionBusyTripId, setPoActionBusyTripId] = useState<string | null>(null);
   const [poActionError, setPoActionError] = useState("");
   const [poActionSuccess, setPoActionSuccess] = useState("");
+  const [expandedPoCode, setExpandedPoCode] = useState<string | null>(null);
 
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityError, setActivityError] = useState("");
@@ -2025,14 +1913,6 @@ const canMarkTmReadyToBill =
 
   useEffect(() => {
     async function loadProject() {
-      if (authLoading || !appUser) return;
-
-      if (isFieldRole) {
-        setLoading(false);
-        router.replace("/technician/my-day");
-        return;
-      }
-
       if (!routeProjectId) {
         setLoading(false);
         setError("Project not found.");
@@ -2195,15 +2075,10 @@ const canMarkTmReadyToBill =
 
     loadProject();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeProjectId, authLoading, appUser, isFieldRole, router]);
+  }, [routeProjectId]);
 
   useEffect(() => {
     async function loadCustomers() {
-      if (authLoading || !appUser || isFieldRole) {
-        setCustomersLoading(false);
-        return;
-      }
-
       try {
         setCustomersLoading(true);
         setCustomersError("");
@@ -2228,15 +2103,10 @@ const canMarkTmReadyToBill =
     }
 
     loadCustomers();
-  }, [authLoading, appUser, isFieldRole]);
+  }, []);
 
   useEffect(() => {
     async function loadTechnicians() {
-      if (authLoading || !appUser || isFieldRole) {
-        setTechLoading(false);
-        return;
-      }
-
       try {
         const snap = await getDocs(collection(db, "users"));
 
@@ -2262,15 +2132,10 @@ const canMarkTmReadyToBill =
     }
 
     loadTechnicians();
-  }, [authLoading, appUser, isFieldRole]);
+  }, []);
 
   useEffect(() => {
     async function loadProfiles() {
-      if (authLoading || !appUser || isFieldRole) {
-        setProfilesLoading(false);
-        return;
-      }
-
       setProfilesLoading(true);
       setProfilesError("");
 
@@ -2299,7 +2164,7 @@ const canMarkTmReadyToBill =
     }
 
     loadProfiles();
-  }, [authLoading, appUser, isFieldRole]);
+  }, []);
 
   useEffect(() => {
     if (!projectId) return;
@@ -3174,7 +3039,7 @@ const canMarkTmReadyToBill =
       void recordProjectActivity({
         type: "trip_cancelled",
         title: "Trip cancelled",
-        description: formatTripScheduleLine(t),
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
         details: [
           t.link?.projectStageKey ? `Stage: ${stageLabel(t.link.projectStageKey as StageKey)}` : "Project Trip",
           `Reason: ${trimmed}`,
@@ -3193,7 +3058,9 @@ const canMarkTmReadyToBill =
     }
 
     const ok = window.confirm(
-      `Permanently delete this trip?\n\n${formatTripScheduleLine(t)}\n\nThis cannot be undone.`,
+      `Permanently delete this trip?\n\n${t.date} • ${formatTripWindow(
+        String(t.timeWindow || ""),
+      )} • ${t.startTime}-${t.endTime}\n\nThis cannot be undone.`,
     );
     if (!ok) return;
 
@@ -3205,7 +3072,7 @@ const canMarkTmReadyToBill =
       void recordProjectActivity({
         type: "trip_deleted",
         title: "Trip deleted",
-        description: formatTripScheduleLine(t),
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
         details: [
           t.link?.projectStageKey ? `Stage: ${stageLabel(t.link.projectStageKey as StageKey)}` : "Project Trip",
         ],
@@ -3580,7 +3447,7 @@ const canMarkTmReadyToBill =
     void recordProjectActivity({
       type: "trip_created",
       title: "Project trip scheduled",
-      description: `${formatTripDate(date)} • Scheduled: ${formatClockTime(st)}–${formatClockTime(et)}`,
+      description: `${date} • ${formatTripWindow(values.timeWindow)} • ${st}-${et}`,
       details: buildCrewActivityDetails({
         primaryName,
         helperName,
@@ -3791,7 +3658,7 @@ const canMarkTmReadyToBill =
           void recordProjectActivity({
             type: "trip_created",
             title: "Stage trip scheduled",
-            description: `${formatTripDate(date)} • Scheduled: ${formatClockTime(st)}–${formatClockTime(et)}`,
+            description: `${date} • ${formatTripWindow(tripModal.timeWindow)} • ${st}-${et}`,
             details: [
               `Stage: ${stageLabel(stageKey)}`,
               ...buildCrewActivityDetails({
@@ -3868,7 +3735,7 @@ const canMarkTmReadyToBill =
       void recordProjectActivity({
         type: "trip_updated",
         title: "Trip updated",
-        description: `${formatTripDate(date)} • Scheduled: ${formatClockTime(st)}–${formatClockTime(et)}`,
+        description: `${date} • ${formatTripWindow(tripModal.timeWindow)} • ${st}-${et}`,
         details: [
           existingTrip?.link?.projectStageKey
             ? `Stage: ${stageLabel(existingTrip.link.projectStageKey as StageKey)}`
@@ -3922,7 +3789,7 @@ const canMarkTmReadyToBill =
       void recordProjectActivity({
         type: "trip_notes_saved",
         title: "Trip notes saved",
-        description: formatTripScheduleLine(t),
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
         details: noteValue ? [noteValue] : ["Notes cleared"],
       });
     } catch (err: any) {
@@ -3942,7 +3809,6 @@ const canMarkTmReadyToBill =
 
     try {
       const now = nowIso();
-      const existingPauseBlocks = Array.isArray(t.pauseBlocks) ? t.pauseBlocks : [];
       let patch: Record<string, any> = {
         updatedAt: now,
         updatedByUid: myUid || null,
@@ -3957,9 +3823,6 @@ const canMarkTmReadyToBill =
           status: "in_progress",
           timerState: "running",
           startedAt: t.startedAt || now,
-          actualStartAt: t.actualStartAt || t.startedAt || now,
-          actualEndAt: null,
-          pauseBlocks: existingPauseBlocks,
           pausedAt: null,
           active: true,
         };
@@ -3968,32 +3831,22 @@ const canMarkTmReadyToBill =
       }
 
       if (action === "pause") {
-        const hasOpenPause = existingPauseBlocks.some((block) => block && !block.endAt);
         patch = {
           ...patch,
           status: "in_progress",
           timerState: "paused",
           pausedAt: now,
-          pauseBlocks: hasOpenPause
-            ? existingPauseBlocks
-            : [...existingPauseBlocks, { startAt: now, endAt: null }],
         };
         activityType = "trip_paused";
         activityTitle = "Trip paused";
       }
 
       if (action === "resume") {
-        const blocksWithLegacyPause =
-          !existingPauseBlocks.some((block) => block && !block.endAt) && t.pausedAt
-            ? [...existingPauseBlocks, { startAt: t.pausedAt, endAt: null }]
-            : existingPauseBlocks;
-
         patch = {
           ...patch,
           status: "in_progress",
           timerState: "running",
           pausedAt: null,
-          pauseBlocks: closeOpenPauseBlocks(blocksWithLegacyPause, now),
           active: true,
         };
         activityType = "trip_resumed";
@@ -4005,13 +3858,8 @@ const canMarkTmReadyToBill =
           ...patch,
           status: "planned",
           timerState: "idle",
-          startedAt: null,
-          actualStartAt: null,
-          actualEndAt: null,
           completedAt: null,
           pausedAt: null,
-          pauseBlocks: [],
-          closeoutHours: null,
           active: true,
           closeout: null,
         };
@@ -4043,7 +3891,7 @@ const canMarkTmReadyToBill =
       void recordProjectActivity({
         type: activityType,
         title: activityTitle,
-        description: formatTripScheduleLine(t),
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
         details,
       });
     } catch (err: any) {
@@ -4053,31 +3901,35 @@ const canMarkTmReadyToBill =
     }
   }
 
-  function openCloseoutModal(t: TripDoc) {
-    const timerStoppedAt = nowIso();
-    const timerElapsedMinutes = getTripTimerElapsedMinutes(t, timerStoppedAt);
-    const calculatedHours = getTimerDrivenHoursForTrip(t, timerStoppedAt) || "";
-    const existingWorkNotes = safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? "");
-    const existingMaterials = safeTrim(t.materialsUsedToday || "");
-    const crewHours = getCloseoutCrewMembers(t.crew || null).map((member) => ({
-      ...member,
-      hoursWorkedToday: calculatedHours,
-    }));
+  function estimateTripHours(t: TripDoc) {
+    const timerHours = getTimerDrivenHoursForTrip(t);
+    if (timerHours) return timerHours;
 
+    const start = safeTrim(t.startTime);
+    const end = safeTrim(t.endTime);
+
+    if (start && end && end > start) {
+      const [sh, sm] = start.split(":").map(Number);
+      const [eh, em] = end.split(":").map(Number);
+      const diff = eh * 60 + em - (sh * 60 + sm);
+      if (diff > 0) {
+        return (Math.round((diff / 60) * 4) / 4).toFixed(2);
+      }
+    }
+
+    return "1.00";
+  }
+
+  function openCloseoutModal(t: TripDoc) {
+    const hasStage = Boolean(safeTrim(t.link?.projectStageKey || ""));
     setCloseoutModal({
       open: true,
       tripId: t.id,
-      decision: "",
-      calculatedHours,
-      timerElapsedMinutes,
-      timerStoppedAt,
-      hoursSource: calculatedHours ? "timer" : "manual_required",
-      crewHours,
-      correctHoursOpen: !calculatedHours,
-      showOptionalNote: Boolean(existingWorkNotes),
-      showMaterials: Boolean(existingMaterials),
-      workNotes: existingWorkNotes,
-      materialsUsedToday: existingMaterials,
+      outcome: hasStage ? "done_today" : isTmProject ? "done_today" : "complete_project",
+      needsMoreWork: "no",
+      hoursWorkedToday: estimateTripHours(t),
+      workNotes: safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? ""),
+      materialsUsedToday: safeTrim(t.materialsUsedToday || ""),
       saving: false,
       error: "",
     });
@@ -4104,117 +3956,36 @@ const canMarkTmReadyToBill =
       return;
     }
 
-    if (!closeoutModal.decision) {
+    const hoursWorked = Number(closeoutModal.hoursWorkedToday || 0);
+    if (Number.isNaN(hoursWorked) || hoursWorked <= 0) {
       setCloseoutModal((prev) => ({
         ...prev,
-        error: "Choose whether another visit is needed before saving.",
+        error: "Enter a valid hours value greater than 0.",
       }));
       return;
     }
-
-    const workNotes = safeTrim(closeoutModal.workNotes);
-    const materials = safeTrim(closeoutModal.materialsUsedToday);
-    const needsMoreWork: CloseoutNeedsWork =
-      closeoutModal.decision === "another_visit" ? "yes" : "no";
-
-    if (needsMoreWork === "yes" && !workNotes) {
-      setCloseoutModal((prev) => ({
-        ...prev,
-        error: "Explain what work remains before saving this closeout.",
-      }));
-      return;
-    }
-
-    if (closeoutModal.crewHours.length === 0) {
-      setCloseoutModal((prev) => ({
-        ...prev,
-        error: "No assigned crew members were found for this project trip.",
-      }));
-      return;
-    }
-
-    const crewHoursByUid: Record<string, number> = {};
-    for (const member of closeoutModal.crewHours) {
-      const memberHours = Number(member.hoursWorkedToday || 0);
-      if (!isValidProjectHours(memberHours)) {
-        setCloseoutModal((prev) => ({
-          ...prev,
-          error: `${member.name}'s hours must be at least 1.00 hour and use 0.50-hour increments.`,
-        }));
-        return;
-      }
-      crewHoursByUid[member.uid] = memberHours;
-    }
-
-    const crewHourValues = Object.values(crewHoursByUid);
-    const calculatedHours = Number(closeoutModal.calculatedHours || 0);
-    const hasCrewCorrection =
-      Number.isFinite(calculatedHours) && calculatedHours > 0
-        ? crewHourValues.some((hours) => Math.abs(hours - calculatedHours) > 0.001)
-        : true;
-    const hoursWorked =
-      hasCrewCorrection || !Number.isFinite(calculatedHours) || calculatedHours <= 0
-        ? Math.max(...crewHourValues)
-        : calculatedHours;
-
-    if (!isValidProjectHours(hoursWorked)) {
-      setCloseoutModal((prev) => ({
-        ...prev,
-        error: "Enter valid project hours before saving.",
-      }));
-      return;
-    }
-
-    const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
-    const outcome: CloseoutOutcome =
-      needsMoreWork === "yes"
-        ? "done_today"
-        : stageKey
-          ? "complete_stage"
-          : "complete_project";
-    const crewHoursAdjusted = hasCrewCorrection;
 
     setCloseoutModal((prev) => ({ ...prev, saving: true, error: "" }));
     setTripActionBusyId(t.id);
 
     try {
       const now = nowIso();
-      const timerStoppedAt = closeoutModal.timerStoppedAt || now;
-      const existingBlocks = Array.isArray(t.pauseBlocks) ? t.pauseBlocks : [];
-      const blocksWithLegacyPausedAt =
-        String(t.timerState || "").toLowerCase() === "paused" &&
-        !existingBlocks.some((block) => block && !block.endAt) &&
-        t.pausedAt
-          ? [...existingBlocks, { startAt: t.pausedAt, endAt: null }]
-          : existingBlocks;
-      const finalPauseBlocks = closeOpenPauseBlocks(blocksWithLegacyPausedAt, timerStoppedAt);
+      const workNotes = safeTrim(closeoutModal.workNotes);
+      const materials = safeTrim(closeoutModal.materialsUsedToday);
 
       const tripPatch: Record<string, any> = {
         status: "complete",
         timerState: "stopped",
-        actualEndAt: timerStoppedAt,
         completedAt: now,
         pausedAt: null,
-        pauseBlocks: finalPauseBlocks,
         active: true,
         notes: workNotes || null,
         materialsUsedToday: materials || null,
         closeoutHours: hoursWorked,
         closeout: {
-          outcome,
-          needsMoreWork,
+          outcome: closeoutModal.outcome,
+          needsMoreWork: closeoutModal.needsMoreWork,
           hoursWorkedToday: hoursWorked,
-          hoursSource: closeoutModal.hoursSource,
-          timerElapsedMinutes: closeoutModal.timerElapsedMinutes,
-          timerStoppedAt,
-          crewHoursByUid,
-          crewHours: closeoutModal.crewHours.map((member) => ({
-            uid: member.uid,
-            name: member.name,
-            roleLabel: member.roleLabel,
-            hoursWorkedToday: Number(member.hoursWorkedToday),
-          })),
-          crewHoursAdjusted,
           workNotes: workNotes || null,
           materialsUsedToday: materials || null,
           savedAt: now,
@@ -4225,6 +3996,7 @@ const canMarkTmReadyToBill =
         updatedByUid: myUid || null,
       };
 
+      const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
       const enabled = getEnabledStages(project.projectType);
       const projectPatch: Record<string, any> = {
         updatedAt: now,
@@ -4238,7 +4010,7 @@ const canMarkTmReadyToBill =
               ? project.topOutVent
               : project.trimFinish;
 
-        if (outcome === "done_today") {
+        if (closeoutModal.outcome === "done_today") {
           if (currentStage.status === "not_started" || currentStage.status === "scheduled") {
             const nextStage = {
               ...(currentStage as any),
@@ -4252,7 +4024,7 @@ const canMarkTmReadyToBill =
           }
         }
 
-        if (outcome === "complete_stage") {
+        if (closeoutModal.outcome === "complete_stage") {
           const completeDate = t.date || toIsoDate(new Date());
           const nextStage = {
             ...(currentStage as any),
@@ -4276,7 +4048,7 @@ const canMarkTmReadyToBill =
         }
       }
 
-      if (outcome === "complete_project") {
+      if (closeoutModal.outcome === "complete_project") {
         const completeDate = t.date || toIsoDate(new Date());
 
         if (isTmProject) {
@@ -4317,7 +4089,7 @@ const canMarkTmReadyToBill =
         }
       }
 
-      if (isTmProject && outcome === "done_today") {
+      if (isTmProject && closeoutModal.outcome === "done_today") {
         if (projectOfficeStatus === "field_complete") {
           projectPatch.projectOfficeStatus = "field_complete";
         } else if (projectOfficeStatus === "ready_to_invoice") {
@@ -4337,7 +4109,6 @@ const canMarkTmReadyToBill =
         projectId: project.id,
         projectStageKey: stageKey || null,
         hours: hoursWorked,
-        crewHoursByUid,
         notes: workNotes || null,
         actorUid: myUid || null,
         actorName: actorDisplayName || null,
@@ -4354,41 +4125,43 @@ const canMarkTmReadyToBill =
         timeEntrySyncedByName: actorDisplayName || null,
       };
 
-      const cleanTripPatch = stripUndefinedDeep(tripPatch);
-      const cleanProjectPatch = stripUndefinedDeep(projectPatch);
+const cleanTripPatch = stripUndefinedDeep(tripPatch);
+const cleanProjectPatch = stripUndefinedDeep(projectPatch);
 
-      batch.update(doc(db, "trips", t.id), cleanTripPatch as any);
+batch.update(doc(db, "trips", t.id), cleanTripPatch as any);
 
-      if (Object.keys(cleanProjectPatch).length > 1) {
-        batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
-      }
+if (Object.keys(cleanProjectPatch).length > 1) {
+  batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
+}
 
-      await batch.commit();
+await batch.commit();
 
-      setProjectTrips((prev) =>
-        prev.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                ...cleanTripPatch,
-              }
-            : x,
-        ),
-      );
+setProjectTrips((prev) =>
+  prev.map((x) =>
+    x.id === t.id
+      ? {
+          ...x,
+          ...cleanTripPatch,
+        }
+      : x,
+  ),
+);
 
-      if (Object.keys(cleanProjectPatch).length > 1) {
-        mergeProjectState(cleanProjectPatch);
-      } else {
-        mergeProjectState({ updatedAt: now });
-      }
+if (Object.keys(cleanProjectPatch).length > 1) {
+  mergeProjectState(cleanProjectPatch);
+} else {
+  mergeProjectState({ updatedAt: now });
+}
 
       const details: string[] = [];
-      details.push(`Outcome: ${outcome.replaceAll("_", " ")}`);
-      details.push(`Another visit needed: ${needsMoreWork === "yes" ? "Yes" : "No"}`);
-      details.push(`Trip hours: ${hoursWorked.toFixed(2)}`);
-      details.push(`Timer elapsed: ${formatElapsedMinutes(closeoutModal.timerElapsedMinutes)}`);
+      details.push(`Outcome: ${closeoutModal.outcome.replaceAll("_", " ")}`);
+      details.push(
+        `More work needed after today: ${
+          closeoutModal.needsMoreWork === "yes" ? "Yes" : "No"
+        }`,
+      );
+      details.push(`Hours worked today: ${hoursWorked}`);
       details.push(`Time entries synced: ${synced.memberCount}`);
-      if (crewHoursAdjusted) details.push("Individual crew hours adjusted");
       if (stageKey) details.push(`Stage: ${stageLabel(stageKey)}`);
       if (workNotes) details.push(`Work notes: ${workNotes}`);
       if (materials) details.push(`Materials: ${materials}`);
@@ -4396,7 +4169,7 @@ const canMarkTmReadyToBill =
       void recordProjectActivity({
         type: "trip_closeout_saved",
         title: "Project trip closeout saved",
-        description: formatTripScheduleLine(t),
+        description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
         details,
       });
 
@@ -4959,23 +4732,20 @@ const canMarkTmReadyToBill =
         t.closeoutHours ??
         0,
     );
-    const timerHours = Number(getTimerDrivenHoursForTrip(t) || 0);
+
+    const estimatedHours = Number(estimateTripHours(t));
     const hours =
-      Number.isFinite(closeoutHours) && closeoutHours > 0 ? closeoutHours : timerHours;
-    const storedCrewHours =
-      (t.closeout as any)?.crewHoursByUid && typeof (t.closeout as any).crewHoursByUid === "object"
-        ? ((t.closeout as any).crewHoursByUid as Record<string, number>)
-        : undefined;
+      Number.isFinite(closeoutHours) && closeoutHours > 0 ? closeoutHours : estimatedHours;
 
     if (!Number.isFinite(hours) || hours <= 0) {
-      alert("This trip does not have valid timer or saved closeout hours to resync.");
+      alert("This trip does not have valid hours to resync.");
       return;
     }
 
     const ok = window.confirm(
-      `Resync labor hours for assigned crew on this completed project trip?\n\nDefault trip hours: ${hours.toFixed(
+      `Resync labor hours for all assigned crew on this completed project trip?\n\nHours: ${hours.toFixed(
         2,
-      )}${storedCrewHours ? "\nSaved individual crew adjustments will also be applied." : ""}\n\nThis is a safety repair action. It will update existing time entries and create missing ones. It will not duplicate entries.`,
+      )}\n\nThis is a safety repair action. It will update existing time entries and create missing ones. It will not duplicate entries.`,
     );
 
     if (!ok) return;
@@ -4985,14 +4755,16 @@ const canMarkTmReadyToBill =
     try {
       const now = nowIso();
       const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
-      const notes = safeTrim((t.closeout as any)?.workNotes) || safeTrim(t.notes) || "";
+      const notes =
+        safeTrim((t.closeout as any)?.workNotes) ||
+        safeTrim(t.notes) ||
+        "";
 
       const synced = await upsertProjectTripTimeEntriesForCrew({
         trip: t,
         projectId: project.id,
         projectStageKey: stageKey || null,
         hours,
-        crewHoursByUid: storedCrewHours,
         notes: notes || null,
         actorUid: myUid || null,
         actorName: actorDisplayName || null,
@@ -5034,13 +4806,14 @@ const canMarkTmReadyToBill =
         description: formatTripScheduleLine(t),
         details: [
           `Crew entries updated/created: ${synced.memberCount}`,
-          `Default trip hours: ${hours.toFixed(2)}`,
-          ...(storedCrewHours ? ["Saved individual crew hour adjustments applied"] : []),
+          `Hours: ${hours.toFixed(2)}`,
           stageKey ? `Stage: ${stageLabel(stageKey)}` : "Project Trip",
         ],
       });
 
-      alert(`✅ Labor hours resynced.\n\nCrew entries updated/created: ${synced.memberCount}`);
+      alert(
+        `✅ Labor hours resynced.\n\nCrew entries updated/created: ${synced.memberCount}`,
+      );
     } catch (err: any) {
       alert(err?.message || "Failed to resync labor hours.");
     } finally {
@@ -5904,10 +5677,7 @@ if (nextStatus === "active_work") {
   }
 
   return (
-    <ProtectedPage
-      fallbackTitle="Project Detail"
-      allowedRoles={["admin", "dispatcher", "manager", "billing", "office_display"]}
-    >
+    <ProtectedPage fallbackTitle="Project Detail">
       <AppShell appUser={appUser}>
         <Dialog
           open={tripModal.open}
@@ -5969,9 +5739,9 @@ if (nextStatus === "active_work") {
                     disabled={tripModalBusy}
                     {...selectMenuProps()}
                   >
-                    <MenuItem value="all_day">All Day (8:00 AM–5:00 PM)</MenuItem>
-                    <MenuItem value="am">Morning (8:00 AM–12:00 PM)</MenuItem>
-                    <MenuItem value="pm">Afternoon (1:00 PM–5:00 PM)</MenuItem>
+                    <MenuItem value="all_day">All Day (8:00–5:00)</MenuItem>
+                    <MenuItem value="am">Morning (8:00–12:00)</MenuItem>
+                    <MenuItem value="pm">Afternoon (1:00–5:00)</MenuItem>
                     <MenuItem value="custom">Custom</MenuItem>
                   </Select>
                 </FormControl>
@@ -6162,7 +5932,7 @@ if (nextStatus === "active_work") {
           open={closeoutModal.open}
           onClose={closeoutModal.saving ? undefined : closeCloseoutDialog}
           fullWidth
-          maxWidth="sm"
+          maxWidth="md"
           PaperProps={{
             sx: { borderRadius: 4 },
           }}
@@ -6177,18 +5947,22 @@ if (nextStatus === "active_work") {
             {(() => {
               const t = projectTrips.find((trip) => trip.id === closeoutModal.tripId) || null;
               const stageKey = safeTrim(t?.link?.projectStageKey || "") as StageKey | "";
-              const timerAvailable = closeoutModal.hoursSource === "timer";
-              const allCrewHours = closeoutModal.crewHours.map((member) => Number(member.hoursWorkedToday || 0));
-              const crewValuesMatch =
-                allCrewHours.length > 0 && allCrewHours.every((hours) => hours === allCrewHours[0]);
-              const displayedCrewHours = crewValuesMatch && allCrewHours[0] > 0 ? allCrewHours[0].toFixed(2) : null;
-              const crewNames = closeoutModal.crewHours.map((member) => member.name).join(" + ");
-              const completeButtonLabel = stageKey ? "No — Stage Complete" : "No — Project Work Complete";
+              const hasStageOption = Boolean(stageKey);
 
               return (
                 <Stack spacing={2.25}>
+                  <Alert severity="info" variant="outlined">
+                    This saves the project closeout and automatically creates/updates time entries for all assigned crew.
+                  </Alert>
+
                   {t ? (
-                    <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 4,
+                      }}
+                    >
                       <Stack spacing={0.5}>
                         <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
                           {project?.projectName || "Project"}
@@ -6203,257 +5977,118 @@ if (nextStatus === "active_work") {
                     </Paper>
                   ) : null}
 
+                  <Box>
+                    <FormLabel sx={{ mb: 1, display: "block", fontWeight: 700 }}>
+                      What are you saving for today?
+                    </FormLabel>
+                    <RadioGroup
+                      value={closeoutModal.outcome}
+                      onChange={(e) =>
+                        setCloseoutModal((prev) => ({
+                          ...prev,
+                          outcome: e.target.value as CloseoutOutcome,
+                        }))
+                      }
+                    >
+                      <FormControlLabel
+                        value="done_today"
+                        control={<Radio />}
+                        label="Done for today"
+                      />
+                      {hasStageOption ? (
+                        <FormControlLabel
+                          value="complete_stage"
+                          control={<Radio />}
+                          label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}
+                        />
+                      ) : null}
+                      <FormControlLabel
+                        value="complete_project"
+                        control={<Radio />}
+                        label={isTmProject ? "No more field work expected" : "Complete entire project"}
+                      />
+                    </RadioGroup>
+                  </Box>
+
                   <Paper
                     variant="outlined"
                     sx={{
                       p: 2,
                       borderRadius: 4,
-                      bgcolor: alpha(theme.palette.primary.main, 0.035),
                     }}
                   >
-                    <Stack spacing={1.25}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                        Today&apos;s Saved Hours
-                      </Typography>
-
-                      {timerAvailable ? (
-                        <>
-                          <Stack direction="row" spacing={1.25} alignItems="baseline" flexWrap="wrap" useFlexGap>
-                            <Typography variant="h4" sx={{ fontWeight: 900 }}>
-                              {closeoutModal.calculatedHours}
-                            </Typography>
-                            <Typography variant="subtitle1" color="text.secondary">
-                              hours
-                            </Typography>
-                          </Stack>
-                          <Typography variant="body2" color="text.secondary">
-                            From trip timer: {formatElapsedMinutes(closeoutModal.timerElapsedMinutes)}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            Rounded to nearest 0.5 hr • 1 hr minimum
-                          </Typography>
-                        </>
-                      ) : (
-                        <Alert severity="warning" variant="outlined" sx={{ borderRadius: 3 }}>
-                          No usable trip timer was found. Enter today&apos;s actual crew hours below; scheduled hours will not be used.
-                        </Alert>
-                      )}
-
-                      <Button
-                        variant="text"
-                        startIcon={<EditRoundedIcon />}
-                        onClick={() =>
+                    <Stack spacing={1.5}>
+                      <FormLabel sx={{ fontWeight: 700 }}>
+                        Is more work still needed after today?
+                      </FormLabel>
+                      <RadioGroup
+                        value={closeoutModal.needsMoreWork}
+                        onChange={(e) =>
                           setCloseoutModal((prev) => ({
                             ...prev,
-                            correctHoursOpen: !prev.correctHoursOpen,
+                            needsMoreWork: e.target.value as CloseoutNeedsWork,
                           }))
                         }
-                        sx={{ alignSelf: "flex-start", px: 0 }}
                       >
-                        {closeoutModal.correctHoursOpen ? "Hide Hour Correction" : "Correct Hours"}
-                      </Button>
+                        <FormControlLabel value="no" control={<Radio />} label="No" />
+                        <FormControlLabel value="yes" control={<Radio />} label="Yes" />
+                      </RadioGroup>
                     </Stack>
                   </Paper>
 
-                  {closeoutModal.correctHoursOpen ? (
-                    <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
-                      <Stack spacing={1.5}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                          Correct Today&apos;s Crew Hours
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Change only a crew member whose actual project time was different today. Hours use 0.50-hour increments with a 1.00-hour minimum.
-                        </Typography>
+                  <TextField
+                    label="Hours Worked Today"
+                    type="number"
+                    inputProps={{ min: 0.25, step: "0.25" }}
+                    value={closeoutModal.hoursWorkedToday}
+                    onChange={(e) =>
+                      setCloseoutModal((prev) => ({
+                        ...prev,
+                        hoursWorkedToday: e.target.value,
+                      }))
+                    }
+                    fullWidth
+                  />
 
-                        {closeoutModal.crewHours.map((member) => (
-                          <Stack
-                            key={member.uid}
-                            direction={{ xs: "column", sm: "row" }}
-                            spacing={1.5}
-                            alignItems={{ xs: "stretch", sm: "center" }}
-                            justifyContent="space-between"
-                          >
-                            <Box>
-                              <Typography variant="body1" sx={{ fontWeight: 700 }}>
-                                {member.name}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">
-                                {member.roleLabel}
-                              </Typography>
-                            </Box>
-                            <TextField
-                              label="Saved Hours"
-                              type="number"
-                              size="small"
-                              inputProps={{ min: 1, step: "0.5" }}
-                              value={member.hoursWorkedToday}
-                              onChange={(e) =>
-                                setCloseoutModal((prev) => ({
-                                  ...prev,
-                                  crewHours: prev.crewHours.map((row) =>
-                                    row.uid === member.uid
-                                      ? { ...row, hoursWorkedToday: e.target.value }
-                                      : row,
-                                  ),
-                                }))
-                              }
-                              sx={{ width: { xs: "100%", sm: 145 } }}
-                            />
-                          </Stack>
-                        ))}
+                  <Typography variant="body2" color="text.secondary">
+                    These hours start from the trip timer when available, but the tech can adjust them before saving. They are then saved for all assigned project-trip crew.
+                  </Typography>
 
-                        {timerAvailable ? (
-                          <Button
-                            variant="text"
-                            onClick={() =>
-                              setCloseoutModal((prev) => ({
-                                ...prev,
-                                crewHours: prev.crewHours.map((member) => ({
-                                  ...member,
-                                  hoursWorkedToday: prev.calculatedHours,
-                                })),
-                              }))
-                            }
-                            sx={{ alignSelf: "flex-start", px: 0 }}
-                          >
-                            Reset All to Timer Hours
-                          </Button>
-                        ) : null}
-                      </Stack>
-                    </Paper>
+                  <TextField
+                    label="Work Notes"
+                    value={closeoutModal.workNotes}
+                    onChange={(e) =>
+                      setCloseoutModal((prev) => ({
+                        ...prev,
+                        workNotes: e.target.value,
+                      }))
+                    }
+                    multiline
+                    minRows={4}
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="Materials Used Today"
+                    value={closeoutModal.materialsUsedToday}
+                    onChange={(e) =>
+                      setCloseoutModal((prev) => ({
+                        ...prev,
+                        materialsUsedToday: e.target.value,
+                      }))
+                    }
+                    multiline
+                    minRows={4}
+                    fullWidth
+                  />
+
+                  <Typography variant="body2" color="text.secondary">
+                    Keep materials simple and natural-language. No line items required.
+                  </Typography>
+
+                  {closeoutModal.error ? (
+                    <Alert severity="error">{closeoutModal.error}</Alert>
                   ) : null}
-
-                  <Box>
-                    <FormLabel sx={{ mb: 1.25, display: "block", fontWeight: 800, color: "text.primary" }}>
-                      {stageKey ? "Does this stage need another visit?" : "Does this project need another visit?"}
-                    </FormLabel>
-                    <Box
-                      sx={{
-                        display: "grid",
-                        gap: 1.25,
-                        gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
-                      }}
-                    >
-                      <Button
-                        variant={closeoutModal.decision === "another_visit" ? "contained" : "outlined"}
-                        color={closeoutModal.decision === "another_visit" ? "warning" : "inherit"}
-                        onClick={() =>
-                          setCloseoutModal((prev) => ({
-                            ...prev,
-                            decision: "another_visit",
-                            showOptionalNote: true,
-                            error: "",
-                          }))
-                        }
-                        sx={{ justifyContent: "flex-start", textAlign: "left", py: 1.5, borderRadius: 3 }}
-                      >
-                        Yes — Another Visit Needed
-                      </Button>
-                      <Button
-                        variant={closeoutModal.decision === "stage_complete" ? "contained" : "outlined"}
-                        onClick={() =>
-                          setCloseoutModal((prev) => ({
-                            ...prev,
-                            decision: "stage_complete",
-                            error: "",
-                          }))
-                        }
-                        sx={{ justifyContent: "flex-start", textAlign: "left", py: 1.5, borderRadius: 3 }}
-                      >
-                        {completeButtonLabel}
-                      </Button>
-                    </Box>
-                  </Box>
-
-                  {closeoutModal.decision === "another_visit" ? (
-                    <TextField
-                      required
-                      label="What work remains?"
-                      value={closeoutModal.workNotes}
-                      onChange={(e) =>
-                        setCloseoutModal((prev) => ({ ...prev, workNotes: e.target.value }))
-                      }
-                      multiline
-                      minRows={3}
-                      helperText="Required so the office knows what needs to be completed or scheduled next."
-                      fullWidth
-                    />
-                  ) : closeoutModal.showOptionalNote ? (
-                    <TextField
-                      label="Completion Note (optional)"
-                      value={closeoutModal.workNotes}
-                      onChange={(e) =>
-                        setCloseoutModal((prev) => ({ ...prev, workNotes: e.target.value }))
-                      }
-                      multiline
-                      minRows={3}
-                      fullWidth
-                    />
-                  ) : (
-                    <Button
-                      variant="text"
-                      onClick={() => setCloseoutModal((prev) => ({ ...prev, showOptionalNote: true }))}
-                      sx={{ alignSelf: "flex-start", px: 0 }}
-                    >
-                      Add Optional Completion Note
-                    </Button>
-                  )}
-
-                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 4 }}>
-                    <Stack spacing={1}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                        Crew Receiving Hours
-                      </Typography>
-                      <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        justifyContent="space-between"
-                        spacing={1.25}
-                        alignItems={{ xs: "flex-start", sm: "center" }}
-                      >
-                        <Box>
-                          <Typography variant="body1" sx={{ fontWeight: 700 }}>
-                            {crewNames || "No crew assigned"}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {displayedCrewHours
-                              ? `will each receive ${displayedCrewHours} hours`
-                              : "crew hours have individual adjustments"}
-                          </Typography>
-                        </Box>
-                        <Button
-                          variant="text"
-                          onClick={() => setCloseoutModal((prev) => ({ ...prev, correctHoursOpen: true }))}
-                          sx={{ flexShrink: 0 }}
-                        >
-                          View / Adjust Crew
-                        </Button>
-                      </Stack>
-                    </Stack>
-                  </Paper>
-
-                  {closeoutModal.showMaterials ? (
-                    <TextField
-                      label="Materials Used Today (optional)"
-                      value={closeoutModal.materialsUsedToday}
-                      onChange={(e) =>
-                        setCloseoutModal((prev) => ({ ...prev, materialsUsedToday: e.target.value }))
-                      }
-                      multiline
-                      minRows={3}
-                      helperText="Optional: Keep materials simple and natural-language."
-                      fullWidth
-                    />
-                  ) : (
-                    <Button
-                      variant="text"
-                      onClick={() => setCloseoutModal((prev) => ({ ...prev, showMaterials: true }))}
-                      sx={{ alignSelf: "flex-start", px: 0 }}
-                    >
-                      Add Materials Used Today
-                    </Button>
-                  )}
-
-                  {closeoutModal.error ? <Alert severity="error">{closeoutModal.error}</Alert> : null}
                 </Stack>
               );
             })()}
@@ -6467,11 +6102,7 @@ if (nextStatus === "active_work") {
               variant="contained"
               color="warning"
               onClick={saveProjectTripCloseout}
-              disabled={
-                closeoutModal.saving ||
-                !closeoutModal.decision ||
-                (closeoutModal.decision === "another_visit" && !safeTrim(closeoutModal.workNotes))
-              }
+              disabled={closeoutModal.saving}
               sx={{ borderRadius: 99, boxShadow: "none" }}
             >
               {closeoutModal.saving ? "Saving..." : "Save Closeout"}
@@ -6554,34 +6185,21 @@ if (nextStatus === "active_work") {
                     </Typography>
                   </CloseoutDetailBlock>
 
-                  <CloseoutDetailBlock icon={<GroupRoundedIcon fontSize="small" />} title="Crew Hours">
+                  <CloseoutDetailBlock icon={<GroupRoundedIcon fontSize="small" />} title="Crew">
                     <Stack spacing={0.75}>
-                      {Array.isArray((closeoutDetailsTrip.closeout as any)?.crewHours) &&
-                      (closeoutDetailsTrip.closeout as any).crewHours.length > 0 ? (
-                        (closeoutDetailsTrip.closeout as any).crewHours.map((member: any) => (
-                          <Typography key={safeTrim(member.uid) || safeTrim(member.name)} variant="body2" color="text.secondary">
-                            <strong>{safeTrim(member.name) || "Employee"}:</strong>{" "}
-                            {Number(member.hoursWorkedToday || 0).toFixed(2)}h
-                            {safeTrim(member.roleLabel) ? ` • ${safeTrim(member.roleLabel)}` : ""}
-                          </Typography>
-                        ))
-                      ) : (
-                        <>
-                          <Typography variant="body2" color="text.secondary">
-                            <strong>Tech:</strong> {closeoutDetailsTrip.crew?.primaryTechName || "Unassigned"}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            <strong>Helper:</strong> {closeoutDetailsTrip.crew?.helperName || "—"}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            <strong>2nd Tech:</strong> {closeoutDetailsTrip.crew?.secondaryTechName || "—"}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            <strong>2nd Helper:</strong>{" "}
-                            {closeoutDetailsTrip.crew?.secondaryHelperName || "—"}
-                          </Typography>
-                        </>
-                      )}
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Tech:</strong> {closeoutDetailsTrip.crew?.primaryTechName || "Unassigned"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>Helper:</strong> {closeoutDetailsTrip.crew?.helperName || "—"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>2nd Tech:</strong> {closeoutDetailsTrip.crew?.secondaryTechName || "—"}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        <strong>2nd Helper:</strong>{" "}
+                        {closeoutDetailsTrip.crew?.secondaryHelperName || "—"}
+                      </Typography>
                     </Stack>
                   </CloseoutDetailBlock>
 
@@ -6591,7 +6209,7 @@ if (nextStatus === "active_work") {
                   >
                     <Stack spacing={0.75}>
                       <Typography variant="body2" color="text.secondary">
-                        <strong>Trip hours:</strong>{" "}
+                        <strong>Total labor:</strong>{" "}
                         {getCloseoutHours(closeoutDetailsTrip) != null
                           ? `${getCloseoutHours(closeoutDetailsTrip)?.toFixed(2)}h`
                           : "—"}
@@ -7940,94 +7558,198 @@ if (nextStatus === "active_work") {
                       {purchaseOrders.map((po) => {
                         const attachment = getLatestPoAttachment(po);
                         const matched = safeTrim(po.status).toLowerCase() === "matched";
+                        const parsedLineItems = Array.isArray(po.parsedLineItems)
+                          ? po.parsedLineItems
+                          : [];
+                        const materialsExpanded = expandedPoCode === po.poCode;
+                        const createdByName = safeTrim(po.requestedByName) || "Unknown user";
+                        const vendorName = safeTrim(po.vendorName);
 
                         return (
                           <Paper
                             key={po.poCode}
                             variant="outlined"
                             sx={{
-                              p: 2,
+                              p: { xs: 2, sm: 2.25 },
                               borderRadius: 1,
                               bgcolor: matched
                                 ? alpha(theme.palette.success.main, 0.04)
                                 : "background.paper",
                             }}
                           >
-                            <Stack
-                              direction={{ xs: "column", md: "row" }}
-                              spacing={1.5}
-                              justifyContent="space-between"
-                              alignItems={{ xs: "stretch", md: "center" }}
-                            >
-                              <Stack spacing={0.75}>
-                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                  <Chip
-                                    icon={<ReceiptLongRoundedIcon />}
-                                    label={po.poCode}
-                                    color="primary"
-                                    variant="filled"
-                                    size="small"
-                                    sx={{ fontWeight: 900 }}
-                                  />
-                                  <Chip
-                                    label={formatPoStatus(po.status)}
-                                    color={poStatusColor(po.status)}
-                                    variant={matched ? "filled" : "outlined"}
-                                    size="small"
-                                  />
-                                  <Chip
-                                    label={formatPoTripContext(po)}
-                                    variant="outlined"
-                                    size="small"
-                                  />
+                            <Stack spacing={1.5}>
+                              <Stack
+                                direction={{ xs: "column", md: "row" }}
+                                spacing={1.5}
+                                justifyContent="space-between"
+                                alignItems={{ xs: "stretch", md: "flex-start" }}
+                              >
+                                <Stack spacing={0.75}>
+                                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                    <Chip
+                                      icon={<ReceiptLongRoundedIcon />}
+                                      label={po.poCode}
+                                      color="primary"
+                                      variant="filled"
+                                      size="small"
+                                      sx={{ fontWeight: 900 }}
+                                    />
+                                    <Chip
+                                      label={formatPoStatus(po.status)}
+                                      color={poStatusColor(po.status)}
+                                      variant={matched ? "filled" : "outlined"}
+                                      size="small"
+                                    />
+                                    <Chip
+                                      label={formatPoTripContext(po)}
+                                      variant="outlined"
+                                      size="small"
+                                    />
+                                  </Stack>
+
+                                  <Typography variant="body2" color="text.secondary">
+                                    Created by {createdByName} • {formatDateTime(po.createdAt)}
+                                  </Typography>
+
+                                  <Typography variant="caption" color="text.secondary">
+                                    Trip ID:{" "}
+                                    <Box component="span" sx={{ fontFamily: "monospace" }}>
+                                      {po.tripId}
+                                    </Box>
+                                  </Typography>
+
+                                  {matched && vendorName ? (
+                                    <Typography variant="body2" color="text.secondary">
+                                      Vendor: {vendorName}
+                                    </Typography>
+                                  ) : null}
+
+                                  {po.parsedInvoiceNumber ? (
+                                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                      Invoice #{po.parsedInvoiceNumber}
+                                      {typeof po.parsedInvoiceTotal === "number"
+                                        ? ` • Total ${formatCurrency(po.parsedInvoiceTotal)}`
+                                        : ""}
+                                    </Typography>
+                                  ) : null}
+
+                                  {typeof po.importedMaterialCount === "number" && po.importedMaterialCount > 0 ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      Imported materials: {po.importedMaterialCount}
+                                    </Typography>
+                                  ) : null}
                                 </Stack>
 
-                                <Typography variant="body2" color="text.secondary">
-                                  Trip ID:{" "}
-                                  <Box component="span" sx={{ fontFamily: "monospace" }}>
-                                    {po.tripId}
-                                  </Box>
-                                </Typography>
-
-                                {po.parsedInvoiceNumber ? (
-                                  <Typography variant="body2" color="text.secondary">
-                                    Invoice #{po.parsedInvoiceNumber}
-                                    {typeof po.parsedInvoiceTotal === "number"
-                                      ? ` • ${formatCurrency(po.parsedInvoiceTotal)}`
-                                      : ""}
-                                  </Typography>
-                                ) : null}
-
-                                {typeof po.importedMaterialCount === "number" && po.importedMaterialCount > 0 ? (
-                                  <Typography variant="caption" color="text.secondary">
-                                    Imported materials: {po.importedMaterialCount}
-                                  </Typography>
-                                ) : null}
-                              </Stack>
-
-                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                <Button
-                                  variant="outlined"
-                                  size="small"
-                                  startIcon={<ContentCopyRoundedIcon />}
-                                  onClick={() => copyPoCode(po.poCode)}
-                                  sx={{ borderRadius: 99 }}
-                                >
-                                  Copy PO
-                                </Button>
-
-                                {attachment ? (
+                                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                   <Button
                                     variant="outlined"
                                     size="small"
-                                    startIcon={<OpenInNewRoundedIcon />}
-                                    onClick={() => openProjectPoPdf(po)}
+                                    startIcon={<ContentCopyRoundedIcon />}
+                                    onClick={() => copyPoCode(po.poCode)}
                                     sx={{ borderRadius: 99 }}
                                   >
-                                    Open PDF
+                                    Copy PO
                                   </Button>
-                                ) : null}
+
+                                  {attachment ? (
+                                    <Button
+                                      variant="outlined"
+                                      size="small"
+                                      startIcon={<OpenInNewRoundedIcon />}
+                                      onClick={() => openProjectPoPdf(po)}
+                                      sx={{ borderRadius: 99 }}
+                                    >
+                                      Open PDF
+                                    </Button>
+                                  ) : null}
+
+                                  {parsedLineItems.length > 0 ? (
+                                    <Button
+                                      variant="text"
+                                      size="small"
+                                      onClick={() =>
+                                        setExpandedPoCode((current) =>
+                                          current === po.poCode ? null : po.poCode,
+                                        )
+                                      }
+                                      sx={{ borderRadius: 99 }}
+                                    >
+                                      {materialsExpanded ? "Hide Materials" : "View Materials"}
+                                    </Button>
+                                  ) : null}
+                                </Stack>
                               </Stack>
+
+                              {materialsExpanded && parsedLineItems.length > 0 ? (
+                                <Paper
+                                  variant="outlined"
+                                  sx={{
+                                    p: { xs: 1.5, sm: 2 },
+                                    borderRadius: 1,
+                                    bgcolor: alpha(theme.palette.primary.main, 0.025),
+                                  }}
+                                >
+                                  <Stack spacing={1.25}>
+                                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                      Materials on Invoice
+                                    </Typography>
+
+                                    {parsedLineItems.map((line: any, index: number) => {
+                                      const qty = Number(
+                                        line.shippedQty ?? line.orderedQty ?? line.units ?? 0,
+                                      );
+                                      const unit = safeTrim(line.unitOfMeasure);
+                                      const description = safeTrim(line.description) || "Material item";
+                                      const sku = safeTrim(line.sku);
+                                      const lineTotal =
+                                        typeof line.extension === "number"
+                                          ? formatCurrency(line.extension)
+                                          : "—";
+
+                                      return (
+                                        <Box key={`${po.poCode}_${sku || index}_${index}`}>
+                                          {index > 0 ? <Divider sx={{ mb: 1.25 }} /> : null}
+                                          <Stack
+                                            direction={{ xs: "column", sm: "row" }}
+                                            spacing={1}
+                                            justifyContent="space-between"
+                                            alignItems={{ xs: "flex-start", sm: "flex-start" }}
+                                          >
+                                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                                {qty > 0 ? `${qty}${unit ? ` ${unit}` : ""} • ` : ""}
+                                                {description}
+                                              </Typography>
+                                              {sku ? (
+                                                <Typography variant="caption" color="text.secondary">
+                                                  SKU {sku}
+                                                </Typography>
+                                              ) : null}
+                                            </Box>
+                                            <Typography variant="body2" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                                              {lineTotal}
+                                            </Typography>
+                                          </Stack>
+                                        </Box>
+                                      );
+                                    })}
+
+                                    {typeof po.parsedInvoiceTotal === "number" ? (
+                                      <>
+                                        <Divider />
+                                        <Stack direction="row" justifyContent="space-between" spacing={1}>
+                                          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                            Invoice Total
+                                          </Typography>
+                                          <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                                            {formatCurrency(po.parsedInvoiceTotal)}
+                                          </Typography>
+                                        </Stack>
+                                      </>
+                                    ) : null}
+                                  </Stack>
+                                </Paper>
+                              ) : null}
                             </Stack>
                           </Paper>
                         );
