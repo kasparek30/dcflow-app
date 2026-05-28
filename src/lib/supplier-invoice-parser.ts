@@ -31,8 +31,10 @@ export type ParsedSupplierInvoice = {
 
 function toNumber(value: string | null | undefined) {
   if (!value) return null;
+
   const cleaned = value.replace(/[^0-9.-]/g, "");
   const n = Number(cleaned);
+
   return Number.isFinite(n) ? n : null;
 }
 
@@ -40,36 +42,61 @@ function clean(value: string | null | undefined) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
-function upper(value: string | null | undefined) {
-  return clean(value).toUpperCase();
-}
-
 function extractDcflowPoCode(text: string) {
-  return String(text || "").match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/i)?.[0]?.toUpperCase() || null;
+  return (
+    String(text || "")
+      .match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/i)?.[0]
+      ?.toUpperCase() || null
+  );
 }
 
-function overlapsAnySpan(index: number, length: number, spans: Array<{ start: number; end: number }>) {
+function overlapsAnySpan(
+  index: number,
+  length: number,
+  spans: Array<{ start: number; end: number }>,
+) {
   const start = index;
   const end = index + length;
 
   return spans.some((span) => start < span.end && end > span.start);
 }
 
+function sortLineItems(items: ParsedSupplierInvoiceLineItem[]) {
+  return [...items].sort((a, b) => {
+    const lineA =
+      typeof a.lineNumber === "number" ? a.lineNumber : Number.MAX_SAFE_INTEGER;
+    const lineB =
+      typeof b.lineNumber === "number" ? b.lineNumber : Number.MAX_SAFE_INTEGER;
+
+    return lineA - lineB;
+  });
+}
+
 function parseFarmersLineItems(flat: string) {
   const items: ParsedSupplierInvoiceLineItem[] = [];
 
   const lineSection =
-    flat.split("LINE SHIPPED ORDERED UM SKU DESCRIPTION SUGG UNITS PRICE/ PER EXTENSION")[1] ||
-    "";
+    flat.split(
+      "LINE SHIPPED ORDERED UM SKU DESCRIPTION SUGG UNITS PRICE/ PER EXTENSION",
+    )[1] || "";
 
   if (!lineSection) return items;
 
-  const stopSection = lineSection.split("I understand that")[0] || lineSection;
+  const stopSection =
+    lineSection.split("I understand that")[0] || lineSection;
 
   const occupiedSpans: Array<{ start: number; end: number }> = [];
 
+  /*
+   * Farmers full row format with a populated SUGG column:
+   *
+   * 1 2 2 EA 2408YP 2x4x8 #2&BTR YELLOW PINE 4.19 2 3.771 /EA 7.54CN
+   *
+   * line / shipped / ordered / unit / sku / description /
+   * suggested price / units / unit price / price per / extension
+   */
   const fullPattern =
-    /(\d+)\s+(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
+    /(\d+)\s+(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+(?:\.\d+)?)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
 
   for (const match of stopSection.matchAll(fullPattern)) {
     const index = match.index ?? -1;
@@ -98,14 +125,81 @@ function parseFarmersLineItems(flat: string) {
     });
   }
 
+  /*
+   * Farmers full row format where the SUGG column is blank:
+   *
+   * 2 1 1 BG 7193378 J-HOOK POLY ALLOY BLACK 1/2IN 1 3.99 /BG 3.99N
+   * 3 1 1 BG 7193386 J-HOOK POLY ALLOY BLACK 3/4IN 1 4.79 /BG 4.79N
+   *
+   * line / shipped / ordered / unit / sku / description /
+   * units / unit price / price per / extension
+   *
+   * This pattern is evaluated after the populated-SUGG pattern.
+   * Any overlapping match is ignored so populated-SUGG rows are not duplicated.
+   */
+  const fullWithoutSuggestedPricePattern =
+    /(\d+)\s+(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+(\d+(?:\.\d+)?)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
+
+  for (const match of stopSection.matchAll(fullWithoutSuggestedPricePattern)) {
+    const index = match.index ?? -1;
+
+    if (
+      index >= 0 &&
+      overlapsAnySpan(index, match[0].length, occupiedSpans)
+    ) {
+      continue;
+    }
+
+    if (index >= 0) {
+      occupiedSpans.push({
+        start: index,
+        end: index + match[0].length,
+      });
+    }
+
+    items.push({
+      lineNumber: toNumber(match[1]),
+      shippedQty: toNumber(match[2]),
+      orderedQty: toNumber(match[3]),
+      unitOfMeasure: match[4] || null,
+      sku: match[5] || null,
+      description: clean(match[6]),
+      suggestedPrice: null,
+      units: toNumber(match[7]),
+      unitPrice: toNumber(match[8]),
+      pricePer: match[9] || null,
+      extension: toNumber(match[10]),
+      rawLine: clean(match[0]),
+    });
+  }
+
+  /*
+   * Older/alternate Farmers row format where shipped and ordered are not
+   * separately represented in the extracted row:
+   *
+   * 1 5 EA 8111486 1/2 CPVC CAP .69 5 0.621 /EA 3.11
+   *
+   * This can accidentally match inside one of the full-format rows,
+   * so all already occupied spans are skipped.
+   */
   const shortPattern =
-    /(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
+    /(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z0-9.-]+)\s+(.+?)\s+([0-9]*\.[0-9]{2})\s+(\d+(?:\.\d+)?)\s+([0-9]+\.[0-9]+)\s*\/([A-Z]+)\s+([0-9]+\.[0-9]{2})[A-Z]*/gi;
 
   for (const match of stopSection.matchAll(shortPattern)) {
     const index = match.index ?? -1;
 
-    if (index >= 0 && overlapsAnySpan(index, match[0].length, occupiedSpans)) {
+    if (
+      index >= 0 &&
+      overlapsAnySpan(index, match[0].length, occupiedSpans)
+    ) {
       continue;
+    }
+
+    if (index >= 0) {
+      occupiedSpans.push({
+        start: index,
+        end: index + match[0].length,
+      });
     }
 
     items.push({
@@ -124,12 +218,14 @@ function parseFarmersLineItems(flat: string) {
     });
   }
 
-  return items;
+  return sortLineItems(items);
 }
 
 function parseMooreInvoiceNumber(flat: string) {
   return (
-    flat.match(/\bINVOICE\s*(?:NUMBER|NO\.?|#)?\s*:?\s*([A-Z0-9.-]{5,})\b/i)?.[1] ||
+    flat.match(
+      /\bINVOICE\s*(?:NUMBER|NO\.?|#)?\s*:?\s*([A-Z0-9.-]{5,})\b/i,
+    )?.[1] ||
     flat.match(/\bINVOICE\s+([A-Z][0-9][A-Z0-9.-]{5,})\b/i)?.[1] ||
     flat.match(/\b([A-Z][0-9]{5,}[A-Z0-9.-]*)\b/)?.[1] ||
     null
@@ -137,213 +233,234 @@ function parseMooreInvoiceNumber(flat: string) {
 }
 
 function parseMooreTotal(flat: string) {
-  // Moore invoices list NET AMOUNT once per line item. AMOUNT DUE and SUBTOTAL
-  // represent the full page/invoice and must be preferred for multi-item invoices.
   const patterns = [
-    /\bAMOUNT\s+DUE\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
-    /\bSUBTOTAL\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
-    /\bINVOICE\s+TOTAL\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
     /\bNET\s+AMOUNT\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
+    /\bAMOUNT\s+DUE\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
+    /\bINVOICE\s+TOTAL\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
     /\bTOTAL\s*:?\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
   ];
 
   for (const pattern of patterns) {
     const match = flat.match(pattern);
-    if (match?.[1]) return toNumber(match[1]);
+
+    if (match?.[1]) {
+      return toNumber(match[1]);
+    }
   }
 
   return null;
 }
 
-function parseMooreOrderedBy(source: string) {
+function parseMooreLineItems(source: string) {
+  const items: ParsedSupplierInvoiceLineItem[] = [];
+
   const lines = String(source || "")
     .split(/\r?\n/g)
     .map((line) => clean(line))
     .filter(Boolean);
 
-  const index = lines.findIndex((line) => upper(line) === "ORDERED BY");
-  return index >= 0 ? clean(lines[index + 1]) || null : null;
-}
+  /*
+   * Moore invoices normally extract vertically rather than as horizontal
+   * material rows. This recognizes the real Moore layout already validated
+   * from the production T001B invoice.
+   */
+  const flat = clean(source);
 
-function findLineSequence(lines: string[], labels: string[], startAt = 0) {
-  const expected = labels.map((label) => upper(label));
+  const itemNumber =
+    flat.match(/\bITEM\s+NUMBER\s+([A-Z0-9./-]+)\b/i)?.[1] || null;
 
-  for (let index = Math.max(0, startAt); index <= lines.length - expected.length; index += 1) {
-    const matches = expected.every((label, offset) => upper(lines[index + offset]) === label);
-    if (matches) return index;
+  const descriptionMatch = flat.match(
+    /\bPRODUCT\s+DESCRIPTION\s+(.+?)\s+QTY\s+ORDERED\b/i,
+  );
+
+  const description = descriptionMatch ? clean(descriptionMatch[1]) : "";
+
+  const orderedMatch = flat.match(
+    /\bQTY\s+ORDERED\s+([0-9]+(?:\.[0-9]+)?)\s*([A-Z]+)\b/i,
+  );
+
+  const shippedMatch = flat.match(
+    /\bQTY\s+SHIPPED\s+([0-9]+(?:\.[0-9]+)?)\s*([A-Z]+)\b/i,
+  );
+
+  const unitPriceMatch = flat.match(
+    /\bUNIT\s+PRICE\s+([0-9,]+\.[0-9]+)\b/i,
+  );
+
+  const netAmountMatch = flat.match(
+    /\bNET\s+AMOUNT\s+([0-9,]+\.[0-9]{2})\b/i,
+  );
+
+  if (
+    itemNumber &&
+    description &&
+    netAmountMatch?.[1]
+  ) {
+    const unitOfMeasure =
+      shippedMatch?.[2]?.toUpperCase() ||
+      orderedMatch?.[2]?.toUpperCase() ||
+      null;
+
+    items.push({
+      lineNumber: 1,
+      shippedQty: toNumber(shippedMatch?.[1]),
+      orderedQty: toNumber(orderedMatch?.[1]),
+      unitOfMeasure,
+      sku: itemNumber,
+      description,
+      suggestedPrice: null,
+      units: toNumber(shippedMatch?.[1] || orderedMatch?.[1]),
+      unitPrice: toNumber(unitPriceMatch?.[1]),
+      pricePer: unitOfMeasure,
+      extension: toNumber(netAmountMatch[1]),
+      rawLine: clean(
+        [
+          itemNumber,
+          description,
+          shippedMatch?.[1] || orderedMatch?.[1] || "",
+          unitOfMeasure || "",
+          unitPriceMatch?.[1] || "",
+          netAmountMatch[1],
+        ]
+          .filter(Boolean)
+          .join(" "),
+      ),
+    });
+
+    return items;
   }
 
-  return -1;
-}
+  /*
+   * Fallback for any Moore PDF that extracts as horizontal row text rather
+   * than the currently validated vertical format.
+   */
+  const rejectLine =
+    /\b(INVOICE|CUSTOMER|ACCOUNT|SHIP\s+TO|SOLD\s+TO|TOTAL|SUBTOTAL|TAX|TERMS|PAGE|REMIT|MOORE\s+SUPPLY|BRANCH|ORDER\s+DATE|INVOICE\s+DATE|CUSTOMER\s+P\.?O\.?)\b/i;
 
-function findSectionEnd(lines: string[], labels: string[], startAt = 0) {
-  const expected = labels.map((label) => upper(label));
+  for (const line of lines) {
+    if (rejectLine.test(line)) continue;
 
-  for (let index = Math.max(0, startAt); index <= lines.length - expected.length; index += 1) {
-    const matches = expected.every((label, offset) => {
-      const value = upper(lines[index + offset]);
+    const amountMatches = Array.from(
+      line.matchAll(/-?\$?\d[\d,]*\.\d{2}/g),
+    );
+
+    if (amountMatches.length === 0) continue;
+
+    const extensionMatch = amountMatches[amountMatches.length - 1];
+    const extension = toNumber(extensionMatch[0]);
+
+    if (extension == null) continue;
+
+    const unitPriceMatchFromLine =
+      amountMatches.length >= 2
+        ? amountMatches[amountMatches.length - 2]
+        : null;
+
+    const unitPrice = unitPriceMatchFromLine
+      ? toNumber(unitPriceMatchFromLine[0])
+      : null;
+
+    const priceTailStart =
+      unitPriceMatchFromLine?.index ??
+      extensionMatch.index ??
+      Math.max(0, line.length - extensionMatch[0].length);
+
+    const beforePrices = clean(line.slice(0, priceTailStart));
+    const tokens = beforePrices.split(/\s+/g).filter(Boolean);
+
+    if (tokens.length < 3) continue;
+
+    let lineNumber: number | null = null;
+    let qty: number | null = null;
+    let unitOfMeasure: string | null = null;
+    let sku: string | null = null;
+    let fallbackDescription = "";
+
+    let cursor = 0;
+
+    if (/^\d+$/.test(tokens[0]) && tokens.length >= 5) {
+      lineNumber = toNumber(tokens[0]);
+      cursor = 1;
+    }
+
+    const qtyIndex = tokens.findIndex((token, index) => {
+      if (index < cursor) return false;
+      return /^\d+(?:\.\d+)?$/.test(token);
+    });
+
+    if (qtyIndex >= 0) {
+      qty = toNumber(tokens[qtyIndex]);
+      cursor = qtyIndex + 1;
+    }
+
+    if (tokens[cursor] && /^[A-Z]{1,5}$/i.test(tokens[cursor])) {
+      unitOfMeasure = tokens[cursor].toUpperCase();
+      cursor += 1;
+    }
+
+    const skuIndex = tokens.findIndex((token, index) => {
+      if (index < cursor) return false;
+
       return (
-        value === label ||
-        value.startsWith(`${label} `) ||
-        value.startsWith(`${label}:`)
+        /[0-9]/.test(token) &&
+        /^[A-Z0-9./-]+$/i.test(token)
       );
     });
 
-    if (matches) return index;
-  }
-
-  return -1;
-}
-
-function sectionBetween(
-  lines: string[],
-  startLabels: string[],
-  endLabels: string[],
-) {
-  const startIndex = findLineSequence(lines, startLabels);
-  if (startIndex < 0) return [] as string[];
-
-  const contentStart = startIndex + startLabels.length;
-  const endIndex = findSectionEnd(lines, endLabels, contentStart);
-
-  if (endIndex < 0) return lines.slice(contentStart);
-  return lines.slice(contentStart, endIndex);
-}
-
-function parseMooreQtyUnit(value?: string | null) {
-  const match = clean(value).match(/^(-?\d+(?:\.\d+)?)\s*([A-Z]+)?$/i);
-
-  return {
-    qty: match?.[1] ? toNumber(match[1]) : null,
-    unit: match?.[2] ? match[2].toUpperCase() : null,
-  };
-}
-
-function groupMooreDescriptions(descriptionLines: string[], itemCount: number) {
-  if (itemCount <= 1) {
-    return descriptionLines.length ? [clean(descriptionLines.join(" "))] : [];
-  }
-
-  const groups: string[][] = [];
-  let current: string[] = [];
-
-  for (let index = 0; index < descriptionLines.length; index += 1) {
-    const line = descriptionLines[index];
-    current.push(line);
-
-    if (/^YOUR\s*#/i.test(line)) {
-      if (index + 1 < descriptionLines.length) {
-        current.push(descriptionLines[index + 1]);
-        index += 1;
-      }
-
-      groups.push(current);
-      current = [];
+    if (skuIndex >= 0) {
+      sku = tokens[skuIndex];
+      fallbackDescription = clean(tokens.slice(skuIndex + 1).join(" "));
+    } else {
+      fallbackDescription = clean(tokens.slice(cursor).join(" "));
     }
-  }
 
-  if (current.length > 0) {
-    if (groups.length < itemCount) {
-      groups.push(current);
-    } else if (groups.length > 0) {
-      groups[groups.length - 1].push(...current);
-    }
-  }
-
-  const descriptions = groups.map((group) => clean(group.join(" "))).filter(Boolean);
-
-  if (descriptions.length === itemCount) return descriptions;
-
-  // The real Moore PDFs include a "Your #" marker per row. If a future PDF
-  // does not, avoid guessing which description belongs to which material row.
-  if (itemCount > 1) return [];
-
-  return descriptions;
-}
-
-function parseMooreLineItems(source: string) {
-  const lines = String(source || "")
-    .split(/\r?\n/g)
-    .map((line) => clean(line))
-    .filter(Boolean);
-
-  const itemNumbers = sectionBetween(lines, ["ITEM", "NUMBER"], ["PRODUCT DESCRIPTION"])
-    .map((line) => clean(line))
-    .filter((line) => /^[A-Z0-9./-]*\d[A-Z0-9./-]*$/i.test(line));
-
-  const descriptionLines = sectionBetween(lines, ["PRODUCT DESCRIPTION"], ["QTY", "ORDERED"]);
-  const orderedLines = sectionBetween(lines, ["QTY", "ORDERED"], ["QTY", "SHIPPED"]);
-  const shippedLines = sectionBetween(lines, ["QTY", "SHIPPED"], ["UNIT PRICE"]);
-  const unitPriceLines = sectionBetween(lines, ["UNIT PRICE"], ["UNIT"]);
-  const unitLines = sectionBetween(lines, ["UNIT"], ["NET AMOUNT"]);
-  const netAmountLines = sectionBetween(lines, ["NET AMOUNT"], ["INVOICE TERMS"]);
-
-  const itemCount = Math.max(
-    itemNumbers.length,
-    orderedLines.length,
-    shippedLines.length,
-    unitPriceLines.length,
-    unitLines.length,
-    netAmountLines.length,
-  );
-
-  if (itemCount === 0) return [] as ParsedSupplierInvoiceLineItem[];
-
-  const descriptions = groupMooreDescriptions(descriptionLines, itemCount);
-  if (descriptions.length !== itemCount) return [] as ParsedSupplierInvoiceLineItem[];
-
-  const items: ParsedSupplierInvoiceLineItem[] = [];
-
-  for (let index = 0; index < itemCount; index += 1) {
-    const description = clean(descriptions[index]);
-    const ordered = parseMooreQtyUnit(orderedLines[index]);
-    const shipped = parseMooreQtyUnit(shippedLines[index]);
-    const unitOfMeasure = upper(unitLines[index]) || shipped.unit || ordered.unit || null;
-    const sku = clean(itemNumbers[index]) || null;
-    const extension = toNumber(netAmountLines[index]);
-    const unitPrice = toNumber(unitPriceLines[index]);
-
-    if (!description || extension == null) continue;
+    if (!fallbackDescription || fallbackDescription.length < 3) continue;
 
     items.push({
-      lineNumber: index + 1,
-      shippedQty: shipped.qty,
-      orderedQty: ordered.qty,
+      lineNumber,
+      shippedQty: qty,
+      orderedQty: qty,
       unitOfMeasure,
       sku,
-      description,
+      description: fallbackDescription,
       suggestedPrice: null,
-      units: shipped.qty ?? ordered.qty,
+      units: qty,
       unitPrice,
       pricePer: unitOfMeasure,
       extension,
-      rawLine: clean(
-        [
-          sku,
-          description,
-          shippedLines[index],
-          unitPriceLines[index],
-          unitOfMeasure,
-          netAmountLines[index],
-        ]
-          .filter(Boolean)
-          .join(" | "),
-      ),
+      rawLine: line,
     });
   }
 
   return items;
 }
 
-export function parseSupplierInvoiceText(text: string): ParsedSupplierInvoice {
+export function parseSupplierInvoiceText(
+  text: string,
+): ParsedSupplierInvoice {
   const source = String(text || "");
   const flat = clean(source);
-  const normalized = upper(flat);
+  const upper = flat.toUpperCase();
 
-  const isFarmers = normalized.includes("FARMERS LUMBER COMPANY");
-  const isMoore = normalized.includes("MOORE SUPPLY");
+  const isFarmers = upper.includes("FARMERS LUMBER COMPANY");
+  const isMoore = upper.includes("MOORE SUPPLY");
 
-  const poCode = extractDcflowPoCode(flat);
+  const genericPoCode = extractDcflowPoCode(flat);
+
+  const customerPoValue =
+    flat.match(
+      /\bCUSTOMER\s+P\.?\s*O\.?\s*(?:NUMBER|NO\.?|#|:)?\s*([A-Z0-9.-]+)/i,
+    )?.[1] ||
+    flat.match(
+      /\bCUSTOMER\s+PO\s*(?:NUMBER|NO\.?|#|:)?\s*([A-Z0-9.-]+)/i,
+    )?.[1] ||
+    null;
+
+  const customerPoCode = customerPoValue
+    ? extractDcflowPoCode(customerPoValue)
+    : null;
+
+  const poCode = customerPoCode || genericPoCode;
 
   const farmersInvoiceNumber =
     flat.match(/INVOICE:\s*([0-9]+)/i)?.[1] ||
@@ -362,15 +479,16 @@ export function parseSupplierInvoiceText(text: string): ParsedSupplierInvoice {
       ? "MOORE SUPPLY"
       : null;
 
-  const customerName = normalized.includes("DANIEL CERNOCH PLUMBING")
-    ? "DANIEL CERNOCH PLUMBING"
-    : normalized.includes("DANIEL CERNOCH PLBG")
-      ? "DANIEL CERNOCH PLBG 715"
+  const customerName =
+    flat.includes("DANIEL CERNOCH PLUMBING") ||
+    flat.includes("DANIEL CERNOCH PLBG")
+      ? "DANIEL CERNOCH PLUMBING"
       : null;
 
-  const purchasedBy = isMoore
-    ? parseMooreOrderedBy(source)
-    : flat.match(/\(([A-Z0-9 .'-]+)\)\s+[0-9]+\.[0-9]{2}/i)?.[1] || null;
+  const purchasedBy =
+    flat.match(/\(([A-Z0-9 .'-]+)\)\s+[0-9]+\.[0-9]{2}/i)?.[1] ||
+    flat.match(/\bORDERED\s+BY\s+([A-Z0-9 .'-]+?)\s+(?:SHIPPED|SALESPERSON|ORDER\s+WRITER)\b/i)?.[1] ||
+    null;
 
   const dueDate =
     flat.match(/\bDUE DATE:\s*([0-9/.-]+)\b/i)?.[1] ||
@@ -378,11 +496,17 @@ export function parseSupplierInvoiceText(text: string): ParsedSupplierInvoice {
     null;
 
   const farmersAmountCharged =
-    flat.match(/\*\*\s*AMOUNT CHARGED TO STORE ACCOUNT\s*\*\*\s*([0-9]+\.[0-9]{2})/i)?.[1] ||
-    null;
+    flat.match(
+      /\*\*\s*AMOUNT CHARGED TO STORE ACCOUNT\s*\*\*\s*([0-9]+\.[0-9]{2})/i,
+    )?.[1] || null;
 
-  const total = isMoore ? parseMooreTotal(flat) : toNumber(farmersAmountCharged);
-  const lineItems = isMoore ? parseMooreLineItems(source) : parseFarmersLineItems(flat);
+  const total = isMoore
+    ? parseMooreTotal(flat)
+    : toNumber(farmersAmountCharged);
+
+  const lineItems = isMoore
+    ? parseMooreLineItems(source)
+    : parseFarmersLineItems(flat);
 
   return {
     vendorName,
