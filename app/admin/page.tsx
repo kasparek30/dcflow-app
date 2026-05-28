@@ -88,7 +88,7 @@ function AdminToolCard({
       elevation={0}
       sx={{
         height: "100%",
-        borderRadius: 3,
+        borderRadius: 1,
         border: `1px solid ${
           featured
             ? alpha(theme.palette.primary.main, 0.22)

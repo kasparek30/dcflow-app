@@ -1,3 +1,4 @@
+// src/lib/project-trip-time-entries.ts
 import { doc, getDoc, writeBatch, type WriteBatch } from "firebase/firestore";
 import { db } from "./firebase";
 

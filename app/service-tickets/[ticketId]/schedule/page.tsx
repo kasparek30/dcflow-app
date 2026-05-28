@@ -864,6 +864,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
   const [selectedEndTime, setSelectedEndTime] = useState("12:00");
   const [selectedPrimaryUid, setSelectedPrimaryUid] = useState("");
   const [selectedSecondaryUid, setSelectedSecondaryUid] = useState("");
+  const [showAdditionalTechnician, setShowAdditionalTechnician] = useState(false);
   const [useDefaultHelper, setUseDefaultHelper] = useState(true);
   const [selectedHelperUid, setSelectedHelperUid] = useState("");
   const [selectedSecondaryHelperUid, setSelectedSecondaryHelperUid] = useState("");
@@ -928,22 +929,46 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           .filter((user) => user.active && user.role === "technician")
           .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-        const nextHelpers = profilesSnap.docs
+        // Regular DCFlow crew pairing is now managed from Admin > Users using
+        // users.preferredTechnicianId. Employee Profile pairing remains a
+        // backward-compatible fallback for users not yet reviewed there.
+        const legacyPairingByUserUid = new Map(
+          profilesSnap.docs
+            .map((ds) => {
+              const profile = ds.data() as any;
+              return [
+                String(profile.userUid || "").trim(),
+                String(profile.defaultPairedTechUid || "").trim() || null,
+              ] as const;
+            })
+            .filter(([uid]) => Boolean(uid))
+        );
+
+        const nextHelpers = usersSnap.docs
           .map((ds) => {
-            const profile = ds.data() as any;
-            const laborRole = String(profile.laborRole || "").trim().toLowerCase();
+            const user = ds.data() as any;
+            const uid = String(user.uid ?? ds.id).trim();
+            const role = String(user.role || "").trim().toLowerCase();
+            const preferredTechnicianId =
+              String(user.preferredTechnicianId || "").trim() ||
+              legacyPairingByUserUid.get(uid) ||
+              null;
+
             return {
-              uid: String(profile.userUid || "").trim(),
-              name: String(profile.displayName || "Unnamed"),
-              laborRole,
-              defaultPairedTechUid: profile.defaultPairedTechUid ?? null,
-            } satisfies HelperOption;
+              uid,
+              name: String(user.displayName || "Unnamed"),
+              laborRole: role,
+              defaultPairedTechUid: preferredTechnicianId,
+              active: Boolean(user.active ?? false),
+            };
           })
           .filter(
             (helper) =>
+              helper.active &&
               helper.uid &&
               (helper.laborRole === "helper" || helper.laborRole === "apprentice")
           )
+          .map(({ active: _active, ...helper }) => helper satisfies HelperOption)
           .sort((a, b) => a.name.localeCompare(b.name));
 
         const rawTicketTrips = tripsSnap.docs.map((ds) => mapTripDocLite(ds.id, ds.data()));
@@ -1008,24 +1033,37 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     return getNextBusinessDays(initialBusinessDate, visibleBusinessDayCount);
   }, [initialBusinessDate, visibleBusinessDayCount]);
 
-  const defaultHelperForPrimary = useMemo(() => {
-    if (!selectedPrimaryUid) return "";
-    return (
-      helpers.find(
+  const defaultHelpersForPrimary = useMemo(() => {
+    if (!selectedPrimaryUid) return [] as HelperOption[];
+
+    return helpers
+      .filter(
         (helper) =>
           String(helper.defaultPairedTechUid || "").trim() === selectedPrimaryUid
-      )?.uid || ""
-    );
+      )
+      .slice(0, 2);
   }, [helpers, selectedPrimaryUid]);
+
+  const primaryTechnicianName = useMemo(
+    () =>
+      technicians.find((tech) => tech.uid === selectedPrimaryUid)?.displayName ||
+      "Selected technician",
+    [technicians, selectedPrimaryUid]
+  );
 
   useEffect(() => {
     if (!useDefaultHelper) return;
     if (!selectedPrimaryUid) {
       setSelectedHelperUid("");
+      setSelectedSecondaryHelperUid("");
+      setSelectedSecondaryUid("");
+      setShowAdditionalTechnician(false);
       return;
     }
-    setSelectedHelperUid(defaultHelperForPrimary);
-  }, [useDefaultHelper, selectedPrimaryUid, defaultHelperForPrimary]);
+
+    setSelectedHelperUid(defaultHelpersForPrimary[0]?.uid || "");
+    setSelectedSecondaryHelperUid(defaultHelpersForPrimary[1]?.uid || "");
+  }, [useDefaultHelper, selectedPrimaryUid, defaultHelpersForPrimary]);
 
   useEffect(() => {
     setHolidayOverrideEnabled(false);
@@ -1483,8 +1521,12 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
 
       await addDoc(collection(db, "trips"), payload as any);
 
-      const helperIds = helperUid ? [helperUid] : [];
-      const helperNames = helperName ? [helperName] : [];
+      const helperIds = Array.from(
+        new Set([helperUid, secondaryHelperUid].filter(Boolean))
+      );
+      const helperNames = helperIds
+        .map((uid) => findHelperName(uid) || "Unnamed Helper")
+        .filter(Boolean);
 
       const assignedTechnicianIds = [selectedPrimaryUid];
       if (secondaryTechUid && !assignedTechnicianIds.includes(secondaryTechUid)) {
@@ -1871,80 +1913,170 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       </Box>
                     ) : null}
 
-                    <Box
-                      sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                      }}
-                    >
-                      <TextField
-                        select
-                        label="Secondary Technician (optional)"
-                        value={selectedSecondaryUid}
-                        onChange={(e) => setSelectedSecondaryUid(e.target.value)}
-                      >
-                        <MenuItem value="">— None —</MenuItem>
-                        {technicians
-                          .filter((tech) => tech.uid !== selectedPrimaryUid)
-                          .map((tech) => (
-                            <MenuItem key={tech.uid} value={tech.uid}>
-                              {tech.displayName}
-                            </MenuItem>
-                          ))}
-                      </TextField>
+                    {selectedPrimaryUid ? (
+                      <Stack spacing={2}>
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: 2,
+                            borderRadius: 3,
+                            borderColor: alpha(theme.palette.primary.main, 0.18),
+                            backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                          }}
+                        >
+                          <Stack spacing={1.25}>
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={1}
+                              alignItems={{ xs: "flex-start", sm: "center" }}
+                              justifyContent="space-between"
+                            >
+                              <Box>
+                                <Typography variant="subtitle2" fontWeight={800}>
+                                  Regular Support Crew
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  Load the usual helper / apprentice pairing for {primaryTechnicianName}.
+                                </Typography>
+                              </Box>
 
-                      <Box sx={{ display: "flex", alignItems: "center" }}>
-                        <FormControlLabel
-                          control={
-                            <Checkbox
-                              checked={useDefaultHelper}
-                              onChange={(e) => setUseDefaultHelper(e.target.checked)}
-                            />
-                          }
-                          label="Use default helper pairing"
-                        />
-                      </Box>
-                    </Box>
+                              <FormControlLabel
+                                control={
+                                  <Checkbox
+                                    checked={useDefaultHelper}
+                                    onChange={(e) => setUseDefaultHelper(e.target.checked)}
+                                  />
+                                }
+                                label="Use regular crew"
+                                sx={{ mr: 0 }}
+                              />
+                            </Stack>
 
-                    <Box
-                      sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                      }}
-                    >
-                      <TextField
-                        select
-                        label="Helper / Apprentice (optional)"
-                        value={selectedHelperUid}
-                        onChange={(e) => {
-                          setUseDefaultHelper(false);
-                          setSelectedHelperUid(e.target.value);
-                        }}
-                      >
-                        <MenuItem value="">— None —</MenuItem>
-                        {helpers.map((helper) => (
-                          <MenuItem key={helper.uid} value={helper.uid}>
-                            {helper.name} ({helper.laborRole})
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                            {useDefaultHelper ? (
+                              defaultHelpersForPrimary.length > 0 ? (
+                                <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
+                                  Regular crew loaded: {defaultHelpersForPrimary
+                                    .map((helper) => helper.name)
+                                    .join(" and ")}. Adjust below only if this trip uses a different crew.
+                                </Alert>
+                              ) : (
+                                <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
+                                  No regular helper / apprentice pairing is saved for {primaryTechnicianName}.
+                                </Alert>
+                              )
+                            ) : null}
+                          </Stack>
+                        </Paper>
 
-                      <TextField
-                        select
-                        label="Secondary Helper (optional)"
-                        value={selectedSecondaryHelperUid}
-                        onChange={(e) => setSelectedSecondaryHelperUid(e.target.value)}
-                      >
-                        <MenuItem value="">— None —</MenuItem>
-                        {helpers.map((helper) => (
-                          <MenuItem key={helper.uid} value={helper.uid}>
-                            {helper.name} ({helper.laborRole})
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </Box>
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gap: 2,
+                            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                          }}
+                        >
+                          <TextField
+                            select
+                            label="Helper / Apprentice (optional)"
+                            value={selectedHelperUid}
+                            onChange={(e) => {
+                              setUseDefaultHelper(false);
+                              setSelectedHelperUid(e.target.value);
+                            }}
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {helpers
+                              .filter((helper) => helper.uid !== selectedSecondaryHelperUid)
+                              .map((helper) => (
+                                <MenuItem key={helper.uid} value={helper.uid}>
+                                  {helper.name} ({helper.laborRole})
+                                </MenuItem>
+                              ))}
+                          </TextField>
+
+                          <TextField
+                            select
+                            label="Additional Helper / Apprentice (optional)"
+                            value={selectedSecondaryHelperUid}
+                            onChange={(e) => {
+                              setUseDefaultHelper(false);
+                              setSelectedSecondaryHelperUid(e.target.value);
+                            }}
+                          >
+                            <MenuItem value="">— None —</MenuItem>
+                            {helpers
+                              .filter((helper) => helper.uid !== selectedHelperUid)
+                              .map((helper) => (
+                                <MenuItem key={helper.uid} value={helper.uid}>
+                                  {helper.name} ({helper.laborRole})
+                                </MenuItem>
+                              ))}
+                          </TextField>
+                        </Box>
+
+                        {!showAdditionalTechnician && !selectedSecondaryUid ? (
+                          <Button
+                            type="button"
+                            variant="outlined"
+                            onClick={() => setShowAdditionalTechnician(true)}
+                            sx={{ alignSelf: "flex-start", borderRadius: 999 }}
+                          >
+                            Add Another Technician
+                          </Button>
+                        ) : (
+                          <Stack spacing={1}>
+                            <Box
+                              sx={{
+                                display: "grid",
+                                gap: 2,
+                                gridTemplateColumns: { xs: "1fr", md: "1fr auto" },
+                                alignItems: "center",
+                              }}
+                            >
+                              <TextField
+                                select
+                                label="Additional Technician (optional)"
+                                value={selectedSecondaryUid}
+                                onChange={(e) => setSelectedSecondaryUid(e.target.value)}
+                              >
+                                <MenuItem value="">— None —</MenuItem>
+                                {technicians
+                                  .filter((tech) => tech.uid !== selectedPrimaryUid)
+                                  .map((tech) => (
+                                    <MenuItem key={tech.uid} value={tech.uid}>
+                                      {tech.displayName}
+                                    </MenuItem>
+                                  ))}
+                              </TextField>
+
+                              <Button
+                                type="button"
+                                variant="text"
+                                onClick={() => {
+                                  setSelectedSecondaryUid("");
+                                  setShowAdditionalTechnician(false);
+                                }}
+                                sx={{ borderRadius: 999 }}
+                              >
+                                Remove
+                              </Button>
+                            </Box>
+
+                            {selectedSecondaryUid &&
+                            selectedHelperUid &&
+                            selectedSecondaryHelperUid ? (
+                              <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
+                                This trip now uses all four currently supported crew positions. A second technician can be assigned, but no additional helper slot is available on this trip.
+                              </Alert>
+                            ) : null}
+                          </Stack>
+                        )}
+                      </Stack>
+                    ) : (
+                      <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+                        Select the primary technician to load regular crew and additional assignment options.
+                      </Alert>
+                    )}
 
                     {selectedOverlapConflicts.length > 0 ? (
                       <Paper

@@ -1974,71 +1974,130 @@ export default function DashboardPage() {
     );
 
     const unsubActiveTrips = onSnapshot(
-      query(collection(db, "trips"), where("active", "==", true), limit(250)),
+      query(collection(db, "trips"), limit(2000)),
       async (snap) => {
         const visibleTrips = snap.docs
           .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
+          .filter((trip) => trip.active !== false)
           .filter((trip) => isFieldVisibleStatus(trip.status, trip.timerState));
 
         const items = await Promise.all(
           visibleTrips.map(async (trip) => {
-            const type = safeTrim(trip.type).toLowerCase() === "project" ? "project" : "service";
-            const crew = (trip.crew || {}) as TripCrew;
+            const type =
+              safeTrim(trip.type).toLowerCase() === "project"
+                ? "project"
+                : "service";
 
-            if (type === "service" && safeTrim(trip.link?.serviceTicketId)) {
+            const crew = ((trip.crewConfirmed || trip.crew) || {}) as TripCrew;
+
+            const serviceTicketId = safeTrim(
+              trip.link?.serviceTicketId || trip.serviceTicketId,
+            );
+
+            const projectId = safeTrim(
+              trip.link?.projectId || trip.projectId,
+            );
+
+            if (type === "service" && serviceTicketId) {
               try {
-                const serviceTicketSnap = await getDoc(doc(db, "serviceTickets", safeTrim(trip.link?.serviceTicketId)));
-                const data = serviceTicketSnap.exists() ? (serviceTicketSnap.data() as any) : {};
+                const serviceTicketSnap = await getDoc(
+                  doc(db, "serviceTickets", serviceTicketId),
+                );
+
+                const data = serviceTicketSnap.exists()
+                  ? (serviceTicketSnap.data() as any)
+                  : {};
 
                 return {
                   id: `service_${trip.id}`,
                   tripId: trip.id,
                   itemType: "service" as const,
-                  href: `/service-tickets/${safeTrim(trip.link?.serviceTicketId)}`,
-                  title: safeTrim(data.customerDisplayName) || "Service Ticket",
-                  subtitle: safeTrim(data.issueSummary) || "Service Work",
-                  addressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+                  href: `/service-tickets/${serviceTicketId}`,
+                  title:
+                    safeTrim(data.customerDisplayName) ||
+                    "Service Ticket",
+                  subtitle:
+                    safeTrim(data.issueSummary) ||
+                    "Service Work",
+                  addressLine1:
+                    safeTrim(data.serviceAddressLine1) || undefined,
                   city: safeTrim(data.serviceCity) || undefined,
                   state: safeTrim(data.serviceState) || undefined,
-                  updatedAt: safeTrim(trip.updatedAt || data.updatedAt) || undefined,
+                  updatedAt:
+                    safeTrim(
+                      trip.updatedAt ||
+                        trip.actualStartAt ||
+                        trip.startedAt ||
+                        data.updatedAt,
+                    ) || undefined,
                   status: safeTrim(trip.status) || undefined,
                   timerState: safeTrim(trip.timerState) || undefined,
                   assignedTechnicianName:
-                    safeTrim(crew.primaryTechName) || safeTrim(data.assignedTechnicianName) || undefined,
+                    safeTrim(crew.primaryTechName) ||
+                    safeTrim(data.assignedTechnicianName) ||
+                    undefined,
                   assignedHelperName:
-                    safeTrim(crew.helperName) || safeTrim(data.assignedHelperName) || undefined,
-                  secondaryTechnicianName: safeTrim(crew.secondaryTechName) || undefined,
-                  secondaryHelperName: safeTrim(crew.secondaryHelperName) || undefined,
+                    safeTrim(crew.helperName) ||
+                    safeTrim(data.assignedHelperName) ||
+                    undefined,
+                  secondaryTechnicianName:
+                    safeTrim(crew.secondaryTechName) || undefined,
+                  secondaryHelperName:
+                    safeTrim(crew.secondaryHelperName) || undefined,
                 } satisfies ActiveWorkItem;
               } catch {
                 return null;
               }
             }
 
-            if (type === "project" && safeTrim(trip.link?.projectId)) {
+            if (type === "project" && projectId) {
               try {
-                const projectSnap = await getDoc(doc(db, "projects", safeTrim(trip.link?.projectId)));
-                const data = projectSnap.exists() ? (projectSnap.data() as any) : {};
-                const projectName = safeTrim(data.projectName) || "Project Trip";
-                const customerDisplayName = safeTrim(data.customerDisplayName) || "Project";
+                const projectSnap = await getDoc(
+                  doc(db, "projects", projectId),
+                );
+
+                const data = projectSnap.exists()
+                  ? (projectSnap.data() as any)
+                  : {};
+
+                const projectName =
+                  safeTrim(data.projectName) || "Project Trip";
+
+                const customerDisplayName =
+                  safeTrim(data.customerDisplayName) || "Project";
 
                 return {
                   id: `project_${trip.id}`,
                   tripId: trip.id,
                   itemType: "project" as const,
-                  href: `/projects/${safeTrim(trip.link?.projectId)}`,
+                  href: `/projects/${projectId}`,
                   title: projectName,
-                  subtitle: `${customerDisplayName}${safeTrim(trip.link?.projectStageKey) ? ` • ${stageLabel(trip.link?.projectStageKey)}` : ""}`,
-                  addressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+                  subtitle: `${customerDisplayName}${
+                    safeTrim(trip.link?.projectStageKey)
+                      ? ` • ${stageLabel(trip.link?.projectStageKey)}`
+                      : ""
+                  }`,
+                  addressLine1:
+                    safeTrim(data.serviceAddressLine1) || undefined,
                   city: safeTrim(data.serviceCity) || undefined,
                   state: safeTrim(data.serviceState) || undefined,
-                  updatedAt: safeTrim(trip.updatedAt || data.updatedAt) || undefined,
+                  updatedAt:
+                    safeTrim(
+                      trip.updatedAt ||
+                        trip.actualStartAt ||
+                        trip.startedAt ||
+                        data.updatedAt,
+                    ) || undefined,
                   status: safeTrim(trip.status) || undefined,
                   timerState: safeTrim(trip.timerState) || undefined,
-                  assignedTechnicianName: safeTrim(crew.primaryTechName) || undefined,
-                  assignedHelperName: safeTrim(crew.helperName) || undefined,
-                  secondaryTechnicianName: safeTrim(crew.secondaryTechName) || undefined,
-                  secondaryHelperName: safeTrim(crew.secondaryHelperName) || undefined,
+                  assignedTechnicianName:
+                    safeTrim(crew.primaryTechName) || undefined,
+                  assignedHelperName:
+                    safeTrim(crew.helperName) || undefined,
+                  secondaryTechnicianName:
+                    safeTrim(crew.secondaryTechName) || undefined,
+                  secondaryHelperName:
+                    safeTrim(crew.secondaryHelperName) || undefined,
                 } satisfies ActiveWorkItem;
               } catch {
                 return null;
@@ -2049,7 +2108,9 @@ export default function DashboardPage() {
           }),
         );
 
-        setActiveItems((items.filter(Boolean) as ActiveWorkItem[]).sort(statusSort));
+        setActiveItems(
+          (items.filter(Boolean) as ActiveWorkItem[]).sort(statusSort),
+        );
       },
       () => setActiveItems([]),
     );
@@ -2296,18 +2357,20 @@ export default function DashboardPage() {
                   accent="neutral"
                 >
                   <Stack spacing={1.25}>
-                    <AreaSnapshotCard activeItems={activeItems} />
-
                     {activeItems.length === 0 ? (
                       <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
                         No active field work is showing right now.
                       </Alert>
                     ) : (
-                      <Stack spacing={1.25}>
-                        {activeItems.map((item) => (
-                          <ActiveWorkRow key={item.id} item={item} />
-                        ))}
-                      </Stack>
+                      <>
+                        <AreaSnapshotCard activeItems={activeItems} />
+
+                        <Stack spacing={1.25}>
+                          {activeItems.map((item) => (
+                            <ActiveWorkRow key={item.id} item={item} />
+                          ))}
+                        </Stack>
+                      </>
                     )}
                   </Stack>
                 </SectionCard>
