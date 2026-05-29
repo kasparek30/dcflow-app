@@ -105,6 +105,35 @@ type TripLink = {
   projectStageKey?: string | null;
 };
 
+type ProjectTripMaterial = {
+  id?: string;
+  name?: string | null;
+  qty?: number | null;
+  unit?: string | null;
+  notes?: string | null;
+  imported?: boolean;
+  source?: "manual" | "supplier_invoice" | string | null;
+  poCode?: string | null;
+  supplierName?: string | null;
+  supplierInvoiceNumber?: string | null;
+  supplierInvoiceId?: string | null;
+  supplierLineKey?: string | null;
+  supplierSku?: string | null;
+  unitCost?: number | null;
+  lineTotal?: number | null;
+  importedAt?: string | null;
+};
+
+type ProjectTripMaterialGroup = {
+  key: string;
+  poCode: string;
+  supplierName: string;
+  invoiceNumber: string;
+  items: ProjectTripMaterial[];
+  hasLineTotals: boolean;
+  total: number;
+};
+
 type TripDoc = {
   id: string;
   active?: boolean;
@@ -123,9 +152,14 @@ type TripDoc = {
   actualStartAt?: string | null;
   actualEndAt?: string | null;
   pauseBlocks?: PauseBlock[] | null;
+  materials?: ProjectTripMaterial[] | null;
+  materialsSummary?: string | null;
+  materialNotes?: string | null;
   updatedAt?: string | null;
   closeout?: {
     needsMoreWork?: string | boolean | null;
+    materialsUsedToday?: string | null;
+    materialNotes?: string | null;
   } | null;
   needsMoreTime?: boolean | null;
 };
@@ -235,6 +269,69 @@ function formatElapsedMinutes(totalMinutes: number) {
   if (hours > 0 && minutes > 0) return `${hours} hr ${minutes} min`;
   if (hours > 0) return `${hours} hr`;
   return `${minutes} min`;
+}
+
+function formatMaterialMoney(value?: number | null) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "";
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+function formatMaterialQuantity(material: ProjectTripMaterial) {
+  const quantity = Number(material.qty);
+  const quantityLabel = Number.isFinite(quantity)
+    ? Number.isInteger(quantity)
+      ? String(quantity)
+      : quantity.toFixed(2).replace(/\.00$/, "")
+    : "";
+  const unit = safeTrim(material.unit).toUpperCase();
+
+  return [quantityLabel, unit].filter(Boolean).join(" ");
+}
+
+function getPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) {
+  if (!Array.isArray(materials)) return [];
+
+  return materials.filter((material) => {
+    const source = safeTrim(material?.source).toLowerCase();
+    return source === "supplier_invoice" || material?.imported === true;
+  });
+}
+
+function groupPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) {
+  const groups = new Map<string, ProjectTripMaterialGroup>();
+
+  for (const material of getPurchasedProjectMaterials(materials)) {
+    const poCode = safeTrim(material.poCode).toUpperCase();
+    const supplierName = safeTrim(material.supplierName);
+    const invoiceNumber = safeTrim(material.supplierInvoiceNumber);
+    const key = [poCode || "no-po", supplierName || "supplier", invoiceNumber || "no-invoice"].join("__");
+    const existing = groups.get(key) || {
+      key,
+      poCode,
+      supplierName,
+      invoiceNumber,
+      items: [],
+      hasLineTotals: false,
+      total: 0,
+    };
+
+    const lineTotal = Number(material.lineTotal);
+    existing.items.push(material);
+    if (Number.isFinite(lineTotal)) {
+      existing.hasLineTotals = true;
+      existing.total += lineTotal;
+    }
+
+    groups.set(key, existing);
+  }
+
+  return Array.from(groups.values());
 }
 
 function formatClockTime(hhmm?: string | null) {
@@ -603,6 +700,10 @@ function useRealtimeActiveTrip(uid: string) {
         actualStartAt: d.actualStartAt ?? d.startedAt ?? null,
         actualEndAt: d.actualEndAt ?? d.completedAt ?? null,
         pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
+        materials: Array.isArray(d.materials) ? d.materials : null,
+        materialsSummary: d.materialsSummary ?? null,
+        materialNotes: d.materialNotes ?? d.closeout?.materialNotes ?? null,
+        closeout: d.closeout ?? null,
         updatedAt: d.updatedAt ?? null,
       });
     }
@@ -804,6 +905,112 @@ function NavList({
         );
       })}
     </List>
+  );
+}
+
+function PurchasedProjectMaterialsCard({
+  materials,
+}: {
+  materials?: ProjectTripMaterial[] | null;
+}) {
+  const groups = groupPurchasedProjectMaterials(materials);
+  const allItems = getPurchasedProjectMaterials(materials);
+  const hasLineTotals = allItems.some((material) =>
+    Number.isFinite(Number(material.lineTotal)),
+  );
+  const purchasedTotal = allItems.reduce((sum, material) => {
+    const amount = Number(material.lineTotal);
+    return Number.isFinite(amount) ? sum + amount : sum;
+  }, 0);
+
+  if (groups.length === 0) return null;
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 1.75,
+        borderRadius: 1,
+        bgcolor: (muiTheme) => alpha(muiTheme.palette.primary.main, 0.025),
+      }}
+    >
+      <Stack spacing={1.5}>
+        <Box>
+          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+            Materials Purchased for This Project Trip
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Supplier-imported purchases stay attached to this project trip.
+          </Typography>
+        </Box>
+
+        {groups.map((group) => (
+          <Box key={group.key}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", fontWeight: 700, mb: 0.6 }}
+            >
+              {[
+                group.poCode ? `PO ${group.poCode}` : "",
+                group.supplierName || "",
+                group.invoiceNumber ? `Invoice #${group.invoiceNumber}` : "",
+              ]
+                .filter(Boolean)
+                .join(" • ")}
+            </Typography>
+
+            <Stack spacing={0.65}>
+              {group.items.map((material, index) => {
+                const qty = formatMaterialQuantity(material);
+                const lineTotal = formatMaterialMoney(material.lineTotal);
+
+                return (
+                  <Stack
+                    key={material.id || material.supplierLineKey || `${group.key}_${index}`}
+                    direction="row"
+                    spacing={1}
+                    justifyContent="space-between"
+                    alignItems="flex-start"
+                  >
+                    <Typography variant="body2" sx={{ minWidth: 0 }}>
+                      {qty ? `${qty} • ` : ""}
+                      {safeTrim(material.name) || "Material"}
+                    </Typography>
+                    {lineTotal ? (
+                      <Typography
+                        variant="body2"
+                        sx={{ fontWeight: 700, whiteSpace: "nowrap" }}
+                      >
+                        {lineTotal}
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                );
+              })}
+            </Stack>
+          </Box>
+        ))}
+
+        {hasLineTotals ? (
+          <>
+            <Divider />
+            <Stack direction="row" justifyContent="space-between" spacing={1}>
+              <Typography variant="body2" color="text.secondary">
+                Materials Purchased Total
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                {formatMaterialMoney(purchasedTotal)}
+              </Typography>
+            </Stack>
+          </>
+        ) : null}
+
+        <Typography variant="caption" color="text.secondary">
+          Add a material note below when purchased items were left onsite, returned, or planned for a later visit.
+        </Typography>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -1375,6 +1582,12 @@ export default function AppShell({
 
     const suggestedHours = roundProjectTimerMinutesToHours(elapsedMinutes);
     const crew = activeTrip.crewConfirmed || activeTrip.crew || null;
+    const savedMaterialNote = safeTrim(
+      activeTrip.materialNotes ||
+        activeTrip.materialsSummary ||
+        activeTrip.closeout?.materialNotes ||
+        activeTrip.closeout?.materialsUsedToday
+    );
 
     setProjectCloseoutDecision("");
     setProjectTodayResult("done_today");
@@ -1385,9 +1598,9 @@ export default function AppShell({
     setProjectCorrectHoursOpen(false);
     setProjectCrewHours(buildProjectCloseoutCrewHours(crew, suggestedHours));
     setProjectOptionalNoteOpen(false);
-    setProjectMaterialsOpen(false);
+    setProjectMaterialsOpen(Boolean(savedMaterialNote));
     setProjectCloseoutNotes("");
-    setProjectMaterialsSummary("");
+    setProjectMaterialsSummary(savedMaterialNote);
     setProjectRequestedReturnDate("");
     setProjectCloseoutError("");
     setProjectDockNotice("");
@@ -1553,6 +1766,7 @@ export default function AppShell({
         timerElapsedMinutes: projectTimerMinutes,
         timerRoundedHours: hoursNumber,
         materialsSummary: materialsSummary || null,
+        materialNotes: materialsSummary || null,
         materialsLoggedAt: materialsSummary ? stamp : null,
         materialsLoggedByUid: materialsSummary ? myUid || null : null,
         needsMoreTime:
@@ -1721,6 +1935,7 @@ export default function AppShell({
         crewHoursAdjusted,
         workNotes: closeoutNotes || null,
         materialsUsedToday: materialsSummary || null,
+        materialNotes: materialsSummary || null,
         savedAt,
         savedByUid: myUid || null,
         savedByName: myDisplayName || null,
@@ -3560,6 +3775,8 @@ export default function AppShell({
               )}
             </Paper>
 
+            <PurchasedProjectMaterialsCard materials={activeTrip.materials} />
+
             <Button
               size="small"
               variant="outlined"
@@ -3579,17 +3796,18 @@ export default function AppShell({
                 },
               }}
             >
-              {projectMaterialsOpen ? "Remove Materials Note" : "Add Materials Note (optional)"}
+              {projectMaterialsOpen ? "Remove Material Note" : "Add Material Note (optional)"}
             </Button>
             {projectMaterialsOpen ? (
               <TextField
-                label="Materials Used Today (optional)"
+                label="Material Notes (optional)"
                 value={projectMaterialsSummary}
                 onChange={(e) => setProjectMaterialsSummary(e.target.value)}
                 multiline
                 minRows={2}
                 disabled={projectCloseoutSaving}
-                placeholder="Type or dictate materials used or anything billing should know..."
+                placeholder="Example: Not installed today — left onsite for next visit."
+                helperText="Supplier-imported materials stay attached to this project trip."
                 fullWidth
                 sx={{ mt: -1.25 }}
               />

@@ -222,6 +222,33 @@ type TripCrew = {
   secondaryHelperName?: string | null;
 };
 
+type ProjectTripMaterial = {
+  id?: string;
+  name?: string | null;
+  qty?: number | null;
+  unit?: string | null;
+  notes?: string | null;
+  imported?: boolean;
+  source?: "manual" | "supplier_invoice" | string | null;
+  poCode?: string | null;
+  supplierName?: string | null;
+  supplierInvoiceNumber?: string | null;
+  supplierInvoiceId?: string | null;
+  supplierLineKey?: string | null;
+  supplierSku?: string | null;
+  unitCost?: number | null;
+  lineTotal?: number | null;
+  importedAt?: string | null;
+};
+
+type ProjectTripMaterialGroup = {
+  key: string;
+  poCode: string;
+  supplierName: string;
+  invoiceNumber: string;
+  items: ProjectTripMaterial[];
+};
+
 type TripDoc = {
   id: string;
   active: boolean;
@@ -249,6 +276,9 @@ type TripDoc = {
   closeout?: any;
   closeoutHours?: number | null;
   materialsUsedToday?: string | null;
+  materialNotes?: string | null;
+  materialsSummary?: string | null;
+  materials?: ProjectTripMaterial[] | null;
   billingPeriodId?: string | null;
   billingPeriodSequence?: number | null;
   billingPeriodLabel?: string | null;
@@ -767,6 +797,60 @@ function formatCurrency(value?: number) {
   }).format(amount);
 }
 
+function formatPurchasedMaterialQuantity(material: ProjectTripMaterial) {
+  const quantity = Number(material.qty);
+  const quantityLabel = Number.isFinite(quantity)
+    ? Number.isInteger(quantity)
+      ? String(quantity)
+      : quantity.toFixed(2).replace(/\.00$/, "")
+    : "";
+  const unit = safeTrim(material.unit).toUpperCase();
+
+  return [quantityLabel, unit].filter(Boolean).join(" ");
+}
+
+function getPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) {
+  if (!Array.isArray(materials)) return [];
+
+  return materials.filter((material) => {
+    const source = safeTrim(material?.source).toLowerCase();
+    return source === "supplier_invoice" || material?.imported === true;
+  });
+}
+
+function groupPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) {
+  const groups = new Map<string, ProjectTripMaterialGroup>();
+
+  for (const material of getPurchasedProjectMaterials(materials)) {
+    const poCode = safeTrim(material.poCode).toUpperCase();
+    const supplierName = safeTrim(material.supplierName);
+    const invoiceNumber = safeTrim(material.supplierInvoiceNumber);
+    const key = [poCode || "no-po", supplierName || "supplier", invoiceNumber || "no-invoice"].join("__");
+    const existing = groups.get(key) || {
+      key,
+      poCode,
+      supplierName,
+      invoiceNumber,
+      items: [],
+    };
+
+    existing.items.push(material);
+    groups.set(key, existing);
+  }
+
+  return Array.from(groups.values());
+}
+
+function materialWasImportedAfterCloseout(
+  material: ProjectTripMaterial,
+  closeoutSavedAt?: string | null,
+) {
+  const savedMs = closeoutSavedAt ? new Date(closeoutSavedAt).getTime() : NaN;
+  const importedMs = material.importedAt ? new Date(material.importedAt).getTime() : NaN;
+
+  return Number.isFinite(savedMs) && Number.isFinite(importedMs) && importedMs > savedMs;
+}
+
 function buildStageBilledAmounts(projectType: EditableProjectType, totalBid: number) {
   const bid = Number(totalBid) || 0;
 
@@ -1205,6 +1289,125 @@ function CloseoutDetailBlock({
   );
 }
 
+function PurchasedProjectMaterialsCard({
+  materials,
+  closeoutSavedAt,
+}: {
+  materials?: ProjectTripMaterial[] | null;
+  closeoutSavedAt?: string | null;
+}) {
+  const purchasedMaterials = getPurchasedProjectMaterials(materials);
+  const groups = groupPurchasedProjectMaterials(materials);
+  const hasLineTotals = purchasedMaterials.some((material) =>
+    Number.isFinite(Number(material.lineTotal)),
+  );
+  const total = purchasedMaterials.reduce((sum, material) => {
+    const amount = Number(material.lineTotal);
+    return Number.isFinite(amount) ? sum + amount : sum;
+  }, 0);
+  const importedAfterCloseout = purchasedMaterials.some((material) =>
+    materialWasImportedAfterCloseout(material, closeoutSavedAt),
+  );
+
+  if (groups.length === 0) return null;
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        borderRadius: 4,
+        bgcolor: (muiTheme) => alpha(muiTheme.palette.primary.main, 0.025),
+      }}
+    >
+      <Stack spacing={1.5}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", sm: "center" }}
+        >
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+              Materials Purchased for This Project Trip
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Supplier-imported purchases stay attached to this project trip.
+            </Typography>
+          </Box>
+
+          {importedAfterCloseout ? (
+            <Chip size="small" label="Imported after closeout" color="info" variant="outlined" />
+          ) : null}
+        </Stack>
+
+        {groups.map((group) => (
+          <Box key={group.key}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", fontWeight: 700, mb: 0.75 }}
+            >
+              {[
+                group.poCode ? `PO ${group.poCode}` : "",
+                group.supplierName || "",
+                group.invoiceNumber ? `Invoice #${group.invoiceNumber}` : "",
+              ]
+                .filter(Boolean)
+                .join(" • ")}
+            </Typography>
+
+            <Stack spacing={0.75}>
+              {group.items.map((material, index) => {
+                const quantity = formatPurchasedMaterialQuantity(material);
+                const amount = Number(material.lineTotal);
+                const hasAmount = Number.isFinite(amount);
+
+                return (
+                  <Stack
+                    key={material.id || material.supplierLineKey || `${group.key}_${index}`}
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={{ xs: 0.25, sm: 1 }}
+                    justifyContent="space-between"
+                  >
+                    <Typography variant="body2">
+                      {quantity ? `${quantity} • ` : ""}
+                      {safeTrim(material.name) || "Material"}
+                    </Typography>
+                    {hasAmount ? (
+                      <Typography variant="body2" sx={{ fontWeight: 700, whiteSpace: "nowrap" }}>
+                        {formatCurrency(amount)}
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                );
+              })}
+            </Stack>
+          </Box>
+        ))}
+
+        {hasLineTotals ? (
+          <>
+            <Divider />
+            <Stack direction="row" spacing={1} justifyContent="space-between">
+              <Typography variant="body2" color="text.secondary">
+                Materials Purchased Total
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                {formatCurrency(total)}
+              </Typography>
+            </Stack>
+          </>
+        ) : null}
+
+        <Typography variant="caption" color="text.secondary">
+          Field staff may add a note when purchased items were left onsite, returned, or planned for a later visit. Supplier-imported items cannot be removed in closeout.
+        </Typography>
+      </Stack>
+    </Paper>
+  );
+}
+
 function selectMenuProps() {
   return {
     MenuProps: {
@@ -1600,6 +1803,11 @@ const canMarkTmReadyToBill =
     if (!closeoutDetailsTripId) return null;
     return projectTrips.find((trip) => trip.id === closeoutDetailsTripId) || null;
   }, [closeoutDetailsTripId, projectTrips]);
+
+  const closeoutModalTrip = useMemo(() => {
+    if (!closeoutModal.tripId) return null;
+    return projectTrips.find((trip) => trip.id === closeoutModal.tripId) || null;
+  }, [closeoutModal.tripId, projectTrips]);
 
   const previewStageAmounts = useMemo(() => {
     return buildStageBilledAmounts(
@@ -2207,6 +2415,9 @@ const canMarkTmReadyToBill =
             closeout: d.closeout ?? null,
             closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
             materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
+            materialNotes: d.materialNotes ?? d.closeout?.materialNotes ?? null,
+            materialsSummary: d.materialsSummary ?? null,
+            materials: Array.isArray(d.materials) ? d.materials : [],
             billingPeriodId: d.billingPeriodId ?? null,
             billingPeriodSequence:
               typeof d.billingPeriodSequence === "number" ? d.billingPeriodSequence : null,
@@ -3243,6 +3454,9 @@ const canMarkTmReadyToBill =
           closeout: d.closeout ?? null,
           closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
           materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
+          materialNotes: d.materialNotes ?? d.closeout?.materialNotes ?? null,
+          materialsSummary: d.materialsSummary ?? null,
+          materials: Array.isArray(d.materials) ? d.materials : [],
           createdAt: d.createdAt ?? undefined,
           createdByUid: d.createdByUid ?? null,
           updatedAt: d.updatedAt ?? undefined,
@@ -3929,7 +4143,13 @@ const canMarkTmReadyToBill =
       needsMoreWork: "no",
       hoursWorkedToday: estimateTripHours(t),
       workNotes: safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? ""),
-      materialsUsedToday: safeTrim(t.materialsUsedToday || ""),
+      materialsUsedToday: safeTrim(
+        t.materialNotes ||
+          (t.closeout as any)?.materialNotes ||
+          t.materialsUsedToday ||
+          t.materialsSummary ||
+          ""
+      ),
       saving: false,
       error: "",
     });
@@ -3981,6 +4201,8 @@ const canMarkTmReadyToBill =
         active: true,
         notes: workNotes || null,
         materialsUsedToday: materials || null,
+        materialNotes: materials || null,
+        materialsSummary: materials || null,
         closeoutHours: hoursWorked,
         closeout: {
           outcome: closeoutModal.outcome,
@@ -3988,6 +4210,7 @@ const canMarkTmReadyToBill =
           hoursWorkedToday: hoursWorked,
           workNotes: workNotes || null,
           materialsUsedToday: materials || null,
+          materialNotes: materials || null,
           savedAt: now,
           savedByUid: myUid || null,
           savedByName: actorDisplayName || null,
@@ -4195,7 +4418,9 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     const openTrips = relevantTrips.filter((trip) => safeTrim(trip.status).toLowerCase() !== "complete");
     const totalHours = completedTrips.reduce((sum, trip) => sum + getCloseoutHours(trip)!, 0);
     const materialsCount = completedTrips.reduce((sum, trip) => {
-      return getTripMaterialsSummary(trip) ? sum + 1 : sum;
+      return getTripMaterialsSummary(trip) || getPurchasedProjectMaterials(trip.materials).length > 0
+        ? sum + 1
+        : sum;
     }, 0);
     const needsTimeEntryReview = completedTrips.some((trip) => {
       const closeout = (trip.closeout || {}) as any;
@@ -4919,12 +5144,15 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     );
   }
 
-  function getCloseoutMaterials(t?: TripDoc | null) {
+  function getCloseoutMaterialNotes(t?: TripDoc | null) {
     if (!t) return "—";
     return (
+      safeTrim((t.closeout as any)?.materialNotes) ||
+      safeTrim(t.materialNotes) ||
       safeTrim((t.closeout as any)?.materialsUsedToday) ||
       safeTrim(t.materialsUsedToday) ||
-      "No materials recorded."
+      safeTrim(t.materialsSummary) ||
+      "No additional material notes."
     );
   }
 
@@ -6068,8 +6296,10 @@ if (nextStatus === "active_work") {
                     fullWidth
                   />
 
+                  <PurchasedProjectMaterialsCard materials={closeoutModalTrip?.materials} />
+
                   <TextField
-                    label="Materials Used Today"
+                    label="Material Notes (optional)"
                     value={closeoutModal.materialsUsedToday}
                     onChange={(e) =>
                       setCloseoutModal((prev) => ({
@@ -6077,14 +6307,12 @@ if (nextStatus === "active_work") {
                         materialsUsedToday: e.target.value,
                       }))
                     }
+                    placeholder="Example: Not installed today — left onsite for next visit."
+                    helperText="Supplier-imported materials remain attached to this trip and cannot be removed during closeout."
                     multiline
-                    minRows={4}
+                    minRows={3}
                     fullWidth
                   />
-
-                  <Typography variant="body2" color="text.secondary">
-                    Keep materials simple and natural-language. No line items required.
-                  </Typography>
 
                   {closeoutModal.error ? (
                     <Alert severity="error">{closeoutModal.error}</Alert>
@@ -6240,11 +6468,16 @@ if (nextStatus === "active_work") {
                       </Typography>
                       <Divider />
                       <Typography variant="body2" color="text.secondary">
-                        <strong>Materials:</strong> {getCloseoutMaterials(closeoutDetailsTrip)}
+                        <strong>Material notes:</strong> {getCloseoutMaterialNotes(closeoutDetailsTrip)}
                       </Typography>
                     </Stack>
                   </CloseoutDetailBlock>
                 </Box>
+
+                <PurchasedProjectMaterialsCard
+                  materials={closeoutDetailsTrip.materials}
+                  closeoutSavedAt={(closeoutDetailsTrip.closeout as any)?.savedAt || null}
+                />
               </Stack>
             ) : null}
           </DialogContent>
@@ -8675,7 +8908,9 @@ if (nextStatus === "active_work") {
                                             </Typography>
                                             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                                               <Chip label={`${(getCloseoutHours(trip) || 0).toFixed(2)}h`} size="small" variant="outlined" />
-                                              {getTripMaterialsSummary(trip) ? <Chip label="Materials noted" size="small" variant="outlined" /> : null}
+                                              {getTripMaterialsSummary(trip) || getPurchasedProjectMaterials(trip.materials).length > 0 ? (
+                                                <Chip label="Materials recorded" size="small" variant="outlined" />
+                                              ) : null}
                                             </Stack>
                                           </Stack>
                                           <Typography variant="body2" color="text.secondary">
@@ -8686,7 +8921,7 @@ if (nextStatus === "active_work") {
                                             <strong>Work:</strong> {getCloseoutWorkSummary(trip)}
                                           </Typography>
                                           <Typography variant="body2" color="text.secondary">
-                                            <strong>Materials:</strong> {getCloseoutMaterials(trip)}
+                                            <strong>Material notes:</strong> {getCloseoutMaterialNotes(trip)}
                                           </Typography>
                                         </Stack>
                                       </CardContent>
