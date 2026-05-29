@@ -160,6 +160,8 @@ type SelectedOverlapConflict = {
   memberName: string;
   tripId: string;
   tripType: "service" | "project" | "trip";
+  tripStatus: "planned" | "in_progress";
+  scheduledTimeLabel: string;
   previewTitle: string;
   previewSubtitle?: string;
   estimatedDurationLabel: string;
@@ -673,6 +675,9 @@ function analyzeMemberAvailability(args: {
 
   if (overlappingTrips.length > 0) {
     const first = overlappingTrips[0];
+    const hasInProgressOverlap = overlappingTrips.some(
+      (trip) => normalizeStatus(trip.status) === "in_progress"
+    );
     const tripType =
       normalizeTripType(first.type) === "project"
         ? "Project"
@@ -683,7 +688,7 @@ function analyzeMemberAvailability(args: {
     reasons.push(
       buildReason(
         "overlap",
-        "Overlapping Trip",
+        hasInProgressOverlap ? "In-Progress Trip" : "Overlapping Trip",
         `${tripType} • ${
           String(first.previewTitle || "").trim() || "Scheduled Trip"
         } • Est. ${formatEstimatedDurationLabel(getTripEstimatedDurationMinutes(first))}`
@@ -743,9 +748,13 @@ function analyzeMemberAvailability(args: {
       disabled: true,
     };
   } else if (overlapReason) {
+    const hasInProgressOverlap = overlappingTrips.some(
+      (trip) => normalizeStatus(trip.status) === "in_progress"
+    );
+
     status = {
       kind: "overlap",
-      label: "Booked",
+      label: hasInProgressOverlap ? "In Progress" : "Booked",
       detail: overlapReason.detail,
       disabled: false,
       tooltipItems: overlappingTrips.map((trip) => ({
@@ -1278,6 +1287,13 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           memberName: member.name,
           tripId: trip.id,
           tripType,
+          tripStatus:
+            normalizeStatus(trip.status) === "in_progress"
+              ? "in_progress"
+              : "planned",
+          scheduledTimeLabel: `${formatTime12h(tripRange.start)}–${formatTime12h(
+            tripRange.end
+          )}`,
           previewTitle:
             String(trip.previewTitle || "").trim() ||
             (tripType === "project"
@@ -1304,6 +1320,12 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
 
   const overlapConflictTripIds = useMemo(() => {
     return Array.from(new Set(selectedOverlapConflicts.map((item) => item.tripId)));
+  }, [selectedOverlapConflicts]);
+
+  const hasInProgressOverlap = useMemo(() => {
+    return selectedOverlapConflicts.some(
+      (conflict) => conflict.tripStatus === "in_progress"
+    );
   }, [selectedOverlapConflicts]);
 
   const existingOpenTrips = useMemo(() => {
@@ -1450,13 +1472,16 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
               createdByName: (appUser as any)?.displayName || null,
               conflictTypes: Array.from(
                 new Set(
-                  selectedOverlapConflicts.map((conflict) =>
+                  selectedOverlapConflicts.flatMap((conflict) => [
+                    conflict.tripStatus === "in_progress"
+                      ? "in_progress_overlap"
+                      : "scheduled_overlap",
                     conflict.tripType === "project"
                       ? "project_overlap"
                       : conflict.tripType === "service"
                         ? "service_overlap"
-                        : "trip_overlap"
-                  )
+                        : "trip_overlap",
+                  ])
                 )
               ),
               conflictTripIds: overlapConflictTripIds,
@@ -1560,7 +1585,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
 
       setSaveSuccess(
         dispatchOverridePayload
-          ? "Trip scheduled with dispatch override."
+          ? hasInProgressOverlap
+            ? "Next trip scheduled as Planned with Dispatch Override. The current in-progress trip remains unchanged."
+            : "Trip scheduled with Dispatch Override."
           : "Trip scheduled successfully."
       );
 
@@ -2090,8 +2117,20 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       >
                         <Stack spacing={1.25}>
                           <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2 }}>
-                            One or more selected crew members already have an overlapping trip in this time slot.
-                            You can still dispatch this service trip by using Dispatch Override.
+                            {hasInProgressOverlap ? (
+                              <>
+                                One or more selected crew members are currently on an <strong>in-progress</strong>{" "}
+                                trip during this time slot. Use Dispatch Override only after confirming they
+                                are wrapping up or transitioning directly to this customer. This new trip will
+                                save as <strong>Planned</strong> only; it will not start or end an active trip.
+                              </>
+                            ) : (
+                              <>
+                                One or more selected crew members already have an overlapping planned trip in
+                                this time slot. You can still dispatch this service trip by using Dispatch
+                                Override.
+                              </>
+                            )}
                           </Alert>
 
                           <Stack spacing={0.75}>
@@ -2120,10 +2159,34 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                 )}
 
                                 <Box>
-                                  <Typography variant="body2" color="text.secondary">
-                                    <strong>{conflict.memberName}</strong> already assigned to{" "}
-                                    <strong>{conflict.previewTitle}</strong>
-                                  </Typography>
+                                  <Stack
+                                    direction="row"
+                                    spacing={0.75}
+                                    alignItems="center"
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                  >
+                                    <Typography variant="body2" color="text.secondary">
+                                      <strong>{conflict.memberName}</strong> already assigned to{" "}
+                                      <strong>{conflict.previewTitle}</strong>
+                                    </Typography>
+
+                                    <Chip
+                                      size="small"
+                                      color={
+                                        conflict.tripStatus === "in_progress"
+                                          ? "info"
+                                          : "warning"
+                                      }
+                                      variant="outlined"
+                                      label={
+                                        conflict.tripStatus === "in_progress"
+                                          ? "In Progress"
+                                          : "Planned"
+                                      }
+                                      sx={{ borderRadius: 999, fontWeight: 700 }}
+                                    />
+                                  </Stack>
 
                                   {conflict.previewSubtitle ? (
                                     <Typography variant="caption" color="text.secondary">
@@ -2136,7 +2199,8 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                     color="text.secondary"
                                     sx={{ display: "block" }}
                                   >
-                                    Est. {conflict.estimatedDurationLabel}
+                                    Scheduled {conflict.scheduledTimeLabel} • Est.{" "}
+                                    {conflict.estimatedDurationLabel}
                                   </Typography>
                                 </Box>
                               </Stack>
@@ -2152,7 +2216,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                     onChange={(e) => setDispatchOverrideEnabled(e.target.checked)}
                                   />
                                 }
-                                label="Enable Dispatch Override for this overlapping service dispatch"
+                                label={
+                                  hasInProgressOverlap
+                                    ? "Enable Dispatch Override to schedule this as the next planned trip"
+                                    : "Enable Dispatch Override for this overlapping service dispatch"
+                                }
                               />
 
                               {dispatchOverrideEnabled ? (
@@ -2162,7 +2230,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                   onChange={(e) => setDispatchOverrideReason(e.target.value)}
                                   multiline
                                   minRows={3}
-                                  placeholder="Example: emergency no-water call, quick diagnostic, high-priority customer, etc."
+                                  placeholder={
+                                    hasInProgressOverlap
+                                      ? "Example: Confirmed Josh is wrapping up and proceeding directly to this customer."
+                                      : "Example: emergency no-water call, quick diagnostic, high-priority customer, etc."
+                                  }
                                 />
                               ) : null}
                             </>
@@ -2213,6 +2285,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                         {dispatchOverrideEnabled && selectedOverlapConflicts.length > 0 ? (
                           <Typography variant="body2" color="warning.main">
                             Dispatch Override: Enabled
+                            {hasInProgressOverlap
+                              ? " — this trip will remain Planned until the active trip is completed."
+                              : ""}
                           </Typography>
                         ) : null}
                       </Stack>

@@ -331,6 +331,7 @@ type DispatchConflictSummary = {
   hardMessages: string[];
   softMessages: string[];
   softTripIds: string[];
+  softConflictTypes: string[];
 };
 
 type ServiceTicketActivityEntry = {
@@ -1245,6 +1246,7 @@ function collectDispatchOverrideConflicts(args: {
   const hard = new Set<string>();
   const soft = new Set<string>();
   const softTripIds = new Set<string>();
+  const softConflictTypes = new Set<string>();
 
   const selectedRange =
     args.timeWindow === "custom"
@@ -1295,12 +1297,17 @@ function collectDispatchOverrideConflicts(args: {
       const detail = `${formatTime12h(tripRange.start)}–${formatTime12h(tripRange.end)}`;
 
       if (isInProgressTripLikeStatus((trip as any).status)) {
-        hard.add(`${member.name} is already on an in-progress trip (${detail}).`);
+        soft.add(
+          `${member.name} is currently on an in-progress trip (${detail}). Dispatch Override can schedule this as the next planned trip; it will not start until the current trip is completed or paused.`
+        );
+        softTripIds.add(String((trip as any).id || ""));
+        softConflictTypes.add("in_progress_overlap");
       } else if (isPlannedTripLikeStatus((trip as any).status)) {
         soft.add(
           `${member.name} already has a scheduled trip (${detail}). Dispatch Override can be used if needed.`
         );
         softTripIds.add(String((trip as any).id || ""));
+        softConflictTypes.add("scheduled_overlap");
       }
     }
   }
@@ -1309,6 +1316,7 @@ function collectDispatchOverrideConflicts(args: {
     hardMessages: Array.from(hard),
     softMessages: Array.from(soft),
     softTripIds: Array.from(softTripIds).filter(Boolean),
+    softConflictTypes: Array.from(softConflictTypes),
   } satisfies DispatchConflictSummary;
 }
 
@@ -1378,8 +1386,8 @@ function getOptionAvailabilityLabel(args: {
 
     if (status === "in_progress") {
       return {
-        label: `${args.baseLabel} — In Progress`,
-        disabled: true,
+        label: `${args.baseLabel} — In Progress (override allowed)`,
+        disabled: false,
       };
     }
 
@@ -3373,7 +3381,7 @@ Supply line`}
     if (latestDispatchConflicts.softMessages.length > 0) {
       if (!tripDispatchOverrideEnabled) {
         setTripSaveError(
-          "This selection overlaps another planned trip. Enable Dispatch Override to continue."
+          "This selection overlaps another scheduled or in-progress trip. Enable Dispatch Override to save it as a planned trip."
         );
         return;
       }
@@ -3411,7 +3419,7 @@ Supply line`}
               createdAt: now,
               createdByUid: appUser?.uid || null,
               createdByName: appUser?.displayName || null,
-              conflictTypes: ["scheduled_overlap"],
+              conflictTypes: latestDispatchConflicts.softConflictTypes,
               conflictTripIds: latestDispatchConflicts.softTripIds,
             } satisfies DispatchOverrideInfo)
           : null;
@@ -4107,7 +4115,7 @@ Supply line`}
       if (latestDispatchConflicts.softMessages.length > 0) {
         if (!editTripDispatchOverrideEnabled) {
           throw new Error(
-            "This selection overlaps another planned trip. Enable Dispatch Override to continue."
+            "This selection overlaps another scheduled or in-progress trip. Enable Dispatch Override to save it as a planned trip."
           );
         }
 
@@ -4152,7 +4160,7 @@ Supply line`}
               createdAt: now,
               createdByUid: appUser?.uid || null,
               createdByName: appUser?.displayName || null,
-              conflictTypes: ["scheduled_overlap"],
+              conflictTypes: latestDispatchConflicts.softConflictTypes,
               conflictTripIds: latestDispatchConflicts.softTripIds,
             } satisfies DispatchOverrideInfo)
           : null;
@@ -7310,7 +7318,7 @@ Supply line`}
                             }
                           />
                         }
-                        label="Dispatch Override this planned overlap"
+                        label="Dispatch Override — schedule this as a planned trip"
                       />
 
                       {editTripDispatchOverrideEnabled ? (
@@ -7320,7 +7328,7 @@ Supply line`}
                           onChange={(e) =>
                             setEditTripDispatchOverrideReason(e.target.value)
                           }
-                          placeholder="Example: emergency callback, VIP customer, short diagnostic visit, etc."
+                          placeholder="Example: Confirmed with Josh that he is wrapping up and proceeding directly to this customer."
                           multiline
                           minRows={2}
                         />
@@ -7331,9 +7339,10 @@ Supply line`}
                   {editTripErr ? <Alert severity="error">{editTripErr}</Alert> : null}
 
                   <Typography variant="body2" color="text.secondary">
-                    Planned overlaps can be saved with Dispatch Override. In-progress trip
-                    conflicts, PTO, and holidays remain blocked unless their separate override
-                    is enabled.
+                    Scheduled or in-progress trip overlaps can be saved with Dispatch Override.
+                    The new trip remains planned and cannot be started while another trip is
+                    running. PTO and holidays remain blocked unless their separate override is
+                    enabled.
                   </Typography>
                 </Stack>
               </DialogContent>
