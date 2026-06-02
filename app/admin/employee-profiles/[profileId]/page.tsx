@@ -1,3 +1,4 @@
+// app/admin/employee-profiles/[profileId]/page.tsx
 "use client";
 
 import Link from "next/link";

@@ -1,5 +1,5 @@
 // app/api/qbo/employees/sync/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   qboFetchWithAutoRefresh,
   getQboApiBaseUrl,
@@ -31,15 +31,39 @@ function normalizeAttempt(value: unknown): AttemptValue {
   return value === "refreshed" ? "refreshed" : "original";
 }
 
-export async function POST() {
+function normalizeEmail(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalizeName(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function buildEmployeeQuery(start: number, max: number, includeInactive: boolean) {
+  // QBO commonly hides inactive name-list entities unless explicitly requested.
+  // This keeps the default clean, while allowing the UI's "show inactive" workflow
+  // to refresh a complete employee list when needed.
+  if (includeInactive) {
+    return `select * from Employee where Active in (true, false) startposition ${start} maxresults ${max}`;
+  }
+
+  return `select * from Employee where Active = true startposition ${start} maxresults ${max}`;
+}
+
+export async function POST(req: NextRequest) {
   try {
     const { realmId } = await getQboCookieValues();
+
     if (!realmId) {
       return NextResponse.json(
         { error: "Not connected to QuickBooks (missing realmId)." },
         { status: 400 }
       );
     }
+
+    const includeInactive =
+      req.nextUrl.searchParams.get("includeInactive") === "1" ||
+      req.nextUrl.searchParams.get("includeInactive") === "true";
 
     const base = getQboApiBaseUrl();
 
@@ -51,9 +75,8 @@ export async function POST() {
     let lastAttempt: AttemptValue = "original";
 
     while (true) {
-      const q = encodeURIComponent(
-        `select * from Employee startposition ${start} maxresults ${max}`
-      );
+      const rawQuery = buildEmployeeQuery(start, max, includeInactive);
+      const q = encodeURIComponent(rawQuery);
       const url = `${base}/v3/company/${realmId}/query?query=${q}`;
 
       const { res, body, intuitTid, attempt } = await qboFetchWithAutoRefresh(url);
@@ -69,6 +92,7 @@ export async function POST() {
             status: res.status,
             intuit_tid: lastIntuitTid,
             attempt: lastAttempt,
+            query: rawQuery,
             body,
           },
           { status: 500 }
@@ -86,6 +110,9 @@ export async function POST() {
     const nowIso = new Date().toISOString();
 
     let totalUpserts = 0;
+    let activeCount = 0;
+    let inactiveCount = 0;
+
     let batch = db.batch();
     let batchCount = 0;
 
@@ -93,24 +120,34 @@ export async function POST() {
       const id = String(e.Id || "").trim();
       if (!id) continue;
 
+      const isActive = typeof e.Active === "boolean" ? e.Active : true;
+
+      if (isActive) activeCount += 1;
+      else inactiveCount += 1;
+
       const docRef = db.collection("qboEmployees").doc(id);
 
       const payload = {
         qboEmployeeId: id,
-        displayName: e.DisplayName ?? "",
-        givenName: e.GivenName ?? "",
-        familyName: e.FamilyName ?? "",
-        middleName: e.MiddleName ?? "",
-        email: e.PrimaryEmailAddr?.Address ?? "",
-        phone: e.PrimaryPhone?.FreeFormNumber ?? "",
-        hiredDate: e.HiredDate ?? "",
-        releasedDate: e.ReleasedDate ?? "",
-        active: typeof e.Active === "boolean" ? e.Active : true,
+
+        displayName: normalizeName(e.DisplayName),
+        givenName: normalizeName(e.GivenName),
+        familyName: normalizeName(e.FamilyName),
+        middleName: normalizeName(e.MiddleName),
+
+        email: normalizeEmail(e.PrimaryEmailAddr?.Address),
+        phone: normalizeName(e.PrimaryPhone?.FreeFormNumber),
+
+        hiredDate: normalizeName(e.HiredDate),
+        releasedDate: normalizeName(e.ReleasedDate),
+        active: isActive,
 
         source: "quickbooks",
         realmId,
         lastSyncIntuitTid: lastIntuitTid,
         updatedAt: nowIso,
+
+        // Keep the original firstSeenAt after the first sync.
         firstSeenAt: nowIso,
       };
 
@@ -132,11 +169,16 @@ export async function POST() {
 
     return NextResponse.json({
       ok: true,
-      message: "QBO Employees synced to Firestore.",
+      message: includeInactive
+        ? "QBO Employees synced to Firestore, including inactive employees."
+        : "Active QBO Employees synced to Firestore.",
       realmId,
       attempt: lastAttempt,
       intuit_tid: lastIntuitTid,
+      includeInactive,
       fetchedCount: all.length,
+      activeCount,
+      inactiveCount,
       upsertedCount: totalUpserts,
       collection: "qboEmployees",
     });
