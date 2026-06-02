@@ -931,6 +931,20 @@ function formatDateTime(value?: string) {
   return date.toLocaleString();
 }
 
+function formatShortDate(value?: string | null) {
+  const raw = safeTrim(value);
+  if (!raw) return "—";
+
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? fromIsoDate(raw) : new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+
+  return date.toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  });
+}
+
 function formatTripWindow(w: string) {
   const x = String(w || "").toLowerCase();
   if (x === "am") return "AM";
@@ -1791,6 +1805,36 @@ const canMarkTmReadyToBill =
     if (!tmBillingTabs.length) return null;
     return tmBillingTabs.find((tab) => tab.key === activeTmBillingTab) || tmBillingTabs[0];
   }, [tmBillingTabs, activeTmBillingTab]);
+
+  const tmBillingOverview = useMemo(() => {
+    const readyPeriods = tmBillingPeriods.filter((period) => period.status === "ready_to_bill");
+    const invoicedPeriods = tmBillingPeriods.filter((period) => period.status === "invoiced");
+    const openPeriods = tmBillingPeriods.filter((period) => period.status === "open");
+    const hasCurrentOpenPeriod = tmBillingTabs.some((tab) => tab.isCurrentOpen);
+
+    const sortedInvoices = [...invoicedPeriods].sort((a, b) => {
+      const aMs = parseIsoMs(a.invoicedAt || a.invoiceDate || null);
+      const bMs = parseIsoMs(b.invoicedAt || b.invoiceDate || null);
+
+      if (Number.isFinite(aMs) && Number.isFinite(bMs) && aMs !== bMs) return bMs - aMs;
+      return Number(b.sequence || 0) - Number(a.sequence || 0);
+    });
+
+    const lastInvoice = sortedInvoices[0] || null;
+    const totalInvoicedHours = invoicedPeriods.reduce(
+      (sum, period) => sum + Number(period.totalHours || 0),
+      0,
+    );
+
+    return {
+      readyPeriods,
+      invoicedPeriods,
+      openPeriods,
+      hasCurrentOpenPeriod,
+      lastInvoice,
+      totalInvoicedHours,
+    };
+  }, [tmBillingPeriods, tmBillingTabs]);
 
   useEffect(() => {
     if (!tmBillingTabs.length) return;
@@ -4613,6 +4657,76 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     }
   }
 
+  async function reopenTmProjectActiveWork() {
+    if (!project || !isTmProject || !canEditProject) return;
+
+    const ok = window.confirm(
+      "Reopen this T&M project for more field work and future billing periods?\n\nExisting invoiced billing periods stay invoiced. A fresh Current Period will be available for the next completed trips.",
+    );
+    if (!ok) return;
+
+    try {
+      const now = nowIso();
+      let nextPeriods = getProjectBillingPeriods(project);
+      const openPeriod = nextPeriods.find((period) => period.status === "open") || null;
+      let currentBillingPeriodId = openPeriod?.id || null;
+
+      if (!openPeriod) {
+        const nextOpen = createOpenBillingPeriod({
+          project: { ...(project as any), billingPeriods: nextPeriods } as Project,
+          actorUid: myUid || null,
+          actorName: actorDisplayName || null,
+          openedAt: now,
+        });
+        nextPeriods = [...nextPeriods, nextOpen].sort((a, b) => a.sequence - b.sequence);
+        currentBillingPeriodId = nextOpen.id;
+      }
+
+      const patch = stripUndefinedDeep({
+        billingPeriods: nextPeriods,
+        currentBillingPeriodId,
+        projectOfficeStatus: "active_work",
+        active: true,
+        fieldCompletedAt: null,
+        fieldCompletedByUid: null,
+        fieldCompletedByName: null,
+        readyToInvoiceAt: null,
+        readyToInvoiceByUid: null,
+        readyToInvoiceByName: null,
+        invoicedAt: null,
+        invoicedByUid: null,
+        invoicedByName: null,
+        invoiceNumber: null,
+        invoiceDate: null,
+        invoiceNotes: null,
+        closedAt: null,
+        closedByUid: null,
+        closedByName: null,
+        reopenedAt: now,
+        reopenedByUid: myUid || null,
+        reopenedByName: actorDisplayName || null,
+        reopenReason: "T&M project reopened for additional field work / future billing periods.",
+        updatedAt: now,
+      });
+
+      await updateDoc(doc(db, "projects", project.id), patch as any);
+      mergeProjectState(patch);
+      setActiveTmBillingTab("current");
+
+      void recordProjectActivity({
+        type: "project_updated",
+        title: "T&M project reopened for active work",
+        description: "Project is active again and ready for future trips / billing periods.",
+        details: [
+          `Updated by: ${actorDisplayName}`,
+          currentBillingPeriodId ? `Current billing period: ${currentBillingPeriodId}` : "Current billing period available",
+        ],
+      });
+    } catch (err: any) {
+      alert(err?.message || "Failed to reopen the T&M project.");
+    }
+  }
+
   async function markTmCurrentPeriodReadyToBill() {
     if (!project || !isTmProject || !canMarkTmReadyToBill) return;
 
@@ -4844,45 +4958,56 @@ if (Object.keys(cleanProjectPatch).length > 1) {
         invoiceNotes: invoiceNotes || undefined,
       };
 
-      const nextPeriods = tmBillingPeriods
+      let nextPeriods = tmBillingPeriods
         .map((item) => (item.id === invoicedPeriod.id ? invoicedPeriod : item))
         .sort((a, b) => a.sequence - b.sequence);
 
       const remainingReadyPeriods = nextPeriods.filter((item) => item.status === "ready_to_bill");
-      const remainingUnbilledTrips = getUnbilledCompletedTrips(
-        projectTrips.filter((trip) => safeTrim(trip.billingPeriodId) !== period.id),
-      );
       const hasOpenPeriod = nextPeriods.some((item) => item.status === "open");
 
       let nextStatus: ProjectOfficeStatus = "active_work";
-      let nextActive = true;
       const projectPatch: Record<string, any> = {
-        billingPeriods: nextPeriods,
         updatedAt: now,
       };
 
       if (remainingReadyPeriods.length > 0) {
         nextStatus = "ready_to_invoice";
-      } else if (project.fieldCompletedAt) {
-        if (!hasOpenPeriod && remainingUnbilledTrips.length === 0) {
-          nextStatus = "invoiced";
-          nextActive = false;
-          projectPatch.invoicedAt = now;
-          projectPatch.invoicedByUid = myUid || null;
-          projectPatch.invoicedByName = actorDisplayName || null;
-          projectPatch.invoiceNumber = invoiceNumber || null;
-          projectPatch.invoiceDate = invoiceDate;
-          projectPatch.invoiceNotes = invoiceNotes || null;
-        } else {
-          nextStatus = "field_complete";
+      } else {
+        // Recording one T&M billing period invoice should not finish/inactivate
+        // the whole project. T&M projects often continue through Billing 2,
+        // Billing 3, etc. Keep the project schedulable and make sure there is
+        // a fresh open Current Period ready for future completed trips.
+        if (!hasOpenPeriod) {
+          const nextOpen = createOpenBillingPeriod({
+            project: { ...(project as any), billingPeriods: nextPeriods } as Project,
+            actorUid: myUid || null,
+            actorName: actorDisplayName || null,
+            openedAt: now,
+          });
+
+          nextPeriods = [...nextPeriods, nextOpen].sort((a, b) => a.sequence - b.sequence);
+          projectPatch.currentBillingPeriodId = nextOpen.id;
         }
+
+        projectPatch.fieldCompletedAt = null;
+        projectPatch.fieldCompletedByUid = null;
+        projectPatch.fieldCompletedByName = null;
+        projectPatch.readyToInvoiceAt = null;
+        projectPatch.readyToInvoiceByUid = null;
+        projectPatch.readyToInvoiceByName = null;
       }
 
+      projectPatch.billingPeriods = nextPeriods;
       projectPatch.projectOfficeStatus = nextStatus;
-      projectPatch.active = nextActive;
+      projectPatch.active = true;
+
+      // Firestore rejects undefined anywhere inside nested arrays/objects.
+      // T&M billing periods often carry optional invoice metadata, so clean the
+      // full project patch before the batched update.
+      const cleanProjectPatch = stripUndefinedDeep(projectPatch);
 
       const batch = writeBatch(db);
-      batch.update(doc(db, "projects", project.id), projectPatch as any);
+      batch.update(doc(db, "projects", project.id), cleanProjectPatch as any);
       for (const trip of periodTrips) {
         batch.update(doc(db, "trips", trip.id), {
           billingPeriodStatus: "invoiced",
@@ -4912,7 +5037,7 @@ if (Object.keys(cleanProjectPatch).length > 1) {
         ),
       );
       mergeProjectState({
-        ...projectPatch,
+        ...cleanProjectPatch,
       });
       setActiveTmBillingTab(period.id);
       setTmInvoiceDialog(emptyTmInvoiceDialog());
@@ -7994,7 +8119,13 @@ if (nextStatus === "active_work") {
 
                             <SectionCard
                 title="Project Closeout & Billing"
-                subtitle={projectHasStageBilling ? "Stage-based projects bill one stage at a time. Use each stage tab to mark Ready to Bill or Invoiced." : "Track field completion, office review, invoice readiness, and final project closure."}
+                subtitle={
+                  projectHasStageBilling
+                    ? "Stage-based projects bill one stage at a time. Use each stage tab to mark Ready to Bill or Invoiced."
+                    : isTmProject
+                      ? "Track the overall project lifecycle. Individual invoice details live inside each T&M billing period."
+                      : "Track field completion, office review, invoice readiness, and final project closure."
+                }
                 icon={<PaidRoundedIcon color="primary" />}
                 action={
                   canUpdateProjectOfficeStatus ? (
@@ -8085,7 +8216,9 @@ if (nextStatus === "active_work") {
                   <Typography variant="body2" color="text.secondary">
                     {projectHasStageBilling
                       ? "This is an overview for the whole project. New Construction and Remodel billing actions live on each stage tab so one stage can be billed without closing the project."
-                      : projectOfficeStatusHelper(projectOfficeStatus)}
+                      : isTmProject
+                        ? "This project-level card stays focused on active work, field completion, and final closure. T&M invoice numbers, invoice dates, and invoiced-at history are tracked on each billing period below."
+                        : projectOfficeStatusHelper(projectOfficeStatus)}
                   </Typography>
 
                   {projectHasStageBilling ? (
@@ -8163,22 +8296,54 @@ if (nextStatus === "active_work") {
                             : "Synced"
                       }
                     />
-                    <InfoField
-                      label="Ready To Invoice"
-                      value={(project as any).readyToInvoiceAt ? formatDateTime((project as any).readyToInvoiceAt) : "—"}
-                    />
-                    <InfoField
-                      label="Invoice #"
-                      value={(project as any).invoiceNumber || "—"}
-                    />
-                    <InfoField
-                      label="Invoice Date"
-                      value={(project as any).invoiceDate || "—"}
-                    />
-                    <InfoField
-                      label="Invoiced At"
-                      value={(project as any).invoicedAt ? formatDateTime((project as any).invoicedAt) : "—"}
-                    />
+
+                    {isTmProject ? (
+                      <>
+                        <InfoField
+                          label="Billing Periods"
+                          value={`${tmBillingOverview.invoicedPeriods.length} invoiced / ${tmBillingOverview.readyPeriods.length} ready / ${tmBillingOverview.hasCurrentOpenPeriod ? "current open" : "no current"}`}
+                        />
+                        <InfoField
+                          label="Last Invoice"
+                          value={
+                            tmBillingOverview.lastInvoice
+                              ? `${tmBillingOverview.lastInvoice.invoiceNumber ? `#${tmBillingOverview.lastInvoice.invoiceNumber}` : tmBillingOverview.lastInvoice.label || `Billing ${tmBillingOverview.lastInvoice.sequence}`}${tmBillingOverview.lastInvoice.invoiceDate ? ` • ${formatShortDate(tmBillingOverview.lastInvoice.invoiceDate)}` : ""}`
+                              : "—"
+                          }
+                        />
+                        <InfoField
+                          label="Current Period"
+                          value={
+                            tmBillingOverview.hasCurrentOpenPeriod
+                              ? `${projectBillingSummary.unbilledCompletedTrips} unbilled trip${projectBillingSummary.unbilledCompletedTrips === 1 ? "" : "s"}`
+                              : "No current period"
+                          }
+                        />
+                        <InfoField
+                          label="Final Field Complete"
+                          value={(project as any).fieldCompletedAt ? formatDateTime((project as any).fieldCompletedAt) : "—"}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <InfoField
+                          label="Ready To Invoice"
+                          value={(project as any).readyToInvoiceAt ? formatDateTime((project as any).readyToInvoiceAt) : "—"}
+                        />
+                        <InfoField
+                          label="Invoice #"
+                          value={(project as any).invoiceNumber || "—"}
+                        />
+                        <InfoField
+                          label="Invoice Date"
+                          value={(project as any).invoiceDate || "—"}
+                        />
+                        <InfoField
+                          label="Invoiced At"
+                          value={(project as any).invoicedAt ? formatDateTime((project as any).invoicedAt) : "—"}
+                        />
+                      </>
+                    )}
                   </Box>
                 </Stack>
               </SectionCard>
@@ -8739,7 +8904,16 @@ if (nextStatus === "active_work") {
                       subtitle="Freeze accumulated completed trips and materials into billing periods without itemizing every line for the field crew."
                       icon={<PaidRoundedIcon color="primary" />}
                       action={
-                        canMarkTmFieldComplete ? (
+                        canEditProject && projectOfficeStatus !== "active_work" ? (
+                          <Button
+                            variant="contained"
+                            color="success"
+                            onClick={() => void reopenTmProjectActiveWork()}
+                            sx={{ borderRadius: 99, boxShadow: "none" }}
+                          >
+                            Reopen Active Work
+                          </Button>
+                        ) : canMarkTmFieldComplete ? (
                           <Button
                             variant="outlined"
                             onClick={() => void markTmProjectFieldComplete()}
@@ -8784,7 +8958,7 @@ if (nextStatus === "active_work") {
                         </Tabs>
 
                         {activeTmBillingTabData ? (
-                          <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 4 }}>
+                          <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 1 }}>
                             <Stack spacing={2}>
                               <Stack
                                 direction={{ xs: "column", sm: "row" }}
@@ -8888,6 +9062,27 @@ if (nextStatus === "active_work") {
                                       : "—"
                                   }
                                 />
+
+                                {!activeTmBillingTabData.isCurrentOpen ? (
+                                  <>
+                                    <InfoField
+                                      label="Invoice #"
+                                      value={activeTmBillingTabData.period?.invoiceNumber ? `#${activeTmBillingTabData.period.invoiceNumber}` : "—"}
+                                    />
+                                    <InfoField
+                                      label="Invoice Date"
+                                      value={formatShortDate(activeTmBillingTabData.period?.invoiceDate || null)}
+                                    />
+                                    <InfoField
+                                      label="Invoiced At"
+                                      value={activeTmBillingTabData.period?.invoicedAt ? formatDateTime(activeTmBillingTabData.period.invoicedAt) : "—"}
+                                    />
+                                    <InfoField
+                                      label="Invoiced By"
+                                      value={activeTmBillingTabData.period?.invoicedByName || "—"}
+                                    />
+                                  </>
+                                ) : null}
                               </Box>
 
                               {activeTmBillingTabData.trips.length === 0 ? (

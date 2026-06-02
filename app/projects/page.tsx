@@ -1,3 +1,4 @@
+// app/projects/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -282,6 +283,10 @@ function getProjectDisplayLifecycleLabel(lifecycle: DisplayLifecycle) {
     default:
       return "Active";
   }
+}
+
+function isLostProjectBid(project: Project) {
+  return project.bidStatus === "lost";
 }
 
 function getProjectDisplayLifecycleColor(
@@ -662,7 +667,9 @@ export default function ProjectsPage() {
 
       const lifecycle = getProjectDisplayLifecycle(project, trips);
 
-      if (activityFilter === "active" && lifecycle !== "active") return false;
+      if (activityFilter === "active" && (lifecycle !== "active" || isLostProjectBid(project))) {
+        return false;
+      }
       if (
         activityFilter === "billing" &&
         lifecycle !== "field_complete" &&
@@ -682,7 +689,7 @@ export default function ProjectsPage() {
   const summary = useMemo(() => {
     const activeCount = projects.filter((project) => {
       const trips = projectTripsById[project.id] || [];
-      return getProjectDisplayLifecycle(project, trips) === "active";
+      return getProjectDisplayLifecycle(project, trips) === "active" && !isLostProjectBid(project);
     }).length;
 
     const fieldCompleteCount = projects.filter((project) => {
@@ -719,6 +726,7 @@ export default function ProjectsPage() {
       const trips = projectTripsById[project.id] || [];
       return (
         getProjectDisplayLifecycle(project, trips) === "active" &&
+        !isLostProjectBid(project) &&
         !safeTrim(project.primaryTechnicianName || project.assignedTechnicianName)
       );
     }).length;
@@ -733,7 +741,12 @@ export default function ProjectsPage() {
       .filter((project) => {
         const trips = projectTripsById[project.id] || [];
         const lifecycle = getProjectDisplayLifecycle(project, trips);
-        return lifecycle !== "invoiced" && lifecycle !== "closed" && lifecycle !== "inactive";
+        return (
+          lifecycle !== "invoiced" &&
+          lifecycle !== "closed" &&
+          lifecycle !== "inactive" &&
+          !isLostProjectBid(project)
+        );
       })
       .reduce((sum, project) => sum + Number(project.totalBidAmount ?? 0), 0);
 
