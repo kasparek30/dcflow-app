@@ -433,7 +433,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [ticketError, setTicketError] = useState("");
   const [issueSummary, setIssueSummary] = useState("");
   const [issueDetails, setIssueDetails] = useState("");
-  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState("60");
+  const [estimatedDurationHours, setEstimatedDurationHours] = useState("1");
   const [selectedAddressKey, setSelectedAddressKey] = useState("");
 
   useEffect(() => {
@@ -1198,7 +1198,8 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         return;
       }
 
-      const minutes = Math.max(1, Number(estimatedDurationMinutes || "60"));
+      const hours = Math.max(0.25, Number(estimatedDurationHours || "1"));
+      const minutes = Math.max(1, Math.round(hours * 60));
 
       const serviceAddressId =
         addr.source === "service" ? addr.key.replace("service:", "") : null;
@@ -1241,7 +1242,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
       setIssueSummary("");
       setIssueDetails("");
-      setEstimatedDurationMinutes("60");
+      setEstimatedDurationHours("1");
       setShowCreateTicket(false);
 
       setRelatedTickets((prev) => [
@@ -2406,11 +2407,11 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                   />
 
                   <TextField
-                    label="Estimated duration (minutes)"
+                    label="Estimated duration (hours)"
                     type="number"
-                    inputProps={{ min: 1 }}
-                    value={estimatedDurationMinutes}
-                    onChange={(e) => setEstimatedDurationMinutes(e.target.value)}
+                    inputProps={{ min: 0.25, step: 0.25 }}
+                    value={estimatedDurationHours}
+                    onChange={(e) => setEstimatedDurationHours(e.target.value)}
                     fullWidth
                   />
                 </Box>

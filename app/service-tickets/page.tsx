@@ -156,6 +156,25 @@ function getScheduleText(ticket: ServiceTicketListItem) {
   );
 }
 
+function formatEstimatedDurationHours(minutes?: number | null) {
+  const rawMinutes = Number(minutes || 0);
+
+  if (!Number.isFinite(rawMinutes) || rawMinutes <= 0) return "—";
+
+  const hours = rawMinutes / 60;
+
+  if (Number.isInteger(hours)) {
+    return `${hours} ${hours === 1 ? "hr" : "hrs"}`;
+  }
+
+  const rounded = Math.round(hours * 100) / 100;
+  const display = Number.isInteger(rounded)
+    ? String(rounded)
+    : String(rounded).replace(/\.0+$/, "");
+
+  return `${display} hrs`;
+}
+
 function normalize(s: unknown) {
   return String(s || "").trim().toLowerCase();
 }
@@ -1147,7 +1166,7 @@ export default function ServiceTicketsPage() {
                                     variant="body2"
                                     sx={{ color: "text.primary", fontWeight: 700 }}
                                   >
-                                    {ticket.estimatedDurationMinutes} min
+                                    {formatEstimatedDurationHours(ticket.estimatedDurationMinutes)}
                                   </Typography>
                                 </Typography>
                               </Stack>
