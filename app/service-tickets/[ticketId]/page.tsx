@@ -4301,29 +4301,72 @@ Supply line`}
 
     try {
       const now = nowIso();
+      const tripRef = doc(db, "trips", trip.id);
+      const ticketRef = ticket?.id ? doc(db, "serviceTickets", ticket.id) : null;
 
-      await updateDoc(doc(db, "trips", trip.id), {
-        status: "cancelled",
-        timerState: "complete",
-        active: false,
-        cancelReason: "deleted",
-        updatedAt: now,
-        updatedByUid: myUid || null,
-      });
+      const nextTrips = trips.filter((t) => t.id !== trip.id);
+      const nextStatus = deriveNextTicketStatus(nextTrips);
+      const hasRemainingOpenTrips = nextTrips.some((item) => isOpenTripRecord(item));
 
-      const nextTrips = trips.map((t) =>
-        t.id === trip.id
-          ? {
-              ...t,
-              status: "cancelled",
-              timerState: "complete",
-              active: false,
-              cancelReason: "deleted",
-              updatedAt: now,
-              updatedByUid: myUid || null,
-            }
-          : t
-      );
+      const batch = writeBatch(db);
+
+      batch.delete(tripRef);
+
+      if (ticketRef) {
+        batch.update(
+          ticketRef,
+          stripUndefined({
+            status: nextStatus,
+            updatedAt: now,
+            updatedByUid: myUid || null,
+
+            // A deleted, never-started service trip should behave like scheduling never happened.
+            // Clear the assignment/schedule fields so the ticket returns to the default Available Tickets queue.
+            ...(hasRemainingOpenTrips
+              ? {}
+              : {
+                  assignedTechnicianId: null,
+                  assignedTechnicianName: null,
+                  primaryTechnicianId: null,
+                  secondaryTechnicianId: null,
+                  secondaryTechnicianName: null,
+                  helperIds: null,
+                  helperNames: null,
+                  assignedTechnicianIds: null,
+                  scheduledDate: null,
+                  scheduledStartTime: null,
+                  scheduledEndTime: null,
+                  scheduledTimeWindow: null,
+                  scheduledTripId: null,
+                  activeTripId: null,
+                }),
+          })
+        );
+      }
+
+      const activityRef = ticket?.id
+        ? doc(collection(db, "serviceTickets", ticket.id, "activity"))
+        : null;
+
+      if (activityRef) {
+        batch.set(activityRef, {
+          type: "scheduled_trip_deleted",
+          title: "Scheduled Trip Removed",
+          description:
+            "A planned service trip was deleted before work started. The ticket was returned to the available work queue.",
+          details: [
+            `Deleted trip: ${trip.id}`,
+            `Previous schedule: ${trip.date} ${trip.startTime}-${trip.endTime}`,
+            `Next ticket status: ${formatTicketStatus(nextStatus)}`,
+          ],
+          createdAt: now,
+          createdByUid: myUid || null,
+          createdByName: appUser?.displayName || "System",
+          createdByRole: appUser?.role || null,
+        });
+      }
+
+      await batch.commit();
 
       setTrips(nextTrips);
       setAvailabilityTripsByDate((prev) => ({
@@ -4331,12 +4374,51 @@ Supply line`}
         [trip.date]: (prev[trip.date] || []).filter((item) => item.id !== trip.id),
       }));
 
-      const nextStatus = deriveNextTicketStatus(nextTrips);
-      if (ticket?.id && nextStatus !== ticket.status) {
-        await persistTicketStatus(nextStatus, now);
+      if (ticket?.id) {
+        setTicket((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: nextStatus,
+                updatedAt: now,
+                ...(hasRemainingOpenTrips
+                  ? {}
+                  : {
+                      assignedTechnicianId: undefined,
+                      assignedTechnicianName: undefined,
+                      primaryTechnicianId: undefined,
+                      secondaryTechnicianId: undefined,
+                      secondaryTechnicianName: undefined,
+                      helperIds: undefined,
+                      helperNames: undefined,
+                      assignedTechnicianIds: undefined,
+                    }),
+              }
+            : prev
+        );
+        setTicketStatusEdit(nextStatus);
       }
 
-      setTripOk(trip.id, "Trip removed.");
+      setActivityEntries((prev) => [
+        {
+          id: activityRef?.id || `local_${trip.id}_${now}`,
+          type: "scheduled_trip_deleted",
+          title: "Scheduled Trip Removed",
+          description:
+            "A planned service trip was deleted before work started. The ticket was returned to the available work queue.",
+          details: [
+            `Deleted trip: ${trip.id}`,
+            `Previous schedule: ${trip.date} ${trip.startTime}-${trip.endTime}`,
+            `Next ticket status: ${formatTicketStatus(nextStatus)}`,
+          ],
+          createdAt: now,
+          createdByName: appUser?.displayName || "System",
+          createdByRole: appUser?.role || null,
+        },
+        ...prev,
+      ]);
+
+      setTripOk(trip.id, "Scheduled trip deleted. Ticket returned to the available queue.");
     } catch (err: unknown) {
       setTripErr(
         trip.id,

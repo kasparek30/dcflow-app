@@ -37,7 +37,7 @@ export default function ServiceTicketMapPreview({
         display: "block",
         width: "100%",
         minHeight: { xs: 210, sm: 240 },
-        borderRadius: 2,
+        borderRadius: 1,
         overflow: "hidden",
         border: "1px solid",
         borderColor: "divider",
@@ -85,7 +85,7 @@ export default function ServiceTicketMapPreview({
           sx={{
             px: 1.25,
             py: 1,
-            borderRadius: 1.5,
+            borderRadius: 1,
             backgroundColor: alpha(theme.palette.background.paper, 0.9),
             backdropFilter: "blur(8px)",
           }}

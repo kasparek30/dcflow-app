@@ -1328,9 +1328,21 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     );
   }, [selectedOverlapConflicts]);
 
-  const existingOpenTrips = useMemo(() => {
+  const existingActiveTicketTrips = useMemo(() => {
     return ticketTrips.filter((trip) => trip.active !== false && isOpenTripStatus(trip.status));
   }, [ticketTrips]);
+
+  const existingPlannedTicketTrips = useMemo(() => {
+    return existingActiveTicketTrips.filter(
+      (trip) => normalizeStatus(trip.status) === "planned"
+    );
+  }, [existingActiveTicketTrips]);
+
+  const existingInProgressTicketTrips = useMemo(() => {
+    return existingActiveTicketTrips.filter(
+      (trip) => normalizeStatus(trip.status) === "in_progress"
+    );
+  }, [existingActiveTicketTrips]);
 
   useEffect(() => {
     if (selectedOverlapConflicts.length === 0) {
@@ -1371,17 +1383,20 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
       return;
     }
 
-    if (hasOpenTrips(existingOpenTrips)) {
+    if (existingInProgressTicketTrips.length > 0) {
       setSaveError(
-        "This ticket already has an open trip. Complete or cancel it before scheduling another."
+        "This ticket already has an in-progress trip. Finish or pause/close out that active trip before scheduling another backup visit."
       );
       return;
     }
 
     const remoteOpenTrips = await findOpenTripsForTicketId(ticketId);
-    if (remoteOpenTrips.length > 0) {
+    const remoteInProgressTrips = remoteOpenTrips.filter(
+      (trip) => normalizeStatus(trip.status) === "in_progress"
+    );
+    if (remoteInProgressTrips.length > 0) {
       setSaveError(
-        "This ticket already has an open trip in Firestore. Refresh and use that trip instead."
+        "This ticket already has an in-progress trip in Firestore. Refresh and use that active trip instead."
       );
       return;
     }
@@ -1714,10 +1729,17 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                   </Alert>
                 ) : null}
 
-                {existingOpenTrips.length > 0 ? (
+                {existingInProgressTicketTrips.length > 0 ? (
                   <Alert severity="error" variant="outlined" sx={{ borderRadius: 3 }}>
-                    This ticket already has an open trip. Complete or cancel that trip before
-                    scheduling another one.
+                    This ticket already has an in-progress trip. Finish or pause/close out that
+                    active trip before scheduling another backup visit.
+                  </Alert>
+                ) : existingPlannedTicketTrips.length > 0 ? (
+                  <Alert severity="warning" variant="outlined" sx={{ borderRadius: 3 }}>
+                    This ticket already has {existingPlannedTicketTrips.length} planned trip
+                    {existingPlannedTicketTrips.length === 1 ? "" : "s"}. You can still schedule
+                    another planned backup visit for “maybe today, first thing tomorrow” situations.
+                    If the first trip gets completed, remove any unused backup trip from the ticket.
                   </Alert>
                 ) : null}
 
@@ -2320,7 +2342,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                           loading ||
                           availabilityLoading ||
                           !ticket ||
-                          existingOpenTrips.length > 0 ||
+                          existingInProgressTicketTrips.length > 0 ||
                           isTicketTerminal(ticket.status)
                         }
                         startIcon={
