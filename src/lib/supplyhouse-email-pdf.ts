@@ -50,8 +50,20 @@ export function htmlToPlainText(htmlOrText: unknown) {
     .join("\n");
 }
 
-function sanitizeEmailHtmlForRendering(html: string) {
+/**
+ * SupplyHouse email HTML uses old-school table markup and remote images.
+ * Their sample emails may include http:// image URLs. Converting known
+ * SupplyHouse assets to https improves Chrome rendering reliability.
+ */
+function normalizeSupplyHouseAssetUrls(html: string) {
   return String(html || "")
+    .replace(/http:\/\/s3\.supplyhouse\.com/gi, "https://s3.supplyhouse.com")
+    .replace(/http:\/\/www\.supplyhouse\.com/gi, "https://www.supplyhouse.com")
+    .replace(/http:\/\/supplyhouse\.com/gi, "https://supplyhouse.com");
+}
+
+function sanitizeEmailHtmlForRendering(html: string) {
+  return normalizeSupplyHouseAssetUrls(String(html || ""))
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
     .replace(/<object[\s\S]*?<\/object>/gi, "")
@@ -79,15 +91,22 @@ function buildPrintableEmailHtml(args: {
   <title>${escapeHtml(clean(args.subject) || "SupplyHouse Email Invoice")}</title>
   <style>
     @page { size: Letter; margin: 0.35in; }
-    * { box-sizing: border-box; }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
     body {
       margin: 0;
+      padding: 0;
       background: #ffffff;
       color: #1f1f1f;
       font-family: Arial, Helvetica, sans-serif;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
+
     .dcflow-capture-header {
       border: 1px solid #d0d7de;
       border-radius: 10px;
@@ -96,31 +115,42 @@ function buildPrintableEmailHtml(args: {
       background: #f6f8fa;
       page-break-inside: avoid;
     }
+
     .dcflow-capture-title {
       font-size: 14px;
       font-weight: 700;
       color: #0b3558;
       margin-bottom: 8px;
     }
+
     .dcflow-capture-meta {
       font-size: 11px;
       line-height: 1.45;
       color: #374151;
       word-break: break-word;
     }
-    .dcflow-capture-meta strong { color: #111827; }
+
+    .dcflow-capture-meta strong {
+      color: #111827;
+    }
+
     .dcflow-email-body {
       width: 100%;
       overflow: visible;
     }
+
     .dcflow-email-body img {
       max-width: 100%;
       height: auto;
     }
+
     .dcflow-email-body table {
       max-width: 100%;
     }
-    a { color: inherit; }
+
+    a {
+      color: inherit;
+    }
   </style>
 </head>
 <body>
@@ -128,10 +158,23 @@ function buildPrintableEmailHtml(args: {
     <div class="dcflow-capture-title">DCFlow Supplier Email PDF Snapshot</div>
     <div class="dcflow-capture-meta"><strong>Subject:</strong> ${escapeHtml(clean(args.subject) || "—")}</div>
     <div class="dcflow-capture-meta"><strong>From:</strong> ${escapeHtml(clean(args.from) || "—")}</div>
-    ${clean(args.to) ? `<div class="dcflow-capture-meta"><strong>To:</strong> ${escapeHtml(clean(args.to))}</div>` : ""}
-    ${clean(args.receivedAt) ? `<div class="dcflow-capture-meta"><strong>Received:</strong> ${escapeHtml(clean(args.receivedAt))}</div>` : ""}
-    ${clean(args.messageId) ? `<div class="dcflow-capture-meta"><strong>Message ID:</strong> ${escapeHtml(clean(args.messageId))}</div>` : ""}
+    ${
+      clean(args.to)
+        ? `<div class="dcflow-capture-meta"><strong>To:</strong> ${escapeHtml(clean(args.to))}</div>`
+        : ""
+    }
+    ${
+      clean(args.receivedAt)
+        ? `<div class="dcflow-capture-meta"><strong>Received:</strong> ${escapeHtml(clean(args.receivedAt))}</div>`
+        : ""
+    }
+    ${
+      clean(args.messageId)
+        ? `<div class="dcflow-capture-meta"><strong>Message ID:</strong> ${escapeHtml(clean(args.messageId))}</div>`
+        : ""
+    }
   </div>
+
   <div class="dcflow-email-body">
     ${sanitizedBody}
   </div>
@@ -163,13 +206,23 @@ async function tryRenderHtmlToPdfBuffer(args: {
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-sync",
         "--font-render-hinting=none",
+        "--hide-scrollbars",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-zygote",
       ],
     });
 
     const page = await browser.newPage();
-    page.setDefaultNavigationTimeout(25000);
-    page.setDefaultTimeout(25000);
+
+    page.setDefaultNavigationTimeout(20000);
+    page.setDefaultTimeout(20000);
 
     await page.setViewport({
       width: 900,
@@ -186,12 +239,64 @@ async function tryRenderHtmlToPdfBuffer(args: {
       bodyHtml,
     });
 
+    /**
+     * Important:
+     * Do NOT use networkidle0 here. SupplyHouse emails include remote
+     * images and old email-client markup. In production, networkidle0 can
+     * wait too long or timeout, causing a fallback text PDF.
+     */
     await page.setContent(printableHtml, {
-      waitUntil: "networkidle0",
-      timeout: 30000,
+      waitUntil: "domcontentloaded",
+      timeout: 20000,
     });
 
     await page.emulateMediaType("screen");
+
+    /**
+     * Give product/logo images a short chance to load, but don't fail the
+     * whole render if an external image is slow or blocked.
+     */
+    await page
+      .evaluate(async () => {
+        const images = Array.from(document.images || []);
+
+        await Promise.all(
+          images.map((img) => {
+            if (img.complete) return Promise.resolve();
+
+            return new Promise<void>((resolve) => {
+              const timer = window.setTimeout(() => resolve(), 2500);
+
+              img.addEventListener(
+                "load",
+                () => {
+                  window.clearTimeout(timer);
+                  resolve();
+                },
+                { once: true },
+              );
+
+              img.addEventListener(
+                "error",
+                () => {
+                  window.clearTimeout(timer);
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+          }),
+        );
+      })
+      .catch((err: unknown) => {
+        console.warn("SupplyHouse PDF image wait warning:", err);
+      });
+
+    /**
+     * Tiny layout settle delay. Avoid page.waitForTimeout so this file
+     * stays compatible across Puppeteer versions.
+     */
+    await new Promise((resolve) => setTimeout(resolve, 750));
 
     const pdf = await page.pdf({
       format: "Letter",
@@ -205,9 +310,14 @@ async function tryRenderHtmlToPdfBuffer(args: {
       },
     });
 
+    console.log("SupplyHouse email PDF render mode: html_puppeteer");
+
     return Buffer.from(pdf);
   } catch (err) {
-    console.warn("SupplyHouse HTML email PDF rendering failed; falling back to text PDF.", err);
+    console.warn(
+      "SupplyHouse HTML email PDF rendering failed; falling back to text PDF.",
+      err,
+    );
     return null;
   } finally {
     if (browser) {
@@ -339,15 +449,29 @@ async function generateFallbackTextPdfBuffer(args: {
   drawSpacer(4);
   drawRule();
 
-  drawLine(`Subject: ${clean(args.subject) || "—"}`, { font: bold, size: 10 });
+  drawLine(`Subject: ${clean(args.subject) || "—"}`, {
+    font: bold,
+    size: 10,
+  });
   drawLine(`From: ${clean(args.from) || "—"}`, { size: 9 });
   if (clean(args.to)) drawLine(`To: ${clean(args.to)}`, { size: 9 });
-  if (clean(args.receivedAt)) drawLine(`Received: ${clean(args.receivedAt)}`, { size: 9 });
-  if (clean(args.messageId)) drawLine(`Message ID: ${clean(args.messageId)}`, { size: 8, color: rgb(0.45, 0.45, 0.45) });
+  if (clean(args.receivedAt)) {
+    drawLine(`Received: ${clean(args.receivedAt)}`, { size: 9 });
+  }
+  if (clean(args.messageId)) {
+    drawLine(`Message ID: ${clean(args.messageId)}`, {
+      size: 8,
+      color: rgb(0.45, 0.45, 0.45),
+    });
+  }
 
   drawSpacer(8);
   drawRule();
-  drawLine("EMAIL BODY", { font: bold, size: 11, color: rgb(0.10, 0.24, 0.42) });
+  drawLine("EMAIL BODY", {
+    font: bold,
+    size: 11,
+    color: rgb(0.10, 0.24, 0.42),
+  });
   drawSpacer(4);
 
   const bodyLines = String(args.bodyText || "")
