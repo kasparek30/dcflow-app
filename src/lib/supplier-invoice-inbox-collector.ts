@@ -445,8 +445,9 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
     ) || `SupplyHouse-Invoice-${orderNumber}.pdf`;
 
   const attachmentId = `${safeMessageId}_supplyhouse_email_${filename}`;
+  const storageVersion = safeFilePart(now.replace(/[:.]/g, "-")) || String(Date.now());
   const storagePath =
-    `supplierInvoiceInbox/${args.invoiceId}/attachments/${attachmentId}`;
+    `supplierInvoiceInbox/${args.invoiceId}/attachments/${storageVersion}_${attachmentId}`;
 
   const pdfBuffer = await generateSupplyHouseEmailPdfBuffer({
     subject: args.subject,
@@ -471,6 +472,7 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
         poCode,
         orderNumber,
         uploadedAt: now,
+        generatedPdfVersion: now,
       },
     },
   });
@@ -498,6 +500,7 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
       supplierParser: "supplyhouse_email_body",
       detectedPoCodes: poCode ? [poCode] : [],
       orderNumber,
+      generatedPdfVersion: now,
     },
   } as SavedSupplierAttachment;
 }
@@ -519,9 +522,88 @@ async function savePendingSupplierInvoice(args: {
 
   const existing = await invoiceRef.get();
 
+  const bodyText = cleanText(args.emailBodyText);
+
   if (existing.exists) {
+    if (args.supplierHint === "supplyhouse" && bodyText) {
+      const generatedAttachment = await saveSupplyHouseEmailPdfAttachment({
+        invoiceId,
+        subject: args.subject,
+        from: args.from,
+        to: args.to || null,
+        messageId: args.messageId,
+        receivedAt: args.receivedAt || null,
+        bodyText,
+        bodyHtml: args.emailBodyHtml || null,
+      });
+
+      const now = new Date().toISOString();
+      const parsedFromBody = parseSupplierInvoiceText(bodyText);
+
+      await invoiceRef.set(
+        {
+          status: "ocr_pending",
+          sourceType: "supplier_email_body",
+          processingMode: "supplyhouse_refresh",
+          supplierHint: args.supplierHint || null,
+          emailSubject: args.subject || null,
+          emailFrom: args.from || null,
+          emailTo: args.to || null,
+          emailBodyText: bodyText || null,
+          emailBodyHtml:
+            args.emailBodyHtml && args.emailBodyHtml.length <= 100000
+              ? args.emailBodyHtml
+              : null,
+          messageId: args.messageId,
+          uid: args.uid,
+          detectedPoCodes: parsedFromBody?.poCode ? [parsedFromBody.poCode] : [],
+          matchedPoCode: null,
+          matchedPoCodes: [],
+          attachmentCount: 1,
+          pdfAttachmentCount: 1,
+          generatedEmailPdfCount: 1,
+          attachments: [generatedAttachment],
+          refreshedGeneratedEmailPdfAt: now,
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+
+      await adminFirestore
+        .collection("poInboxProcessedEmails")
+        .doc(invoiceId)
+        .set(
+          {
+            scope: "supplierInvoiceInbox",
+            invoiceId,
+            messageId: args.messageId,
+            subject: args.subject,
+            from: args.from,
+            uid: args.uid,
+            supplierHint: args.supplierHint || null,
+            attachmentCount: 0,
+            pdfAttachmentCount: 1,
+            generatedEmailPdfCount: 1,
+            collectionStatus: "ocr_pending",
+            refreshedGeneratedEmailPdfAt: now,
+            processedAt: now,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+
+      return {
+        created: false,
+        refreshed: true,
+        invoiceId,
+        pdfAttachmentCount: 1,
+        generatedEmailPdfCount: 1,
+      };
+    }
+
     return {
       created: false,
+      refreshed: false,
       invoiceId,
       pdfAttachmentCount: 0,
       generatedEmailPdfCount: 0,
@@ -536,7 +618,6 @@ async function savePendingSupplierInvoice(args: {
 
   let generatedEmailPdfCount = 0;
 
-  const bodyText = cleanText(args.emailBodyText);
   if (savedAttachments.length === 0 && args.supplierHint === "supplyhouse" && bodyText) {
     const generatedAttachment = await saveSupplyHouseEmailPdfAttachment({
       invoiceId,
@@ -983,9 +1064,11 @@ export async function collectSupplierInvoiceInbox(options?: {
 export async function backfillSupplyHouseInvoiceInbox(options?: {
   scanLimit?: number | string;
   maxProcess?: number | string;
+  refreshExisting?: boolean;
 }): Promise<SupplyHouseBackfillResult> {
   const scanLimit = readPositiveInteger(options?.scanLimit, 25, 1, 100);
   const maxProcess = readPositiveInteger(options?.maxProcess, 2, 1, 5);
+  const refreshExisting = options?.refreshExisting === true;
 
   const result = makeBaseBackfillResult();
   const mailboxName = "INBOX";
@@ -1054,7 +1137,7 @@ export async function backfillSupplyHouseInvoiceInbox(options?: {
 
           const existingByUid = await findExistingSupplierInvoiceByUid(uid);
 
-          if (existingByUid.exists) {
+          if (existingByUid.exists && !refreshExisting) {
             result.alreadySaved += 1;
             result.debug.scannedEmails.push({
               uid,
@@ -1096,7 +1179,7 @@ export async function backfillSupplyHouseInvoiceInbox(options?: {
             supplierHint: "supplyhouse",
           });
 
-          if (!saved.created) {
+          if (!saved.created && !(saved as any).refreshed) {
             result.alreadySaved += 1;
             result.debug.scannedEmails.push({
               uid,
@@ -1116,7 +1199,9 @@ export async function backfillSupplyHouseInvoiceInbox(options?: {
             subject,
             from,
             messageId,
-            reason: `Backfilled SupplyHouse invoice into ${saved.invoiceId}; awaiting processor.`,
+            reason: (saved as any).refreshed
+              ? `Refreshed SupplyHouse generated PDF for ${saved.invoiceId}; awaiting processor.`
+              : `Backfilled SupplyHouse invoice into ${saved.invoiceId}; awaiting processor.`,
           });
         } catch (err) {
           const message =

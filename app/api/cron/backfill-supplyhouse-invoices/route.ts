@@ -43,9 +43,15 @@ export async function GET(req: Request) {
 
     const url = new URL(req.url);
 
+    const refreshParam = String(url.searchParams.get("refresh") || "").toLowerCase();
+
     const result = await backfillSupplyHouseInvoiceInbox({
       scanLimit: readNumberParam(url.searchParams.get("limit"), 25, 1, 100),
       maxProcess: readNumberParam(url.searchParams.get("maxProcess"), 2, 1, 5),
+      refreshExisting:
+        refreshParam === "1" ||
+        refreshParam === "true" ||
+        refreshParam === "yes",
     });
 
     return NextResponse.json({
