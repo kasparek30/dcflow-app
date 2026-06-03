@@ -182,6 +182,44 @@ function buildPrintableEmailHtml(args: {
 </html>`;
 }
 
+async function getCloudRunChromiumLaunchOptions() {
+  const chromiumModule = await import("@sparticuz/chromium");
+  const chromium = chromiumModule.default;
+
+  const executablePath = await chromium.executablePath();
+
+  if (!executablePath) {
+    throw new Error("@sparticuz/chromium did not provide an executable path.");
+  }
+
+  return {
+    executablePath,
+    args: [
+      ...chromium.args,
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--disable-sync",
+      "--font-render-hinting=none",
+      "--hide-scrollbars",
+      "--mute-audio",
+      "--no-first-run",
+      "--no-zygote",
+    ],
+    headless: true,
+    defaultViewport: {
+      width: 900,
+      height: 1200,
+      deviceScaleFactor: 1,
+    },
+  };
+}
+
 async function tryRenderHtmlToPdfBuffer(args: {
   subject: string;
   from: string;
@@ -196,28 +234,12 @@ async function tryRenderHtmlToPdfBuffer(args: {
   let browser: any = null;
 
   try {
-    const puppeteerModule = await import("puppeteer");
+    const puppeteerModule = await import("puppeteer-core");
     const puppeteer = puppeteerModule.default || puppeteerModule;
 
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-background-networking",
-        "--disable-default-apps",
-        "--disable-extensions",
-        "--disable-sync",
-        "--font-render-hinting=none",
-        "--hide-scrollbars",
-        "--mute-audio",
-        "--no-first-run",
-        "--no-zygote",
-      ],
-    });
+    const launchOptions = await getCloudRunChromiumLaunchOptions();
+
+    browser = await puppeteer.launch(launchOptions);
 
     const page = await browser.newPage();
 
@@ -310,7 +332,7 @@ async function tryRenderHtmlToPdfBuffer(args: {
       },
     });
 
-    console.log("SupplyHouse email PDF render mode: html_puppeteer");
+    console.log("SupplyHouse email PDF render mode: html_puppeteer_core_sparticuz");
 
     return Buffer.from(pdf);
   } catch (err) {
