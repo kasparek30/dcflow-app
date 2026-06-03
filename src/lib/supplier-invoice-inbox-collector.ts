@@ -428,6 +428,7 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
   messageId: string;
   receivedAt?: string | null;
   bodyText: string;
+  bodyHtml?: string | null;
 }) {
   const now = new Date().toISOString();
   const bucket = adminStorageBucket;
@@ -454,6 +455,7 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
     messageId: args.messageId,
     receivedAt: args.receivedAt || null,
     bodyText: args.bodyText,
+    bodyHtml: args.bodyHtml || null,
   });
 
   await bucket.file(storagePath).save(pdfBuffer, {
@@ -464,7 +466,7 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
         ownerCode: args.invoiceId,
         messageId: args.messageId,
         originalFilename: filename,
-        source: "email_body_generated_pdf",
+        source: "email_body_rendered_or_generated_pdf",
         vendorName: "SUPPLYHOUSE",
         poCode,
         orderNumber,
@@ -488,7 +490,7 @@ async function saveSupplyHouseEmailPdfAttachment(args: {
     ocrText: shortText,
     parsedInvoice,
     extractedMeta: {
-      extractionMethod: "email_body_generated_pdf",
+      extractionMethod: "email_body_rendered_or_generated_pdf",
       ocrStatus: shortText ? "complete" : "empty",
       ocrProcessedAt: now,
       source: "email_body",
@@ -544,6 +546,7 @@ async function savePendingSupplierInvoice(args: {
       messageId: args.messageId,
       receivedAt: args.receivedAt || null,
       bodyText,
+      bodyHtml: args.emailBodyHtml || null,
     });
 
     savedAttachments = [generatedAttachment];
@@ -877,7 +880,7 @@ export async function collectSupplierInvoiceInbox(options?: {
           });
 
           subject = cleanText(parsed.subject) || subject;
-          from = cleanText(parsed.from?.text) || from;
+          from = mailAddressText(parsed.from) || from;
           messageId =
             cleanText(parsed.messageId) ||
             messageId ||
@@ -1078,7 +1081,7 @@ export async function backfillSupplyHouseInvoiceInbox(options?: {
           const parsed = await fetchAndParseFullMessage({ client, uid });
 
           subject = cleanText(parsed.subject) || subject;
-          from = cleanText(parsed.from?.text) || from;
+          from = mailAddressText(parsed.from) || from;
           messageId =
             cleanText(parsed.messageId) ||
             messageId ||
