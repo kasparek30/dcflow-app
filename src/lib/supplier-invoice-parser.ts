@@ -435,15 +435,209 @@ function parseMooreLineItems(source: string) {
   return items;
 }
 
+
+function decodeHtmlEntitiesForParsing(value: string) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_match, code) => {
+      const n = Number(code);
+      return Number.isFinite(n) ? String.fromCharCode(n) : "";
+    });
+}
+
+function htmlToTextForParsing(value: string) {
+  const raw = String(value || "");
+
+  return decodeHtmlEntitiesForParsing(
+    raw
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|tr|table|tbody|thead|h1|h2|h3|h4|h5|li)>/gi, "\n")
+      .replace(/<\/td>/gi, " ")
+      .replace(/<\/th>/gi, " ")
+      .replace(/<[^>]+>/g, " "),
+  )
+    .split(/\r?\n/g)
+    .map((line) => clean(line))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseSupplyHouseInvoiceNumber(flat: string) {
+  return (
+    flat.match(/\bInvoice\s+of\s+Order\s*#\s*([0-9]+)/i)?.[1] ||
+    flat.match(/\bOrder\s*#\s*([0-9]+)/i)?.[1] ||
+    flat.match(/\bInvoice\s*#\s*([0-9]+)/i)?.[1] ||
+    null
+  );
+}
+
+function parseSupplyHouseTotal(flat: string) {
+  const patterns = [
+    /\bOrder\s+Total:\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
+    /\bTotal\s+Payments:\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
+    /\bSubtotal:\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
+    /\bTotal\s*\$?\s*([0-9,]+\.[0-9]{2})\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = flat.match(pattern);
+    if (match?.[1]) return toNumber(match[1]);
+  }
+
+  return null;
+}
+
+function parseSupplyHouseLineItems(source: string) {
+  const items: ParsedSupplierInvoiceLineItem[] = [];
+  const htmlSource = String(source || "");
+
+  function addItem(args: {
+    rowText: string;
+    lineNumber: number;
+  }) {
+    const rowText = clean(args.rowText);
+    const sku = rowText.match(/\bSKU:\s*([A-Z0-9.-]+)/i)?.[1] || null;
+    if (!sku) return;
+
+    const description = clean(rowText.split(/\bSKU:/i)[0]);
+    if (!description) return;
+
+    const brand =
+      rowText.match(/\bBrand:\s*(.+?)(?=\s+\$[0-9,]+\.[0-9]{2}|$)/i)?.[1] ||
+      null;
+
+    const moneyMatches = Array.from(rowText.matchAll(/\$?\s*[0-9,]+\.[0-9]{2}/g));
+    if (moneyMatches.length === 0) return;
+
+    const unitPriceMatch = moneyMatches[0];
+    const extensionMatch = moneyMatches[moneyMatches.length - 1];
+
+    const unitPrice = toNumber(unitPriceMatch[0]);
+    const extension = toNumber(extensionMatch[0]);
+
+    const firstEnd = (unitPriceMatch.index ?? 0) + unitPriceMatch[0].length;
+    const lastStart = extensionMatch.index ?? rowText.length;
+    const betweenPrices = rowText.slice(firstEnd, lastStart);
+    const qty =
+      toNumber(betweenPrices.match(/\b([0-9]+(?:\.[0-9]+)?)\b/)?.[1]) || 1;
+
+    items.push({
+      lineNumber: args.lineNumber,
+      shippedQty: qty,
+      orderedQty: qty,
+      unitOfMeasure: "EA",
+      sku,
+      description,
+      suggestedPrice: null,
+      units: qty,
+      unitPrice,
+      pricePer: "EA",
+      extension,
+      rawLine: clean(
+        [
+          description,
+          `SKU: ${sku}`,
+          brand ? `Brand: ${clean(brand)}` : "",
+          unitPrice != null ? `$${unitPrice.toFixed(2)}` : "",
+          qty,
+          extension != null ? `$${extension.toFixed(2)}` : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      ),
+    });
+  }
+
+  const htmlRows = Array.from(
+    htmlSource.matchAll(/<tr\b[\s\S]*?\bSKU:\s*[A-Z0-9.-]+[\s\S]*?<\/tr>/gi),
+  );
+
+  htmlRows.forEach((match, index) => {
+    addItem({
+      rowText: htmlToTextForParsing(match[0]),
+      lineNumber: index + 1,
+    });
+  });
+
+  if (items.length > 0) return items;
+
+  const text = htmlToTextForParsing(source);
+  const orderSection =
+    text.split(/Order Summary/i)[1]?.split(/Subtotal:/i)[0] ||
+    text.split(/Item\s+Price\s+Qty\s+Total/i)[1]?.split(/Subtotal:/i)[0] ||
+    text;
+
+  const pattern =
+    /(.+?)\s+SKU:\s*([A-Z0-9.-]+)\s+Brand:\s*(.+?)\s+\$([0-9,]+\.[0-9]{2})\s+([0-9]+(?:\.[0-9]+)?)\s+\$([0-9,]+\.[0-9]{2})/gi;
+
+  let lineNumber = 1;
+
+  for (const match of orderSection.matchAll(pattern)) {
+    const description = clean(match[1]);
+    const sku = clean(match[2]);
+    const brand = clean(match[3]);
+    const unitPrice = toNumber(match[4]);
+    const qty = toNumber(match[5]) || 1;
+    const extension = toNumber(match[6]);
+
+    if (!description || !sku) continue;
+
+    items.push({
+      lineNumber,
+      shippedQty: qty,
+      orderedQty: qty,
+      unitOfMeasure: "EA",
+      sku,
+      description,
+      suggestedPrice: null,
+      units: qty,
+      unitPrice,
+      pricePer: "EA",
+      extension,
+      rawLine: clean(
+        [
+          description,
+          `SKU: ${sku}`,
+          brand ? `Brand: ${brand}` : "",
+          unitPrice != null ? `$${unitPrice.toFixed(2)}` : "",
+          qty,
+          extension != null ? `$${extension.toFixed(2)}` : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      ),
+    });
+
+    lineNumber += 1;
+  }
+
+  return items;
+}
+
 export function parseSupplierInvoiceText(
   text: string,
 ): ParsedSupplierInvoice {
   const source = String(text || "");
-  const flat = clean(source);
+  const textForParsing = htmlToTextForParsing(source);
+  const flat = clean(textForParsing || source);
   const upper = flat.toUpperCase();
+  const sourceUpper = source.toUpperCase();
 
   const isFarmers = upper.includes("FARMERS LUMBER COMPANY");
   const isMoore = upper.includes("MOORE SUPPLY");
+  const isSupplyHouse =
+    upper.includes("SUPPLYHOUSE") ||
+    sourceUpper.includes("SUPPLYHOUSE.COM") ||
+    sourceUpper.includes("SUPPLYHOUSE");
 
   const genericPoCode = extractDcflowPoCode(flat);
 
@@ -454,6 +648,8 @@ export function parseSupplierInvoiceText(
     flat.match(
       /\bCUSTOMER\s+PO\s*(?:NUMBER|NO\.?|#|:)?\s*([A-Z0-9.-]+)/i,
     )?.[1] ||
+    flat.match(/\bPO\s*#:\s*([A-Z0-9.-]+)/i)?.[1] ||
+    flat.match(/\bPO\s*#\s*([A-Z0-9.-]+)/i)?.[1] ||
     null;
 
   const customerPoCode = customerPoValue
@@ -469,15 +665,19 @@ export function parseSupplierInvoiceText(
     flat.match(/\bINVOICE\s*#?\s*([0-9]{4,})\b/i)?.[1] ||
     null;
 
-  const invoiceNumber = isMoore
-    ? parseMooreInvoiceNumber(flat) || farmersInvoiceNumber
-    : farmersInvoiceNumber;
+  const invoiceNumber = isSupplyHouse
+    ? parseSupplyHouseInvoiceNumber(flat) || farmersInvoiceNumber
+    : isMoore
+      ? parseMooreInvoiceNumber(flat) || farmersInvoiceNumber
+      : farmersInvoiceNumber;
 
   const vendorName = isFarmers
     ? "FARMERS LUMBER COMPANY"
     : isMoore
       ? "MOORE SUPPLY"
-      : null;
+      : isSupplyHouse
+        ? "SUPPLYHOUSE"
+        : null;
 
   const customerName =
     flat.includes("DANIEL CERNOCH PLUMBING") ||
@@ -500,13 +700,17 @@ export function parseSupplierInvoiceText(
       /\*\*\s*AMOUNT CHARGED TO STORE ACCOUNT\s*\*\*\s*([0-9]+\.[0-9]{2})/i,
     )?.[1] || null;
 
-  const total = isMoore
-    ? parseMooreTotal(flat)
-    : toNumber(farmersAmountCharged);
+  const total = isSupplyHouse
+    ? parseSupplyHouseTotal(flat)
+    : isMoore
+      ? parseMooreTotal(flat)
+      : toNumber(farmersAmountCharged);
 
-  const lineItems = isMoore
-    ? parseMooreLineItems(source)
-    : parseFarmersLineItems(flat);
+  const lineItems = isSupplyHouse
+    ? parseSupplyHouseLineItems(source)
+    : isMoore
+      ? parseMooreLineItems(source)
+      : parseFarmersLineItems(flat);
 
   return {
     vendorName,
@@ -522,3 +726,4 @@ export function parseSupplierInvoiceText(
     rawTextPreview: source.slice(0, 2000),
   };
 }
+

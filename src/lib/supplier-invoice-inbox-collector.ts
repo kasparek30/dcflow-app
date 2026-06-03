@@ -3,6 +3,11 @@ import { ImapFlow } from "imapflow";
 import { simpleParser, type Attachment, type ParsedMail } from "mailparser";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminFirestore, adminStorageBucket } from "./firebase-admin";
+import { parseSupplierInvoiceText } from "./supplier-invoice-parser";
+import {
+  generateSupplyHouseEmailPdfBuffer,
+  htmlToPlainText,
+} from "./supplyhouse-email-pdf";
 
 type SavedSupplierAttachment = {
   id: string;
@@ -14,6 +19,7 @@ type SavedSupplierAttachment = {
   uploadedAt: string;
   extractedText?: string;
   ocrText?: string;
+  parsedInvoice?: ReturnType<typeof parseSupplierInvoiceText> | null;
   extractedMeta?: Record<string, unknown> | null;
 };
 
@@ -49,6 +55,23 @@ export type SupplierInvoiceCollectionResult = {
   };
 };
 
+export type SupplyHouseBackfillResult = {
+  scanned: number;
+  eligible: number;
+  saved: number;
+  alreadySaved: number;
+  skipped: number;
+  errors: string[];
+  pendingInvoiceIds: string[];
+  debug: {
+    scannedMailbox: string;
+    totalMessageCount: number;
+    scannedUidCount: number;
+    scannedUids: number[];
+    scannedEmails: CollectorDebugEntry[];
+  };
+};
+
 const CHECKPOINT_COLLECTION = "systemCounters";
 const CHECKPOINT_DOCUMENT = "supplierInvoiceCollector";
 
@@ -64,6 +87,19 @@ function requiredEnv(name: string) {
 
 function cleanText(value: unknown) {
   return String(value || "").trim();
+}
+
+function mailAddressText(value: unknown) {
+  if (!value) return "";
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item: any) => cleanText(item?.text))
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  return cleanText((value as { text?: unknown })?.text);
 }
 
 function safeProcessedEmailId(scope: string, messageId: string) {
@@ -130,6 +166,35 @@ function envelopeAddressToText(value: unknown) {
     .join(", ");
 }
 
+function getParsedHtml(parsed: ParsedMail) {
+  const html = parsed.html;
+  return typeof html === "string" ? html : "";
+}
+
+function getEmailBodyText(parsed: ParsedMail) {
+  const plain = cleanText(parsed.text);
+  if (plain) return plain;
+
+  const html = getParsedHtml(parsed);
+  if (html) return htmlToPlainText(html);
+
+  return "";
+}
+
+function isSupplyHouseSupplierEmail(args: {
+  subject: string;
+  from: string;
+}) {
+  const subject = cleanText(args.subject).toLowerCase();
+  const from = cleanText(args.from).toLowerCase();
+
+  return (
+    from.includes("supplyhouse.com") ||
+    subject.includes("supplyhouse.com") ||
+    subject.includes("supplyhouse")
+  );
+}
+
 function isSupportedSupplierInvoiceEmail(args: {
   subject: string;
   from: string;
@@ -140,7 +205,9 @@ function isSupportedSupplierInvoiceEmail(args: {
   const invoiceLike =
     subject.includes("invoice") ||
     subject.includes("invoices") ||
-    subject.includes("credit");
+    subject.includes("credit") ||
+    subject.includes("order confirmation") ||
+    subject.includes("confirmation for your order");
 
   const farmers =
     from.includes("farmerslumber.com") ||
@@ -153,7 +220,9 @@ function isSupportedSupplierInvoiceEmail(args: {
     from.includes("billtrust.com") ||
     subject.includes("moore supply");
 
-  return invoiceLike && (farmers || moore);
+  const supplyHouse = isSupplyHouseSupplierEmail({ subject, from });
+
+  return invoiceLike && (farmers || moore || supplyHouse);
 }
 
 function makeBaseResult(args?: {
@@ -178,6 +247,25 @@ function makeBaseResult(args?: {
     errors: [],
     pendingInvoiceIds: [],
     message: args?.message || "",
+    debug: {
+      scannedMailbox: "INBOX",
+      totalMessageCount: 0,
+      scannedUidCount: 0,
+      scannedUids: [],
+      scannedEmails: [],
+    },
+  };
+}
+
+function makeBaseBackfillResult(): SupplyHouseBackfillResult {
+  return {
+    scanned: 0,
+    eligible: 0,
+    saved: 0,
+    alreadySaved: 0,
+    skipped: 0,
+    errors: [],
+    pendingInvoiceIds: [],
     debug: {
       scannedMailbox: "INBOX",
       totalMessageCount: 0,
@@ -216,6 +304,29 @@ async function fetchAndParseFullMessage(args: {
   console.log(`[supplier-collector] Parsed full source for UID ${args.uid}.`);
 
   return parsed;
+}
+
+async function fetchLightMessage(args: {
+  client: ImapFlow;
+  uid: number;
+}) {
+  const lightMessage = (await args.client.fetchOne(
+    args.uid,
+    {
+      uid: true,
+      envelope: true,
+      flags: true,
+    },
+    { uid: true },
+  )) as any;
+
+  const envelope = lightMessage?.envelope || {};
+
+  return {
+    subject: cleanText(envelope.subject),
+    from: envelopeAddressToText(envelope.from),
+    messageId: cleanText(envelope.messageId) || `uid_${args.uid}`,
+  };
 }
 
 async function findExistingSupplierInvoiceByUid(uid: number) {
@@ -309,12 +420,97 @@ async function savePdfAttachments(args: {
   return saved;
 }
 
+async function saveSupplyHouseEmailPdfAttachment(args: {
+  invoiceId: string;
+  subject: string;
+  from: string;
+  to?: string | null;
+  messageId: string;
+  receivedAt?: string | null;
+  bodyText: string;
+}) {
+  const now = new Date().toISOString();
+  const bucket = adminStorageBucket;
+  const bucketName = bucket.name;
+
+  const parsedInvoice = parseSupplierInvoiceText(args.bodyText);
+  const poCode = cleanText(parsedInvoice.poCode).toUpperCase();
+  const orderNumber = cleanText(parsedInvoice.invoiceNumber) || "order";
+
+  const safeMessageId = safeFilePart(args.messageId) || `message-${Date.now()}`;
+  const filename =
+    safeFilePart(
+      `SupplyHouse Invoice ${orderNumber}${poCode ? ` - PO ${poCode}` : ""}.pdf`,
+    ) || `SupplyHouse-Invoice-${orderNumber}.pdf`;
+
+  const attachmentId = `${safeMessageId}_supplyhouse_email_${filename}`;
+  const storagePath =
+    `supplierInvoiceInbox/${args.invoiceId}/attachments/${attachmentId}`;
+
+  const pdfBuffer = await generateSupplyHouseEmailPdfBuffer({
+    subject: args.subject,
+    from: args.from,
+    to: args.to || null,
+    messageId: args.messageId,
+    receivedAt: args.receivedAt || null,
+    bodyText: args.bodyText,
+  });
+
+  await bucket.file(storagePath).save(pdfBuffer, {
+    resumable: false,
+    metadata: {
+      contentType: "application/pdf",
+      metadata: {
+        ownerCode: args.invoiceId,
+        messageId: args.messageId,
+        originalFilename: filename,
+        source: "email_body_generated_pdf",
+        vendorName: "SUPPLYHOUSE",
+        poCode,
+        orderNumber,
+        uploadedAt: now,
+      },
+    },
+  });
+
+  const shortText =
+    args.bodyText.length > 50000 ? args.bodyText.slice(0, 50000) : args.bodyText;
+
+  return {
+    id: attachmentId,
+    filename,
+    contentType: "application/pdf",
+    size: pdfBuffer.length,
+    storagePath,
+    downloadUrl: buildDownloadUrl(bucketName, storagePath),
+    uploadedAt: now,
+    extractedText: shortText,
+    ocrText: shortText,
+    parsedInvoice,
+    extractedMeta: {
+      extractionMethod: "email_body_generated_pdf",
+      ocrStatus: shortText ? "complete" : "empty",
+      ocrProcessedAt: now,
+      source: "email_body",
+      generatedPdf: true,
+      supplierParser: "supplyhouse_email_body",
+      detectedPoCodes: poCode ? [poCode] : [],
+      orderNumber,
+    },
+  } as SavedSupplierAttachment;
+}
+
 async function savePendingSupplierInvoice(args: {
   subject: string;
   from: string;
   messageId: string;
   uid: number;
   attachments: Attachment[];
+  emailBodyText?: string;
+  emailBodyHtml?: string;
+  supplierHint?: "supplyhouse" | null;
+  receivedAt?: string | null;
+  to?: string | null;
 }) {
   const invoiceId = safeProcessedEmailId("supplier_invoice", args.messageId);
   const invoiceRef = adminFirestore.collection("supplierInvoiceInbox").doc(invoiceId);
@@ -326,40 +522,70 @@ async function savePendingSupplierInvoice(args: {
       created: false,
       invoiceId,
       pdfAttachmentCount: 0,
+      generatedEmailPdfCount: 0,
     };
   }
 
-  const savedAttachments = await savePdfAttachments({
+  let savedAttachments = await savePdfAttachments({
     invoiceId,
     messageId: args.messageId,
     attachments: args.attachments,
   });
+
+  let generatedEmailPdfCount = 0;
+
+  const bodyText = cleanText(args.emailBodyText);
+  if (savedAttachments.length === 0 && args.supplierHint === "supplyhouse" && bodyText) {
+    const generatedAttachment = await saveSupplyHouseEmailPdfAttachment({
+      invoiceId,
+      subject: args.subject,
+      from: args.from,
+      to: args.to || null,
+      messageId: args.messageId,
+      receivedAt: args.receivedAt || null,
+      bodyText,
+    });
+
+    savedAttachments = [generatedAttachment];
+    generatedEmailPdfCount = 1;
+  }
 
   if (savedAttachments.length === 0) {
     return {
       created: false,
       invoiceId,
       pdfAttachmentCount: 0,
+      generatedEmailPdfCount: 0,
     };
   }
 
   const now = new Date().toISOString();
+  const parsedFromBody = bodyText ? parseSupplierInvoiceText(bodyText) : null;
 
   await invoiceRef.set({
     status: "ocr_pending",
-    sourceType: "supplier_email",
+    sourceType:
+      generatedEmailPdfCount > 0 ? "supplier_email_body" : "supplier_email",
     processingMode: "scheduled_automation",
+    supplierHint: args.supplierHint || null,
     emailSubject: args.subject || null,
     emailFrom: args.from || null,
+    emailTo: args.to || null,
+    emailBodyText: bodyText || null,
+    emailBodyHtml:
+      args.emailBodyHtml && args.emailBodyHtml.length <= 100000
+        ? args.emailBodyHtml
+        : null,
     messageId: args.messageId,
     uid: args.uid,
-    detectedPoCodes: [],
+    detectedPoCodes: parsedFromBody?.poCode ? [parsedFromBody.poCode] : [],
     matchedPoCode: null,
     matchedPoCodes: [],
     serviceTicketId: null,
     projectId: null,
-    attachmentCount: args.attachments.length,
+    attachmentCount: args.attachments.length + generatedEmailPdfCount,
     pdfAttachmentCount: savedAttachments.length,
+    generatedEmailPdfCount,
     attachments: savedAttachments,
     createdAt: now,
     updatedAt: now,
@@ -377,8 +603,10 @@ async function savePendingSupplierInvoice(args: {
         subject: args.subject,
         from: args.from,
         uid: args.uid,
+        supplierHint: args.supplierHint || null,
         attachmentCount: args.attachments.length,
         pdfAttachmentCount: savedAttachments.length,
+        generatedEmailPdfCount,
         collectionStatus: "ocr_pending",
         processedAt: now,
         createdAt: FieldValue.serverTimestamp(),
@@ -390,6 +618,7 @@ async function savePendingSupplierInvoice(args: {
     created: true,
     invoiceId,
     pdfAttachmentCount: savedAttachments.length,
+    generatedEmailPdfCount,
   };
 }
 
@@ -419,6 +648,54 @@ async function writeCheckpoint(args: {
     );
 }
 
+async function makeImapClient() {
+  const client = new ImapFlow({
+    host: requiredEnv("PO_INBOX_HOST"),
+    port: Number(requiredEnv("PO_INBOX_PORT")),
+    secure: String(process.env.PO_INBOX_SECURE || "true") === "true",
+    auth: {
+      user: requiredEnv("PO_INBOX_USER"),
+      pass: requiredEnv("PO_INBOX_PASSWORD"),
+    },
+    logger: false,
+  });
+
+  await client.connect();
+
+  return client;
+}
+
+async function collectParsedSupplierEmail(args: {
+  parsed: ParsedMail;
+  subject: string;
+  from: string;
+  messageId: string;
+  uid: number;
+  supplierHint?: "supplyhouse" | null;
+}) {
+  const html = getParsedHtml(args.parsed);
+  const bodyText = getEmailBodyText(args.parsed);
+  const attachments = args.parsed.attachments || [];
+
+  const saved = await savePendingSupplierInvoice({
+    subject: cleanText(args.parsed.subject) || args.subject,
+    from: mailAddressText(args.parsed.from) || args.from,
+    to: mailAddressText(args.parsed.to) || null,
+    messageId:
+      cleanText(args.parsed.messageId) ||
+      args.messageId ||
+      `uid_${args.uid}`,
+    uid: args.uid,
+    attachments,
+    emailBodyText: bodyText,
+    emailBodyHtml: html,
+    supplierHint: args.supplierHint || null,
+    receivedAt: args.parsed.date?.toISOString() || null,
+  });
+
+  return saved;
+}
+
 export async function collectSupplierInvoiceInbox(options?: {
   bootstrapUid?: number | string | null;
   maxMessagesPerRun?: number | string;
@@ -435,10 +712,6 @@ export async function collectSupplierInvoiceInbox(options?: {
     ? readOptionalUid(checkpointSnap.data()?.lastScannedUid)
     : null;
 
-  /*
-   * Bootstrap is deliberately a no-scan action.
-   * It establishes where future automation begins without touching old email.
-   */
   if (bootstrapUid !== null) {
     if (existingCheckpointUid !== null) {
       return makeBaseResult({
@@ -493,23 +766,11 @@ export async function collectSupplierInvoiceInbox(options?: {
   });
 
   const mailboxName = "INBOX";
-
-  const client = new ImapFlow({
-    host: requiredEnv("PO_INBOX_HOST"),
-    port: Number(requiredEnv("PO_INBOX_PORT")),
-    secure: String(process.env.PO_INBOX_SECURE || "true") === "true",
-    auth: {
-      user: requiredEnv("PO_INBOX_USER"),
-      pass: requiredEnv("PO_INBOX_PASSWORD"),
-    },
-    logger: false,
-  });
+  const client = await makeImapClient();
 
   console.log(
     `[supplier-collector] Starting scan after UID ${existingCheckpointUid}.`,
   );
-
-  await client.connect();
 
   try {
     const lock = await client.getMailboxLock(mailboxName);
@@ -533,11 +794,9 @@ export async function collectSupplierInvoiceInbox(options?: {
         allUids.length > 0 ? allUids[allUids.length - 1] : existingCheckpointUid;
 
       const newUids = allUids.filter((uid) => uid > existingCheckpointUid);
-
       result.newUidCount = newUids.length;
 
       const selectedUids = newUids.slice(0, maxMessagesPerRun);
-
       result.debug.scannedUidCount = selectedUids.length;
       result.debug.scannedUids = selectedUids;
 
@@ -558,30 +817,12 @@ export async function collectSupplierInvoiceInbox(options?: {
         let shouldStopRun = false;
 
         try {
-          console.log(`[supplier-collector] Reading envelope for UID ${uid}.`);
+          const light = await fetchLightMessage({ client, uid });
+          subject = light.subject;
+          from = light.from;
+          messageId = light.messageId;
 
-          const lightMessage = (await client.fetchOne(
-            uid,
-            {
-              uid: true,
-              envelope: true,
-              flags: true,
-            },
-            { uid: true },
-          )) as any;
-
-          const envelope = lightMessage?.envelope || {};
-
-          subject = cleanText(envelope.subject);
-          from = envelopeAddressToText(envelope.from);
-          messageId = cleanText(envelope.messageId) || `uid_${uid}`;
-
-          if (
-            !isSupportedSupplierInvoiceEmail({
-              subject,
-              from,
-            })
-          ) {
+          if (!isSupportedSupplierInvoiceEmail({ subject, from })) {
             result.skipped += 1;
             shouldAdvanceCheckpoint = true;
 
@@ -590,7 +831,7 @@ export async function collectSupplierInvoiceInbox(options?: {
               subject,
               from,
               messageId,
-              reason: "Skipped: not a supported Farmers/Moore supplier invoice email.",
+              reason: "Skipped: not a supported supplier invoice email.",
             });
 
             continue;
@@ -642,30 +883,17 @@ export async function collectSupplierInvoiceInbox(options?: {
             messageId ||
             `uid_${uid}`;
 
-          const attachments = parsed.attachments || [];
-          const pdfAttachments = attachments.filter(isPdfAttachment);
+          const supplierHint = isSupplyHouseSupplierEmail({ subject, from })
+            ? "supplyhouse"
+            : null;
 
-          if (pdfAttachments.length === 0) {
-            result.skipped += 1;
-            shouldAdvanceCheckpoint = true;
-
-            result.debug.scannedEmails.push({
-              uid,
-              subject,
-              from,
-              messageId,
-              reason: "Skipped: supported supplier email had no PDF attachment.",
-            });
-
-            continue;
-          }
-
-          const saved = await savePendingSupplierInvoice({
+          const saved = await collectParsedSupplierEmail({
+            parsed,
             subject,
             from,
             messageId,
             uid,
-            attachments,
+            supplierHint,
           });
 
           if (!saved.created) {
@@ -677,7 +905,7 @@ export async function collectSupplierInvoiceInbox(options?: {
               subject,
               from,
               messageId,
-              reason: `Skipped: supplier invoice already exists as ${saved.invoiceId}.`,
+              reason: `Skipped: supplier invoice already exists as ${saved.invoiceId}, or no collectable PDF/email snapshot could be saved.`,
             });
 
             continue;
@@ -745,6 +973,176 @@ export async function collectSupplierInvoiceInbox(options?: {
       }
     } catch (err) {
       console.warn("Supplier invoice collector logout warning:", err);
+    }
+  }
+}
+
+export async function backfillSupplyHouseInvoiceInbox(options?: {
+  scanLimit?: number | string;
+  maxProcess?: number | string;
+}): Promise<SupplyHouseBackfillResult> {
+  const scanLimit = readPositiveInteger(options?.scanLimit, 25, 1, 100);
+  const maxProcess = readPositiveInteger(options?.maxProcess, 2, 1, 5);
+
+  const result = makeBaseBackfillResult();
+  const mailboxName = "INBOX";
+  const client = await makeImapClient();
+
+  try {
+    const lock = await client.getMailboxLock(mailboxName);
+
+    try {
+      result.debug.totalMessageCount =
+        client.mailbox && typeof client.mailbox === "object"
+          ? Number(client.mailbox.exists || 0)
+          : 0;
+
+      const allUidsRaw = await client.search({ all: true });
+
+      const selectedUids = Array.isArray(allUidsRaw)
+        ? allUidsRaw
+            .map((uid) => Number(uid))
+            .filter((uid) => Number.isFinite(uid))
+            .sort((a, b) => b - a)
+            .slice(0, scanLimit)
+        : [];
+
+      result.debug.scannedUidCount = selectedUids.length;
+      result.debug.scannedUids = selectedUids;
+
+      for (const uid of selectedUids) {
+        result.scanned += 1;
+
+        let subject = "";
+        let from = "";
+        let messageId = `uid_${uid}`;
+
+        try {
+          const light = await fetchLightMessage({ client, uid });
+          subject = light.subject;
+          from = light.from;
+          messageId = light.messageId;
+
+          if (!isSupplyHouseSupplierEmail({ subject, from })) {
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: "Skipped: not a SupplyHouse email.",
+            });
+            continue;
+          }
+
+          if (!isSupportedSupplierInvoiceEmail({ subject, from })) {
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: "Skipped: SupplyHouse email was not invoice/order-like.",
+            });
+            continue;
+          }
+
+          result.eligible += 1;
+
+          const existingByUid = await findExistingSupplierInvoiceByUid(uid);
+
+          if (existingByUid.exists) {
+            result.alreadySaved += 1;
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: `Skipped: already collected as ${existingByUid.invoiceId} with status ${existingByUid.status || "unknown"}.`,
+            });
+            continue;
+          }
+
+          if (result.saved >= maxProcess) {
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: "Deferred: maxProcess reached for this backfill run.",
+            });
+            break;
+          }
+
+          const parsed = await fetchAndParseFullMessage({ client, uid });
+
+          subject = cleanText(parsed.subject) || subject;
+          from = cleanText(parsed.from?.text) || from;
+          messageId =
+            cleanText(parsed.messageId) ||
+            messageId ||
+            `uid_${uid}`;
+
+          const saved = await collectParsedSupplierEmail({
+            parsed,
+            subject,
+            from,
+            messageId,
+            uid,
+            supplierHint: "supplyhouse",
+          });
+
+          if (!saved.created) {
+            result.alreadySaved += 1;
+            result.debug.scannedEmails.push({
+              uid,
+              subject,
+              from,
+              messageId,
+              reason: `Skipped: already exists as ${saved.invoiceId}, or no collectable email snapshot could be saved.`,
+            });
+            continue;
+          }
+
+          result.saved += 1;
+          result.pendingInvoiceIds.push(saved.invoiceId);
+
+          result.debug.scannedEmails.push({
+            uid,
+            subject,
+            from,
+            messageId,
+            reason: `Backfilled SupplyHouse invoice into ${saved.invoiceId}; awaiting processor.`,
+          });
+        } catch (err) {
+          const message =
+            err instanceof Error
+              ? err.message
+              : "Failed to backfill SupplyHouse invoice email.";
+
+          result.errors.push(message);
+          result.debug.scannedEmails.push({
+            uid,
+            subject,
+            from,
+            messageId,
+            reason: `Backfill error: ${message}`,
+          });
+        }
+      }
+
+      return result;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    try {
+      if ((client as any).usable !== false) {
+        await client.logout();
+      }
+    } catch (err) {
+      console.warn("SupplyHouse backfill logout warning:", err);
     }
   }
 }

@@ -27,7 +27,7 @@ type LinkableInvoiceAttachment = {
   attachment: SavedAttachment;
   ocrText: string;
   parsedInvoice: ReturnType<typeof parseSupplierInvoiceText> | null;
-  sourceKind: "standard_pdf" | "moore_batch_page";
+  sourceKind: "standard_pdf" | "moore_batch_page" | "email_body_generated_pdf";
   pageNumber?: number | null;
 };
 
@@ -158,42 +158,33 @@ async function appendAttachmentToPurchaseOrder(args: {
     : [];
 
   const incomingAttachmentId = String(args.attachment.id || "");
-  const existingAttachmentIndex = existingAttachments.findIndex(
+  const alreadyAttached = existingAttachments.some(
     (existing: any) => String(existing.id || "") === incomingAttachmentId
   );
 
-  const refreshedAttachment = {
-    ...args.attachment,
-    ocrText:
-      args.ocrText.length > 50000 ? args.ocrText.slice(0, 50000) : args.ocrText,
-    parsedInvoice: args.parsedInvoice,
-    extractedMeta: {
-      ...(args.attachment.extractedMeta || {}),
-      extractionMethod:
-        String(args.attachment.extractedMeta?.supplierParser || "") === "moore_batch_page"
-          ? "native_unpdf_page_split"
-          : "native_unpdf",
-      ocrStatus: args.ocrText ? "complete" : "empty",
-      ocrProcessedAt: now,
-      sourceSupplierInvoiceId: args.invoiceId,
-    },
-  };
+  if (alreadyAttached) {
+    return { ok: true, reason: "Attachment already linked." };
+  }
 
-  const nextAttachments =
-    existingAttachmentIndex >= 0
-      ? existingAttachments.map((existing: any, index: number) =>
-          index === existingAttachmentIndex
-            ? {
-                ...existing,
-                ...refreshedAttachment,
-                extractedMeta: {
-                  ...(existing.extractedMeta || {}),
-                  ...(refreshedAttachment.extractedMeta || {}),
-                },
-              }
-            : existing
-        )
-      : [...existingAttachments, refreshedAttachment];
+  const nextAttachments = [
+    ...existingAttachments,
+    {
+      ...args.attachment,
+      ocrText:
+        args.ocrText.length > 50000 ? args.ocrText.slice(0, 50000) : args.ocrText,
+      parsedInvoice: args.parsedInvoice,
+      extractedMeta: {
+        ...(args.attachment.extractedMeta || {}),
+        extractionMethod:
+          String(args.attachment.extractedMeta?.supplierParser || "") === "moore_batch_page"
+            ? "native_unpdf_page_split"
+            : "native_unpdf",
+        ocrStatus: args.ocrText ? "complete" : "empty",
+        ocrProcessedAt: now,
+        sourceSupplierInvoiceId: args.invoiceId,
+      },
+    },
+  ];
 
   await poRef.set(
     {
@@ -215,8 +206,7 @@ async function appendAttachmentToPurchaseOrder(args: {
         String(args.invoiceData.emailFrom || "").trim() ||
         po.invoiceEmailFrom ||
         null,
-      invoiceEmailMatchedAt: po.invoiceEmailMatchedAt || now,
-      invoiceLastParsedAt: now,
+      invoiceEmailMatchedAt: now,
       invoiceAttachmentCount: nextAttachments.length,
       invoicePdfAttachmentCount: nextAttachments.length,
       matchedAttachments: nextAttachments,
@@ -232,13 +222,7 @@ async function appendAttachmentToPurchaseOrder(args: {
     { merge: true }
   );
 
-  return {
-    ok: true,
-    reason:
-      existingAttachmentIndex >= 0
-        ? "Attachment already linked; parsed invoice refreshed."
-        : "Attachment linked to PO.",
-  };
+  return { ok: true, reason: "Attachment linked to PO." };
 }
 
 export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
@@ -291,6 +275,72 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
     }
 
     try {
+      const embeddedEmailText =
+        clean(attachment.extractedText) ||
+        clean(attachment.ocrText) ||
+        clean((invoice as any).emailBodyText);
+
+      const supplierParser = clean(attachment.extractedMeta?.supplierParser).toLowerCase();
+      const attachmentSource = clean(attachment.extractedMeta?.source).toLowerCase();
+      const isGeneratedEmailBodyPdf =
+        Boolean(embeddedEmailText) &&
+        (supplierParser.includes("supplyhouse") ||
+          attachmentSource.includes("email_body") ||
+          clean(attachment.extractedMeta?.extractionMethod)
+            .toLowerCase()
+            .includes("email_body"));
+
+      if (isGeneratedEmailBodyPdf) {
+        const emailParsed = parseSupplierInvoiceText(embeddedEmailText);
+        parsedInvoice = emailParsed;
+
+        const poCodes = Array.from(
+          new Set([
+            ...extractPoCodes(embeddedEmailText),
+            emailParsed.poCode || "",
+          ].filter(Boolean))
+        );
+
+        poCodes.forEach((code) => detectedPoCodes.add(code));
+
+        const updatedAttachment: SavedAttachment = {
+          ...attachment,
+          ocrText:
+            embeddedEmailText.length > 50000
+              ? embeddedEmailText.slice(0, 50000)
+              : embeddedEmailText,
+          extractedText:
+            embeddedEmailText.length > 50000
+              ? embeddedEmailText.slice(0, 50000)
+              : embeddedEmailText,
+          parsedInvoice: emailParsed,
+          extractedMeta: {
+            ...(attachment.extractedMeta || {}),
+            extractionMethod: "email_body_generated_pdf",
+            ocrStatus: embeddedEmailText ? "complete" : "empty",
+            ocrProcessedAt: now,
+            supplierParser: "supplyhouse_email_body",
+            detectedPoCodes: poCodes,
+          },
+        };
+
+        updatedAttachments.push(updatedAttachment);
+
+        for (const poCode of poCodes) {
+          linkableAttachments.push({
+            poCode,
+            attachment: updatedAttachment,
+            ocrText: embeddedEmailText,
+            parsedInvoice: emailParsed,
+            sourceKind: "email_body_generated_pdf",
+            pageNumber: null,
+          });
+        }
+
+        processed += 1;
+        continue;
+      }
+
       const [buffer] = await adminStorageBucket.file(storagePath).download();
       const fullText = await extractTextFromPdfBuffer(buffer);
       const fullParsed = parseSupplierInvoiceText(fullText);
