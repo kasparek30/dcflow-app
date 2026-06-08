@@ -135,6 +135,13 @@ type EmployeeOption = {
   active: boolean;
 };
 
+type HelperOption = {
+  uid: string;
+  name: string;
+  laborRole: string;
+  defaultPairedTechUid?: string | null;
+};
+
 type TicketSummary = {
   id: string;
   issueSummary: string;
@@ -150,7 +157,8 @@ type ProjectSummary = {
 
 type TechFilterValue = "ALL" | "UNASSIGNED" | string;
 type AddTripType = "service" | "project";
-type SlotKey = "am" | "pm";
+type HalfDaySlotKey = "am" | "pm";
+type SlotKey = HalfDaySlotKey | "all_day";
 type MeetingRoleFilter =
   | "all"
   | "technician"
@@ -217,6 +225,8 @@ type PickerItem = {
   metaRight?: string;
   metaLeft?: string;
   preview?: string;
+  estimatedHours?: number | null;
+  ticketStatus?: string | null;
 };
 
 type AddSlotConflictSummary = {
@@ -508,7 +518,7 @@ function getPtoSummaryForDate(
 
 function formatTimeRangeForCard(t: TripDoc) {
   const w = (t.timeWindow || "").toLowerCase();
-  if (w === "all_day") return "All Day • All Day";
+  if (w === "all_day") return "8AM–5PM • All Day";
   if (w === "am") return "8AM–12Noon • AM";
   if (w === "pm") return "1PM–5PM • PM";
   const start = t.startTime ? formatTime12h(t.startTime) : "—";
@@ -630,7 +640,7 @@ const SLOT_AM_END = 12 * 60;
 const SLOT_PM_START = 13 * 60;
 const SLOT_PM_END = 17 * 60;
 
-function tripBlocksSlot(t: TripDoc, slot: SlotKey) {
+function tripBlocksSlot(t: TripDoc, slot: HalfDaySlotKey) {
   const w = String(t.timeWindow || "").toLowerCase();
   if (t.active === false) return false;
   if (normalizeStatus(t.status) === "cancelled") return false;
@@ -643,11 +653,13 @@ function tripBlocksSlot(t: TripDoc, slot: SlotKey) {
   const etMin = minutesFromHHMM(t.endTime) ?? null;
   if (stMin == null || etMin == null || etMin <= stMin) return true;
 
-  const [slotStart, slotEnd] = slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
+  const [slotStart, slotEnd] =
+    slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
+
   return stMin < slotEnd && etMin > slotStart;
 }
 
-function eventBlocksSlot(e: CompanyEvent, slot: SlotKey) {
+function eventBlocksSlot(e: CompanyEvent, slot: HalfDaySlotKey) {
   if (!e.active || !e.blocksSchedule) return false;
 
   const w = String(e.timeWindow || "").toLowerCase();
@@ -659,12 +671,19 @@ function eventBlocksSlot(e: CompanyEvent, slot: SlotKey) {
   const etMin = minutesFromHHMM(String(e.endTime || "")) ?? null;
   if (stMin == null || etMin == null || etMin <= stMin) return true;
 
-  const [slotStart, slotEnd] = slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
+  const [slotStart, slotEnd] =
+    slot === "am" ? [SLOT_AM_START, SLOT_AM_END] : [SLOT_PM_START, SLOT_PM_END];
+
   return stMin < slotEnd && etMin > slotStart;
 }
 
-function selectedSlotsForWindow(windowValue: string, startTime?: string | null, endTime?: string | null): SlotKey[] {
+function selectedSlotsForWindow(
+  windowValue: string,
+  startTime?: string | null,
+  endTime?: string | null
+): HalfDaySlotKey[] {
   const w = String(windowValue || "").toLowerCase();
+
   if (w === "all_day") return ["am", "pm"];
   if (w === "am" || w === "pm") return [w];
 
@@ -672,7 +691,7 @@ function selectedSlotsForWindow(windowValue: string, startTime?: string | null, 
   const etMin = minutesFromHHMM(String(endTime || "")) ?? null;
   if (stMin == null || etMin == null || etMin <= stMin) return ["am", "pm"];
 
-  const slots: SlotKey[] = [];
+  const slots: HalfDaySlotKey[] = [];
   if (stMin < SLOT_AM_END && etMin > SLOT_AM_START) slots.push("am");
   if (stMin < SLOT_PM_END && etMin > SLOT_PM_START) slots.push("pm");
 
@@ -822,18 +841,38 @@ function computeCellAvailability(args: {
   const amSoftBusy = !amHardBusy && amSoftTrip;
   const pmSoftBusy = !pmHardBusy && pmSoftTrip;
 
-  return {
-    amHardBusy,
-    pmHardBusy,
-    amSoftBusy,
-    pmSoftBusy,
-    allHardBusy: amHardBusy && pmHardBusy,
-    meetings,
-  };
+return {
+  amHardBusy,
+  pmHardBusy,
+  amSoftBusy,
+  pmSoftBusy,
+  allHardBusy: amHardBusy || pmHardBusy,
+  allDayHardBusy: amHardBusy || pmHardBusy,
+  allDaySoftBusy: !(amHardBusy || pmHardBusy) && (amSoftTrip || pmSoftTrip),
+  meetings,
+};
+}
+
+function slotsForQuickSlot(slot: SlotKey): HalfDaySlotKey[] {
+  return slot === "all_day" ? ["am", "pm"] : [slot];
+}
+
+function formatSlotLabel(slot: SlotKey) {
+  if (slot === "all_day") return "All Day";
+  if (slot === "am") return "AM";
+  if (slot === "pm") return "PM";
+  return slot;
+}
+
+function formatSlotForMessage(slot: SlotKey) {
+  return slot === "all_day" ? "All Day" : slot.toUpperCase();
 }
 
 function computeAddSlotConflict(args: {
   techUid: string;
+  helperUids?: string[];
+  employeeNamesByUid?: Record<string, string>;
+  employeeRolesByUid?: Record<string, string>;
   dateIso: string;
   slot: SlotKey;
   trips: TripDoc[];
@@ -845,43 +884,66 @@ function computeAddSlotConflict(args: {
   const soft = new Set<string>();
   const softTripIds = new Set<string>();
 
-  const { techUid, dateIso, slot, trips, holidayByDate, ptoByUidByDate, eventsByDate } = args;
+  const {
+    techUid,
+    helperUids = [],
+    employeeNamesByUid = {},
+    employeeRolesByUid = {},
+    dateIso,
+    slot,
+    trips,
+    holidayByDate,
+    ptoByUidByDate,
+    eventsByDate,
+  } = args;
+
+  const crewUids = uniqueTrimmedStrings([techUid, ...helperUids]);
+  const halfDaySlots = slotsForQuickSlot(slot);
 
   const holiday = holidayByDate[dateIso];
   if (holiday) {
     hard.add(`That date is a company holiday (${holiday.name}).`);
   }
 
-  const pto = ptoByUidByDate[techUid]?.[dateIso];
-  if (pto) {
-    hard.add(`That technician is on approved PTO for ${dateIso}.`);
-  }
+  for (const uid of crewUids) {
+    const employeeName = employeeNamesByUid[uid] || uid;
+    const employeeRole = employeeRolesByUid[uid] || "employee";
 
-  const meetings = (eventsByDate[dateIso] || []).filter((event) =>
-    eventAppliesToUid(event, techUid, "technician")
-  );
-  const meetingBlock = meetings.some((event) => eventBlocksSlot(event, slot));
-  if (meetingBlock) {
-    hard.add(`That ${slot.toUpperCase()} slot is blocked by a company meeting/event.`);
-  }
+    const pto = ptoByUidByDate[uid]?.[dateIso];
+    if (pto) {
+      hard.add(`${employeeName} is on approved PTO for ${dateIso}.`);
+    }
 
-  const overlappingTrips = trips.filter(
-    (trip) =>
-      trip.active !== false &&
-      String(trip.date || "").trim() === dateIso &&
-      isTechOnTrip(trip, techUid) &&
-      tripBlocksSlot(trip, slot)
-  );
+    const meetings = (eventsByDate[dateIso] || []).filter((event) =>
+      eventAppliesToUid(event, uid, employeeRole)
+    );
 
-  for (const trip of overlappingTrips) {
-    const status = normalizeStatus(trip.status);
-    const detail = `${formatTimeRangeForCard(trip)}`;
+    const meetingBlock = meetings.some((event) =>
+      halfDaySlots.some((halfDaySlot) => eventBlocksSlot(event, halfDaySlot))
+    );
 
-    if (status === "in_progress") {
-      hard.add(`That technician already has an in-progress trip in this slot (${detail}).`);
-    } else if (status === "planned") {
-      soft.add(`That technician already has a planned trip in this slot (${detail}). Dispatch Override can be used if needed.`);
-      softTripIds.add(trip.id);
+    if (meetingBlock) {
+      hard.add(`${employeeName} is blocked by a company meeting/event during ${formatSlotForMessage(slot)}.`);
+    }
+
+    const overlappingTrips = trips.filter(
+      (trip) =>
+        trip.active !== false &&
+        String(trip.date || "").trim() === dateIso &&
+        isEmployeeOnTrip(trip, uid) &&
+        halfDaySlots.some((halfDaySlot) => tripBlocksSlot(trip, halfDaySlot))
+    );
+
+    for (const trip of overlappingTrips) {
+      const status = normalizeStatus(trip.status);
+      const detail = `${formatTimeRangeForCard(trip)}`;
+
+      if (status === "in_progress") {
+        hard.add(`${employeeName} already has an in-progress trip during ${formatSlotForMessage(slot)} (${detail}).`);
+      } else if (status === "planned") {
+        soft.add(`${employeeName} already has a planned trip during ${formatSlotForMessage(slot)} (${detail}). Dispatch Override can be used if needed.`);
+        softTripIds.add(trip.id);
+      }
     }
   }
 
@@ -1018,6 +1080,7 @@ export default function SchedulePage() {
   const [techsLoading, setTechsLoading] = useState(true);
   const [techsError, setTechsError] = useState("");
   const [techs, setTechs] = useState<TechRow[]>([]);
+  const [helpers, setHelpers] = useState<HelperOption[]>([]);
   const [meetingEmployees, setMeetingEmployees] = useState<EmployeeOption[]>([]);
 
   const [tripsLoading, setTripsLoading] = useState(true);
@@ -1106,6 +1169,63 @@ export default function SchedulePage() {
     return meetingEmployees.filter((employee) => selected.has(employee.uid));
   }, [meetingEmployees, meetAppliesToUids]);
 
+  const employeeNamesByUid = useMemo(() => {
+  const out: Record<string, string> = {};
+
+  for (const tech of techs) {
+    out[tech.uid] = tech.name;
+  }
+
+  for (const helper of helpers) {
+    out[helper.uid] = helper.name;
+  }
+
+  return out;
+}, [techs, helpers]);
+
+const employeeRolesByUid = useMemo(() => {
+  const out: Record<string, string> = {};
+
+  for (const tech of techs) {
+    out[tech.uid] = "technician";
+  }
+
+  for (const helper of helpers) {
+    out[helper.uid] = helper.laborRole || "helper";
+  }
+
+  return out;
+}, [techs, helpers]);
+
+const defaultHelpersForAddTech = useMemo(() => {
+  if (!addTechUid) return [] as HelperOption[];
+
+  return helpers
+    .filter(
+      (helper) =>
+        String(helper.defaultPairedTechUid || "").trim() === String(addTechUid || "").trim()
+    )
+    .slice(0, 2);
+}, [helpers, addTechUid]);
+
+const addPrimaryHelper = defaultHelpersForAddTech[0] || null;
+const addSecondaryHelper = defaultHelpersForAddTech[1] || null;
+
+const selectedAddPickerItem = useMemo(() => {
+  const id = String(addSelectedId || addAdvancedId || "").trim();
+  if (!id) return null;
+
+  const base = addTripType === "service" ? openTicketItems : openProjectItems;
+  return base.find((item) => item.id === id) || null;
+}, [addSelectedId, addAdvancedId, addTripType, openTicketItems, openProjectItems]);
+
+const addEstimateHours = addTripType === "service" ? selectedAddPickerItem?.estimatedHours ?? null : null;
+const addShouldRecommendAllDay =
+  addTripType === "service" &&
+  typeof addEstimateHours === "number" &&
+  addEstimateHours >= 6 &&
+  addSlot !== "all_day";
+
   const meetingConflictSummary = useMemo(() => {
     const empty = { hardMessages: [] as string[], softMessages: [] as string[], conflictEmployeeUids: [] as string[] };
     if (!meetOpen || !/^\d{4}-\d{2}-\d{2}$/.test(String(meetDateIso || ""))) return empty;
@@ -1193,25 +1313,41 @@ export default function SchedulePage() {
     editingMeetId,
   ]);
 
-  const addSlotConflicts = useMemo(() => {
-    if (!addOpen || !addTechUid || !addDateIso) {
-      return {
-        hardMessages: [],
-        softMessages: [],
-        softTripIds: [],
-      } satisfies AddSlotConflictSummary;
-    }
+const addSlotConflicts = useMemo(() => {
+  if (!addOpen || !addTechUid || !addDateIso) {
+    return {
+      hardMessages: [],
+      softMessages: [],
+      softTripIds: [],
+    } satisfies AddSlotConflictSummary;
+  }
 
-    return computeAddSlotConflict({
-      techUid: addTechUid,
-      dateIso: addDateIso,
-      slot: addSlot,
-      trips,
-      holidayByDate,
-      ptoByUidByDate,
-      eventsByDate,
-    });
-  }, [addOpen, addTechUid, addDateIso, addSlot, trips, holidayByDate, ptoByUidByDate, eventsByDate]);
+  return computeAddSlotConflict({
+    techUid: addTechUid,
+    helperUids: [addPrimaryHelper?.uid, addSecondaryHelper?.uid].filter(Boolean) as string[],
+    employeeNamesByUid,
+    employeeRolesByUid,
+    dateIso: addDateIso,
+    slot: addSlot,
+    trips,
+    holidayByDate,
+    ptoByUidByDate,
+    eventsByDate,
+  });
+}, [
+  addOpen,
+  addTechUid,
+  addDateIso,
+  addSlot,
+  addPrimaryHelper?.uid,
+  addSecondaryHelper?.uid,
+  employeeNamesByUid,
+  employeeRolesByUid,
+  trips,
+  holidayByDate,
+  ptoByUidByDate,
+  eventsByDate,
+]);
 
   useEffect(() => {
     if (addSlotConflicts.softMessages.length === 0) {
@@ -1299,16 +1435,48 @@ export default function SchedulePage() {
           const line1 = String(d.serviceAddressLine1 ?? "").trim();
           const city = String(d.serviceCity ?? "").trim();
 
-          const estHoursRaw =
-            d.estimatedHours ??
-            d.estimatedDurationHours ??
-            d.estHours ??
-            d.durationHours ??
-            null;
+const estHoursCandidates = [
+  d.estimatedHours,
+  d.estimatedDurationHours,
+  d.estimatedDuration,
+  d.estimatedDurationHrs,
+  d.estimatedHoursNeeded,
+  d.estimatedLaborHours,
+  d.estHours,
+  d.durationHours,
+  d.durationHrs,
+  d.scheduling?.estimatedHours,
+  d.scheduling?.estimatedDurationHours,
+  d.ticketOverview?.estimatedHours,
+  d.ticketOverview?.estimatedDurationHours,
+  d.overview?.estimatedHours,
+  d.overview?.estimatedDurationHours,
+];
 
-          const estHoursNum = Number(estHoursRaw);
-          const estHours = Number.isFinite(estHoursNum) && estHoursNum > 0 ? estHoursNum : null;
+const estHoursDirect = estHoursCandidates
+  .map((value) => Number(value))
+  .find((value) => Number.isFinite(value) && value > 0);
 
+const estMinutesCandidates = [
+  d.estimatedDurationMinutes,
+  d.estimatedMinutes,
+  d.durationMinutes,
+  d.scheduling?.estimatedDurationMinutes,
+  d.scheduling?.estimatedMinutes,
+  d.ticketOverview?.estimatedDurationMinutes,
+  d.overview?.estimatedDurationMinutes,
+];
+
+const estMinutesDirect = estMinutesCandidates
+  .map((value) => Number(value))
+  .find((value) => Number.isFinite(value) && value > 0);
+
+const estHours =
+  typeof estHoursDirect === "number"
+    ? estHoursDirect
+    : typeof estMinutesDirect === "number"
+      ? Math.round((estMinutesDirect / 60) * 10) / 10
+      : null;
           const detailsRaw =
             d.issueDetails ??
             d.details ??
@@ -1331,8 +1499,10 @@ export default function SchedulePage() {
             label,
             sublabel: sub,
             metaLeft: statusLabel,
-            metaRight: estHours ? `Est. ${estHours}h` : "Est. —",
+            metaRight: estHours ? `Est. ${estHours} hr${estHours === 1 ? "" : "s"}` : "Est. —",
             preview,
+            estimatedHours: estHours,
+            ticketStatus: stNorm,
           } as PickerItem;
         })
         .filter(Boolean) as PickerItem[];
@@ -1389,10 +1559,17 @@ export default function SchedulePage() {
     return t?.name || "";
   }
 
-  function slotDefaults(slot: SlotKey) {
-    if (slot === "am") return { timeWindow: "am" as const, startTime: "08:00", endTime: "12:00" };
+function slotDefaults(slot: SlotKey) {
+  if (slot === "am") {
+    return { timeWindow: "am" as const, startTime: "08:00", endTime: "12:00" };
+  }
+
+  if (slot === "pm") {
     return { timeWindow: "pm" as const, startTime: "13:00", endTime: "17:00" };
   }
+
+  return { timeWindow: "all_day" as const, startTime: "08:00", endTime: "17:00" };
+}
 
   function openAddModal(args: { techUid: string; dateIso: string; slot: SlotKey }) {
     setAddErr("");
@@ -1457,15 +1634,28 @@ export default function SchedulePage() {
       return setAddErr(addTripType === "service" ? "Choose an open Service Ticket." : "Choose a Project.");
     }
 
-    const liveConflicts = computeAddSlotConflict({
-      techUid,
-      dateIso,
-      slot: addSlot,
-      trips,
-      holidayByDate,
-      ptoByUidByDate,
-      eventsByDate,
-    });
+const livePrimaryHelper = helpers
+  .filter(
+    (helper) =>
+      String(helper.defaultPairedTechUid || "").trim() === techUid
+  )
+  .slice(0, 2);
+
+const liveHelperUid = livePrimaryHelper[0]?.uid || "";
+const liveSecondaryHelperUid = livePrimaryHelper[1]?.uid || "";
+
+const liveConflicts = computeAddSlotConflict({
+  techUid,
+  helperUids: [liveHelperUid, liveSecondaryHelperUid].filter(Boolean),
+  employeeNamesByUid,
+  employeeRolesByUid,
+  dateIso,
+  slot: addSlot,
+  trips,
+  holidayByDate,
+  ptoByUidByDate,
+  eventsByDate,
+});
 
     if (liveConflicts.hardMessages.length > 0) {
       return setAddErr(liveConflicts.hardMessages[0]);
@@ -1485,9 +1675,22 @@ export default function SchedulePage() {
     setAddErr("");
 
     try {
-      const now = nowIso();
-      const techName = findTechName(techUid) || "Technician";
-      const slot = slotDefaults(addSlot);
+const now = nowIso();
+const techName = findTechName(techUid) || "Technician";
+const slot = slotDefaults(addSlot);
+
+const estimatedDurationMinutes =
+  addTripType === "service" && typeof selectedAddPickerItem?.estimatedHours === "number"
+    ? Math.round(selectedAddPickerItem.estimatedHours * 60)
+    : null;
+
+const helperUid = liveHelperUid || "";
+const helperName = helperUid ? employeeNamesByUid[helperUid] || "Unnamed Helper" : null;
+
+const secondaryHelperUid = liveSecondaryHelperUid || "";
+const secondaryHelperName = secondaryHelperUid
+  ? employeeNamesByUid[secondaryHelperUid] || "Unnamed Helper"
+  : null;
 
       const dispatchOverride =
         liveConflicts.softMessages.length > 0
@@ -1506,21 +1709,30 @@ export default function SchedulePage() {
         active: true,
         type: addTripType,
         status: "planned",
-        date: dateIso,
-        timeWindow: slot.timeWindow,
-        startTime: slot.startTime,
-        endTime: slot.endTime,
-        dispatchOverride,
-        crew: {
-          primaryTechUid: techUid,
-          primaryTechName: techName,
-          helperUid: null,
-          helperName: null,
-          secondaryTechUid: null,
-          secondaryTechName: null,
-          secondaryHelperUid: null,
-          secondaryHelperName: null,
-        },
+date: dateIso,
+timeWindow: slot.timeWindow,
+startTime: slot.startTime,
+endTime: slot.endTime,
+estimatedDurationMinutes,
+dispatchOverride,
+crew: {
+  primaryTechUid: techUid,
+  primaryTechName: techName,
+  helperUid: helperUid || null,
+  helperName,
+  secondaryTechUid: null,
+  secondaryTechName: null,
+  secondaryHelperUid: secondaryHelperUid || null,
+  secondaryHelperName,
+},
+crewConfirmed: null,
+timerState: "not_started",
+actualStartAt: null,
+actualEndAt: null,
+startedByUid: null,
+endedByUid: null,
+pauseBlocks: [],
+actualMinutes: null,
         link: {
           serviceTicketId: addTripType === "service" ? linkId : null,
           projectId: addTripType === "project" ? linkId : null,
@@ -1534,11 +1746,40 @@ export default function SchedulePage() {
         updatedByUid: appUser?.uid || null,
       };
 
-      const created = await addDoc(collection(db, "trips"), payload);
-      const newTrip: TripDoc = { id: created.id, ...(payload as any) };
-      setTrips((prev) => [...prev, newTrip].sort(compareTripTime));
+const created = await addDoc(collection(db, "trips"), payload);
 
-      closeAddModal();
+if (addTripType === "service") {
+  const selectedTicket = selectedAddPickerItem;
+  const ticketStatus = normalizeTicketStatus(selectedTicket?.ticketStatus);
+  const nextStatus = ticketStatus === "followup" || ticketStatus === "follow_up" ? "follow_up" : "scheduled";
+
+  const helperIds = Array.from(new Set([helperUid, secondaryHelperUid].filter(Boolean)));
+  const helperNames = helperIds
+    .map((uid) => employeeNamesByUid[uid] || "Unnamed Helper")
+    .filter(Boolean);
+
+  const assignedTechnicianIds = Array.from(
+    new Set([techUid, helperUid, secondaryHelperUid].filter(Boolean))
+  );
+
+  await updateDoc(doc(db, "serviceTickets", linkId), {
+    status: nextStatus,
+    assignedTechnicianId: techUid,
+    assignedTechnicianName: techName,
+    primaryTechnicianId: techUid,
+    secondaryTechnicianId: null,
+    secondaryTechnicianName: null,
+    helperIds: helperIds.length ? helperIds : null,
+    helperNames: helperNames.length ? helperNames : null,
+    assignedTechnicianIds,
+    updatedAt: now,
+  });
+}
+
+const newTrip: TripDoc = { id: created.id, ...(payload as any) };
+setTrips((prev) => [...prev, newTrip].sort(compareTripTime));
+
+closeAddModal();
     } catch (e: any) {
       setAddErr(e?.message || "Failed to add trip.");
     } finally {
@@ -2230,50 +2471,96 @@ export default function SchedulePage() {
     return { startIso: toIsoDate(weekDays[0]), endIso: toIsoDate(weekDays[weekDays.length - 1]) };
   }, [view, anchorIso, anchorDate]);
 
-  useEffect(() => {
-    async function loadUsers() {
-      setTechsLoading(true);
-      setTechsError("");
-      try {
-        const snap = await getDocs(collection(db, "users"));
-        const allUsers: EmployeeOption[] = snap.docs
+useEffect(() => {
+  async function loadUsers() {
+    setTechsLoading(true);
+    setTechsError("");
+
+    try {
+      const [usersSnap, profilesSnap] = await Promise.all([
+        getDocs(collection(db, "users")),
+        getDocs(collection(db, "employeeProfiles")),
+      ]);
+
+      const allUsers: EmployeeOption[] = usersSnap.docs
+        .map((ds) => {
+          const d = ds.data() as any;
+          return {
+            uid: String(d.uid ?? ds.id),
+            displayName: String(d.displayName ?? "Unnamed"),
+            role: String(d.role ?? ""),
+            active: Boolean(d.active ?? false),
+          };
+        })
+        .filter((item) => item.active);
+
+      const techItems: TechRow[] = allUsers
+        .filter((item) => normalizeRole(item.role) === "technician")
+        .map((item) => ({ uid: item.uid, name: item.displayName }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const legacyPairingByUserUid = new Map(
+        profilesSnap.docs
           .map((ds) => {
-            const d = ds.data() as any;
-            return {
-              uid: String(d.uid ?? ds.id),
-              displayName: String(d.displayName ?? "Unnamed"),
-              role: String(d.role ?? ""),
-              active: Boolean(d.active ?? false),
-            };
+            const profile = ds.data() as any;
+            return [
+              String(profile.userUid || "").trim(),
+              String(profile.defaultPairedTechUid || "").trim() || null,
+            ] as const;
           })
-          .filter((item) => item.active);
+          .filter(([uid]) => Boolean(uid))
+      );
 
-        const techItems: TechRow[] = allUsers
-          .filter((item) => normalizeRole(item.role) === "technician")
-          .map((item) => ({ uid: item.uid, name: item.displayName }))
-          .sort((a, b) => a.name.localeCompare(b.name));
+      const helperItems: HelperOption[] = usersSnap.docs
+        .map((ds) => {
+          const user = ds.data() as any;
+          const uid = String(user.uid ?? ds.id).trim();
+          const role = normalizeRole(user.role);
+          const preferredTechnicianId =
+            String(user.preferredTechnicianId || "").trim() ||
+            legacyPairingByUserUid.get(uid) ||
+            null;
 
-        const meetingEligibleUsers = allUsers
-          .filter((item) => isMeetingEligibleRole(item.role))
-          .sort((a, b) => {
-            const byName = a.displayName.localeCompare(b.displayName);
-            if (byName !== 0) return byName;
-            return formatRoleLabel(a.role).localeCompare(formatRoleLabel(b.role));
-          });
+          return {
+            uid,
+            name: String(user.displayName || "Unnamed"),
+            laborRole: role,
+            defaultPairedTechUid: preferredTechnicianId,
+            active: Boolean(user.active ?? false),
+          };
+        })
+        .filter(
+          (helper) =>
+            helper.active &&
+            helper.uid &&
+            (helper.laborRole === "helper" || helper.laborRole === "apprentice")
+        )
+        .map(({ active: _active, ...helper }) => helper)
+        .sort((a, b) => a.name.localeCompare(b.name));
 
-        setTechs(techItems);
-        setMeetingEmployees(meetingEligibleUsers);
-      } catch (e: any) {
-        setTechsError(e?.message || "Failed to load employees.");
-        setTechs([]);
-        setMeetingEmployees([]);
-      } finally {
-        setTechsLoading(false);
-      }
+      const meetingEligibleUsers = allUsers
+        .filter((item) => isMeetingEligibleRole(item.role))
+        .sort((a, b) => {
+          const byName = a.displayName.localeCompare(b.displayName);
+          if (byName !== 0) return byName;
+          return formatRoleLabel(a.role).localeCompare(formatRoleLabel(b.role));
+        });
+
+      setTechs(techItems);
+      setHelpers(helperItems);
+      setMeetingEmployees(meetingEligibleUsers);
+    } catch (e: any) {
+      setTechsError(e?.message || "Failed to load employees.");
+      setTechs([]);
+      setHelpers([]);
+      setMeetingEmployees([]);
+    } finally {
+      setTechsLoading(false);
     }
+  }
 
-    loadUsers();
-  }, []);
+  loadUsers();
+}, []);
 
   useEffect(() => {
     async function loadHolidays() {
@@ -3412,32 +3699,62 @@ export default function SchedulePage() {
                                           />
                                         ) : null}
 
-                                        {canShowAmPlus ? (
-                                          <ScheduleSlotButton
-                                            label={availability.amSoftBusy ? "Override AM" : "Add AM"}
-                                            onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
-                                          />
-                                        ) : null}
+                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                          {canShowAmPlus ? (
+                                            <ScheduleSlotButton
+                                              label={availability.amSoftBusy ? "Override AM" : "Add AM"}
+                                              onClick={() =>
+                                                openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })
+                                              }
+                                            />
+                                          ) : null}
+
+                                          {canShowPmPlus ? (
+                                            <ScheduleSlotButton
+                                              label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
+                                              onClick={() =>
+                                                openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })
+                                              }
+                                            />
+                                          ) : null}
+
+                                          {canEditSchedule &&
+                                          rowKey !== "UNASSIGNED" &&
+                                          !availability.allDayHardBusy &&
+                                          !isPast ? (
+                                            <ScheduleSlotButton
+                                              label={
+                                                availability.allDaySoftBusy
+                                                  ? "Override All Day"
+                                                  : "Add All Day"
+                                              }
+                                              onClick={() =>
+                                                openAddModal({
+                                                  techUid: rowKey,
+                                                  dateIso: iso,
+                                                  slot: "all_day",
+                                                })
+                                              }
+                                            />
+                                          ) : null}
+                                        </Stack>
 
                                         {amTrips.length ? (
                                           <Stack spacing={1}>
                                             {amTrips.map((trip) =>
-                                              renderTripCard(trip, { keyValue: `mobile_am_${iso}_${rowKey}_${trip.id}` })
+                                              renderTripCard(trip, {
+                                                keyValue: `mobile_am_${iso}_${rowKey}_${trip.id}`,
+                                              })
                                             )}
                                           </Stack>
-                                        ) : null}
-
-                                        {canShowPmPlus ? (
-                                          <ScheduleSlotButton
-                                            label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
-                                            onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
-                                          />
                                         ) : null}
 
                                         {pmTrips.length ? (
                                           <Stack spacing={1}>
                                             {pmTrips.map((trip) =>
-                                              renderTripCard(trip, { keyValue: `mobile_pm_${iso}_${rowKey}_${trip.id}` })
+                                              renderTripCard(trip, {
+                                                keyValue: `mobile_pm_${iso}_${rowKey}_${trip.id}`,
+                                              })
                                             )}
                                           </Stack>
                                         ) : null}
@@ -3616,32 +3933,62 @@ export default function SchedulePage() {
                                               />
                                             ) : null}
 
-                                            {canShowAmPlus ? (
-                                              <ScheduleSlotButton
-                                                label={availability.amSoftBusy ? "Override AM" : "Add AM"}
-                                                onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })}
-                                              />
-                                            ) : null}
+                                                                                       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                              {canShowAmPlus ? (
+                                                <ScheduleSlotButton
+                                                  label={availability.amSoftBusy ? "Override AM" : "Add AM"}
+                                                  onClick={() =>
+                                                    openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })
+                                                  }
+                                                />
+                                              ) : null}
+
+                                              {canShowPmPlus ? (
+                                                <ScheduleSlotButton
+                                                  label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
+                                                  onClick={() =>
+                                                    openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })
+                                                  }
+                                                />
+                                              ) : null}
+
+                                              {canEditSchedule &&
+                                              rowKey !== "UNASSIGNED" &&
+                                              !availability.allDayHardBusy &&
+                                              !isPast ? (
+                                                <ScheduleSlotButton
+                                                  label={
+                                                    availability.allDaySoftBusy
+                                                      ? "Override All Day"
+                                                      : "Add All Day"
+                                                  }
+                                                  onClick={() =>
+                                                    openAddModal({
+                                                      techUid: rowKey,
+                                                      dateIso: iso,
+                                                      slot: "all_day",
+                                                    })
+                                                  }
+                                                />
+                                              ) : null}
+                                            </Stack>
 
                                             {amTrips.length ? (
                                               <Stack spacing={1}>
                                                 {amTrips.map((trip) =>
-                                                  renderTripCard(trip, { keyValue: `desk_am_${iso}_${rowKey}_${trip.id}` })
+                                                  renderTripCard(trip, {
+                                                    keyValue: `desk_am_${iso}_${rowKey}_${trip.id}`,
+                                                  })
                                                 )}
                                               </Stack>
-                                            ) : null}
-
-                                            {canShowPmPlus ? (
-                                              <ScheduleSlotButton
-                                                label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
-                                                onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })}
-                                              />
                                             ) : null}
 
                                             {pmTrips.length ? (
                                               <Stack spacing={1}>
                                                 {pmTrips.map((trip) =>
-                                                  renderTripCard(trip, { keyValue: `desk_pm_${iso}_${rowKey}_${trip.id}` })
+                                                  renderTripCard(trip, {
+                                                    keyValue: `desk_pm_${iso}_${rowKey}_${trip.id}`,
+                                                  })
                                                 )}
                                               </Stack>
                                             ) : null}
@@ -3680,9 +4027,34 @@ export default function SchedulePage() {
           <DialogTitle>Schedule Trip</DialogTitle>
           <DialogContent dividers>
             <Stack spacing={2}>
-              <Typography variant="body2" color="text.secondary">
-                Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong> • Date: <strong>{addDateIso}</strong> • Slot: <strong>{addSlot.toUpperCase()}</strong>
-              </Typography>
+<Paper
+  variant="outlined"
+  sx={{
+    p: 1.5,
+    borderRadius: 2,
+    backgroundColor: alpha(theme.palette.primary.main, 0.04),
+  }}
+>
+  <Stack spacing={0.75}>
+    <Typography variant="body2" color="text.secondary">
+      Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong>
+    </Typography>
+
+    <Typography variant="body2" color="text.secondary">
+      Helper: <strong>{addPrimaryHelper?.name || "—"}</strong>
+    </Typography>
+
+    {addSecondaryHelper ? (
+      <Typography variant="body2" color="text.secondary">
+        Additional Helper: <strong>{addSecondaryHelper.name}</strong>
+      </Typography>
+    ) : null}
+
+    <Typography variant="body2" color="text.secondary">
+      Date: <strong>{addDateIso}</strong> • Window: <strong>{formatSlotLabel(addSlot)}</strong>
+    </Typography>
+  </Stack>
+</Paper>
 
               <FormControl fullWidth>
                 <InputLabel>Trip Type</InputLabel>
@@ -3825,6 +4197,25 @@ export default function SchedulePage() {
                   )}
                 </Box>
               </Paper>
+
+              {addShouldRecommendAllDay ? (
+                <Alert
+                  severity="warning"
+                  variant="outlined"
+                  action={
+                    <Button
+                      color="warning"
+                      size="small"
+                      onClick={() => setAddSlot("all_day")}
+                      disabled={addSaving}
+                    >
+                      Switch to All Day
+                    </Button>
+                  }
+                >
+                  This ticket is estimated at {addEstimateHours} hours. All Day is recommended so it blocks both AM and PM for the crew.
+                </Alert>
+              ) : null}
 
               <TextField
                 label="Advanced ID (optional)"
