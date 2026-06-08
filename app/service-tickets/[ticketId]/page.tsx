@@ -483,6 +483,13 @@ function safeStr(x: unknown) {
   return String(x ?? "").trim();
 }
 
+function middleTruncate(value: unknown, front = 8, back = 5) {
+  const text = safeStr(value);
+  if (!text) return "";
+  if (text.length <= front + back + 1) return text;
+  return `${text.slice(0, front)}…${text.slice(-back)}`;
+}
+
 function createId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -1674,18 +1681,38 @@ function Section(props: {
   children: React.ReactNode;
 }) {
   return (
-    <Card variant="outlined" sx={{ borderRadius: 1.2 }}>
+    <Card
+      variant="outlined"
+      sx={{
+        borderRadius: 1.2,
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
+      }}
+    >
       <CardHeader
         avatar={props.icon}
         action={props.action}
+        sx={{
+          minWidth: 0,
+          "& .MuiCardHeader-content": { minWidth: 0 },
+          "& .MuiCardHeader-action": {
+            minWidth: 0,
+            ml: 1,
+          },
+        }}
         title={
-          <Typography variant="h6" fontWeight={700}>
+          <Typography
+            variant="h6"
+            fontWeight={700}
+            sx={{ overflowWrap: "anywhere" }}
+          >
             {props.title}
           </Typography>
         }
       />
       <Divider />
-      <CardContent>{props.children}</CardContent>
+      <CardContent sx={{ minWidth: 0 }}>{props.children}</CardContent>
     </Card>
   );
 }
@@ -5241,7 +5268,29 @@ Supply line`}
         {error ? <Alert severity="error">{error}</Alert> : null}
 
         {!loading && !error && ticket ? (
-          <Stack spacing={3}>
+          <Stack
+            spacing={3}
+            sx={{
+              minWidth: 0,
+              maxWidth: "100%",
+              overflowX: "clip",
+              "& .MuiPaper-root, & .MuiCard-root": {
+                minWidth: 0,
+                maxWidth: "100%",
+              },
+              "& .MuiChip-root": {
+                maxWidth: "100%",
+              },
+              "& .MuiChip-label": {
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              },
+              "& .MuiTypography-root": {
+                minWidth: 0,
+              },
+            }}
+          >
             {isInvoicedTicket ? (
               <Alert severity="success" variant="outlined">
                 This ticket has been invoiced and is now locked from dispatch, trip, and billing edits.
@@ -5438,12 +5487,31 @@ Supply line`}
             <Stack
               direction={{ xs: "column", md: "row" }}
               justifyContent="space-between"
-              alignItems={{ xs: "flex-start", md: "center" }}
+              alignItems={{ xs: "stretch", md: "center" }}
               spacing={2}
+              sx={{ minWidth: 0, maxWidth: "100%" }}
             >
-              <Stack spacing={1}>
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                  <Typography variant="h4" fontWeight={800}>
+              <Stack spacing={1} sx={{ minWidth: 0, maxWidth: "100%", flex: 1 }}>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  flexWrap="wrap"
+                  useFlexGap
+                  sx={{ minWidth: 0, maxWidth: "100%" }}
+                >
+                  <Typography
+                    variant="h4"
+                    fontWeight={800}
+                    sx={{
+                      minWidth: 0,
+                      maxWidth: "100%",
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
+                      fontSize: { xs: "1.8rem", sm: "2.125rem" },
+                      lineHeight: 1.08,
+                    }}
+                  >
                     {ticket.issueSummary}
                   </Typography>
                   <Chip
@@ -5454,13 +5522,41 @@ Supply line`}
                 </Stack>
 
                 {!isFieldUser ? (
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Chip label={`Ticket ID: ${ticketId}`} variant="outlined" />
+                  <Stack
+                    direction="row"
+                    spacing={0.75}
+                    alignItems="center"
+                    sx={{
+                      minWidth: 0,
+                      maxWidth: "100%",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <Chip
+                      title={ticketId}
+                      aria-label={`Ticket ID ${ticketId}`}
+                      label={`Ticket ID: ${
+                        isMobile ? middleTruncate(ticketId, 8, 5) : ticketId
+                      }`}
+                      variant="outlined"
+                      sx={{
+                        maxWidth: { xs: "calc(100vw - 94px)", sm: 420 },
+                        minWidth: 0,
+                        "& .MuiChip-label": {
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        },
+                      }}
+                    />
                     <IconButton
                       size="small"
+                      aria-label="Copy service ticket ID"
                       onClick={() =>
                         navigator.clipboard.writeText(ticketId).catch(() => undefined)
                       }
+                      sx={{ flexShrink: 0 }}
                     >
                       <ContentCopyRoundedIcon fontSize="small" />
                     </IconButton>
@@ -5468,7 +5564,11 @@ Supply line`}
                 ) : null}
               </Stack>
 
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1}
+                sx={{ width: { xs: "100%", md: "auto" }, minWidth: 0 }}
+              >
                 {isFieldUser && !ticket.assignedTechnicianId && !hasOpenTrips(trips) ? (
                   <Button
                     variant="contained"
@@ -5486,6 +5586,7 @@ Supply line`}
                   href="/service-tickets"
                   variant="outlined"
                   startIcon={<ArrowBackRoundedIcon />}
+                  sx={{ width: { xs: "100%", sm: "auto" } }}
                 >
                   Back to Tickets
                 </Button>
@@ -5496,12 +5597,36 @@ Supply line`}
               sx={{
                 display: "grid",
                 gap: 2.5,
-                gridTemplateColumns: { xs: "1fr", lg: "1.2fr 0.95fr" },
+                minWidth: 0,
+                maxWidth: "100%",
+                overflowX: "clip",
+                gridTemplateColumns: {
+                  xs: "minmax(0, 1fr)",
+                  lg: "minmax(0, 1.2fr) minmax(0, 0.95fr)",
+                },
               }}
             >
-              <Stack spacing={2.5}>
-                <Stack spacing={1}>
-                  <ServiceTicketLocationCard
+              <Stack spacing={2.5} sx={{ minWidth: 0, maxWidth: "100%" }}>
+                <Stack spacing={1} sx={{ minWidth: 0, maxWidth: "100%" }}>
+                  <Box
+                    sx={{
+                      minWidth: 0,
+                      maxWidth: "100%",
+                      overflowX: "clip",
+                      "& .MuiStack-root": { minWidth: 0 },
+                      "& .MuiChip-root": { maxWidth: "100%" },
+                      "& .MuiChip-label": {
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      },
+                      "& .MuiTypography-root": {
+                        minWidth: 0,
+                        overflowWrap: "anywhere",
+                      },
+                    }}
+                  >
+                    <ServiceTicketLocationCard
                     customerDisplayName={ticket.customerDisplayName}
                     customerHref={
                       ticket.customerId ? `/customers/${ticket.customerId}` : undefined
@@ -5515,6 +5640,7 @@ Supply line`}
                     customerEmail={customerEmail}
                     showEmail={!isFieldUser}
                   />
+                  </Box>
 
                   {canDispatch ? (
                     <Button
@@ -5643,7 +5769,7 @@ Supply line`}
                 </Section>
               </Stack>
 
-              <Stack spacing={2.5}>
+              <Stack spacing={2.5} sx={{ minWidth: 0, maxWidth: "100%" }}>
                 <Section
                   title="Trips"
                   icon={<ScheduleRoundedIcon color="primary" />}

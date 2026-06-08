@@ -2,7 +2,7 @@
 "use client";
 
 import Image from "next/image";
-import React, { ReactNode, useEffect, useMemo, useState } from "react";
+import React, { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import LogoutButton from "./LogoutButton";
 import GlobalSearch from "./GlobalSearch";
@@ -31,6 +31,7 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -61,6 +62,7 @@ import TvRoundedIcon from "@mui/icons-material/TvRounded";
 import FolderRoundedIcon from "@mui/icons-material/FolderRounded";
 import PeopleAltRoundedIcon from "@mui/icons-material/PeopleAltRounded";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
 import ViewWeekRoundedIcon from "@mui/icons-material/ViewWeekRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
@@ -1147,6 +1149,500 @@ function MobileTopActionCard({
         />
       </Box>
     </Paper>
+  );
+}
+
+
+const PULL_TO_REFRESH_TRIGGER_PX = 82;
+const PULL_TO_REFRESH_MAX_PX = 142;
+
+type PullToRefreshState = "idle" | "pulling" | "ready" | "refreshing" | "done";
+
+function isPageScrolledToTop() {
+  if (typeof window === "undefined") return false;
+
+  const doc = document.documentElement;
+  const scrollTop = window.scrollY || doc.scrollTop || document.body.scrollTop || 0;
+  return scrollTop <= 2;
+}
+
+function isPullToRefreshBlockedTarget(target: EventTarget | null) {
+  if (typeof HTMLElement === "undefined") return false;
+  if (!(target instanceof HTMLElement)) return false;
+
+  return Boolean(
+    target.closest(
+      [
+        "input",
+        "textarea",
+        "select",
+        "button",
+        "a",
+        '[role="button"]',
+        '[contenteditable="true"]',
+        ".MuiDialog-root",
+        ".MuiDrawer-root",
+        ".MuiPopover-root",
+      ].join(",")
+    )
+  );
+}
+
+function hasScrollableParentAwayFromTop(target: EventTarget | null) {
+  if (typeof HTMLElement === "undefined") return false;
+  if (!(target instanceof HTMLElement)) return false;
+
+  let node: HTMLElement | null = target;
+
+  while (node && node !== document.body && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    const overflowY = style.overflowY;
+    const canScrollY =
+      /(auto|scroll|overlay)/.test(overflowY) &&
+      node.scrollHeight > node.clientHeight + 1;
+
+    if (canScrollY && node.scrollTop > 2) return true;
+
+    node = node.parentElement;
+  }
+
+  return false;
+}
+
+function MobilePullToRefresh({
+  children,
+  enabled,
+  onRefresh,
+}: {
+  children: ReactNode;
+  enabled: boolean;
+  onRefresh: () => void | Promise<void>;
+}) {
+  const theme = useTheme();
+  const [pullDistance, setPullDistance] = useState(0);
+  const [refreshState, setRefreshState] = useState<PullToRefreshState>("idle");
+
+  const startYRef = useRef(0);
+  const trackingRef = useRef(false);
+  const pullDistanceRef = useRef(0);
+  const refreshingRef = useRef(false);
+  const doneTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const htmlStyle = document.documentElement.style as CSSStyleDeclaration & {
+      overscrollBehaviorY?: string;
+    };
+    const bodyStyle = document.body.style as CSSStyleDeclaration & {
+      overscrollBehaviorY?: string;
+    };
+    const previousHtmlOverscroll = htmlStyle.overscrollBehaviorY || "";
+    const previousBodyOverscroll = bodyStyle.overscrollBehaviorY || "";
+
+    htmlStyle.overscrollBehaviorY = "contain";
+    bodyStyle.overscrollBehaviorY = "contain";
+
+    return () => {
+      htmlStyle.overscrollBehaviorY = previousHtmlOverscroll;
+      bodyStyle.overscrollBehaviorY = previousBodyOverscroll;
+    };
+  }, [enabled]);
+
+  useEffect(() => {
+    return () => {
+      if (doneTimerRef.current) {
+        window.clearTimeout(doneTimerRef.current);
+      }
+    };
+  }, []);
+
+  function setDistance(nextDistance: number) {
+    pullDistanceRef.current = nextDistance;
+    setPullDistance(nextDistance);
+  }
+
+  function resetPull() {
+    trackingRef.current = false;
+    startYRef.current = 0;
+    setDistance(0);
+    setRefreshState("idle");
+  }
+
+  async function runRefresh() {
+    if (refreshingRef.current) return;
+
+    refreshingRef.current = true;
+    trackingRef.current = false;
+    setDistance(PULL_TO_REFRESH_TRIGGER_PX + 18);
+    setRefreshState("refreshing");
+
+    try {
+      await Promise.resolve(onRefresh());
+      await new Promise((resolve) => window.setTimeout(resolve, 520));
+      setRefreshState("done");
+      setDistance(72);
+
+      if (doneTimerRef.current) window.clearTimeout(doneTimerRef.current);
+      doneTimerRef.current = window.setTimeout(() => {
+        refreshingRef.current = false;
+        resetPull();
+      }, 760);
+    } catch {
+      refreshingRef.current = false;
+      resetPull();
+    }
+  }
+
+  function handleTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    if (!enabled || refreshingRef.current) return;
+    if (event.touches.length !== 1) return;
+    if (isPullToRefreshBlockedTarget(event.target)) return;
+    if (hasScrollableParentAwayFromTop(event.target)) return;
+    if (!isPageScrolledToTop()) return;
+
+    trackingRef.current = true;
+    startYRef.current = event.touches[0].clientY;
+  }
+
+  function handleTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    if (!trackingRef.current || !enabled || refreshingRef.current) return;
+    if (event.touches.length !== 1) return;
+
+    const deltaY = event.touches[0].clientY - startYRef.current;
+
+    if (deltaY <= 0) {
+      setDistance(0);
+      setRefreshState("idle");
+      return;
+    }
+
+    if (!isPageScrolledToTop() && pullDistanceRef.current <= 0) return;
+
+    const dampenedPull = Math.pow(deltaY, 0.92) * 0.72;
+    const nextDistance = Math.min(PULL_TO_REFRESH_MAX_PX, dampenedPull);
+    setDistance(nextDistance);
+    setRefreshState(
+      nextDistance >= PULL_TO_REFRESH_TRIGGER_PX ? "ready" : "pulling"
+    );
+
+    if (nextDistance > 4) {
+      event.preventDefault();
+    }
+  }
+
+  function handleTouchEnd() {
+    if (!trackingRef.current || !enabled || refreshingRef.current) return;
+
+    if (pullDistanceRef.current >= PULL_TO_REFRESH_TRIGGER_PX) {
+      void runRefresh();
+      return;
+    }
+
+    resetPull();
+  }
+
+  function handleTouchCancel() {
+    if (refreshingRef.current) return;
+    resetPull();
+  }
+
+  const pullProgress = Math.min(1, pullDistance / PULL_TO_REFRESH_TRIGGER_PX);
+  const easedProgress = 1 - Math.pow(1 - pullProgress, 2);
+  const indicatorVisible = refreshState !== "idle" || pullDistance > 0;
+  const accentMain =
+    refreshState === "done" ? theme.palette.success.main : theme.palette.primary.main;
+  const accentGlow = alpha(accentMain, theme.palette.mode === "dark" ? 0.42 : 0.24);
+  const surfaceAlpha = theme.palette.mode === "dark" ? 0.78 : 0.92;
+  const readyBoost = refreshState === "ready" ? 1 : 0;
+  const isHolding = refreshState === "refreshing" || refreshState === "done";
+  const contentTranslateY = isHolding
+    ? 42
+    : Math.min(68, pullDistance * (0.34 + easedProgress * 0.18));
+  const iconRotation =
+    refreshState === "ready"
+      ? 175 + easedProgress * 95
+      : easedProgress * 185;
+  const indicatorScale =
+    refreshState === "refreshing"
+      ? 1.05
+      : refreshState === "done"
+        ? 1.08
+        : 0.84 + easedProgress * 0.22 + readyBoost * 0.04;
+  const indicatorTranslateY = indicatorVisible
+    ? Math.max(0, Math.min(34, pullDistance * 0.18))
+    : -28;
+
+  const indicatorLabel =
+    refreshState === "refreshing"
+      ? "Syncing DCFlow…"
+      : refreshState === "done"
+        ? "Updated"
+        : pullDistance >= PULL_TO_REFRESH_TRIGGER_PX
+          ? "Release to refresh"
+          : "Pull to refresh";
+
+  const indicatorSubLabel =
+    refreshState === "refreshing"
+      ? "Checking the latest field updates"
+      : refreshState === "done"
+        ? "You’re current"
+        : pullDistance >= PULL_TO_REFRESH_TRIGGER_PX
+          ? "Let go to sync this screen"
+          : "Keep pulling to sync";
+
+  return (
+    <Box
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchCancel}
+      sx={{
+        position: "relative",
+        minHeight: "100%",
+        overscrollBehaviorY: "contain",
+        "@keyframes dcflowRefreshSpin": {
+          from: { transform: "rotate(0deg)" },
+          to: { transform: "rotate(360deg)" },
+        },
+        "@keyframes dcflowRefreshPulse": {
+          "0%": { transform: "scale(0.92)", opacity: 0.44 },
+          "55%": { transform: "scale(1.18)", opacity: 0.12 },
+          "100%": { transform: "scale(1.32)", opacity: 0 },
+        },
+        "@keyframes dcflowRefreshPop": {
+          "0%": { transform: "scale(0.78) rotate(-10deg)" },
+          "60%": { transform: "scale(1.18) rotate(4deg)" },
+          "100%": { transform: "scale(1) rotate(0deg)" },
+        },
+        "@keyframes dcflowRefreshShine": {
+          "0%": { transform: "translateX(-140%) rotate(12deg)" },
+          "100%": { transform: "translateX(150%) rotate(12deg)" },
+        },
+      }}
+    >
+      <Box
+        aria-live="polite"
+        sx={{
+          position: "absolute",
+          top: 4,
+          left: 0,
+          right: 0,
+          zIndex: 5,
+          display: "flex",
+          justifyContent: "center",
+          pointerEvents: "none",
+          opacity: indicatorVisible ? 1 : 0,
+          transform: `translateY(${indicatorTranslateY}px) scale(${indicatorScale})`,
+          transition:
+            refreshState === "pulling" || refreshState === "ready"
+              ? "opacity 90ms ease, transform 60ms linear"
+              : "opacity 180ms ease, transform 280ms cubic-bezier(0.2, 1.25, 0.3, 1)",
+          transformOrigin: "top center",
+        }}
+      >
+        <Paper
+          elevation={refreshState === "ready" || isHolding ? 10 : 4}
+          sx={{
+            position: "relative",
+            px: 1.25,
+            py: 0.85,
+            minWidth: refreshState === "idle" ? 0 : 188,
+            borderRadius: 999,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 1.05,
+            overflow: "hidden",
+            backgroundColor: alpha(theme.palette.background.paper, surfaceAlpha),
+            backgroundImage:
+              theme.palette.mode === "dark"
+                ? `linear-gradient(135deg, ${alpha(accentMain, 0.22)} 0%, ${alpha(
+                    theme.palette.background.paper,
+                    0.92
+                  )} 48%, ${alpha(theme.palette.common.white, 0.055)} 100%)`
+                : `linear-gradient(135deg, ${alpha(theme.palette.common.white, 0.98)} 0%, ${alpha(
+                    accentMain,
+                    0.105
+                  )} 52%, ${alpha(theme.palette.common.white, 0.86)} 100%)`,
+            border: `1px solid ${alpha(accentMain, refreshState === "ready" ? 0.42 : 0.24)}`,
+            color: accentMain,
+            boxShadow:
+              refreshState === "ready" || isHolding
+                ? `0 18px 36px ${accentGlow}, inset 0 1px 0 ${alpha(
+                    theme.palette.common.white,
+                    theme.palette.mode === "dark" ? 0.07 : 0.82
+                  )}`
+                : `0 10px 24px ${alpha(theme.palette.common.black, 0.16)}, inset 0 1px 0 ${alpha(
+                    theme.palette.common.white,
+                    theme.palette.mode === "dark" ? 0.05 : 0.72
+                  )}`,
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
+            transition:
+              "border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease",
+            "&::before": {
+              content: '""',
+              position: "absolute",
+              inset: -36,
+              background: `radial-gradient(circle at 25% 20%, ${alpha(
+                accentMain,
+                0.2 + easedProgress * 0.14
+              )}, transparent 32%), radial-gradient(circle at 82% 84%, ${alpha(
+                theme.palette.success.main,
+                refreshState === "done" ? 0.22 : 0.07
+              )}, transparent 34%)`,
+              opacity: indicatorVisible ? 1 : 0,
+              transition: "opacity 180ms ease",
+            },
+            "&::after": {
+              content: '""',
+              position: "absolute",
+              top: -18,
+              bottom: -18,
+              width: 48,
+              left: 0,
+              background: `linear-gradient(90deg, transparent, ${alpha(
+                theme.palette.common.white,
+                theme.palette.mode === "dark" ? 0.12 : 0.46
+              )}, transparent)`,
+              animation:
+                refreshState === "ready" || refreshState === "refreshing"
+                  ? "dcflowRefreshShine 1.1s ease-in-out infinite"
+                  : "none",
+            },
+          }}
+        >
+          <Box
+            sx={{
+              position: "relative",
+              zIndex: 1,
+              width: 38,
+              height: 38,
+              borderRadius: 999,
+              display: "grid",
+              placeItems: "center",
+              flexShrink: 0,
+              background:
+                refreshState === "done"
+                  ? `linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.24)}, ${alpha(
+                      theme.palette.success.main,
+                      0.08
+                    )})`
+                  : `conic-gradient(${accentMain} ${Math.max(
+                      6,
+                      Math.round(pullProgress * 100)
+                    )}%, ${alpha(accentMain, 0.16)} 0)`,
+              boxShadow:
+                refreshState === "ready"
+                  ? `0 0 0 7px ${alpha(accentMain, 0.1)}`
+                  : `0 0 0 1px ${alpha(accentMain, 0.08)}`,
+              transition: "background 120ms ease, box-shadow 180ms ease",
+              "&::before": {
+                content: '""',
+                position: "absolute",
+                inset: -5,
+                borderRadius: 999,
+                border: `1px solid ${alpha(accentMain, 0.24)}`,
+                animation:
+                  refreshState === "refreshing"
+                    ? "dcflowRefreshPulse 1.05s ease-out infinite"
+                    : "none",
+              },
+            }}
+          >
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 4,
+                borderRadius: 999,
+                backgroundColor: theme.palette.background.paper,
+              }}
+            />
+
+            {refreshState === "refreshing" ? (
+              <CircularProgress
+                size={22}
+                thickness={5}
+                color="inherit"
+                sx={{
+                  zIndex: 1,
+                  animationDuration: "620ms",
+                }}
+              />
+            ) : refreshState === "done" ? (
+              <CheckRoundedIcon
+                sx={{
+                  zIndex: 1,
+                  fontSize: 23,
+                  animation: "dcflowRefreshPop 360ms cubic-bezier(0.2, 1.35, 0.3, 1)",
+                }}
+              />
+            ) : refreshState === "ready" ? (
+              <WaterDropRoundedIcon
+                sx={{
+                  zIndex: 1,
+                  fontSize: 22,
+                  transform: `scale(${1 + easedProgress * 0.08})`,
+                  transition: "transform 120ms ease",
+                }}
+              />
+            ) : (
+              <RefreshRoundedIcon
+                sx={{
+                  zIndex: 1,
+                  fontSize: 22,
+                  transform: `rotate(${iconRotation}deg)`,
+                  transition: "transform 70ms linear",
+                }}
+              />
+            )}
+          </Box>
+
+          <Box sx={{ position: "relative", zIndex: 1, minWidth: 0 }}>
+            <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                fontWeight: 900,
+                lineHeight: 1.05,
+                letterSpacing: "-0.01em",
+                color: accentMain,
+              }}
+            >
+              {indicatorLabel}
+            </Typography>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{
+                display: "block",
+                mt: 0.25,
+                fontSize: 11,
+                lineHeight: 1.05,
+                fontWeight: 650,
+              }}
+            >
+              {indicatorSubLabel}
+            </Typography>
+          </Box>
+        </Paper>
+      </Box>
+
+      <Box
+        sx={{
+          transform: `translateY(${contentTranslateY}px) scale(${
+            refreshState === "ready" ? 0.992 : 1
+          })`,
+          transition:
+            refreshState === "pulling" || refreshState === "ready"
+              ? "none"
+              : "transform 320ms cubic-bezier(0.2, 1.08, 0.25, 1)",
+          willChange: "transform",
+        }}
+      >
+        {children}
+      </Box>
+    </Box>
   );
 }
 
@@ -3370,6 +3866,21 @@ export default function AppShell({
 
   const currentPageLabel = useMemo(() => getMobilePageLabel(pathname), [pathname]);
 
+  function handleMobilePullToRefresh() {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("dcflow:mobile-refresh", {
+          detail: {
+            pathname,
+            refreshedAt: nowIso(),
+          },
+        })
+      );
+    }
+
+    router.refresh();
+  }
+
   const mobileRejectedOverlay =
     isMobile && showRejectedBanner ? (
       <Box
@@ -4126,12 +4637,23 @@ boxShadow: (theme) =>
           px: 1.5,
           pt: showRejectedBanner ? `${MOBILE_TOP_REJECTED_OVERLAY_HEIGHT}px` : 1.5,
           pb: `${mobileBottomPadding}px`,
+          overscrollBehaviorY: "contain",
         }}
       >
-        {globalDockNotice}
-        {!showRejectedBanner ? rejectedBanner : null}
-        {mondayReminderBanner}
-        {children}
+        <MobilePullToRefresh
+          enabled={
+            isMobile &&
+            !drawerOpen &&
+            !activeTripSheetOpen &&
+            !projectCloseoutOpen
+          }
+          onRefresh={handleMobilePullToRefresh}
+        >
+          {globalDockNotice}
+          {!showRejectedBanner ? rejectedBanner : null}
+          {mondayReminderBanner}
+          {children}
+        </MobilePullToRefresh>
       </Box>
 
       {collapsedTripDock}
