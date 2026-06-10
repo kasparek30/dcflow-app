@@ -29,6 +29,7 @@ import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
+import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
 
 type AdminToolCardProps = {
   href: string;
@@ -215,6 +216,13 @@ export default function AdminHomePage() {
         "Labor roles, pairing defaults, technician/helper relationships, payroll metadata, and employee-level settings.",
       icon: <BadgeRoundedIcon sx={{ fontSize: 22 }} />,
     },
+    {
+  href: "/admin/staff-coverage",
+  title: "Staff Coverage",
+  description:
+    "Schedule part-time dispatch, office, billing, and admin coverage while creating linked payroll time entries.",
+  icon: <SupportAgentRoundedIcon sx={{ fontSize: 22 }} />,
+},
     {
       href: "/admin/daily-crew-overrides",
       title: "Daily Crew Overrides",

@@ -12,6 +12,14 @@ export type AppUserRole =
 
 export type LaborRoleType = "lead_field" | "support_field" | "office";
 
+export type StaffCoverageWorkType =
+  | "dispatch"
+  | "billing"
+  | "office"
+  | "admin"
+  | "shop"
+  | "other";
+
 export type AppUser = {
   uid: string;
   displayName: string;
@@ -29,4 +37,13 @@ export type AppUser = {
   // Holiday pay configuration
   holidayEligible?: boolean;
   defaultDailyHolidayHours?: number;
+
+  // --- Staff Coverage / assignment controls ---
+  // showOnSchedule: employee can appear on company schedule rows/cards.
+  // fieldAssignable: employee can be assigned to customer field trips.
+  // staffCoverageEligible: employee can be scheduled for office/dispatch coverage.
+  showOnSchedule?: boolean;
+  fieldAssignable?: boolean;
+  staffCoverageEligible?: boolean;
+  defaultStaffCoverageWorkType?: StaffCoverageWorkType | null;
 };

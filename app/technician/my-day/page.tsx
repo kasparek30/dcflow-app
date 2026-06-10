@@ -59,6 +59,7 @@ import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { formatTimeRange12h } from "../../../src/lib/time-format";
+import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import {
   generatePurchaseOrderForProjectTrip,
   generatePurchaseOrderForTrip,
@@ -138,6 +139,9 @@ type MyDayItem = {
   timerState?: string;
   isActive?: boolean;
   isPaused?: boolean;
+  hasAttachments?: boolean;
+  attachmentCount?: number;
+  lastAttachmentPhase?: string | null;
 };
 
 type EmployeeOption = {
@@ -160,6 +164,9 @@ type ServiceTicketLite = {
   serviceCity?: string;
   serviceState?: string;
   servicePostalCode?: string;
+  hasAttachments?: boolean;
+  attachmentCount?: number;
+  lastAttachmentPhase?: string | null;
 };
 
 type ProjectLite = {
@@ -1028,6 +1035,10 @@ export default function TechnicianMyDayPage() {
                 serviceCity: d.serviceCity ?? "",
                 serviceState: d.serviceState ?? "",
                 servicePostalCode: d.servicePostalCode ?? "",
+                hasAttachments: Boolean(d.hasAttachments),
+                attachmentCount:
+                  typeof d.attachmentCount === "number" ? d.attachmentCount : 0,
+                lastAttachmentPhase: d.lastAttachmentPhase ?? null,
               },
             }));
           },
@@ -1073,6 +1084,10 @@ export default function TechnicianMyDayPage() {
                 serviceCity: d.serviceCity ?? "",
                 serviceState: d.serviceState ?? "",
                 servicePostalCode: d.servicePostalCode ?? "",
+                hasAttachments: Boolean(d.hasAttachments),
+                attachmentCount:
+                  typeof d.attachmentCount === "number" ? d.attachmentCount : 0,
+                lastAttachmentPhase: d.lastAttachmentPhase ?? null,
               },
             }));
           },
@@ -1208,6 +1223,10 @@ export default function TechnicianMyDayPage() {
           timerState,
           isActive,
           isPaused,
+          hasAttachments: Boolean(st?.hasAttachments),
+          attachmentCount:
+            typeof st?.attachmentCount === "number" ? st.attachmentCount : 0,
+          lastAttachmentPhase: st?.lastAttachmentPhase ?? null,
         };
       });
 
@@ -1981,6 +2000,28 @@ async function handleGeneratePo(item: MyDayItem) {
                       />
                     ) : null;
 
+                    const attachmentCount = Number(item.attachmentCount || 0);
+                    const attachmentChip =
+                      item.hasAttachments && attachmentCount > 0 ? (
+                        <Chip
+                          size="small"
+                          icon={<AttachFileRoundedIcon sx={{ fontSize: 15 }} />}
+                          label={
+                            attachmentCount === 1
+                              ? "1 Attachment"
+                              : `${attachmentCount} Attachments`
+                          }
+                          color="info"
+                          variant="outlined"
+                          sx={{
+                            height: 24,
+                            borderRadius: 1.5,
+                            fontSize: 11,
+                            fontWeight: 800,
+                          }}
+                        />
+                      ) : null;
+
                     return (
                       <Box
                         key={item.id}
@@ -2120,8 +2161,9 @@ async function handleGeneratePo(item: MyDayItem) {
                               ) : undefined
                             }
                             trailingContent={
-                              activeBadge ? (
+                              activeBadge || attachmentChip ? (
                                 <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                                  {attachmentChip}
                                   {activeBadge}
                                 </Stack>
                               ) : undefined

@@ -68,6 +68,7 @@ import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
+import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
 
 type ViewMode = "week" | "month" | "day";
 
@@ -233,6 +234,22 @@ type AddSlotConflictSummary = {
   hardMessages: string[];
   softMessages: string[];
   softTripIds: string[];
+};
+
+type StaffCoverageDoc = {
+  id: string;
+  active: boolean;
+  employeeId: string;
+  employeeName: string;
+  employeeRole: string;
+  laborRoleType?: string | null;
+  workType: "dispatch" | "billing" | "office" | "admin" | "shop" | "other" | string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  scheduledHours: number;
+  status: "scheduled" | "clocked_in" | "completed" | "cancelled" | string;
+  notes?: string | null;
 };
 
 const MEETING_ELIGIBLE_ROLES = [
@@ -1044,6 +1061,16 @@ function SectionHeader({
   );
 }
 
+function staffCoverageWorkTypeLabel(workType?: string | null) {
+  const w = String(workType || "").toLowerCase();
+  if (w === "dispatch") return "Dispatch";
+  if (w === "billing") return "Billing";
+  if (w === "office") return "Office";
+  if (w === "admin") return "Admin";
+  if (w === "shop") return "Shop";
+  return "Staff";
+}
+
 export default function SchedulePage() {
   const theme = useTheme();
   const router = useRouter();
@@ -1145,6 +1172,12 @@ export default function SchedulePage() {
   const [meetSaving, setMeetSaving] = useState(false);
   const [meetErr, setMeetErr] = useState("");
   const [meetMsg, setMeetMsg] = useState("");
+
+  const [staffCoverageLoading, setStaffCoverageLoading] = useState(true);
+  const [staffCoverageError, setStaffCoverageError] = useState("");
+  const [staffCoverageByDate, setStaffCoverageByDate] = useState<
+    Record<string, StaffCoverageDoc[]>
+  >({});
 
   const allMeetingEmployeeUids = useMemo(
     () => meetingEmployees.map((employee) => employee.uid),
@@ -2783,9 +2816,23 @@ useEffect(() => {
     loadTrips();
   }, [range.startIso, range.endIso]);
 
-  useEffect(() => {
-    setLoading(tripsLoading || techsLoading || holidaysLoading || ptoLoading || eventsLoading);
-  }, [tripsLoading, techsLoading, holidaysLoading, ptoLoading, eventsLoading]);
+useEffect(() => {
+  setLoading(
+    tripsLoading ||
+      techsLoading ||
+      holidaysLoading ||
+      ptoLoading ||
+      eventsLoading ||
+      staffCoverageLoading
+  );
+}, [
+  tripsLoading,
+  techsLoading,
+  holidaysLoading,
+  ptoLoading,
+  eventsLoading,
+  staffCoverageLoading,
+]);
 
   const serviceTicketIdsInRange = useMemo(() => {
     const set = new Set<string>();
@@ -2872,6 +2919,70 @@ useEffect(() => {
       cancelled = true;
     };
   }, [projectIdsInRange.join("|")]);
+
+  useEffect(() => {
+  async function loadStaffCoverage() {
+    setStaffCoverageLoading(true);
+    setStaffCoverageError("");
+
+    try {
+      const snap = await getDocs(collection(db, "staffCoverage"));
+
+      const map: Record<string, StaffCoverageDoc[]> = {};
+
+      for (const ds of snap.docs) {
+        const d = ds.data() as any;
+
+        const active = typeof d.active === "boolean" ? d.active : true;
+        if (!active) continue;
+
+        const status = String(d.status || "scheduled").toLowerCase();
+        if (status === "cancelled") continue;
+
+        const date = String(d.date || "").trim();
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+        if (date < range.startIso || date > range.endIso) continue;
+
+        const item: StaffCoverageDoc = {
+          id: ds.id,
+          active,
+          employeeId: String(d.employeeId || ""),
+          employeeName: String(d.employeeName || "Employee"),
+          employeeRole: String(d.employeeRole || ""),
+          laborRoleType: d.laborRoleType ?? null,
+          workType: d.workType ?? "office",
+          date,
+          startTime: String(d.startTime || ""),
+          endTime: String(d.endTime || ""),
+          scheduledHours:
+            typeof d.scheduledHours === "number" ? d.scheduledHours : 0,
+          status: d.status ?? "scheduled",
+          notes: d.notes ?? null,
+        };
+
+        if (!map[date]) map[date] = [];
+        map[date].push(item);
+      }
+
+      for (const date of Object.keys(map)) {
+        map[date].sort((a, b) => {
+          const byTime = a.startTime.localeCompare(b.startTime);
+          if (byTime !== 0) return byTime;
+          return a.employeeName.localeCompare(b.employeeName);
+        });
+      }
+
+      setStaffCoverageByDate(map);
+    } catch (e: any) {
+      setStaffCoverageError(e?.message || "Failed to load staff coverage.");
+      setStaffCoverageByDate({});
+    } finally {
+      setStaffCoverageLoading(false);
+    }
+  }
+
+  loadStaffCoverage();
+}, [range.startIso, range.endIso]);
 
   const filteredTrips = useMemo(() => {
     return trips.filter((trip) => {
@@ -3127,6 +3238,109 @@ useEffect(() => {
       />
     );
   }
+
+  function renderStaffCoverageBadgeSmall(dateIso: string) {
+  const list = staffCoverageByDate[dateIso] || [];
+  if (!list.length) return null;
+
+  if (list.length === 1) {
+    const item = list[0];
+
+    return (
+      <Chip
+        size="small"
+        icon={<SupportAgentRoundedIcon sx={{ fontSize: 16 }} />}
+        label={`${staffCoverageWorkTypeLabel(item.workType)} • ${item.employeeName}`}
+        color="info"
+        variant="outlined"
+        sx={{
+          borderRadius: 1.5,
+          fontWeight: 500,
+          maxWidth: 320,
+          "& .MuiChip-label": {
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          },
+        }}
+      />
+    );
+  }
+
+  return (
+    <Chip
+      size="small"
+      icon={<SupportAgentRoundedIcon sx={{ fontSize: 16 }} />}
+      label={`${list.length} staff coverage`}
+      color="info"
+      variant="outlined"
+      sx={{
+        borderRadius: 1.5,
+        fontWeight: 500,
+      }}
+    />
+  );
+}
+
+function renderStaffCoverageCards(dateIso: string) {
+  const list = staffCoverageByDate[dateIso] || [];
+  if (!list.length) return null;
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        p: 1.25,
+        borderRadius: 2,
+        border: `1px solid ${alpha(theme.palette.info.main, 0.22)}`,
+        backgroundColor: alpha(theme.palette.info.main, 0.06),
+      }}
+    >
+      <Stack spacing={0.75}>
+        <Typography
+          variant="caption"
+          sx={{
+            fontWeight: 800,
+            color: "text.secondary",
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+          }}
+        >
+          Office / Dispatch Coverage
+        </Typography>
+
+        {list.map((item) => (
+          <Stack
+            key={item.id}
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            justifyContent="space-between"
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                {item.employeeName}
+              </Typography>
+
+              <Typography variant="caption" color="text.secondary">
+                {staffCoverageWorkTypeLabel(item.workType)} •{" "}
+                {compactTimeLabel(item.startTime, item.endTime)} •{" "}
+                {Number(item.scheduledHours || 0).toFixed(2)}h
+              </Typography>
+            </Box>
+
+            <Chip
+              size="small"
+              label={item.status || "scheduled"}
+              variant="outlined"
+              sx={{ borderRadius: 1.5 }}
+            />
+          </Stack>
+        ))}
+      </Stack>
+    </Paper>
+  );
+}
 
   function renderTripCard(
     trip: TripDoc,
@@ -3384,13 +3598,19 @@ useEffect(() => {
               </Box>
             </Box>
 
-            {(techsError || tripsError || holidaysError || ptoError || eventsError) && (
+            {(techsError ||
+  tripsError ||
+  holidaysError ||
+  ptoError ||
+  eventsError ||
+  staffCoverageError) && (
               <Stack spacing={1}>
                 {techsError ? <Alert severity="error">{techsError}</Alert> : null}
                 {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
                 {holidaysError ? <Alert severity="error">{holidaysError}</Alert> : null}
                 {ptoError ? <Alert severity="error">{ptoError}</Alert> : null}
                 {eventsError ? <Alert severity="error">{eventsError}</Alert> : null}
+                {staffCoverageError ? <Alert severity="error">{staffCoverageError}</Alert> : null}
               </Stack>
             )}
 
@@ -3622,12 +3842,15 @@ useEffect(() => {
                                 {renderHolidayBadge(iso)}
                                 {renderPtoBadgeSmall(iso)}
                                 {renderMeetingsBadgeSmall(iso)}
+                                {renderStaffCoverageBadgeSmall(iso)}
                               </Stack>
                             </Stack>
                           </Box>
 
                           <Box sx={{ p: { xs: 2, md: 2.5 }, pt: 0 }}>
                             <Stack spacing={1.5}>
+                              {renderStaffCoverageCards(iso)}
+
                               {rows.map((r) => {
                                 const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
                                 const cellTrips = grid.get(rowKey)?.get(iso) || [];
@@ -3836,6 +4059,7 @@ useEffect(() => {
                                         {renderHolidayBadge(iso)}
                                         {renderPtoBadgeSmall(iso)}
                                         {renderMeetingsBadgeSmall(iso)}
+                                        {renderStaffCoverageBadgeSmall(iso)}
                                       </Stack>
                                     </Stack>
                                   </TableCell>
@@ -3933,7 +4157,7 @@ useEffect(() => {
                                               />
                                             ) : null}
 
-                                                                                       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                               {canShowAmPlus ? (
                                                 <ScheduleSlotButton
                                                   label={availability.amSoftBusy ? "Override AM" : "Add AM"}

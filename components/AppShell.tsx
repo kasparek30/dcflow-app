@@ -84,6 +84,7 @@ import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import { queueProjectTripTimeEntryWrites } from "../src/lib/project-trip-time-entries";
+import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 
 type PauseBlock = {
   startAt: string;
@@ -296,7 +297,9 @@ function formatMaterialQuantity(material: ProjectTripMaterial) {
   return [quantityLabel, unit].filter(Boolean).join(" ");
 }
 
-function getPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) {
+function getPurchasedProjectMaterials(
+  materials?: ProjectTripMaterial[] | null,
+) {
   if (!Array.isArray(materials)) return [];
 
   return materials.filter((material) => {
@@ -305,14 +308,20 @@ function getPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) 
   });
 }
 
-function groupPurchasedProjectMaterials(materials?: ProjectTripMaterial[] | null) {
+function groupPurchasedProjectMaterials(
+  materials?: ProjectTripMaterial[] | null,
+) {
   const groups = new Map<string, ProjectTripMaterialGroup>();
 
   for (const material of getPurchasedProjectMaterials(materials)) {
     const poCode = safeTrim(material.poCode).toUpperCase();
     const supplierName = safeTrim(material.supplierName);
     const invoiceNumber = safeTrim(material.supplierInvoiceNumber);
-    const key = [poCode || "no-po", supplierName || "supplier", invoiceNumber || "no-invoice"].join("__");
+    const key = [
+      poCode || "no-po",
+      supplierName || "supplier",
+      invoiceNumber || "no-invoice",
+    ].join("__");
     const existing = groups.get(key) || {
       key,
       poCode,
@@ -392,7 +401,7 @@ function minutesBetweenMs(aMs: number, bMs: number) {
 
 function sumPausedMinutes(
   pauseBlocks?: PauseBlock[] | null,
-  referenceNowMs: number = Date.now()
+  referenceNowMs: number = Date.now(),
 ) {
   if (!Array.isArray(pauseBlocks) || pauseBlocks.length === 0) return 0;
 
@@ -422,7 +431,11 @@ function findOpenPauseIndex(pauseBlocks?: PauseBlock[] | null) {
 
 function getProjectTripTimerMinutesAt(trip: TripDoc, referenceMs: number) {
   const startMs = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
-  if (!Number.isFinite(startMs) || !Number.isFinite(referenceMs) || referenceMs < startMs) {
+  if (
+    !Number.isFinite(startMs) ||
+    !Number.isFinite(referenceMs) ||
+    referenceMs < startMs
+  ) {
     return null;
   }
 
@@ -433,7 +446,7 @@ function getProjectTripTimerMinutesAt(trip: TripDoc, referenceMs: number) {
 
 function buildProjectCloseoutCrewHours(
   crew: TripCrew | null | undefined,
-  defaultHours: number
+  defaultHours: number,
 ): ProjectCloseoutCrewHour[] {
   const rows: ProjectCloseoutCrewHour[] = [];
   const seen = new Set<string>();
@@ -515,7 +528,7 @@ function isTimeMaterialsProject(projectType?: string | null) {
 
 function compareTripSequence(
   a: Pick<TripDoc, "id" | "date" | "startTime">,
-  b: Pick<TripDoc, "id" | "date" | "startTime">
+  b: Pick<TripDoc, "id" | "date" | "startTime">,
 ) {
   const aKey = `${safeTrim(a.date)}_${safeTrim(a.startTime) || "00:00"}_${a.id}`;
   const bKey = `${safeTrim(b.date)}_${safeTrim(b.startTime) || "00:00"}_${b.id}`;
@@ -525,12 +538,13 @@ function compareTripSequence(
 function formatTripWindowLabel(
   timeWindow?: string,
   startTime?: string,
-  endTime?: string
+  endTime?: string,
 ) {
   const w = safeTrim(timeWindow).toLowerCase();
   const start = safeTrim(startTime);
   const end = safeTrim(endTime);
-  const formattedWindow = start && end ? `${formatClockTime(start)}–${formatClockTime(end)}` : "";
+  const formattedWindow =
+    start && end ? `${formatClockTime(start)}–${formatClockTime(end)}` : "";
 
   if (w === "all_day") return formattedWindow || "All Day";
   if (w === "am") return formattedWindow || "Morning";
@@ -655,28 +669,28 @@ function useRealtimeActiveTrip(uid: string) {
         where("active", "==", true),
         where("status", "==", "in_progress"),
         where("crew.primaryTechUid", "==", u),
-        limit(10)
+        limit(10),
       ),
       query(
         base,
         where("active", "==", true),
         where("status", "==", "in_progress"),
         where("crew.helperUid", "==", u),
-        limit(10)
+        limit(10),
       ),
       query(
         base,
         where("active", "==", true),
         where("status", "==", "in_progress"),
         where("crew.secondaryTechUid", "==", u),
-        limit(10)
+        limit(10),
       ),
       query(
         base,
         where("active", "==", true),
         where("status", "==", "in_progress"),
         where("crew.secondaryHelperUid", "==", u),
-        limit(10)
+        limit(10),
       ),
     ];
 
@@ -739,7 +753,7 @@ function useRealtimeActiveTrip(uid: string) {
           idsByQuery[idx] = idsThisSnap;
           recompute();
         },
-        () => recompute()
+        () => recompute(),
       );
       unsubs.push(unsub);
     });
@@ -766,7 +780,9 @@ async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
   if (serviceTicketId) {
     href = `/service-tickets/${serviceTicketId}`;
     try {
-      const ticketSnap = await getDoc(doc(db, "serviceTickets", serviceTicketId));
+      const ticketSnap = await getDoc(
+        doc(db, "serviceTickets", serviceTicketId),
+      );
       if (ticketSnap.exists()) {
         const td = ticketSnap.data() as any;
         const issue = safeTrim(td.issueSummary) || "Service Ticket";
@@ -860,10 +876,12 @@ function NavList({
               py: 0.375,
               borderRadius: 1.25,
               "&.Mui-selected": {
-                backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.14),
+                backgroundColor: (theme) =>
+                  alpha(theme.palette.primary.main, 0.14),
               },
               "&.Mui-selected:hover": {
-                backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.18),
+                backgroundColor: (theme) =>
+                  alpha(theme.palette.primary.main, 0.18),
               },
               "&:hover": {
                 backgroundColor: (theme) =>
@@ -969,7 +987,11 @@ function PurchasedProjectMaterialsCard({
 
                 return (
                   <Stack
-                    key={material.id || material.supplierLineKey || `${group.key}_${index}`}
+                    key={
+                      material.id ||
+                      material.supplierLineKey ||
+                      `${group.key}_${index}`
+                    }
                     direction="row"
                     spacing={1}
                     justifyContent="space-between"
@@ -1009,7 +1031,8 @@ function PurchasedProjectMaterialsCard({
         ) : null}
 
         <Typography variant="caption" color="text.secondary">
-          Add a material note below when purchased items were left onsite, returned, or planned for a later visit.
+          Add a material note below when purchased items were left onsite,
+          returned, or planned for a later visit.
         </Typography>
       </Stack>
     </Paper>
@@ -1152,7 +1175,6 @@ function MobileTopActionCard({
   );
 }
 
-
 const PULL_TO_REFRESH_TRIGGER_PX = 82;
 const PULL_TO_REFRESH_MAX_PX = 142;
 
@@ -1162,7 +1184,8 @@ function isPageScrolledToTop() {
   if (typeof window === "undefined") return false;
 
   const doc = document.documentElement;
-  const scrollTop = window.scrollY || doc.scrollTop || document.body.scrollTop || 0;
+  const scrollTop =
+    window.scrollY || doc.scrollTop || document.body.scrollTop || 0;
   return scrollTop <= 2;
 }
 
@@ -1183,8 +1206,8 @@ function isPullToRefreshBlockedTarget(target: EventTarget | null) {
         ".MuiDialog-root",
         ".MuiDrawer-root",
         ".MuiPopover-root",
-      ].join(",")
-    )
+      ].join(","),
+    ),
   );
 }
 
@@ -1323,7 +1346,7 @@ function MobilePullToRefresh({
     const nextDistance = Math.min(PULL_TO_REFRESH_MAX_PX, dampenedPull);
     setDistance(nextDistance);
     setRefreshState(
-      nextDistance >= PULL_TO_REFRESH_TRIGGER_PX ? "ready" : "pulling"
+      nextDistance >= PULL_TO_REFRESH_TRIGGER_PX ? "ready" : "pulling",
     );
 
     if (nextDistance > 4) {
@@ -1351,8 +1374,13 @@ function MobilePullToRefresh({
   const easedProgress = 1 - Math.pow(1 - pullProgress, 2);
   const indicatorVisible = refreshState !== "idle" || pullDistance > 0;
   const accentMain =
-    refreshState === "done" ? theme.palette.success.main : theme.palette.primary.main;
-  const accentGlow = alpha(accentMain, theme.palette.mode === "dark" ? 0.42 : 0.24);
+    refreshState === "done"
+      ? theme.palette.success.main
+      : theme.palette.primary.main;
+  const accentGlow = alpha(
+    accentMain,
+    theme.palette.mode === "dark" ? 0.42 : 0.24,
+  );
   const surfaceAlpha = theme.palette.mode === "dark" ? 0.78 : 0.92;
   const readyBoost = refreshState === "ready" ? 1 : 0;
   const isHolding = refreshState === "refreshing" || refreshState === "done";
@@ -1360,9 +1388,7 @@ function MobilePullToRefresh({
     ? 42
     : Math.min(68, pullDistance * (0.34 + easedProgress * 0.18));
   const iconRotation =
-    refreshState === "ready"
-      ? 175 + easedProgress * 95
-      : easedProgress * 185;
+    refreshState === "ready" ? 175 + easedProgress * 95 : easedProgress * 185;
   const indicatorScale =
     refreshState === "refreshing"
       ? 1.05
@@ -1453,16 +1479,19 @@ function MobilePullToRefresh({
             alignItems: "center",
             gap: 1.05,
             overflow: "hidden",
-            backgroundColor: alpha(theme.palette.background.paper, surfaceAlpha),
+            backgroundColor: alpha(
+              theme.palette.background.paper,
+              surfaceAlpha,
+            ),
             backgroundImage:
               theme.palette.mode === "dark"
                 ? `linear-gradient(135deg, ${alpha(accentMain, 0.22)} 0%, ${alpha(
                     theme.palette.background.paper,
-                    0.92
+                    0.92,
                   )} 48%, ${alpha(theme.palette.common.white, 0.055)} 100%)`
                 : `linear-gradient(135deg, ${alpha(theme.palette.common.white, 0.98)} 0%, ${alpha(
                     accentMain,
-                    0.105
+                    0.105,
                   )} 52%, ${alpha(theme.palette.common.white, 0.86)} 100%)`,
             border: `1px solid ${alpha(accentMain, refreshState === "ready" ? 0.42 : 0.24)}`,
             color: accentMain,
@@ -1470,11 +1499,11 @@ function MobilePullToRefresh({
               refreshState === "ready" || isHolding
                 ? `0 18px 36px ${accentGlow}, inset 0 1px 0 ${alpha(
                     theme.palette.common.white,
-                    theme.palette.mode === "dark" ? 0.07 : 0.82
+                    theme.palette.mode === "dark" ? 0.07 : 0.82,
                   )}`
                 : `0 10px 24px ${alpha(theme.palette.common.black, 0.16)}, inset 0 1px 0 ${alpha(
                     theme.palette.common.white,
-                    theme.palette.mode === "dark" ? 0.05 : 0.72
+                    theme.palette.mode === "dark" ? 0.05 : 0.72,
                   )}`,
             backdropFilter: "blur(14px)",
             WebkitBackdropFilter: "blur(14px)",
@@ -1486,10 +1515,10 @@ function MobilePullToRefresh({
               inset: -36,
               background: `radial-gradient(circle at 25% 20%, ${alpha(
                 accentMain,
-                0.2 + easedProgress * 0.14
+                0.2 + easedProgress * 0.14,
               )}, transparent 32%), radial-gradient(circle at 82% 84%, ${alpha(
                 theme.palette.success.main,
-                refreshState === "done" ? 0.22 : 0.07
+                refreshState === "done" ? 0.22 : 0.07,
               )}, transparent 34%)`,
               opacity: indicatorVisible ? 1 : 0,
               transition: "opacity 180ms ease",
@@ -1503,7 +1532,7 @@ function MobilePullToRefresh({
               left: 0,
               background: `linear-gradient(90deg, transparent, ${alpha(
                 theme.palette.common.white,
-                theme.palette.mode === "dark" ? 0.12 : 0.46
+                theme.palette.mode === "dark" ? 0.12 : 0.46,
               )}, transparent)`,
               animation:
                 refreshState === "ready" || refreshState === "refreshing"
@@ -1526,11 +1555,11 @@ function MobilePullToRefresh({
                 refreshState === "done"
                   ? `linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.24)}, ${alpha(
                       theme.palette.success.main,
-                      0.08
+                      0.08,
                     )})`
                   : `conic-gradient(${accentMain} ${Math.max(
                       6,
-                      Math.round(pullProgress * 100)
+                      Math.round(pullProgress * 100),
                     )}%, ${alpha(accentMain, 0.16)} 0)`,
               boxShadow:
                 refreshState === "ready"
@@ -1574,7 +1603,8 @@ function MobilePullToRefresh({
                 sx={{
                   zIndex: 1,
                   fontSize: 23,
-                  animation: "dcflowRefreshPop 360ms cubic-bezier(0.2, 1.35, 0.3, 1)",
+                  animation:
+                    "dcflowRefreshPop 360ms cubic-bezier(0.2, 1.35, 0.3, 1)",
                 }}
               />
             ) : refreshState === "ready" ? (
@@ -1661,7 +1691,7 @@ export default function AppShell({
   const role = appUser?.role;
   const myUid = safeTrim(appUser?.uid);
   const myDisplayName = safeTrim(
-    (appUser as any)?.displayName || (appUser as any)?.name || "Employee"
+    (appUser as any)?.displayName || (appUser as any)?.name || "Employee",
   );
 
   const showDashboard =
@@ -1698,9 +1728,7 @@ export default function AppShell({
     role === "office_display";
 
   const showProjects =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager";
+    role === "admin" || role === "dispatcher" || role === "manager";
 
   const showWorkload = false;
 
@@ -1742,10 +1770,17 @@ export default function AppShell({
   }, [pathname]);
 
   const activeTrip = useRealtimeActiveTrip(myUid);
-  const [activeTripCard, setActiveTripCard] = useState<ActiveTripCard | null>(null);
-  const [projectMeta, setProjectMeta] = useState<ProjectCloseoutMeta | null>(null);
-  const [projectFutureTrips, setProjectFutureTrips] = useState<FutureProjectTripInfo[]>([]);
-  const [projectFutureTripsLoading, setProjectFutureTripsLoading] = useState(false);
+  const [activeTripCard, setActiveTripCard] = useState<ActiveTripCard | null>(
+    null,
+  );
+  const [projectMeta, setProjectMeta] = useState<ProjectCloseoutMeta | null>(
+    null,
+  );
+  const [projectFutureTrips, setProjectFutureTrips] = useState<
+    FutureProjectTripInfo[]
+  >([]);
+  const [projectFutureTripsLoading, setProjectFutureTripsLoading] =
+    useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1764,7 +1799,12 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [activeTrip?.id, activeTrip?.timerState, activeTrip?.link?.serviceTicketId, activeTrip?.link?.projectId]);
+  }, [
+    activeTrip?.id,
+    activeTrip?.timerState,
+    activeTrip?.link?.serviceTicketId,
+    activeTrip?.link?.projectId,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1812,7 +1852,12 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [activeTrip?.id, activeTrip?.type, activeTrip?.link?.projectId, activeTrip?.link?.projectStageKey]);
+  }, [
+    activeTrip?.id,
+    activeTrip?.type,
+    activeTrip?.link?.projectId,
+    activeTrip?.link?.projectStageKey,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1834,8 +1879,8 @@ export default function AppShell({
             collection(db, "trips"),
             where("link.projectId", "==", projectId),
             orderBy("date", "asc"),
-            orderBy("startTime", "asc")
-          )
+            orderBy("startTime", "asc"),
+          ),
         );
 
         if (cancelled) return;
@@ -1864,7 +1909,9 @@ export default function AppShell({
               date: trip.date,
               startTime: trip.startTime ?? "",
             };
-            return compareTripSequence(candidateComparable, currentComparable) > 0;
+            return (
+              compareTripSequence(candidateComparable, currentComparable) > 0
+            );
           });
 
         const statusMap = new Map<string, string>();
@@ -1884,7 +1931,7 @@ export default function AppShell({
             const status = statusMap.get(trip.id) || "planned";
             const active = activeMap.get(trip.id) !== false;
             return active && status !== "cancelled";
-          })
+          }),
         );
       } catch {
         if (!cancelled) setProjectFutureTrips([]);
@@ -1898,7 +1945,13 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [activeTrip?.id, activeTrip?.type, activeTrip?.date, activeTrip?.startTime, activeTrip?.link?.projectId]);
+  }, [
+    activeTrip?.id,
+    activeTrip?.type,
+    activeTrip?.date,
+    activeTrip?.startTime,
+    activeTrip?.link?.projectId,
+  ]);
 
   useEffect(() => {
     if (!activeTripCard) setActiveTripSheetOpen(false);
@@ -1919,21 +1972,26 @@ export default function AppShell({
 
   const timerState = useMemo(
     () => safeTrim(activeTrip?.timerState).toLowerCase(),
-    [activeTrip?.timerState]
+    [activeTrip?.timerState],
   );
 
   const isPaused = timerState === "paused";
-  const hasServiceTicketTarget = Boolean(safeTrim(activeTrip?.link?.serviceTicketId));
-  const isProjectActiveTrip = safeTrim(activeTrip?.type).toLowerCase() === "project";
+  const hasServiceTicketTarget = Boolean(
+    safeTrim(activeTrip?.link?.serviceTicketId),
+  );
+  const isProjectActiveTrip =
+    safeTrim(activeTrip?.type).toLowerCase() === "project";
   const isTmProject = isTimeMaterialsProject(projectMeta?.projectType);
   const supportsStageCloseout =
     isProjectActiveTrip &&
     !isTmProject &&
-    Boolean(safeTrim(projectMeta?.stageKey || activeTrip?.link?.projectStageKey));
+    Boolean(
+      safeTrim(projectMeta?.stageKey || activeTrip?.link?.projectStageKey),
+    );
 
   const nextFutureProjectTrip = useMemo(
     () => projectFutureTrips[0] || null,
-    [projectFutureTrips]
+    [projectFutureTrips],
   );
 
   const nextFutureProjectTripSummary = useMemo(() => {
@@ -1943,7 +2001,7 @@ export default function AppShell({
       formatTripWindowLabel(
         nextFutureProjectTrip.timeWindow,
         nextFutureProjectTrip.startTime,
-        nextFutureProjectTrip.endTime
+        nextFutureProjectTrip.endTime,
       ),
     ];
     if (safeTrim(nextFutureProjectTrip.stageKey)) {
@@ -1973,18 +2031,22 @@ export default function AppShell({
     useState<ProjectCloseoutDecision>("");
   const [projectTodayResult, setProjectTodayResult] =
     useState<ProjectCloseoutTodayResult>("done_today");
-  const [projectMoreWorkNeeded, setProjectMoreWorkNeeded] =
-    useState<"no" | "yes">("no");
+  const [projectMoreWorkNeeded, setProjectMoreWorkNeeded] = useState<
+    "no" | "yes"
+  >("no");
   const [projectHoursWorked, setProjectHoursWorked] = useState("1.00");
   const [projectTimerMinutes, setProjectTimerMinutes] = useState(0);
   const [projectTimerStoppedAt, setProjectTimerStoppedAt] = useState("");
   const [projectCorrectHoursOpen, setProjectCorrectHoursOpen] = useState(false);
-  const [projectCrewHours, setProjectCrewHours] = useState<ProjectCloseoutCrewHour[]>([]);
+  const [projectCrewHours, setProjectCrewHours] = useState<
+    ProjectCloseoutCrewHour[]
+  >([]);
   const [projectOptionalNoteOpen, setProjectOptionalNoteOpen] = useState(false);
   const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false);
   const [projectCloseoutNotes, setProjectCloseoutNotes] = useState("");
   const [projectMaterialsSummary, setProjectMaterialsSummary] = useState("");
-  const [projectRequestedReturnDate, setProjectRequestedReturnDate] = useState("");
+  const [projectRequestedReturnDate, setProjectRequestedReturnDate] =
+    useState("");
   const [projectCloseoutSaving, setProjectCloseoutSaving] = useState(false);
   const [projectCloseoutError, setProjectCloseoutError] = useState("");
   const [projectDockNotice, setProjectDockNotice] = useState("");
@@ -2037,7 +2099,9 @@ export default function AppShell({
     }
   }
 
-  function selectProjectCloseoutDecision(nextDecision: ProjectCloseoutDecision) {
+  function selectProjectCloseoutDecision(
+    nextDecision: ProjectCloseoutDecision,
+  ) {
     setProjectCloseoutDecision(nextDecision);
     setProjectCloseoutError("");
 
@@ -2066,11 +2130,14 @@ export default function AppShell({
 
     const timerStoppedAt = nowIso();
     const timerStoppedMs = parseIsoMs(timerStoppedAt);
-    const elapsedMinutes = getProjectTripTimerMinutesAt(activeTrip, timerStoppedMs);
+    const elapsedMinutes = getProjectTripTimerMinutesAt(
+      activeTrip,
+      timerStoppedMs,
+    );
 
     if (elapsedMinutes == null) {
       setProjectDockNotice(
-        "Unable to finish this project trip because its timer start time is missing. Open the trip for review before saving labor hours."
+        "Unable to finish this project trip because its timer start time is missing. Open the trip for review before saving labor hours.",
       );
       setActiveTripSheetOpen(false);
       return;
@@ -2082,7 +2149,7 @@ export default function AppShell({
       activeTrip.materialNotes ||
         activeTrip.materialsSummary ||
         activeTrip.closeout?.materialNotes ||
-        activeTrip.closeout?.materialsUsedToday
+        activeTrip.closeout?.materialsUsedToday,
     );
 
     setProjectCloseoutDecision("");
@@ -2114,13 +2181,17 @@ export default function AppShell({
     }
 
     if (!projectCloseoutDecision) {
-      setProjectCloseoutError("Select whether another visit is needed before saving.");
+      setProjectCloseoutError(
+        "Select whether another visit is needed before saving.",
+      );
       return;
     }
 
     const hoursNumber = Number(projectHoursWorked);
     if (!isValidProjectSavedHours(hoursNumber)) {
-      setProjectCloseoutError("Saved project hours must be at least 1.00 hour and use 0.50-hour increments.");
+      setProjectCloseoutError(
+        "Saved project hours must be at least 1.00 hour and use 0.50-hour increments.",
+      );
       return;
     }
 
@@ -2129,7 +2200,7 @@ export default function AppShell({
       const memberHours = Number(member.hours);
       if (!isValidProjectSavedHours(memberHours)) {
         setProjectCloseoutError(
-          `${member.name}'s saved hours must be at least 1.00 hour and use 0.50-hour increments.`
+          `${member.name}'s saved hours must be at least 1.00 hour and use 0.50-hour increments.`,
         );
         return;
       }
@@ -2137,19 +2208,23 @@ export default function AppShell({
     }
 
     if (projectCrewHours.length === 0) {
-      setProjectCloseoutError("No assigned crew members were found for this project trip.");
+      setProjectCloseoutError(
+        "No assigned crew members were found for this project trip.",
+      );
       return;
     }
 
     const projectIdStageKey = safeTrim(
-      projectMeta?.stageKey || activeTrip.link?.projectStageKey
+      projectMeta?.stageKey || activeTrip.link?.projectStageKey,
     );
     const closeoutNotes = safeTrim(projectCloseoutNotes);
     const materialsSummary = safeTrim(projectMaterialsSummary);
     const requestedReturnDate = safeTrim(projectRequestedReturnDate);
 
     if (projectCloseoutDecision === "another_visit" && !closeoutNotes) {
-      setProjectCloseoutError("Please explain what work remains before saving.");
+      setProjectCloseoutError(
+        "Please explain what work remains before saving.",
+      );
       return;
     }
 
@@ -2170,7 +2245,7 @@ export default function AppShell({
       const stamp = safeTrim(projectTimerStoppedAt) || nowIso();
       const savedAt = nowIso();
       const crewHoursAdjusted = projectCrewHours.some(
-        (member) => Number(member.hours) !== hoursNumber
+        (member) => Number(member.hours) !== hoursNumber,
       );
       const tripRef = doc(db, "trips", activeTrip.id);
       const projectRef = doc(db, "projects", projectId);
@@ -2192,8 +2267,8 @@ export default function AppShell({
           collection(db, "trips"),
           where("link.projectId", "==", projectId),
           orderBy("date", "asc"),
-          orderBy("startTime", "asc")
-        )
+          orderBy("startTime", "asc"),
+        ),
       );
 
       const relatedTrips: TripDoc[] = relatedTripsSnap.docs.map((ds) => {
@@ -2217,7 +2292,8 @@ export default function AppShell({
       });
 
       const currentTrip =
-        relatedTrips.find((candidate) => candidate.id === activeTrip.id) || activeTrip;
+        relatedTrips.find((candidate) => candidate.id === activeTrip.id) ||
+        activeTrip;
 
       const futureTrips = relatedTrips.filter((candidate) => {
         if (candidate.id === currentTrip.id) return false;
@@ -2230,7 +2306,9 @@ export default function AppShell({
         if (!isFuture) return false;
 
         if (projectTodayResult === "stage_complete") {
-          return safeTrim(candidate.link?.projectStageKey) === projectIdStageKey;
+          return (
+            safeTrim(candidate.link?.projectStageKey) === projectIdStageKey
+          );
         }
 
         if (projectTodayResult === "project_complete") {
@@ -2266,7 +2344,8 @@ export default function AppShell({
         materialsLoggedAt: materialsSummary ? stamp : null,
         materialsLoggedByUid: materialsSummary ? myUid || null : null,
         needsMoreTime:
-          projectTodayResult === "done_today" && projectMoreWorkNeeded === "yes",
+          projectTodayResult === "done_today" &&
+          projectMoreWorkNeeded === "yes",
         requestedReturnDate:
           projectTodayResult === "done_today" &&
           projectMoreWorkNeeded === "yes" &&
@@ -2308,7 +2387,8 @@ export default function AppShell({
         const needsMoreWork = projectMoreWorkNeeded === "yes";
         const hasFutureTrip = Boolean(nextFutureProjectTrip);
 
-        projectUpdates.additionalTripRequested = needsMoreWork && !hasFutureTrip;
+        projectUpdates.additionalTripRequested =
+          needsMoreWork && !hasFutureTrip;
         projectUpdates.additionalTripRequestedAt =
           needsMoreWork && !hasFutureTrip ? stamp : null;
         projectUpdates.additionalTripRequestedByUid =
@@ -2457,34 +2537,36 @@ export default function AppShell({
       if (projectTodayResult === "done_today") {
         if (projectMoreWorkNeeded === "yes" && nextFutureProjectTrip) {
           setProjectDockNotice(
-            `Saved. ${loggedHoursText} Next scheduled trip: ${nextFutureProjectTripSummary}.`
+            `Saved. ${loggedHoursText} Next scheduled trip: ${nextFutureProjectTripSummary}.`,
           );
         } else if (projectMoreWorkNeeded === "yes" && !nextFutureProjectTrip) {
           setProjectDockNotice(
-            `Saved. ${loggedHoursText} Return requested for ${formatDisplayDate(requestedReturnDate)}.`
+            `Saved. ${loggedHoursText} Return requested for ${formatDisplayDate(requestedReturnDate)}.`,
           );
         } else {
           setProjectDockNotice(`Saved. ${loggedHoursText}`);
         }
       } else if (projectTodayResult === "stage_complete") {
         setProjectDockNotice(
-          `Saved. ${loggedHoursText} Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${loggedHoursText} Stage marked complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`,
         );
       } else {
         setProjectDockNotice(
-          `Saved. ${loggedHoursText} Project marked field complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`
+          `Saved. ${loggedHoursText} Project marked field complete.${cancelledFutureTripCount > 0 ? ` ${cancelledFutureTripCount} future trip(s) cancelled.` : ""}`,
         );
       }
     } catch (err: unknown) {
       setProjectCloseoutError(
-        err instanceof Error ? err.message : "Failed to save project closeout."
+        err instanceof Error ? err.message : "Failed to save project closeout.",
       );
     } finally {
       setProjectCloseoutSaving(false);
     }
   }
 
-  function navigateToActiveTrip(action?: "note" | "follow_up" | "resolved") {
+  function navigateToActiveTrip(
+    action?: "note" | "follow_up" | "resolved" | "attachment",
+  ) {
     if (!activeTripCard) return;
 
     if (!hasServiceTicketTarget || !action) {
@@ -2497,6 +2579,11 @@ export default function AppShell({
 
     if (action === "note") {
       url.hash = `trip-work-notes-${activeTripCard.tripId}`;
+    } else if (action === "attachment") {
+      url.searchParams.set("attachmentAction", "add");
+      url.searchParams.set("attachmentPhase", "during_visit");
+      url.searchParams.set("tripId", activeTripCard.tripId);
+      url.hash = "service-ticket-attachments";
     } else {
       url.searchParams.set("tripAction", action);
       url.searchParams.set("tripId", activeTripCard.tripId);
@@ -2516,12 +2603,12 @@ export default function AppShell({
     const qRef = query(
       collection(db, "weeklyTimesheets"),
       where("status", "==", "submitted"),
-      limit(200)
+      limit(200),
     );
     const unsub = onSnapshot(
       qRef,
       (snap) => setPendingReviewCount(snap.size || 0),
-      () => {}
+      () => {},
     );
     return () => unsub();
   }, [showTimesheetReview]);
@@ -2545,13 +2632,13 @@ export default function AppShell({
     const qRef = query(
       collection(db, "ptoRequests"),
       where("status", "==", "pending"),
-      limit(50)
+      limit(50),
     );
 
     const unsub = onSnapshot(
       qRef,
       (snap) => setPendingPtoCount(snap.size || 0),
-      () => setPendingPtoCount(0)
+      () => setPendingPtoCount(0),
     );
 
     return () => unsub();
@@ -2589,7 +2676,7 @@ export default function AppShell({
       collection(db, "weeklyTimesheets"),
       where("employeeId", "==", uid),
       where("status", "==", "rejected"),
-      limit(20)
+      limit(20),
     );
 
     const unsub = onSnapshot(
@@ -2617,7 +2704,7 @@ export default function AppShell({
       () => {
         setMyRejectedCount(0);
         setLatestRejectedNotice(null);
-      }
+      },
     );
 
     return () => unsub();
@@ -2625,7 +2712,7 @@ export default function AppShell({
 
   const rejectedBannerKey = useMemo(
     () => buildRejectedBannerKey(latestRejectedNotice),
-    [latestRejectedNotice]
+    [latestRejectedNotice],
   );
 
   useEffect(() => {
@@ -2636,7 +2723,8 @@ export default function AppShell({
 
     try {
       if (typeof window !== "undefined") {
-        const saved = window.sessionStorage.getItem(REJECTED_BANNER_DISMISS_KEY) || "";
+        const saved =
+          window.sessionStorage.getItem(REJECTED_BANNER_DISMISS_KEY) || "";
         setDismissedRejectedBannerKey(saved);
       }
     } catch {
@@ -2650,7 +2738,7 @@ export default function AppShell({
       if (typeof window !== "undefined") {
         window.sessionStorage.setItem(
           REJECTED_BANNER_DISMISS_KEY,
-          rejectedBannerKey
+          rejectedBannerKey,
         );
       }
     } catch {}
@@ -2665,12 +2753,12 @@ export default function AppShell({
 
   const rejectedFixHref = useMemo(
     () => buildRejectedFixHref(latestRejectedNotice),
-    [latestRejectedNotice]
+    [latestRejectedNotice],
   );
 
   const latestRejectedWeekLabel = useMemo(
     () => formatDisplayDate(latestRejectedNotice?.weekStartDate || ""),
-    [latestRejectedNotice?.weekStartDate]
+    [latestRejectedNotice?.weekStartDate],
   );
 
   const [showMondayReminder, setShowMondayReminder] = useState(false);
@@ -2747,7 +2835,7 @@ export default function AppShell({
 
         setShowMondayReminder(!ok);
       },
-      () => setShowMondayReminder(false)
+      () => setShowMondayReminder(false),
     );
 
     return () => unsub();
@@ -2764,11 +2852,19 @@ export default function AppShell({
   }
 
   const [followUpTicketIds, setFollowUpTicketIds] = useState<string[]>([]);
-  const [readyToBillTicketIds, setReadyToBillTicketIds] = useState<string[]>([]);
-  const [scheduledFollowUpServiceTicketIds, setScheduledFollowUpServiceTicketIds] = useState<string[]>([]);
+  const [readyToBillTicketIds, setReadyToBillTicketIds] = useState<string[]>(
+    [],
+  );
+  const [
+    scheduledFollowUpServiceTicketIds,
+    setScheduledFollowUpServiceTicketIds,
+  ] = useState<string[]>([]);
   const [projectFollowUpIds, setProjectFollowUpIds] = useState<string[]>([]);
-  const [projectReadyToInvoiceIds, setProjectReadyToInvoiceIds] = useState<string[]>([]);
-  const [newUntouchedServiceTicketCount, setNewUntouchedServiceTicketCount] = useState(0);
+  const [projectReadyToInvoiceIds, setProjectReadyToInvoiceIds] = useState<
+    string[]
+  >([]);
+  const [newUntouchedServiceTicketCount, setNewUntouchedServiceTicketCount] =
+    useState(0);
 
   useEffect(() => {
     if (!showDashboard) {
@@ -2781,13 +2877,13 @@ export default function AppShell({
     const followUpQuery = query(
       collection(db, "serviceTickets"),
       where("status", "==", "follow_up"),
-      limit(100)
+      limit(100),
     );
 
     const readyToBillQuery = query(
       collection(db, "serviceTickets"),
       where("billing.status", "==", "ready_to_bill"),
-      limit(100)
+      limit(100),
     );
 
     const unsubFollowUp = onSnapshot(
@@ -2795,7 +2891,7 @@ export default function AppShell({
       (snap) => {
         setFollowUpTicketIds(snap.docs.map((d) => d.id));
       },
-      () => setFollowUpTicketIds([])
+      () => setFollowUpTicketIds([]),
     );
 
     const unsubReady = onSnapshot(
@@ -2803,7 +2899,7 @@ export default function AppShell({
       (snap) => {
         setReadyToBillTicketIds(snap.docs.map((d) => d.id));
       },
-      () => setReadyToBillTicketIds([])
+      () => setReadyToBillTicketIds([]),
     );
 
     const unsubScheduledServiceTrips = onSnapshot(
@@ -2811,7 +2907,7 @@ export default function AppShell({
         collection(db, "trips"),
         where("type", "==", "service"),
         where("active", "==", true),
-        limit(1000)
+        limit(1000),
       ),
       (snap) => {
         const ids = new Set<string>();
@@ -2829,7 +2925,7 @@ export default function AppShell({
 
         setScheduledFollowUpServiceTicketIds(Array.from(ids));
       },
-      () => setScheduledFollowUpServiceTicketIds([])
+      () => setScheduledFollowUpServiceTicketIds([]),
     );
 
     return () => {
@@ -2855,7 +2951,8 @@ export default function AppShell({
 
       for (const [projectId, projectDoc] of projectsMap.entries()) {
         const officeStatus =
-          safeTrim(projectDoc?.projectOfficeStatus).toLowerCase() || "active_work";
+          safeTrim(projectDoc?.projectOfficeStatus).toLowerCase() ||
+          "active_work";
 
         if (officeStatus === "ready_to_invoice") {
           readyIds.add(projectId);
@@ -2867,10 +2964,11 @@ export default function AppShell({
 
         const projectRequestedMoreWork =
           projectDoc?.additionalTripRequested === true ||
-          safeTrim(projectDoc?.additionalTripRequested).toLowerCase() === "true";
+          safeTrim(projectDoc?.additionalTripRequested).toLowerCase() ===
+            "true";
 
         const trips = (tripsByProject.get(projectId) || []).filter(
-          (trip) => normalizeTripStatus(trip.status) !== "cancelled"
+          (trip) => normalizeTripStatus(trip.status) !== "cancelled",
         );
 
         const hasFlaggedTrip = trips
@@ -2900,7 +2998,7 @@ export default function AppShell({
       () => {
         setProjectFollowUpIds([]);
         setProjectReadyToInvoiceIds([]);
-      }
+      },
     );
 
     const unsubTrips = onSnapshot(
@@ -2943,7 +3041,7 @@ export default function AppShell({
       () => {
         setProjectFollowUpIds([]);
         setProjectReadyToInvoiceIds([]);
-      }
+      },
     );
 
     return () => {
@@ -2956,7 +3054,7 @@ export default function AppShell({
     const ticketsQuery = query(
       collection(db, "serviceTickets"),
       where("status", "==", "new"),
-      limit(200)
+      limit(200),
     );
 
     const unsub = onSnapshot(
@@ -2965,21 +3063,23 @@ export default function AppShell({
         const count = snap.docs.reduce((total, docSnap) => {
           const data = docSnap.data() as any;
           const hasAssignedTech = Boolean(
-            safeTrim(data.assignedTechnicianId) || safeTrim(data.assignedTechnicianName)
+            safeTrim(data.assignedTechnicianId) ||
+            safeTrim(data.assignedTechnicianName),
           );
           return hasAssignedTech ? total : total + 1;
         }, 0);
 
         setNewUntouchedServiceTicketCount(count);
       },
-      () => setNewUntouchedServiceTicketCount(0)
+      () => setNewUntouchedServiceTicketCount(0),
     );
 
     return () => unsub();
   }, []);
 
   const visibleFollowUpTicketIds = useMemo(() => {
-    if (scheduledFollowUpServiceTicketIds.length === 0) return followUpTicketIds;
+    if (scheduledFollowUpServiceTicketIds.length === 0)
+      return followUpTicketIds;
 
     const scheduledSet = new Set(scheduledFollowUpServiceTicketIds);
     return followUpTicketIds.filter((id) => !scheduledSet.has(id));
@@ -3011,16 +3111,40 @@ export default function AppShell({
         ]
       : []),
     ...(showDispatch
-      ? [{ href: "/dispatch", label: "Dispatcher Board", icon: <MapRoundedIcon /> }]
+      ? [
+          {
+            href: "/dispatch",
+            label: "Dispatcher Board",
+            icon: <MapRoundedIcon />,
+          },
+        ]
       : []),
     ...(showMyDay
-      ? [{ href: "/technician/my-day", label: "My Day", icon: <TodayRoundedIcon /> }]
+      ? [
+          {
+            href: "/technician/my-day",
+            label: "My Day",
+            icon: <TodayRoundedIcon />,
+          },
+        ]
       : []),
     ...(showSchedule
-      ? [{ href: "/schedule", label: "Schedule", icon: <CalendarMonthRoundedIcon /> }]
+      ? [
+          {
+            href: "/schedule",
+            label: "Schedule",
+            icon: <CalendarMonthRoundedIcon />,
+          },
+        ]
       : []),
     ...(showOfficeDisplay
-      ? [{ href: "/office-display", label: "Office Display", icon: <TvRoundedIcon /> }]
+      ? [
+          {
+            href: "/office-display",
+            label: "Office Display",
+            icon: <TvRoundedIcon />,
+          },
+        ]
       : []),
     ...(showProjects
       ? [{ href: "/projects", label: "Projects", icon: <FolderRoundedIcon /> }]
@@ -3083,7 +3207,13 @@ export default function AppShell({
 
   const bottomNav: NavEntry[] = [
     ...(showAdmin
-      ? [{ href: "/admin", label: "Admin", icon: <AdminPanelSettingsRoundedIcon /> }]
+      ? [
+          {
+            href: "/admin",
+            label: "Admin",
+            icon: <AdminPanelSettingsRoundedIcon />,
+          },
+        ]
       : []),
   ];
 
@@ -3123,21 +3253,25 @@ export default function AppShell({
 
     return [
       ...topNav.filter(
-        (item) => !mobilePrimaryNav.some((primary) => primary.href === item.href)
+        (item) =>
+          !mobilePrimaryNav.some((primary) => primary.href === item.href),
       ),
       ...bottomNav,
     ];
   }, [showMobileBottomNav, topNav, bottomNav, mobilePrimaryNav]);
 
   const mobileMoreBadgeCount = useMemo(() => {
-    return mobileMoreItems.reduce((sum, item) => sum + (item.badgeCount || 0), 0);
+    return mobileMoreItems.reduce(
+      (sum, item) => sum + (item.badgeCount || 0),
+      0,
+    );
   }, [mobileMoreItems]);
 
   const suppressGlobalActiveTripSurface = false;
 
   const mobileBottomNavValue = useMemo(() => {
     const activeItem = mobilePrimaryNav.find((item) =>
-      isActivePath(pathname, item.href)
+      isActivePath(pathname, item.href),
     );
     return activeItem?.href ?? "more";
   }, [pathname, mobilePrimaryNav]);
@@ -3190,7 +3324,8 @@ export default function AppShell({
         title="Your timesheet was rejected and needs changes"
         body={
           <>
-            {myRejectedCount} rejected timesheet{myRejectedCount === 1 ? "" : "s"} found
+            {myRejectedCount} rejected timesheet
+            {myRejectedCount === 1 ? "" : "s"} found
             {latestRejectedWeekLabel ? (
               <>
                 {" "}
@@ -3247,7 +3382,8 @@ export default function AppShell({
             variant="caption"
             sx={{ mt: 1, display: "block", color: "text.secondary" }}
           >
-            {appUser?.displayName || "Unknown User"} • {appUser?.role || "No Role"}
+            {appUser?.displayName || "Unknown User"} •{" "}
+            {appUser?.role || "No Role"}
           </Typography>
         </Paper>
       </Box>
@@ -3333,7 +3469,12 @@ export default function AppShell({
           />
         </Box>
 
-        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 2 }}>
+        <Stack
+          direction="row"
+          spacing={1.25}
+          alignItems="center"
+          sx={{ px: 2 }}
+        >
           <Box
             sx={{
               width: 52,
@@ -3350,8 +3491,17 @@ export default function AppShell({
           </Box>
 
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-              <Typography variant="subtitle2" fontWeight={700} sx={{ color: tripAccentMain }}>
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              flexWrap="wrap"
+            >
+              <Typography
+                variant="subtitle2"
+                fontWeight={700}
+                sx={{ color: tripAccentMain }}
+              >
                 {isPaused ? "Paused" : "Running"}
               </Typography>
 
@@ -3477,7 +3627,12 @@ export default function AppShell({
           />
         </Box>
 
-        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 2, pb: 1.5 }}>
+        <Stack
+          direction="row"
+          spacing={1.25}
+          alignItems="center"
+          sx={{ px: 2, pb: 1.5 }}
+        >
           <IconButton
             aria-label={isPaused ? "Resume trip" : "Pause trip"}
             onClick={async (event) => {
@@ -3521,8 +3676,17 @@ export default function AppShell({
           </IconButton>
 
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-              <Typography variant="subtitle2" fontWeight={700} sx={{ color: tripAccentMain }}>
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              flexWrap="wrap"
+            >
+              <Typography
+                variant="subtitle2"
+                fontWeight={700}
+                sx={{ color: tripAccentMain }}
+              >
                 {isPaused ? "Paused" : "Running"}
               </Typography>
 
@@ -3553,10 +3717,14 @@ export default function AppShell({
       </Paper>
     ) : null;
 
-  const collapsedTripDock = projectCollapsedTripDock || standardCollapsedTripDock;
+  const collapsedTripDock =
+    projectCollapsedTripDock || standardCollapsedTripDock;
 
   const projectActiveTripBottomSheet =
-    isMobile && activeTripCard && isProjectActiveTrip && !suppressGlobalActiveTripSurface ? (
+    isMobile &&
+    activeTripCard &&
+    isProjectActiveTrip &&
+    !suppressGlobalActiveTripSurface ? (
       <SwipeableDrawer
         anchor="bottom"
         open={activeTripSheetOpen}
@@ -3603,7 +3771,11 @@ export default function AppShell({
               </Box>
 
               <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="subtitle1" fontWeight={700} sx={{ color: tripAccentMain }}>
+                <Typography
+                  variant="subtitle1"
+                  fontWeight={700}
+                  sx={{ color: tripAccentMain }}
+                >
                   {isPaused ? "Paused" : "Running"}
                 </Typography>
                 <Typography variant="body2" noWrap>
@@ -3611,7 +3783,10 @@ export default function AppShell({
                 </Typography>
                 <Typography variant="caption" color="text.secondary" noWrap>
                   {supportsStageCloseout
-                    ? stageLabel(projectMeta?.stageKey || activeTrip?.link?.projectStageKey)
+                    ? stageLabel(
+                        projectMeta?.stageKey ||
+                          activeTrip?.link?.projectStageKey,
+                      )
                     : activeTripCard.secondaryLine}
                 </Typography>
               </Box>
@@ -3627,7 +3802,9 @@ export default function AppShell({
               Project Trip Actions
             </Typography>
 
-            <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
+            <Box
+              sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}
+            >
               {canQuickAct ? (
                 isPaused ? (
                   <Button
@@ -3701,7 +3878,10 @@ export default function AppShell({
     ) : null;
 
   const standardActiveTripBottomSheet =
-    isMobile && activeTripCard && !isProjectActiveTrip && !suppressGlobalActiveTripSurface ? (
+    isMobile &&
+    activeTripCard &&
+    !isProjectActiveTrip &&
+    !suppressGlobalActiveTripSurface ? (
       <SwipeableDrawer
         anchor="bottom"
         open={activeTripSheetOpen}
@@ -3748,7 +3928,11 @@ export default function AppShell({
               </Box>
 
               <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="subtitle1" fontWeight={700} sx={{ color: tripAccentMain }}>
+                <Typography
+                  variant="subtitle1"
+                  fontWeight={700}
+                  sx={{ color: tripAccentMain }}
+                >
                   {isPaused ? "Paused" : "Running"}
                 </Typography>
                 <Typography variant="body2" noWrap>
@@ -3770,7 +3954,9 @@ export default function AppShell({
               Trip Actions
             </Typography>
 
-            <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
+            <Box
+              sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}
+            >
               {canQuickAct ? (
                 isPaused ? (
                   <Button
@@ -3839,6 +4025,15 @@ export default function AppShell({
                   <Button
                     variant="outlined"
                     color={isPaused ? "warning" : "primary"}
+                    startIcon={<AttachFileRoundedIcon />}
+                    onClick={() => navigateToActiveTrip("attachment")}
+                  >
+                    Add Attachment
+                  </Button>
+
+                  <Button
+                    variant="outlined"
+                    color={isPaused ? "warning" : "primary"}
                     startIcon={<ArrowOutwardRoundedIcon />}
                     onClick={() => navigateToActiveTrip("follow_up")}
                   >
@@ -3862,9 +4057,13 @@ export default function AppShell({
       </SwipeableDrawer>
     ) : null;
 
-  const activeTripBottomSheet = projectActiveTripBottomSheet || standardActiveTripBottomSheet;
+  const activeTripBottomSheet =
+    projectActiveTripBottomSheet || standardActiveTripBottomSheet;
 
-  const currentPageLabel = useMemo(() => getMobilePageLabel(pathname), [pathname]);
+  const currentPageLabel = useMemo(
+    () => getMobilePageLabel(pathname),
+    [pathname],
+  );
 
   function handleMobilePullToRefresh() {
     if (typeof window !== "undefined") {
@@ -3874,7 +4073,7 @@ export default function AppShell({
             pathname,
             refreshedAt: nowIso(),
           },
-        })
+        }),
       );
     }
 
@@ -3898,9 +4097,13 @@ export default function AppShell({
             title="Timesheet needs changes"
             body={
               <Box>
-                <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
-                  Open <strong>Time Entries</strong> to correct and resubmit your rejected
-                  timesheet.
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ lineHeight: 1.35 }}
+                >
+                  Open <strong>Time Entries</strong> to correct and resubmit
+                  your rejected timesheet.
                 </Typography>
 
                 <Stack
@@ -3955,7 +4158,11 @@ export default function AppShell({
     isProjectActiveTrip && activeTrip ? (
       <Dialog
         open={projectCloseoutOpen}
-        onClose={projectCloseoutSaving ? undefined : () => setProjectCloseoutOpen(false)}
+        onClose={
+          projectCloseoutSaving
+            ? undefined
+            : () => setProjectCloseoutOpen(false)
+        }
         fullWidth
         maxWidth="xs"
         scroll="paper"
@@ -3987,11 +4194,19 @@ export default function AppShell({
               <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
                 {projectMeta?.projectName || "Project Trip"}
               </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 0.25 }}
+              >
                 {supportsStageCloseout
-                  ? stageLabel(projectMeta?.stageKey || activeTrip.link?.projectStageKey)
+                  ? stageLabel(
+                      projectMeta?.stageKey || activeTrip.link?.projectStageKey,
+                    )
                   : "Project Trip"}
-                {activeTrip.date ? ` • ${formatDisplayDate(activeTrip.date)}` : ""}
+                {activeTrip.date
+                  ? ` • ${formatDisplayDate(activeTrip.date)}`
+                  : ""}
               </Typography>
             </Box>
 
@@ -4005,13 +4220,35 @@ export default function AppShell({
               }}
             >
               <Stack spacing={1}>
-                <Stack direction="row" spacing={1.25} justifyContent="space-between" alignItems="center">
+                <Stack
+                  direction="row"
+                  spacing={1.25}
+                  justifyContent="space-between"
+                  alignItems="center"
+                >
                   <Box>
-                    <Typography variant="overline" sx={{ display: "block", fontSize: 12, fontWeight: 700, color: "text.secondary" }}>
+                    <Typography
+                      variant="overline"
+                      sx={{
+                        display: "block",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "text.secondary",
+                      }}
+                    >
                       TODAY&apos;S SAVED HOURS
                     </Typography>
-                    <Stack direction="row" spacing={0.75} alignItems="baseline" sx={{ mt: 0.3 }}>
-                      <Typography component="div" variant="h4" sx={{ fontWeight: 800, lineHeight: 1 }}>
+                    <Stack
+                      direction="row"
+                      spacing={0.75}
+                      alignItems="baseline"
+                      sx={{ mt: 0.3 }}
+                    >
+                      <Typography
+                        component="div"
+                        variant="h4"
+                        sx={{ fontWeight: 800, lineHeight: 1 }}
+                      >
                         {Number(projectHoursWorked || 0).toFixed(2)}
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
@@ -4055,7 +4292,8 @@ export default function AppShell({
                       Correct Crew Hours
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Only change hours when a crew member&apos;s project time differed today.
+                      Only change hours when a crew member&apos;s project time
+                      differed today.
                     </Typography>
                   </Box>
 
@@ -4070,8 +4308,10 @@ export default function AppShell({
                       onChange={(e) =>
                         setProjectCrewHours((current) =>
                           current.map((row) =>
-                            row.uid === member.uid ? { ...row, hours: e.target.value } : row
-                          )
+                            row.uid === member.uid
+                              ? { ...row, hours: e.target.value }
+                              : row,
+                          ),
                         )
                       }
                       disabled={projectCloseoutSaving}
@@ -4085,7 +4325,10 @@ export default function AppShell({
                     variant="text"
                     onClick={() =>
                       setProjectCrewHours((current) =>
-                        current.map((member) => ({ ...member, hours: projectHoursWorked }))
+                        current.map((member) => ({
+                          ...member,
+                          hours: projectHoursWorked,
+                        })),
                       )
                     }
                     disabled={projectCloseoutSaving}
@@ -4107,7 +4350,9 @@ export default function AppShell({
               <RadioGroup
                 value={projectCloseoutDecision}
                 onChange={(e) =>
-                  selectProjectCloseoutDecision(e.target.value as ProjectCloseoutDecision)
+                  selectProjectCloseoutDecision(
+                    e.target.value as ProjectCloseoutDecision,
+                  )
                 }
                 sx={{ gap: 1 }}
               >
@@ -4122,7 +4367,9 @@ export default function AppShell({
                         ? alpha(theme.palette.primary.main, 0.08)
                         : "transparent",
                     borderColor:
-                      projectCloseoutDecision === "another_visit" ? "primary.main" : "divider",
+                      projectCloseoutDecision === "another_visit"
+                        ? "primary.main"
+                        : "divider",
                   }}
                 >
                   <FormControlLabel
@@ -4141,20 +4388,32 @@ export default function AppShell({
                     borderRadius: 3,
                     bgcolor:
                       projectCloseoutDecision ===
-                      (supportsStageCloseout ? "stage_complete" : "project_complete")
+                      (supportsStageCloseout
+                        ? "stage_complete"
+                        : "project_complete")
                         ? alpha(theme.palette.primary.main, 0.08)
                         : "transparent",
                     borderColor:
                       projectCloseoutDecision ===
-                      (supportsStageCloseout ? "stage_complete" : "project_complete")
+                      (supportsStageCloseout
+                        ? "stage_complete"
+                        : "project_complete")
                         ? "primary.main"
                         : "divider",
                   }}
                 >
                   <FormControlLabel
-                    value={supportsStageCloseout ? "stage_complete" : "project_complete"}
+                    value={
+                      supportsStageCloseout
+                        ? "stage_complete"
+                        : "project_complete"
+                    }
                     control={<Radio />}
-                    label={supportsStageCloseout ? "No — Stage Complete" : "No — Project Work Complete"}
+                    label={
+                      supportsStageCloseout
+                        ? "No — Stage Complete"
+                        : "No — Project Work Complete"
+                    }
                     sx={{ width: "100%", minHeight: 52, m: 0 }}
                   />
                 </Paper>
@@ -4191,7 +4450,10 @@ export default function AppShell({
                       border: `1px solid ${alpha(theme.palette.success.main, 0.28)}`,
                     }}
                   >
-                    <Typography variant="body2" sx={{ fontWeight: 700, color: "success.main" }}>
+                    <Typography
+                      variant="body2"
+                      sx={{ fontWeight: 700, color: "success.main" }}
+                    >
                       Next scheduled trip found
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -4200,15 +4462,22 @@ export default function AppShell({
                   </Paper>
                 ) : (
                   <Stack spacing={1}>
-                    <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2.5 }}>
-                      No future trip is scheduled. Enter the requested return date.
+                    <Alert
+                      severity="warning"
+                      variant="outlined"
+                      sx={{ borderRadius: 2.5 }}
+                    >
+                      No future trip is scheduled. Enter the requested return
+                      date.
                     </Alert>
                     <TextField
                       label="Requested Return Date"
                       type="date"
                       size="small"
                       value={projectRequestedReturnDate}
-                      onChange={(e) => setProjectRequestedReturnDate(e.target.value)}
+                      onChange={(e) =>
+                        setProjectRequestedReturnDate(e.target.value)
+                      }
                       InputLabelProps={{ shrink: true }}
                       disabled={projectCloseoutSaving}
                       fullWidth
@@ -4229,15 +4498,20 @@ export default function AppShell({
                     px: 1.5,
                     py: 0.5,
                     minHeight: 34,
-                    borderColor: (theme) => alpha(theme.palette.primary.main, 0.45),
-                    bgcolor: (theme) => alpha(theme.palette.primary.main, 0.025),
+                    borderColor: (theme) =>
+                      alpha(theme.palette.primary.main, 0.45),
+                    bgcolor: (theme) =>
+                      alpha(theme.palette.primary.main, 0.025),
                     "&:hover": {
                       borderColor: "primary.main",
-                      bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08),
+                      bgcolor: (theme) =>
+                        alpha(theme.palette.primary.main, 0.08),
                     },
                   }}
                 >
-                  {projectOptionalNoteOpen ? "Remove Optional Note" : "Add Optional Note"}
+                  {projectOptionalNoteOpen
+                    ? "Remove Optional Note"
+                    : "Add Optional Note"}
                 </Button>
                 {projectOptionalNoteOpen ? (
                   <TextField
@@ -4263,11 +4537,17 @@ export default function AppShell({
                   No assigned crew found.
                 </Typography>
               ) : projectCrewHours.every(
-                  (member) => Number(member.hours || 0) === Number(projectCrewHours[0]?.hours || 0)
+                  (member) =>
+                    Number(member.hours || 0) ===
+                    Number(projectCrewHours[0]?.hours || 0),
                 ) ? (
                 <Typography variant="body2" color="text.secondary">
-                  {projectCrewHours.map((member) => member.name).join(" + ")} will each receive{" "}
-                  <Box component="span" sx={{ color: "text.primary", fontWeight: 700 }}>
+                  {projectCrewHours.map((member) => member.name).join(" + ")}{" "}
+                  will each receive{" "}
+                  <Box
+                    component="span"
+                    sx={{ color: "text.primary", fontWeight: 700 }}
+                  >
                     {Number(projectCrewHours[0]?.hours || 0).toFixed(2)} hours
                   </Box>
                   .
@@ -4275,9 +4555,16 @@ export default function AppShell({
               ) : (
                 <Stack spacing={0.4}>
                   {projectCrewHours.map((member) => (
-                    <Typography key={member.uid} variant="body2" color="text.secondary">
+                    <Typography
+                      key={member.uid}
+                      variant="body2"
+                      color="text.secondary"
+                    >
                       {member.name} • {member.roleLabel} •{" "}
-                      <Box component="span" sx={{ color: "text.primary", fontWeight: 700 }}>
+                      <Box
+                        component="span"
+                        sx={{ color: "text.primary", fontWeight: 700 }}
+                      >
                         {Number(member.hours || 0).toFixed(2)} hours
                       </Box>
                     </Typography>
@@ -4307,7 +4594,9 @@ export default function AppShell({
                 },
               }}
             >
-              {projectMaterialsOpen ? "Remove Material Note" : "Add Material Note (optional)"}
+              {projectMaterialsOpen
+                ? "Remove Material Note"
+                : "Add Material Note (optional)"}
             </Button>
             {projectMaterialsOpen ? (
               <TextField
@@ -4327,12 +4616,19 @@ export default function AppShell({
             {(projectCloseoutDecision === "stage_complete" ||
               projectCloseoutDecision === "project_complete") &&
             projectFutureTrips.length > 0 ? (
-              <Alert severity="warning" variant="outlined" sx={{ borderRadius: 1 }}>
-                Future scheduled trips that are no longer needed will be cancelled and kept for history.
+              <Alert
+                severity="warning"
+                variant="outlined"
+                sx={{ borderRadius: 1 }}
+              >
+                Future scheduled trips that are no longer needed will be
+                cancelled and kept for history.
               </Alert>
             ) : null}
 
-            {projectCloseoutError ? <Alert severity="error">{projectCloseoutError}</Alert> : null}
+            {projectCloseoutError ? (
+              <Alert severity="error">{projectCloseoutError}</Alert>
+            ) : null}
           </Stack>
         </DialogContent>
 
@@ -4370,7 +4666,11 @@ export default function AppShell({
       variant="outlined"
       sx={{ mb: 1.5, borderRadius: 1.5 }}
       action={
-        <Button size="small" color="inherit" onClick={() => setProjectDockNotice("")}>
+        <Button
+          size="small"
+          color="inherit"
+          onClick={() => setProjectDockNotice("")}
+        >
           Dismiss
         </Button>
       }
@@ -4422,122 +4722,123 @@ export default function AppShell({
             overflow: "hidden",
           }}
         >
-<Box
-  component="header"
-  sx={{
-    height: 72,
-    px: 3,
-    display: "flex",
-    alignItems: "center",
-    gap: 2,
-borderBottom: (theme) =>
-  `1px solid ${
-    theme.palette.mode === "dark"
-      ? alpha("#FFFFFF", 0.08)
-      : alpha(theme.palette.divider, 0.72)
-  }`,
-    backgroundColor: (theme) =>
-      theme.palette.mode === "dark"
-        ? alpha(theme.palette.background.paper, 0.76)
-        : alpha(theme.palette.background.paper, 0.94),
-    backgroundImage: (theme) =>
-      theme.palette.mode === "dark"
-        ? `linear-gradient(180deg, ${alpha(
-            theme.palette.common.white,
-            0.035
-          )} 0%, ${alpha(theme.palette.common.white, 0.012)} 100%)`
-        : `linear-gradient(180deg, ${alpha(
-            theme.palette.common.white,
-            0.82
-          )} 0%, ${alpha(theme.palette.common.white, 0.54)} 100%)`,
-boxShadow: (theme) =>
-  theme.palette.mode === "dark"
-    ? `inset 0 -1px 0 ${alpha("#FFFFFF", 0.025)}`
-    : `inset 0 -1px 0 ${alpha(theme.palette.common.black, 0.035)}`,
-    backdropFilter: "blur(10px)",
-    WebkitBackdropFilter: "blur(10px)",
-    flexShrink: 0,
-  }}
->
-  <GlobalSearch />
+          <Box
+            component="header"
+            sx={{
+              height: 72,
+              px: 3,
+              display: "flex",
+              alignItems: "center",
+              gap: 2,
+              borderBottom: (theme) =>
+                `1px solid ${
+                  theme.palette.mode === "dark"
+                    ? alpha("#FFFFFF", 0.08)
+                    : alpha(theme.palette.divider, 0.72)
+                }`,
+              backgroundColor: (theme) =>
+                theme.palette.mode === "dark"
+                  ? alpha(theme.palette.background.paper, 0.76)
+                  : alpha(theme.palette.background.paper, 0.94),
+              backgroundImage: (theme) =>
+                theme.palette.mode === "dark"
+                  ? `linear-gradient(180deg, ${alpha(
+                      theme.palette.common.white,
+                      0.035,
+                    )} 0%, ${alpha(theme.palette.common.white, 0.012)} 100%)`
+                  : `linear-gradient(180deg, ${alpha(
+                      theme.palette.common.white,
+                      0.82,
+                    )} 0%, ${alpha(theme.palette.common.white, 0.54)} 100%)`,
+              boxShadow: (theme) =>
+                theme.palette.mode === "dark"
+                  ? `inset 0 -1px 0 ${alpha("#FFFFFF", 0.025)}`
+                  : `inset 0 -1px 0 ${alpha(theme.palette.common.black, 0.035)}`,
+              backdropFilter: "blur(10px)",
+              WebkitBackdropFilter: "blur(10px)",
+              flexShrink: 0,
+            }}
+          >
+            <GlobalSearch />
 
-  <Box sx={{ flex: 1 }} />
+            <Box sx={{ flex: 1 }} />
 
-  <Paper
-    elevation={0}
-    sx={{
-      display: {
-        xs: "none",
-        lg: "flex",
-      },
-      alignItems: "center",
-      gap: 1,
-      px: 1.15,
-      py: 0.7,
-      borderRadius: 999,
-      border: (theme) =>
-        `1px solid ${alpha(theme.palette.divider, 0.72)}`,
-      backgroundColor: (theme) =>
-        theme.palette.mode === "dark"
-          ? alpha(theme.palette.common.white, 0.045)
-          : alpha(theme.palette.common.white, 0.72),
-      boxShadow: (theme) =>
-        theme.palette.mode === "dark"
-          ? `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.04)}`
-          : `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.82)}`,
-    }}
-  >
-    <Box
-      sx={{
-        width: 28,
-        height: 28,
-        borderRadius: 999,
-        display: "grid",
-        placeItems: "center",
-        backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.16),
-        color: "primary.main",
-        fontSize: 12,
-        fontWeight: 900,
-        textTransform: "uppercase",
-        border: (theme) =>
-          `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
-      }}
-    >
-      {safeTrim(appUser?.displayName || "U").slice(0, 1)}
-    </Box>
+            <Paper
+              elevation={0}
+              sx={{
+                display: {
+                  xs: "none",
+                  lg: "flex",
+                },
+                alignItems: "center",
+                gap: 1,
+                px: 1.15,
+                py: 0.7,
+                borderRadius: 999,
+                border: (theme) =>
+                  `1px solid ${alpha(theme.palette.divider, 0.72)}`,
+                backgroundColor: (theme) =>
+                  theme.palette.mode === "dark"
+                    ? alpha(theme.palette.common.white, 0.045)
+                    : alpha(theme.palette.common.white, 0.72),
+                boxShadow: (theme) =>
+                  theme.palette.mode === "dark"
+                    ? `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.04)}`
+                    : `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.82)}`,
+              }}
+            >
+              <Box
+                sx={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 999,
+                  display: "grid",
+                  placeItems: "center",
+                  backgroundColor: (theme) =>
+                    alpha(theme.palette.primary.main, 0.16),
+                  color: "primary.main",
+                  fontSize: 12,
+                  fontWeight: 900,
+                  textTransform: "uppercase",
+                  border: (theme) =>
+                    `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+                }}
+              >
+                {safeTrim(appUser?.displayName || "U").slice(0, 1)}
+              </Box>
 
-    <Box sx={{ minWidth: 0 }}>
-      <Typography
-        variant="caption"
-        sx={{
-          display: "block",
-          lineHeight: 1.1,
-          fontWeight: 850,
-          color: "text.primary",
-          maxWidth: 180,
-          letterSpacing: "-0.01em",
-        }}
-        noWrap
-      >
-        {appUser?.displayName || "Unknown User"}
-      </Typography>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    display: "block",
+                    lineHeight: 1.1,
+                    fontWeight: 850,
+                    color: "text.primary",
+                    maxWidth: 180,
+                    letterSpacing: "-0.01em",
+                  }}
+                  noWrap
+                >
+                  {appUser?.displayName || "Unknown User"}
+                </Typography>
 
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{
-          display: "block",
-          lineHeight: 1.1,
-          textTransform: "capitalize",
-          fontWeight: 600,
-        }}
-        noWrap
-      >
-        {appUser?.role || "No Role"}
-      </Typography>
-    </Box>
-  </Paper>
-</Box>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    display: "block",
+                    lineHeight: 1.1,
+                    textTransform: "capitalize",
+                    fontWeight: 600,
+                  }}
+                  noWrap
+                >
+                  {appUser?.role || "No Role"}
+                </Typography>
+              </Box>
+            </Paper>
+          </Box>
 
           <Box
             component="main"
@@ -4635,7 +4936,9 @@ boxShadow: (theme) =>
         component="main"
         sx={{
           px: 1.5,
-          pt: showRejectedBanner ? `${MOBILE_TOP_REJECTED_OVERLAY_HEIGHT}px` : 1.5,
+          pt: showRejectedBanner
+            ? `${MOBILE_TOP_REJECTED_OVERLAY_HEIGHT}px`
+            : 1.5,
           pb: `${mobileBottomPadding}px`,
           overscrollBehaviorY: "contain",
         }}
@@ -4698,7 +5001,9 @@ boxShadow: (theme) =>
                   item.badgeCount && item.badgeCount > 0 ? (
                     <Badge
                       color="error"
-                      badgeContent={item.badgeCount > 99 ? "99+" : item.badgeCount}
+                      badgeContent={
+                        item.badgeCount > 99 ? "99+" : item.badgeCount
+                      }
                       sx={{
                         "& .MuiBadge-badge": {
                           fontWeight: 700,
@@ -4720,7 +5025,9 @@ boxShadow: (theme) =>
               icon={
                 <Badge
                   color="error"
-                  badgeContent={mobileMoreBadgeCount > 99 ? "99+" : mobileMoreBadgeCount}
+                  badgeContent={
+                    mobileMoreBadgeCount > 99 ? "99+" : mobileMoreBadgeCount
+                  }
                   invisible={mobileMoreBadgeCount < 1}
                   sx={{
                     "& .MuiBadge-badge": {

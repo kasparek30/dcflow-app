@@ -1,9 +1,9 @@
 // app/service-tickets/[ticketId]/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   addDoc,
   collection,
@@ -34,6 +34,9 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Stack,
@@ -57,6 +60,10 @@ import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
+import AddPhotoAlternateRoundedIcon from "@mui/icons-material/AddPhotoAlternateRounded";
+import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
+import ImageRoundedIcon from "@mui/icons-material/ImageRounded";
+import MovieRoundedIcon from "@mui/icons-material/MovieRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
@@ -66,7 +73,7 @@ import { getPayrollWeekBounds } from "../../../src/lib/payroll";
 import PictureAsPdfRoundedIcon from "@mui/icons-material/PictureAsPdfRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import CloudDownloadRoundedIcon from "@mui/icons-material/CloudDownloadRounded";
-import { getDownloadURL, getStorage, ref } from "firebase/storage";
+import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import {
   type CompanyHolidayLite,
   type CrewMemberSelection,
@@ -345,6 +352,44 @@ type ServiceTicketActivityEntry = {
   createdByRole?: string | null;
 };
 
+type ServiceTicketAttachmentPhase =
+  | "customer_sent"
+  | "before_visit"
+  | "during_visit"
+  | "after_visit";
+
+type ServiceTicketAttachmentFileType = "image" | "video" | "pdf" | "other";
+
+type ServiceTicketAttachment = {
+  id: string;
+  fileName: string;
+  originalFileName?: string | null;
+  fileType: ServiceTicketAttachmentFileType;
+  contentType?: string | null;
+  size?: number | null;
+  storagePath?: string | null;
+  downloadUrl?: string | null;
+  note?: string | null;
+  phase: ServiceTicketAttachmentPhase;
+  tripId?: string | null;
+  active?: boolean;
+  uploadedAt?: string;
+  uploadedByUid?: string | null;
+  uploadedByName?: string | null;
+  uploadedByRole?: string | null;
+  deletedAt?: string | null;
+  deletedByUid?: string | null;
+};
+
+type SeparateServiceRequestChoice = "no" | "yes";
+
+type MobileCompletionResult = {
+  mode: "resolved" | "follow_up";
+  originalTicketId: string;
+  newTicketId?: string | null;
+  newTicketSummary?: string | null;
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -488,6 +533,51 @@ function middleTruncate(value: unknown, front = 8, back = 5) {
   if (!text) return "";
   if (text.length <= front + back + 1) return text;
   return `${text.slice(0, front)}…${text.slice(-back)}`;
+}
+
+function getAttachmentFileType(
+  contentType?: string | null,
+  fileName?: string | null
+): ServiceTicketAttachmentFileType {
+  const type = String(contentType || "").toLowerCase();
+  const name = String(fileName || "").toLowerCase();
+
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
+  if (type === "application/pdf" || name.endsWith(".pdf")) return "pdf";
+  return "other";
+}
+
+function formatAttachmentPhase(value?: string | null) {
+  switch (String(value || "").trim().toLowerCase()) {
+    case "customer_sent":
+      return "Customer Sent";
+    case "before_visit":
+      return "Before Visit";
+    case "during_visit":
+      return "During Visit";
+    case "after_visit":
+      return "After Visit";
+    default:
+      return "Attachment";
+  }
+}
+
+function formatBytes(value?: number | null) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function sanitizeStorageFileName(fileName: string) {
+  const clean = String(fileName || "attachment")
+    .replace(/[^a-zA-Z0-9._ -]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return clean.slice(0, 120) || "attachment";
 }
 
 function createId() {
@@ -1722,6 +1812,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
 
   const canDispatch =
@@ -1747,6 +1838,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     appUser?.role === "dispatcher" ||
     appUser?.role === "billing";
 
+  const canAddTicketAttachments =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager" ||
+    appUser?.role === "technician" ||
+    appUser?.role === "helper" ||
+    appUser?.role === "apprentice";
+
+  const canDeleteTicketAttachments =
+    appUser?.role === "admin" ||
+    appUser?.role === "dispatcher" ||
+    appUser?.role === "manager";
+
   const isFieldUser =
     appUser?.role === "technician" ||
     appUser?.role === "helper" ||
@@ -1763,6 +1867,25 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
   const [activityEntries, setActivityEntries] = useState<ServiceTicketActivityEntry[]>([]);
+  const [attachments, setAttachments] = useState<ServiceTicketAttachment[]>([]);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [attachmentErr, setAttachmentErr] = useState("");
+  const [attachmentOk, setAttachmentOk] = useState("");
+  const [attachmentPhase, setAttachmentPhase] =
+    useState<ServiceTicketAttachmentPhase>("customer_sent");
+  const [attachmentNote, setAttachmentNote] = useState("");
+  const [attachmentMenuAnchorEl, setAttachmentMenuAnchorEl] =
+    useState<HTMLElement | null>(null);
+  const attachmentCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentMediaInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [separateRequestChoiceByTrip, setSeparateRequestChoiceByTrip] = useState<
+    Record<string, SeparateServiceRequestChoice>
+  >({});
+  const [separateRequestDescriptionByTrip, setSeparateRequestDescriptionByTrip] =
+    useState<Record<string, string>>({});
+  const [mobileCompletionResult, setMobileCompletionResult] =
+    useState<MobileCompletionResult | null>(null);
 
   const isInvoicedTicket = ticket?.status === "invoiced";
 
@@ -2036,6 +2159,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             ptoSnap,
             holidaySnap,
             purchaseOrderSnap,
+            attachmentSnap,
             activitySnap,
           ] = await Promise.all([
           getDocs(collection(db, "users")),
@@ -2055,6 +2179,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               collection(db, "purchaseOrders"),
               where("serviceTicketId", "==", id),
               orderBy("createdAt", "asc")
+            )
+          ),
+          getDocs(
+            query(
+              collection(db, "serviceTickets", id, "attachments"),
+              orderBy("uploadedAt", "desc")
             )
           ),
           getDocs(
@@ -2172,6 +2302,35 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             })
         );
 
+        setAttachments(
+          attachmentSnap.docs
+            .map((ds) => {
+              const attachment = ds.data() as any;
+
+              return {
+                id: ds.id,
+                fileName: String(attachment.fileName || attachment.originalFileName || "Attachment"),
+                originalFileName: attachment.originalFileName ?? null,
+                fileType: getAttachmentFileType(attachment.contentType, attachment.fileName),
+                contentType: attachment.contentType ?? null,
+                size: typeof attachment.size === "number" ? attachment.size : null,
+                storagePath: attachment.storagePath ?? null,
+                downloadUrl: attachment.downloadUrl ?? null,
+                note: attachment.note ?? null,
+                phase: (attachment.phase || "customer_sent") as ServiceTicketAttachmentPhase,
+                tripId: attachment.tripId ?? null,
+                active: attachment.active !== false,
+                uploadedAt: normalizeDateLike(attachment.uploadedAt) ?? undefined,
+                uploadedByUid: attachment.uploadedByUid ?? null,
+                uploadedByName: attachment.uploadedByName ?? null,
+                uploadedByRole: attachment.uploadedByRole ?? null,
+                deletedAt: normalizeDateLike(attachment.deletedAt),
+                deletedByUid: attachment.deletedByUid ?? null,
+              } satisfies ServiceTicketAttachment;
+            })
+            .filter((attachment) => attachment.active !== false)
+        );
+
         setActivityEntries(
           activitySnap.docs.map((ds) => {
             const activity = ds.data() as any;
@@ -2202,6 +2361,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         const nextNoMaterials: Record<string, boolean> = {};
         const nextFinish: Record<string, FinishMode> = {};
         const nextHelperConfirmed: Record<string, boolean> = {};
+        const nextSeparateRequestChoice: Record<string, SeparateServiceRequestChoice> = {};
+        const nextSeparateRequestDescription: Record<string, string> = {};
 
         for (const trip of nextTrips) {
           const loadedMaterials = Array.isArray(trip.materials) ? trip.materials : [];
@@ -2213,6 +2374,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           nextNoMaterials[trip.id] = Boolean(trip.noMaterialsUsed);
           nextFinish[trip.id] = "none";
           nextHelperConfirmed[trip.id] = true;
+          nextSeparateRequestChoice[trip.id] = "no";
+          nextSeparateRequestDescription[trip.id] = "";
         }
 
         setTripWorkNotes(nextWork);
@@ -2223,6 +2386,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTripNoMaterialsUsed(nextNoMaterials);
         setFinishModeByTrip(nextFinish);
         setHelperConfirmedByTrip(nextHelperConfirmed);
+        setSeparateRequestChoiceByTrip(nextSeparateRequestChoice);
+        setSeparateRequestDescriptionByTrip(nextSeparateRequestDescription);
 
         const customerId = String(nextTicket.customerId || "").trim();
         if (customerId) {
@@ -2800,11 +2965,22 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       mobileFinishTrip ? tripFollowUpNotes[mobileFinishTrip.id] || "" : ""
     ).trim();
 
+  const mobileSeparateRequestDescriptionMissing =
+    Boolean(mobileFinishTrip) &&
+    mobileFinishMode === "resolved" &&
+    separateRequestChoiceByTrip[mobileFinishTrip?.id || ""] === "yes" &&
+    !String(
+      mobileFinishTrip
+        ? separateRequestDescriptionByTrip[mobileFinishTrip.id] || ""
+        : ""
+    ).trim();
+
   const mobileCompleteDisabled =
     !mobileFinishTrip ||
     mobileFinishMode === "none" ||
     mobileResolutionNoteMissing ||
     mobileFollowUpNoteMissing ||
+    mobileSeparateRequestDescriptionMissing ||
     Boolean(mobileFinishTrip && tripActionSaving[mobileFinishTrip.id]) ||
     isInvoicedTicket;
 
@@ -2868,6 +3044,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
     const action = String(searchParams.get("tripAction") || "").trim().toLowerCase();
     const targetTripId = String(searchParams.get("tripId") || "").trim();
+    const attachmentAction = String(searchParams.get("attachmentAction") || "")
+      .trim()
+      .toLowerCase();
+    const attachmentPhaseParam = String(searchParams.get("attachmentPhase") || "")
+      .trim()
+      .toLowerCase();
     const hash =
       typeof window !== "undefined"
         ? decodeURIComponent(window.location.hash || "")
@@ -2905,14 +3087,303 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       }
     }
 
+    if (attachmentAction === "add") {
+      const validPhase =
+        attachmentPhaseParam === "customer_sent" ||
+        attachmentPhaseParam === "before_visit" ||
+        attachmentPhaseParam === "during_visit" ||
+        attachmentPhaseParam === "after_visit"
+          ? (attachmentPhaseParam as ServiceTicketAttachmentPhase)
+          : "during_visit";
+
+      setAttachmentPhase(validPhase);
+
+      setTimeout(() => {
+        document
+          .getElementById("service-ticket-attachments")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 180);
+
+      consumed = true;
+    }
+
     if (consumed && typeof window !== "undefined") {
       window.history.replaceState({}, "", pathname);
     }
   }, [isMobile, pathname, searchParams, ticket?.id, trips]);
 
   function closeMobileFinishSheet() {
+    const closingTripId = mobileFinishTripId;
     setMobileFinishTripId(null);
     setMobileFinishMode("none");
+
+    if (closingTripId) {
+      setSeparateRequestChoiceByTrip((prev) => ({
+        ...prev,
+        [closingTripId]: "no",
+      }));
+      setSeparateRequestDescriptionByTrip((prev) => ({
+        ...prev,
+        [closingTripId]: "",
+      }));
+    }
+  }
+
+  function handleAttachmentMenuOpen(event: React.MouseEvent<HTMLButtonElement>) {
+    setAttachmentMenuAnchorEl(event.currentTarget);
+  }
+
+  function handleAttachmentMenuClose() {
+    setAttachmentMenuAnchorEl(null);
+  }
+
+  function triggerAttachmentInput(kind: "camera" | "media" | "file") {
+    setAttachmentMenuAnchorEl(null);
+
+    window.setTimeout(() => {
+      if (kind === "camera") {
+        attachmentCameraInputRef.current?.click();
+        return;
+      }
+
+      if (kind === "media") {
+        attachmentMediaInputRef.current?.click();
+        return;
+      }
+
+      attachmentFileInputRef.current?.click();
+    }, 0);
+  }
+
+  function handleAttachmentInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    void handleUploadServiceTicketAttachments(event.currentTarget.files);
+    event.currentTarget.value = "";
+  }
+
+  async function handleUploadServiceTicketAttachments(fileList: FileList | null) {
+    if (!ticket?.id || !canAddTicketAttachments) return;
+
+    const files = Array.from(fileList || []).filter((file) => file.size > 0);
+    if (files.length === 0) return;
+
+    setAttachmentUploading(true);
+    setAttachmentErr("");
+    setAttachmentOk("");
+
+    try {
+      const storage = getStorage();
+      const uploaded: ServiceTicketAttachment[] = [];
+      const uploadedAt = nowIso();
+      const note = attachmentNote.trim() || null;
+      const activeTripId =
+        inProgressTrip?.id ||
+        trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress")?.id ||
+        null;
+
+      for (const file of files) {
+        const attachmentId = createId();
+        const fileName = sanitizeStorageFileName(file.name);
+        const contentType = file.type || "application/octet-stream";
+        const storagePath = `serviceTickets/${ticket.id}/attachments/${attachmentId}/${fileName}`;
+        const storageRef = ref(storage, storagePath);
+
+        await uploadBytes(storageRef, file, {
+          contentType,
+          customMetadata: {
+            serviceTicketId: ticket.id,
+            uploadedByUid: myUid || "",
+          },
+        });
+
+        let downloadUrl: string | null = null;
+        try {
+          downloadUrl = await getDownloadURL(storageRef);
+        } catch {
+          downloadUrl = null;
+        }
+
+        const attachment: ServiceTicketAttachment = {
+          id: attachmentId,
+          fileName,
+          originalFileName: file.name,
+          fileType: getAttachmentFileType(contentType, fileName),
+          contentType,
+          size: file.size,
+          storagePath,
+          downloadUrl,
+          note,
+          phase: attachmentPhase,
+          tripId: activeTripId,
+          active: true,
+          uploadedAt,
+          uploadedByUid: myUid || null,
+          uploadedByName: appUser?.displayName || null,
+          uploadedByRole: appUser?.role || null,
+        };
+
+        await setDoc(
+          doc(db, "serviceTickets", ticket.id, "attachments", attachmentId),
+          stripUndefined(attachment)
+        );
+
+        uploaded.push(attachment);
+      }
+
+      const now = nowIso();
+      const batch = writeBatch(db);
+      const nextAttachmentCount =
+        attachments.filter((item) => item.active !== false).length + uploaded.length;
+
+      batch.update(doc(db, "serviceTickets", ticket.id), {
+        updatedAt: now,
+        updatedByUid: myUid || null,
+        hasAttachments: nextAttachmentCount > 0,
+        attachmentCount: nextAttachmentCount,
+        lastAttachmentAt: now,
+        lastAttachmentPhase: uploaded[0]?.phase || attachmentPhase,
+      });
+
+      const activityRef = doc(collection(db, "serviceTickets", ticket.id, "activity"));
+      const activityEntry: ServiceTicketActivityEntry = {
+        id: activityRef.id,
+        type: "service_ticket_attachment_added",
+        title: uploaded.length === 1 ? "Attachment Added" : "Attachments Added",
+        description:
+          uploaded.length === 1
+            ? `${uploaded[0].fileName} was added to this service ticket.`
+            : `${uploaded.length} attachments were added to this service ticket.`,
+        details: uploaded.map(
+          (item) =>
+            `${formatAttachmentPhase(item.phase)} • ${item.fileName}${
+              item.note ? ` • ${item.note}` : ""
+            }`
+        ),
+        createdAt: now,
+        createdByName: appUser?.displayName || "System",
+        createdByRole: appUser?.role || null,
+      };
+
+      batch.set(activityRef, {
+        type: activityEntry.type,
+        title: activityEntry.title,
+        description: activityEntry.description,
+        details: activityEntry.details,
+        createdAt: now,
+        createdByUid: myUid || null,
+        createdByName: activityEntry.createdByName,
+        createdByRole: activityEntry.createdByRole,
+      });
+
+      await batch.commit();
+
+      setAttachments((prev) => [...uploaded, ...prev]);
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              updatedAt: now,
+            }
+          : prev
+      );
+      setActivityEntries((prev) => [activityEntry, ...prev]);
+      setAttachmentNote("");
+      setAttachmentOk(
+        uploaded.length === 1 ? "Attachment added." : `${uploaded.length} attachments added.`
+      );
+    } catch (err: unknown) {
+      setAttachmentErr(
+        err instanceof Error ? err.message : "Failed to upload attachment."
+      );
+    } finally {
+      setAttachmentUploading(false);
+    }
+  }
+
+  async function openServiceTicketAttachment(attachment: ServiceTicketAttachment) {
+    const directUrl = safeStr(attachment.downloadUrl);
+    const storagePath = safeStr(attachment.storagePath);
+
+    try {
+      if (storagePath) {
+        const storage = getStorage();
+        const url = await getDownloadURL(ref(storage, storagePath));
+        window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
+
+      if (directUrl) {
+        window.open(directUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+
+      alert("This attachment is missing its storage path.");
+    } catch (err) {
+      console.error("Failed to open attachment:", err);
+      alert("Could not open attachment. Check Firebase Storage permissions.");
+    }
+  }
+
+  async function handleSoftDeleteServiceTicketAttachment(attachment: ServiceTicketAttachment) {
+    if (!ticket?.id || !canDeleteTicketAttachments) return;
+
+    if (
+      window.prompt(`Type DELETE to remove ${attachment.fileName}`, "") !== "DELETE"
+    ) {
+      return;
+    }
+
+    setAttachmentErr("");
+    setAttachmentOk("");
+
+    const nextAttachmentCount = Math.max(
+      0,
+      attachments.filter(
+        (item) => item.id !== attachment.id && item.active !== false
+      ).length
+    );
+
+    try {
+      const now = nowIso();
+      const batch = writeBatch(db);
+
+      batch.update(doc(db, "serviceTickets", ticket.id, "attachments", attachment.id), {
+        active: false,
+        deletedAt: now,
+        deletedByUid: myUid || null,
+        updatedAt: now,
+      });
+
+      const ticketAttachmentSummaryUpdate: Record<string, unknown> = {
+        hasAttachments: nextAttachmentCount > 0,
+        attachmentCount: nextAttachmentCount,
+        updatedAt: now,
+        updatedByUid: myUid || null,
+      };
+
+      if (nextAttachmentCount === 0) {
+        ticketAttachmentSummaryUpdate.lastAttachmentAt = null;
+        ticketAttachmentSummaryUpdate.lastAttachmentPhase = null;
+      }
+
+      batch.update(doc(db, "serviceTickets", ticket.id), ticketAttachmentSummaryUpdate);
+
+      await batch.commit();
+
+      setAttachments((prev) => prev.filter((item) => item.id !== attachment.id));
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              updatedAt: now,
+            }
+          : prev
+      );
+      setAttachmentOk("Attachment removed from the active ticket view.");
+    } catch (err: unknown) {
+      setAttachmentErr(
+        err instanceof Error ? err.message : "Failed to remove attachment."
+      );
+    }
   }
 
   function renderTripMaterialsEditor(tripId: string) {
@@ -3572,6 +4043,8 @@ Supply line`}
       setTripNoMaterialsUsed((prev) => ({ ...prev, [createdTrip.id]: false }));
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
+      setSeparateRequestChoiceByTrip((prev) => ({ ...prev, [createdTrip.id]: "no" }));
+      setSeparateRequestDescriptionByTrip((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripSaveSuccess(
         dispatchOverride
           ? `Trip scheduled with Dispatch Override. Ticket status is now ${formatTicketStatus(nextStatus)}.`
@@ -3867,6 +4340,17 @@ Supply line`}
         throw new Error("Resolved requires resolution notes.");
       }
 
+      const separateRequestChoice = separateRequestChoiceByTrip[trip.id] || "no";
+      const separateRequestDescription = String(
+        separateRequestDescriptionByTrip[trip.id] || ""
+      ).trim();
+      const shouldCreateSeparateServiceRequest =
+        mode === "resolved" && separateRequestChoice === "yes";
+
+      if (shouldCreateSeparateServiceRequest && !separateRequestDescription) {
+        throw new Error("Brief issue description is required for the new service ticket.");
+      }
+
       const materialsText = String(tripMaterialsText[trip.id] || "").trim();
       const mats = parseMaterialsText(materialsText, tripMaterials[trip.id]);
       const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
@@ -4016,7 +4500,6 @@ Supply line`}
         [trip.date]: nextTrips.filter((t) => t.date === trip.date),
       }));
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-      closeMobileFinishSheet();
 
       const nextStatus = deriveNextTicketStatus(nextTrips, mode);
       let billingOverride: BillingPacket | null | undefined = undefined;
@@ -4038,10 +4521,125 @@ Supply line`}
         await persistTicketStatus(nextStatus, now, billingOverride);
       }
 
+      let createdSeparateTicket: { id: string; summary: string } | null = null;
+
+      if (shouldCreateSeparateServiceRequest && ticket?.id) {
+        const newTicketSummary =
+          separateRequestDescription.length > 90
+            ? `${separateRequestDescription.slice(0, 87).trimEnd()}…`
+            : separateRequestDescription;
+
+        const newTicketRef = await addDoc(
+          collection(db, "serviceTickets"),
+          stripUndefined({
+            customerId: ticket.customerId || "",
+            customerDisplayName: ticket.customerDisplayName || "Customer",
+            serviceAddressId: ticket.serviceAddressId || null,
+            serviceAddressLabel: ticket.serviceAddressLabel || null,
+            serviceAddressLine1: ticket.serviceAddressLine1 || "",
+            serviceAddressLine2: ticket.serviceAddressLine2 || null,
+            serviceCity: ticket.serviceCity || "",
+            serviceState: ticket.serviceState || "",
+            servicePostalCode: ticket.servicePostalCode || "",
+            issueSummary: newTicketSummary,
+            issueDetails: separateRequestDescription,
+            status: "new" satisfies TicketStatus,
+            estimatedDurationMinutes: 60,
+            assignedTechnicianId: null,
+            assignedTechnicianName: null,
+            primaryTechnicianId: null,
+            secondaryTechnicianId: null,
+            secondaryTechnicianName: null,
+            helperIds: null,
+            helperNames: null,
+            assignedTechnicianIds: null,
+            active: true,
+            source: "field_separate_request",
+            sourceLabel: "Requested on-site during completed service visit",
+            requestedDuringServiceTicketId: ticket.id,
+            requestedDuringTripId: trip.id,
+            requestedByUid: myUid || null,
+            requestedByName: appUser?.displayName || null,
+            requestedByRole: appUser?.role || null,
+            createdAt: now,
+            createdByUid: myUid || null,
+            updatedAt: now,
+            updatedByUid: myUid || null,
+          })
+        );
+
+        createdSeparateTicket = { id: newTicketRef.id, summary: newTicketSummary };
+
+        const originalActivityRef = doc(
+          collection(db, "serviceTickets", ticket.id, "activity")
+        );
+        const newTicketActivityRef = doc(
+          collection(db, "serviceTickets", newTicketRef.id, "activity")
+        );
+
+        const originalActivityEntry: ServiceTicketActivityEntry = {
+          id: originalActivityRef.id,
+          type: "separate_service_request_created",
+          title: "Separate Service Request Created",
+          description:
+            "Customer requested future work for a different issue while this ticket was being completed.",
+          details: [
+            `New ticket: ${newTicketRef.id}`,
+            `New issue: ${separateRequestDescription}`,
+          ],
+          createdAt: now,
+          createdByName: appUser?.displayName || "System",
+          createdByRole: appUser?.role || null,
+        };
+
+        await Promise.all([
+          setDoc(originalActivityRef, {
+            type: originalActivityEntry.type,
+            title: originalActivityEntry.title,
+            description: originalActivityEntry.description,
+            details: originalActivityEntry.details,
+            createdAt: now,
+            createdByUid: myUid || null,
+            createdByName: originalActivityEntry.createdByName,
+            createdByRole: originalActivityEntry.createdByRole,
+          }),
+          setDoc(newTicketActivityRef, {
+            type: "created_from_completed_service_ticket",
+            title: "Created From Completed Service Visit",
+            description:
+              "This ticket was created from the field after the customer requested a future visit for a separate issue.",
+            details: [
+              `Original ticket: ${ticket.id}`,
+              `Original trip: ${trip.id}`,
+              `Issue: ${separateRequestDescription}`,
+            ],
+            createdAt: now,
+            createdByUid: myUid || null,
+            createdByName: appUser?.displayName || "System",
+            createdByRole: appUser?.role || null,
+          }),
+        ]);
+
+        setActivityEntries((prev) => [originalActivityEntry, ...prev]);
+      }
+
+      closeMobileFinishSheet();
+
       setTripOk(
         trip.id,
-        `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Billable hours: ${hoursToUse}.`
+        `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Billable hours: ${hoursToUse}.${
+          createdSeparateTicket ? " New service ticket created." : ""
+        }`
       );
+
+      if (isMobile) {
+        setMobileCompletionResult({
+          mode,
+          originalTicketId: ticket?.id || "",
+          newTicketId: createdSeparateTicket?.id || null,
+          newTicketSummary: createdSeparateTicket?.summary || null,
+        });
+      }
     } catch (err: unknown) {
       setTripErr(trip.id, err instanceof Error ? err.message : "Failed to finish trip.");
     } finally {
@@ -5453,6 +6051,94 @@ Supply line`}
                         />
 
                         {renderTripMaterialsEditor(mobileFinishTrip.id)}
+
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: 1.5,
+                            borderRadius: 2,
+                            bgcolor: alpha(theme.palette.primary.main, 0.035),
+                          }}
+                        >
+                          <Stack spacing={1.25}>
+                            <Typography variant="subtitle1" fontWeight={800}>
+                              Did the customer ask for a future visit for a different issue?
+                            </Typography>
+
+                            <Stack direction="row" spacing={1}>
+                              <Button
+                                fullWidth
+                                variant={
+                                  (separateRequestChoiceByTrip[mobileFinishTrip.id] || "no") === "no"
+                                    ? "contained"
+                                    : "outlined"
+                                }
+                                color="primary"
+                                onClick={() => {
+                                  setSeparateRequestChoiceByTrip((prev) => ({
+                                    ...prev,
+                                    [mobileFinishTrip.id]: "no",
+                                  }));
+                                  setSeparateRequestDescriptionByTrip((prev) => ({
+                                    ...prev,
+                                    [mobileFinishTrip.id]: "",
+                                  }));
+                                }}
+                                sx={{ borderRadius: 999, fontWeight: 800 }}
+                              >
+                                No
+                              </Button>
+
+                              <Button
+                                fullWidth
+                                variant={
+                                  separateRequestChoiceByTrip[mobileFinishTrip.id] === "yes"
+                                    ? "contained"
+                                    : "outlined"
+                                }
+                                color="primary"
+                                onClick={() =>
+                                  setSeparateRequestChoiceByTrip((prev) => ({
+                                    ...prev,
+                                    [mobileFinishTrip.id]: "yes",
+                                  }))
+                                }
+                                sx={{ borderRadius: 999, fontWeight: 800 }}
+                              >
+                                Yes
+                              </Button>
+                            </Stack>
+
+                            {separateRequestChoiceByTrip[mobileFinishTrip.id] === "yes" ? (
+                              <Stack spacing={1}>
+                                <Alert severity="success" variant="outlined" sx={{ borderRadius: 2 }}>
+                                  Customer and service location will be copied to a new unscheduled ticket.
+                                </Alert>
+
+                                <TextField
+                                  label="Brief Issue Description"
+                                  multiline
+                                  minRows={3}
+                                  value={separateRequestDescriptionByTrip[mobileFinishTrip.id] || ""}
+                                  onChange={(e) =>
+                                    setSeparateRequestDescriptionByTrip((prev) => ({
+                                      ...prev,
+                                      [mobileFinishTrip.id]: e.target.value,
+                                    }))
+                                  }
+                                  error={mobileSeparateRequestDescriptionMissing}
+                                  helperText={
+                                    mobileSeparateRequestDescriptionMissing
+                                      ? "Required to create the new service ticket."
+                                      : "Keep it brief. Dispatch can schedule and edit later."
+                                  }
+                                  placeholder="Example: Customer wants kitchen faucet replaced next week."
+                                  fullWidth
+                                />
+                              </Stack>
+                            ) : null}
+                          </Stack>
+                        </Paper>
                       </>
                     ) : null}
                   </Stack>
@@ -5481,6 +6167,129 @@ Supply line`}
                       : "Complete as Follow-Up"}
                   </Button>
                 ) : null}
+              </DialogActions>
+            </Dialog>
+
+            <Dialog
+              fullScreen={isMobile}
+              open={Boolean(mobileCompletionResult)}
+              onClose={() => setMobileCompletionResult(null)}
+              fullWidth
+              maxWidth="xs"
+            >
+              <DialogContent
+                sx={{
+                  pt: { xs: 7, sm: 4 },
+                  pb: 2,
+                }}
+              >
+                <Stack spacing={2.5} alignItems="center" textAlign="center">
+                  <Box
+                    sx={{
+                      width: 86,
+                      height: 86,
+                      borderRadius: 999,
+                      display: "grid",
+                      placeItems: "center",
+                      bgcolor: alpha(theme.palette.success.main, 0.14),
+                      color: "success.main",
+                    }}
+                  >
+                    <CheckRoundedIcon sx={{ fontSize: 52 }} />
+                  </Box>
+
+                  <Box>
+                    <Typography variant="h5" fontWeight={900}>
+                      {mobileCompletionResult?.mode === "resolved"
+                        ? "Service Ticket Completed"
+                        : "Follow-Up Saved"}
+                    </Typography>
+                    <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
+                      Hours and materials were saved.
+                      {mobileCompletionResult?.mode === "resolved"
+                        ? " Original ticket is ready for billing."
+                        : " Ticket is marked for follow-up."}
+                    </Typography>
+                  </Box>
+
+                  {mobileCompletionResult?.newTicketId ? (
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        width: "100%",
+                        p: 1.5,
+                        borderRadius: 2,
+                        bgcolor: alpha(theme.palette.success.main, 0.08),
+                        borderColor: alpha(theme.palette.success.main, 0.24),
+                        textAlign: "left",
+                      }}
+                    >
+                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                        <Box
+                          sx={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 2,
+                            flexShrink: 0,
+                            display: "grid",
+                            placeItems: "center",
+                            bgcolor: alpha(theme.palette.success.main, 0.14),
+                            color: "success.main",
+                          }}
+                        >
+                          <ScheduleRoundedIcon />
+                        </Box>
+
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="subtitle2" fontWeight={900} color="success.main">
+                            New service ticket created
+                          </Typography>
+                          <Typography variant="body2" sx={{ mt: 0.25 }}>
+                            {ticket.customerDisplayName || "Customer"}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+                            {mobileCompletionResult.newTicketSummary || "Future service request"}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    </Paper>
+                  ) : null}
+                </Stack>
+              </DialogContent>
+
+              <DialogActions
+                sx={{
+                  p: 2,
+                  pt: 0,
+                  pb: "calc(16px + env(safe-area-inset-bottom))",
+                  display: "grid",
+                  gap: 1,
+                }}
+              >
+                {mobileCompletionResult?.newTicketId ? (
+                  <Button
+                    variant="contained"
+                    onClick={() => {
+                      const nextId = mobileCompletionResult.newTicketId;
+                      setMobileCompletionResult(null);
+                      router.push(`/service-tickets/${nextId}`);
+                    }}
+                    sx={{ minHeight: 48, borderRadius: 999, fontWeight: 900 }}
+                  >
+                    View New Ticket
+                  </Button>
+                ) : null}
+
+                <Button
+                  variant={mobileCompletionResult?.newTicketId ? "outlined" : "contained"}
+                  onClick={() => {
+                    setMobileCompletionResult(null);
+                    router.push("/technician/my-day");
+                  }}
+                  sx={{ minHeight: 48, borderRadius: 999, fontWeight: 900 }}
+                >
+                  Back to My Day
+                </Button>
               </DialogActions>
             </Dialog>
 
@@ -5767,6 +6576,340 @@ Supply line`}
                     </Stack>
                   )}
                 </Section>
+
+                <Box id="service-ticket-attachments">
+                  <Section
+                    title="Attachments"
+                    icon={<AttachFileRoundedIcon color="primary" />}
+                  >
+                    <Stack spacing={2}>
+                      {canAddTicketAttachments ? (
+                        <Stack spacing={1.25}>
+                          <Typography variant="body2" color="text.secondary">
+                            Add customer-sent files before scheduling, capture a new field photo,
+                            or attach photos/videos during the visit.
+                          </Typography>
+
+                          <Box>
+                            <Button
+                              variant="contained"
+                              startIcon={<AddPhotoAlternateRoundedIcon />}
+                              disabled={attachmentUploading || isInvoicedTicket}
+                              onClick={handleAttachmentMenuOpen}
+                              fullWidth={isMobile}
+                              sx={{ borderRadius: 999, fontWeight: 800 }}
+                            >
+                              {attachmentUploading ? "Uploading..." : "Add Attachment"}
+                            </Button>
+
+                            <input
+                              ref={attachmentCameraInputRef}
+                              hidden
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={handleAttachmentInputChange}
+                            />
+                            <input
+                              ref={attachmentMediaInputRef}
+                              hidden
+                              type="file"
+                              accept="image/*,video/*"
+                              multiple
+                              onChange={handleAttachmentInputChange}
+                            />
+                            <input
+                              ref={attachmentFileInputRef}
+                              hidden
+                              type="file"
+                              accept="image/*,video/*,application/pdf"
+                              multiple
+                              onChange={handleAttachmentInputChange}
+                            />
+
+                            <Menu
+                              anchorEl={attachmentMenuAnchorEl}
+                              open={Boolean(attachmentMenuAnchorEl)}
+                              onClose={handleAttachmentMenuClose}
+                              anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+                              transformOrigin={{ vertical: "top", horizontal: "left" }}
+                              PaperProps={{
+                                sx: {
+                                  mt: 1,
+                                  minWidth: 260,
+                                  borderRadius: 1,
+                                  overflow: "hidden",
+                                  boxShadow: theme.shadows[8],
+                                },
+                              }}
+                            >
+                              <MenuItem onClick={() => triggerAttachmentInput("camera")}>
+                                <ListItemIcon>
+                                  <AddPhotoAlternateRoundedIcon fontSize="small" />
+                                </ListItemIcon>
+                                <ListItemText
+                                  primary="Camera"
+                                  secondary="Take a new photo"
+                                  primaryTypographyProps={{ fontWeight: 800 }}
+                                />
+                              </MenuItem>
+
+                              <MenuItem onClick={() => triggerAttachmentInput("media")}>
+                                <ListItemIcon>
+                                  <ImageRoundedIcon fontSize="small" />
+                                </ListItemIcon>
+                                <ListItemText
+                                  primary="Photos / Videos"
+                                  secondary="Choose from this device"
+                                  primaryTypographyProps={{ fontWeight: 800 }}
+                                />
+                              </MenuItem>
+
+                              <MenuItem onClick={() => triggerAttachmentInput("file")}>
+                                <ListItemIcon>
+                                  <AttachFileRoundedIcon fontSize="small" />
+                                </ListItemIcon>
+                                <ListItemText
+                                  primary="Files"
+                                  secondary="Upload PDF, photo, or video"
+                                  primaryTypographyProps={{ fontWeight: 800 }}
+                                />
+                              </MenuItem>
+                            </Menu>
+                          </Box>
+
+                          <TextField
+                            select
+                            size="small"
+                            label="Attachment Type"
+                            value={attachmentPhase}
+                            onChange={(e) =>
+                              setAttachmentPhase(e.target.value as ServiceTicketAttachmentPhase)
+                            }
+                            disabled={attachmentUploading || isInvoicedTicket}
+                            fullWidth
+                          >
+                            <MenuItem value="customer_sent">Customer Sent</MenuItem>
+                            <MenuItem value="before_visit">Before Visit</MenuItem>
+                            <MenuItem value="during_visit">During Visit</MenuItem>
+                            <MenuItem value="after_visit">After Visit</MenuItem>
+                          </TextField>
+
+                          <TextField
+                            size="small"
+                            label="Attachment Note (optional)"
+                            value={attachmentNote}
+                            onChange={(e) => setAttachmentNote(e.target.value)}
+                            disabled={attachmentUploading || isInvoicedTicket}
+                            placeholder="Example: Customer texted this photo before scheduling."
+                            fullWidth
+                          />
+                        </Stack>
+                      ) : (
+                        <Alert severity="info" variant="outlined">
+                          Attachments can be added by dispatch, admins, managers, techs, and helpers.
+                        </Alert>
+                      )}
+
+                      {attachmentErr ? <Alert severity="error">{attachmentErr}</Alert> : null}
+                      {attachmentOk ? <Alert severity="success">{attachmentOk}</Alert> : null}
+
+                      {attachments.length === 0 ? (
+                        <Alert severity="info" variant="outlined">
+                          No images, videos, or files have been added to this service ticket yet.
+                        </Alert>
+                      ) : (
+                        <Stack spacing={1}>
+                          {attachments.map((attachment) => {
+                            const isImage = attachment.fileType === "image";
+                            const isVideo = attachment.fileType === "video";
+                            const isPdf = attachment.fileType === "pdf";
+                            const sizeLabel = formatBytes(attachment.size);
+
+                            return (
+                              <Paper
+                                key={attachment.id}
+                                variant="outlined"
+                                sx={{
+                                  p: 1,
+                                  borderRadius: 2.25,
+                                  bgcolor: alpha(theme.palette.primary.main, 0.018),
+                                }}
+                              >
+                                <Stack
+                                  direction="row"
+                                  spacing={1.25}
+                                  alignItems="stretch"
+                                  sx={{ minWidth: 0 }}
+                                >
+                                  <Box
+                                    sx={{
+                                      width: { xs: 96, sm: 106 },
+                                      height: { xs: 128, sm: 142 },
+                                      borderRadius: 1.75,
+                                      overflow: "hidden",
+                                      flexShrink: 0,
+                                      display: "grid",
+                                      placeItems: "center",
+                                      bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                      color: "primary.main",
+                                      border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+                                    }}
+                                  >
+                                    {isImage && attachment.downloadUrl ? (
+                                      <Box
+                                        component="img"
+                                        src={attachment.downloadUrl}
+                                        alt={attachment.fileName}
+                                        sx={{
+                                          width: "100%",
+                                          height: "100%",
+                                          objectFit: "cover",
+                                        }}
+                                      />
+                                    ) : isVideo && attachment.downloadUrl ? (
+                                      <Box
+                                        component="video"
+                                        src={attachment.downloadUrl}
+                                        muted
+                                        playsInline
+                                        preload="metadata"
+                                        sx={{
+                                          width: "100%",
+                                          height: "100%",
+                                          objectFit: "cover",
+                                        }}
+                                      />
+                                    ) : isVideo ? (
+                                      <MovieRoundedIcon sx={{ fontSize: 42 }} />
+                                    ) : isImage ? (
+                                      <ImageRoundedIcon sx={{ fontSize: 42 }} />
+                                    ) : isPdf ? (
+                                      <PictureAsPdfRoundedIcon sx={{ fontSize: 42 }} />
+                                    ) : (
+                                      <AttachFileRoundedIcon sx={{ fontSize: 42 }} />
+                                    )}
+                                  </Box>
+
+                                  <Box
+                                    sx={{
+                                      minWidth: 0,
+                                      flex: 1,
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      py: 0.25,
+                                    }}
+                                  >
+                                    <Typography
+                                      variant="subtitle2"
+                                      fontWeight={900}
+                                      sx={{
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                        lineHeight: 1.2,
+                                      }}
+                                    >
+                                      {attachment.fileName}
+                                    </Typography>
+
+                                    <Stack
+                                      direction="row"
+                                      spacing={0.75}
+                                      flexWrap="wrap"
+                                      useFlexGap
+                                      sx={{ mt: 0.75 }}
+                                    >
+                                      <Chip
+                                        size="small"
+                                        label={formatAttachmentPhase(attachment.phase)}
+                                        variant="outlined"
+                                        sx={{ borderRadius: 1.5, fontWeight: 800 }}
+                                      />
+                                      {sizeLabel ? (
+                                        <Chip
+                                          size="small"
+                                          label={sizeLabel}
+                                          variant="outlined"
+                                          sx={{ borderRadius: 1.5 }}
+                                        />
+                                      ) : null}
+                                    </Stack>
+
+                                    {attachment.note ? (
+                                      <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                        sx={{
+                                          mt: 0.75,
+                                          whiteSpace: "pre-wrap",
+                                          overflow: "hidden",
+                                          display: "-webkit-box",
+                                          WebkitLineClamp: 2,
+                                          WebkitBoxOrient: "vertical",
+                                        }}
+                                      >
+                                        {attachment.note}
+                                      </Typography>
+                                    ) : null}
+
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      sx={{
+                                        display: "block",
+                                        mt: 0.75,
+                                        lineHeight: 1.25,
+                                      }}
+                                    >
+                                      Added {formatActivityDate(attachment.uploadedAt)}
+                                      {attachment.uploadedByName
+                                        ? ` by ${attachment.uploadedByName}`
+                                        : ""}
+                                    </Typography>
+
+                                    <Box sx={{ flex: 1 }} />
+
+                                    <Stack
+                                      direction="row"
+                                      spacing={1}
+                                      alignItems="center"
+                                      flexWrap="wrap"
+                                      useFlexGap
+                                      sx={{ mt: 1 }}
+                                    >
+                                      <Button
+                                        size="small"
+                                        variant="outlined"
+                                        startIcon={<OpenInNewRoundedIcon />}
+                                        onClick={() => openServiceTicketAttachment(attachment)}
+                                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                                      >
+                                        Open
+                                      </Button>
+
+                                      {canDeleteTicketAttachments ? (
+                                        <IconButton
+                                          size="small"
+                                          color="error"
+                                          onClick={() =>
+                                            handleSoftDeleteServiceTicketAttachment(attachment)
+                                          }
+                                        >
+                                          <DeleteOutlineRoundedIcon />
+                                        </IconButton>
+                                      ) : null}
+                                    </Stack>
+                                  </Box>
+                                </Stack>
+                              </Paper>
+                            );
+                          })}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Section>
+                </Box>
               </Stack>
 
               <Stack spacing={2.5} sx={{ minWidth: 0, maxWidth: "100%" }}>

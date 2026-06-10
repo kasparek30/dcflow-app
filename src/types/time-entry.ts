@@ -1,5 +1,7 @@
 // src/types/time-entry.ts
 
+import type { StaffCoverageWorkType } from "./app-user";
+
 export type TimeEntryCategory =
   // ✅ current Firestore categories
   | "service"
@@ -21,9 +23,14 @@ export type TimeEntrySource =
   | "manual_entry"
   | "system_generated_holiday"
   | "system_generated_pto"
-  // ✅ newer sources you’re using in Firestore
   | "trip_completion"
-  | "trip_daily_confirm";
+  | "trip_daily_confirm"
+  | "company_meeting"
+  | "project_trip_closeout"
+  // ✅ Staff Coverage
+  | "staff_schedule"
+  | "staff_confirmed"
+  | "staff_clock";
 
 export type TimeEntryStatus =
   | "draft"
@@ -67,8 +74,26 @@ export type TimeEntry = {
   createdAt?: string;
   updatedAt?: string;
 
-  // ✅ optional fields you already have in Firestore sometimes
   hoursLocked?: boolean;
   hoursSource?: number;
   tripId?: string;
+
+  // Existing newer optional fields used by some workflows
+  companyEventId?: string | null;
+  title?: string | null;
+  location?: string | null;
+
+  // Staff Coverage linkage
+  staffCoverageId?: string | null;
+  workType?: StaffCoverageWorkType | null;
+  scheduledStartTime?: string | null;
+  scheduledEndTime?: string | null;
+  unpaidBreakMinutes?: number;
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
+  confirmedAt?: string | null;
+  confirmedByUid?: string | null;
+
+  createdByUid?: string | null;
+  updatedByUid?: string | null;
 };
