@@ -59,6 +59,30 @@ type TechnicianOption = {
   displayName: string;
 };
 
+type ShirtSize =
+  | "XS"
+  | "S"
+  | "M"
+  | "L"
+  | "XL"
+  | "2XL"
+  | "3XL"
+  | "4XL"
+  | "5XL"
+  | "LT"
+  | "XLT"
+  | "2XLT"
+  | "3XLT"
+  | "4XLT";
+
+type PlumbingLicenseType =
+  | "none"
+  | "apprentice"
+  | "tradesman"
+  | "journeyman"
+  | "master"
+  | "other";
+
 const ROLE_OPTIONS: AppUserRole[] = [
   "admin",
   "dispatcher",
@@ -97,6 +121,41 @@ const LABOR_ROLE_LABELS: Record<LaborRoleType, string> = {
   support_field: "Support Field Labor",
   office: "Office / Administrative",
 };
+
+const SHIRT_SIZE_OPTIONS: ShirtSize[] = [
+  "XS",
+  "S",
+  "M",
+  "L",
+  "XL",
+  "2XL",
+  "3XL",
+  "4XL",
+  "5XL",
+  "LT",
+  "XLT",
+  "2XLT",
+  "3XLT",
+  "4XLT",
+];
+
+const LICENSE_TYPE_LABELS: Record<PlumbingLicenseType, string> = {
+  none: "No License / Not Tracked",
+  apprentice: "Apprentice",
+  tradesman: "Tradesman",
+  journeyman: "Journeyman",
+  master: "Master Plumber",
+  other: "Other",
+};
+
+const LICENSE_TYPE_OPTIONS: PlumbingLicenseType[] = [
+  "none",
+  "apprentice",
+  "tradesman",
+  "journeyman",
+  "master",
+  "other",
+];
 
 function isSupportRole(role: AppUserRole) {
   return role === "helper" || role === "apprentice";
@@ -147,6 +206,24 @@ export default function AdminUserDetailPage({ params }: Props) {
   const [defaultDailyHolidayHours, setDefaultDailyHolidayHours] =
     useState<number>(8);
   const [preferredTechnicianId, setPreferredTechnicianId] = useState("");
+
+  const [shirtSize, setShirtSize] = useState<ShirtSize | "">("");
+  const [gearNotes, setGearNotes] = useState("");
+
+  const [licenseType, setLicenseType] =
+    useState<PlumbingLicenseType>("none");
+  const [licenseNumber, setLicenseNumber] = useState("");
+  const [licenseIssuingState, setLicenseIssuingState] = useState("TX");
+  const [licenseExpirationDate, setLicenseExpirationDate] = useState("");
+  const [licenseNotes, setLicenseNotes] = useState("");
+
+  const [canDriveCompanyVehicle, setCanDriveCompanyVehicle] = useState(false);
+  const [driversLicenseNumber, setDriversLicenseNumber] = useState("");
+  const [driversLicenseState, setDriversLicenseState] = useState("TX");
+  const [driversLicenseExpirationDate, setDriversLicenseExpirationDate] =
+    useState("");
+  const [insuranceApproved, setInsuranceApproved] = useState(false);
+  const [driverNotes, setDriverNotes] = useState("");
 
   const supportRole = isSupportRole(role);
   const calculatedLaborRoleType = getLaborRoleTypeForRole(role);
@@ -241,6 +318,8 @@ export default function AdminUserDetailPage({ params }: Props) {
         }
 
         const data = userSnap.data();
+        const loadedLicenseInfo = data.licenseInfo ?? {};
+        const loadedDriverInfo = data.driverInfo ?? {};
 
         const loadedUser: AppUser = {
           uid: data.uid ?? userSnap.id,
@@ -276,6 +355,34 @@ export default function AdminUserDetailPage({ params }: Props) {
         setPreferredTechnicianId(
           loadedUser.preferredTechnicianId ?? ""
         );
+
+        setShirtSize((data.shirtSize ?? "") as ShirtSize | "");
+        setGearNotes(data.gearNotes ?? "");
+
+        setLicenseType(
+          (loadedLicenseInfo.licenseType ?? "none") as PlumbingLicenseType
+        );
+        setLicenseNumber(loadedLicenseInfo.licenseNumber ?? "");
+        setLicenseIssuingState(loadedLicenseInfo.issuingState ?? "TX");
+        setLicenseExpirationDate(loadedLicenseInfo.expirationDate ?? "");
+        setLicenseNotes(loadedLicenseInfo.notes ?? "");
+
+        setCanDriveCompanyVehicle(
+          typeof loadedDriverInfo.canDriveCompanyVehicle === "boolean"
+            ? loadedDriverInfo.canDriveCompanyVehicle
+            : false
+        );
+        setDriversLicenseNumber(loadedDriverInfo.driversLicenseNumber ?? "");
+        setDriversLicenseState(loadedDriverInfo.driversLicenseState ?? "TX");
+        setDriversLicenseExpirationDate(
+          loadedDriverInfo.driversLicenseExpirationDate ?? ""
+        );
+        setInsuranceApproved(
+          typeof loadedDriverInfo.insuranceApproved === "boolean"
+            ? loadedDriverInfo.insuranceApproved
+            : false
+        );
+        setDriverNotes(loadedDriverInfo.notes ?? "");
       } catch (err: unknown) {
         setError(
           err instanceof Error ? err.message : "Failed to load user."
@@ -315,6 +422,27 @@ export default function AdminUserDetailPage({ params }: Props) {
         defaultDailyHolidayHours,
         preferredTechnicianId: preferredId,
         preferredTechnicianName: preferredName,
+
+        shirtSize: shirtSize || null,
+        gearNotes: gearNotes.trim() || null,
+
+        licenseInfo: {
+          licenseType,
+          licenseNumber: licenseNumber.trim() || null,
+          issuingState: licenseIssuingState.trim() || null,
+          expirationDate: licenseExpirationDate || null,
+          notes: licenseNotes.trim() || null,
+        },
+
+        driverInfo: {
+          canDriveCompanyVehicle,
+          driversLicenseNumber: driversLicenseNumber.trim() || null,
+          driversLicenseState: driversLicenseState.trim() || null,
+          driversLicenseExpirationDate: driversLicenseExpirationDate || null,
+          insuranceApproved,
+          notes: driverNotes.trim() || null,
+        },
+
         updatedAt: new Date().toISOString(),
       });
 
@@ -393,8 +521,8 @@ export default function AdminUserDetailPage({ params }: Props) {
                   color="text.secondary"
                   sx={{ mt: 0.5 }}
                 >
-                  Manage DCFlow role, regular crew pairing, and holiday pay
-                  settings.
+                  Manage DCFlow role, regular crew pairing, holiday pay,
+                  company gear, license info, and driving eligibility.
                 </Typography>
               </Box>
 
@@ -511,6 +639,36 @@ export default function AdminUserDetailPage({ params }: Props) {
                             <Chip
                               label={LABOR_ROLE_LABELS[userDoc.laborRoleType]}
                               size="small"
+                              variant="outlined"
+                            />
+                          ) : null}
+
+                          {shirtSize ? (
+                            <Chip
+                              label={`Shirt: ${shirtSize}`}
+                              size="small"
+                              variant="outlined"
+                            />
+                          ) : null}
+
+                          {licenseType !== "none" ? (
+                            <Chip
+                              label={LICENSE_TYPE_LABELS[licenseType]}
+                              size="small"
+                              color="secondary"
+                              variant="outlined"
+                            />
+                          ) : null}
+
+                          {canDriveCompanyVehicle ? (
+                            <Chip
+                              label={
+                                insuranceApproved
+                                  ? "Approved Driver"
+                                  : "Driver Review Needed"
+                              }
+                              size="small"
+                              color={insuranceApproved ? "success" : "warning"}
                               variant="outlined"
                             />
                           ) : null}
@@ -762,6 +920,321 @@ export default function AdminUserDetailPage({ params }: Props) {
                               </Typography>
                             </Box>
                           )}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        borderRadius: 1,
+                        height: "100%",
+                      }}
+                    >
+                      <CardContent sx={{ p: { xs: 2.5, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          <Box>
+                            <Typography
+                              variant="h6"
+                              component="h2"
+                              sx={{ fontWeight: 700 }}
+                            >
+                              Company Gear
+                            </Typography>
+
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ mt: 0.5 }}
+                            >
+                              Stores shirt size and gear notes for company
+                              apparel orders.
+                            </Typography>
+                          </Box>
+
+                          <Divider />
+
+                          <TextField
+                            fullWidth
+                            select
+                            label="Shirt Size"
+                            value={shirtSize}
+                            onChange={(event) =>
+                              setShirtSize(event.target.value as ShirtSize | "")
+                            }
+                            helperText="Used when ordering company shirts, hoodies, and gear."
+                          >
+                            <MenuItem value="">No size selected</MenuItem>
+
+                            {SHIRT_SIZE_OPTIONS.map((size) => (
+                              <MenuItem key={size} value={size}>
+                                {size}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+
+                          <TextField
+                            fullWidth
+                            multiline
+                            minRows={3}
+                            label="Gear Notes"
+                            value={gearNotes}
+                            onChange={(event) =>
+                              setGearNotes(event.target.value)
+                            }
+                            placeholder="Example: prefers tall shirts, hoodie size is different, needs long sleeves, etc."
+                          />
+                        </Stack>
+                      </CardContent>
+                    </Card>
+
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        borderRadius: 1,
+                        height: "100%",
+                      }}
+                    >
+                      <CardContent sx={{ p: { xs: 2.5, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          <Box>
+                            <Typography
+                              variant="h6"
+                              component="h2"
+                              sx={{ fontWeight: 700 }}
+                            >
+                              Plumbing License Info
+                            </Typography>
+
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ mt: 0.5 }}
+                            >
+                              Tracks license or registration info for
+                              apprentices, tradesmen, journeymen, and master
+                              plumbers.
+                            </Typography>
+                          </Box>
+
+                          <Divider />
+
+                          <TextField
+                            fullWidth
+                            select
+                            label="License Type"
+                            value={licenseType}
+                            onChange={(event) =>
+                              setLicenseType(
+                                event.target.value as PlumbingLicenseType
+                              )
+                            }
+                          >
+                            {LICENSE_TYPE_OPTIONS.map((type) => (
+                              <MenuItem key={type} value={type}>
+                                {LICENSE_TYPE_LABELS[type]}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns: {
+                                xs: "1fr",
+                                sm: "repeat(2, minmax(0, 1fr))",
+                              },
+                              gap: 2,
+                            }}
+                          >
+                            <TextField
+                              fullWidth
+                              label="License Number"
+                              value={licenseNumber}
+                              onChange={(event) =>
+                                setLicenseNumber(event.target.value)
+                              }
+                              disabled={licenseType === "none"}
+                            />
+
+                            <TextField
+                              fullWidth
+                              label="Issuing State"
+                              value={licenseIssuingState}
+                              onChange={(event) =>
+                                setLicenseIssuingState(event.target.value)
+                              }
+                              disabled={licenseType === "none"}
+                              placeholder="TX"
+                            />
+                          </Box>
+
+                          <TextField
+                            fullWidth
+                            label="Expiration Date"
+                            type="date"
+                            value={licenseExpirationDate}
+                            onChange={(event) =>
+                              setLicenseExpirationDate(event.target.value)
+                            }
+                            disabled={licenseType === "none"}
+                            InputLabelProps={{
+                              shrink: true,
+                            }}
+                            helperText="Leave blank if there is no expiration date to track."
+                          />
+
+                          <TextField
+                            fullWidth
+                            multiline
+                            minRows={3}
+                            label="License Notes"
+                            value={licenseNotes}
+                            onChange={(event) =>
+                              setLicenseNotes(event.target.value)
+                            }
+                            disabled={licenseType === "none"}
+                            placeholder="Example: renewal submitted, waiting on card, license held in another state, etc."
+                          />
+                        </Stack>
+                      </CardContent>
+                    </Card>
+
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        borderRadius: 1,
+                        gridColumn: { xs: "auto", md: "1 / -1" },
+                      }}
+                    >
+                      <CardContent sx={{ p: { xs: 2.5, sm: 3 } }}>
+                        <Stack spacing={2.5}>
+                          <Box>
+                            <Typography
+                              variant="h6"
+                              component="h2"
+                              sx={{ fontWeight: 700 }}
+                            >
+                              Driver / Vehicle Eligibility
+                            </Typography>
+
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ mt: 0.5 }}
+                            >
+                              Tracks whether this employee can be assigned a
+                              company vehicle. Vehicle mileage, oil changes,
+                              and year-end tax mileage should live on dedicated
+                              vehicle records later.
+                            </Typography>
+                          </Box>
+
+                          <Divider />
+
+                          <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={3}
+                            alignItems={{ xs: "stretch", sm: "center" }}
+                          >
+                            <FormControlLabel
+                              control={
+                                <Switch
+                                  checked={canDriveCompanyVehicle}
+                                  onChange={(event) =>
+                                    setCanDriveCompanyVehicle(
+                                      event.target.checked
+                                    )
+                                  }
+                                />
+                              }
+                              label={
+                                canDriveCompanyVehicle
+                                  ? "Can Drive Company Vehicle"
+                                  : "Cannot Drive Company Vehicle"
+                              }
+                              sx={{ flex: 1, m: 0 }}
+                            />
+
+                            <FormControlLabel
+                              control={
+                                <Switch
+                                  checked={insuranceApproved}
+                                  disabled={!canDriveCompanyVehicle}
+                                  onChange={(event) =>
+                                    setInsuranceApproved(event.target.checked)
+                                  }
+                                />
+                              }
+                              label={
+                                insuranceApproved
+                                  ? "Insurance Approved"
+                                  : "Insurance Not Approved"
+                              }
+                              sx={{ flex: 1, m: 0 }}
+                            />
+                          </Stack>
+
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns: {
+                                xs: "1fr",
+                                sm: "repeat(3, minmax(0, 1fr))",
+                              },
+                              gap: 2,
+                            }}
+                          >
+                            <TextField
+                              fullWidth
+                              label="Driver License Number"
+                              value={driversLicenseNumber}
+                              onChange={(event) =>
+                                setDriversLicenseNumber(event.target.value)
+                              }
+                              disabled={!canDriveCompanyVehicle}
+                            />
+
+                            <TextField
+                              fullWidth
+                              label="License State"
+                              value={driversLicenseState}
+                              onChange={(event) =>
+                                setDriversLicenseState(event.target.value)
+                              }
+                              disabled={!canDriveCompanyVehicle}
+                              placeholder="TX"
+                            />
+
+                            <TextField
+                              fullWidth
+                              label="Driver License Expiration"
+                              type="date"
+                              value={driversLicenseExpirationDate}
+                              onChange={(event) =>
+                                setDriversLicenseExpirationDate(
+                                  event.target.value
+                                )
+                              }
+                              disabled={!canDriveCompanyVehicle}
+                              InputLabelProps={{
+                                shrink: true,
+                              }}
+                            />
+                          </Box>
+
+                          <TextField
+                            fullWidth
+                            multiline
+                            minRows={3}
+                            label="Driver / Vehicle Notes"
+                            value={driverNotes}
+                            onChange={(event) =>
+                              setDriverNotes(event.target.value)
+                            }
+                            disabled={!canDriveCompanyVehicle}
+                            placeholder="Example: approved for service trucks only, needs insurance review, do not assign trailer, etc."
+                          />
                         </Stack>
                       </CardContent>
                     </Card>

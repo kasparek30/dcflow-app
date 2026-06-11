@@ -36,10 +36,12 @@ import PersonAddAlt1RoundedIcon from "@mui/icons-material/PersonAddAlt1Rounded";
 import BadgeRoundedIcon from "@mui/icons-material/BadgeRounded";
 import EngineeringRoundedIcon from "@mui/icons-material/EngineeringRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
+import DirectionsCarRoundedIcon from "@mui/icons-material/DirectionsCarRounded";
+import CheckroomRoundedIcon from "@mui/icons-material/CheckroomRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
-import { auth, db } from "../../../src/lib/firebase";
+import { db } from "../../../src/lib/firebase";
 import type { AppUser } from "../../../src/types/app-user";
 
 type RoleOption =
@@ -52,9 +54,37 @@ type RoleOption =
   | "helper"
   | "apprentice";
 
+type PlumbingLicenseType =
+  | "none"
+  | "apprentice"
+  | "tradesman"
+  | "journeyman"
+  | "master"
+  | "other";
+
 type TechnicianOption = {
   uid: string;
   displayName: string;
+};
+
+type UserDirectoryItem = AppUser & {
+  shirtSize?: string | null;
+  gearNotes?: string | null;
+  licenseInfo?: {
+    licenseType?: PlumbingLicenseType | null;
+    licenseNumber?: string | null;
+    issuingState?: string | null;
+    expirationDate?: string | null;
+    notes?: string | null;
+  } | null;
+  driverInfo?: {
+    canDriveCompanyVehicle?: boolean;
+    driversLicenseNumber?: string | null;
+    driversLicenseState?: string | null;
+    driversLicenseExpirationDate?: string | null;
+    insuranceApproved?: boolean;
+    notes?: string | null;
+  } | null;
 };
 
 const ROLE_OPTIONS: Array<{ value: RoleOption; label: string }> = [
@@ -109,14 +139,61 @@ function roleTone(role?: string) {
 
   if (r === "admin") return { label: "Admin", color: "error" as const };
   if (r === "manager") return { label: "Manager", color: "warning" as const };
-  if (r === "dispatcher") return { label: "Dispatcher", color: "secondary" as const };
+  if (r === "dispatcher") {
+    return { label: "Dispatcher", color: "secondary" as const };
+  }
   if (r === "billing") return { label: "Billing", color: "default" as const };
-  if (r === "office_display") return { label: "Office Display", color: "default" as const };
-  if (r === "technician") return { label: "Technician", color: "primary" as const };
+  if (r === "office_display") {
+    return { label: "Office Display", color: "default" as const };
+  }
+  if (r === "technician") {
+    return { label: "Technician", color: "primary" as const };
+  }
   if (r === "helper") return { label: "Helper", color: "success" as const };
-  if (r === "apprentice") return { label: "Apprentice", color: "success" as const };
+  if (r === "apprentice") {
+    return { label: "Apprentice", color: "success" as const };
+  }
 
   return { label: role || "Unknown", color: "default" as const };
+}
+
+function licenseLabel(type?: string | null) {
+  if (!type || type === "none") return "";
+
+  if (type === "apprentice") return "Apprentice License";
+  if (type === "tradesman") return "Tradesman";
+  if (type === "journeyman") return "Journeyman";
+  if (type === "master") return "Master";
+  if (type === "other") return "Other License";
+
+  return type;
+}
+
+function driverEligibilityLabel(user: UserDirectoryItem) {
+  if (!user.driverInfo?.canDriveCompanyVehicle) {
+    return "";
+  }
+
+  if (user.driverInfo.insuranceApproved) {
+    return "Approved Driver";
+  }
+
+  return "Can Drive";
+}
+
+function getCardIconForRole(role?: string) {
+  const r = String(role || "").toLowerCase();
+
+  if (
+    r === "technician" ||
+    r === "manager" ||
+    r === "helper" ||
+    r === "apprentice"
+  ) {
+    return <EngineeringRoundedIcon sx={{ fontSize: 22 }} />;
+  }
+
+  return <ConstructionRoundedIcon sx={{ fontSize: 22 }} />;
 }
 
 export default function AdminUsersPage() {
@@ -124,7 +201,7 @@ export default function AdminUsersPage() {
   const { appUser } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
-  const [users, setUsers] = useState<AppUser[]>([]);
+  const [users, setUsers] = useState<UserDirectoryItem[]>([]);
   const [error, setError] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -148,7 +225,7 @@ export default function AdminUsersPage() {
       const qRef = query(collection(db, "users"), orderBy("displayName"));
       const snap = await getDocs(qRef);
 
-      const items: AppUser[] = snap.docs.map((docSnap) => {
+      const items: UserDirectoryItem[] = snap.docs.map((docSnap) => {
         const data = docSnap.data() as any;
 
         return {
@@ -165,6 +242,11 @@ export default function AdminUsersPage() {
             typeof data.defaultDailyHolidayHours === "number"
               ? data.defaultDailyHolidayHours
               : undefined,
+
+          shirtSize: data.shirtSize ?? null,
+          gearNotes: data.gearNotes ?? null,
+          licenseInfo: data.licenseInfo ?? null,
+          driverInfo: data.driverInfo ?? null,
         };
       });
 
@@ -190,8 +272,7 @@ export default function AdminUsersPage() {
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
   }, [users]);
 
-  const requiresTechnician =
-    role === "helper" || role === "apprentice";
+  const requiresTechnician = role === "helper" || role === "apprentice";
 
   function resetCreateForm() {
     setDisplayName("");
@@ -301,16 +382,24 @@ export default function AdminUsersPage() {
               justifyContent="space-between"
             >
               <Box sx={{ minWidth: 0 }}>
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  sx={{ mb: 1 }}
+                >
                   <Chip
                     size="small"
                     icon={<ManageAccountsRoundedIcon sx={{ fontSize: 16 }} />}
-                    label="Users"
+                    label="Employees"
                     sx={{
                       borderRadius: 1.5,
                       fontWeight: 600,
                       backgroundColor: alpha(theme.palette.primary.main, 0.12),
-                      border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                      border: `1px solid ${alpha(
+                        theme.palette.primary.main,
+                        0.22
+                      )}`,
                     }}
                   />
                 </Stack>
@@ -324,7 +413,7 @@ export default function AdminUsersPage() {
                     letterSpacing: "-0.035em",
                   }}
                 >
-                  Admin users
+                  Employee Profiles
                 </Typography>
 
                 <Typography
@@ -336,7 +425,9 @@ export default function AdminUsersPage() {
                     maxWidth: 960,
                   }}
                 >
-                  Create login accounts, assign roles, and set default helper/apprentice technician pairing.
+                  Create login accounts, assign roles, review gear sizes,
+                  license info, driving eligibility, and default
+                  helper/apprentice technician pairing.
                 </Typography>
               </Box>
 
@@ -370,7 +461,7 @@ export default function AdminUsersPage() {
             <Box>
               <SectionHeader
                 title="User directory"
-                subtitle="Select a user to edit their details, or create a new account for office staff, technicians, helpers, and apprentices."
+                subtitle="Select a user to edit their role, crew pairing, company gear, license info, driver eligibility, and holiday settings."
               />
 
               <Box sx={{ mt: 1.5 }}>
@@ -402,6 +493,10 @@ export default function AdminUsersPage() {
                   >
                     {users.map((u) => {
                       const tone = roleTone(u.role);
+                      const currentLicenseLabel = licenseLabel(
+                        u.licenseInfo?.licenseType
+                      );
+                      const currentDriverLabel = driverEligibilityLabel(u);
 
                       return (
                         <Card
@@ -409,7 +504,7 @@ export default function AdminUsersPage() {
                           elevation={0}
                           sx={{
                             height: "100%",
-                            borderRadius: 3,
+                            borderRadius: 1,
                             border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
                             backgroundColor: "background.paper",
                           }}
@@ -417,7 +512,7 @@ export default function AdminUsersPage() {
                           <CardActionArea
                             component={Link}
                             href={`/admin/users/${u.uid}`}
-                            sx={{ height: "100%", borderRadius: 3 }}
+                            sx={{ height: "100%", borderRadius: 1 }}
                           >
                             <CardContent
                               sx={{
@@ -432,7 +527,11 @@ export default function AdminUsersPage() {
                                   alignItems="flex-start"
                                   justifyContent="space-between"
                                 >
-                                  <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, flex: 1 }}>
+                                  <Stack
+                                    direction="row"
+                                    spacing={1.25}
+                                    sx={{ minWidth: 0, flex: 1 }}
+                                  >
                                     <Box
                                       sx={{
                                         width: 42,
@@ -441,15 +540,14 @@ export default function AdminUsersPage() {
                                         display: "grid",
                                         placeItems: "center",
                                         flexShrink: 0,
-                                        backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                                        backgroundColor: alpha(
+                                          theme.palette.primary.main,
+                                          0.12
+                                        ),
                                         color: theme.palette.primary.light,
                                       }}
                                     >
-                                      {String(u.role || "").toLowerCase() === "technician" ? (
-                                        <EngineeringRoundedIcon sx={{ fontSize: 22 }} />
-                                      ) : (
-                                        <ConstructionRoundedIcon sx={{ fontSize: 22 }} />
-                                      )}
+                                      {getCardIconForRole(u.role)}
                                     </Box>
 
                                     <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -488,7 +586,12 @@ export default function AdminUsersPage() {
                                   />
                                 </Stack>
 
-                                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                                <Stack
+                                  direction="row"
+                                  spacing={0.75}
+                                  flexWrap="wrap"
+                                  useFlexGap
+                                >
                                   <Chip
                                     size="small"
                                     label={tone.label}
@@ -499,22 +602,112 @@ export default function AdminUsersPage() {
 
                                   <Chip
                                     size="small"
-                                    icon={<BadgeRoundedIcon sx={{ fontSize: 16 }} />}
+                                    icon={
+                                      <BadgeRoundedIcon sx={{ fontSize: 16 }} />
+                                    }
                                     label={`Labor: ${u.laborRoleType || "—"}`}
                                     variant="outlined"
                                     sx={{ borderRadius: 1.5 }}
                                   />
+
+                                  {u.shirtSize ? (
+                                    <Chip
+                                      size="small"
+                                      icon={
+                                        <CheckroomRoundedIcon
+                                          sx={{ fontSize: 16 }}
+                                        />
+                                      }
+                                      label={`Shirt: ${u.shirtSize}`}
+                                      variant="outlined"
+                                      sx={{ borderRadius: 1.5 }}
+                                    />
+                                  ) : null}
+
+                                  {currentLicenseLabel ? (
+                                    <Chip
+                                      size="small"
+                                      label={currentLicenseLabel}
+                                      color="secondary"
+                                      variant="outlined"
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 600,
+                                      }}
+                                    />
+                                  ) : null}
+
+                                  {currentDriverLabel ? (
+                                    <Chip
+                                      size="small"
+                                      icon={
+                                        <DirectionsCarRoundedIcon
+                                          sx={{ fontSize: 16 }}
+                                        />
+                                      }
+                                      label={currentDriverLabel}
+                                      color={
+                                        u.driverInfo?.insuranceApproved
+                                          ? "success"
+                                          : "warning"
+                                      }
+                                      variant="outlined"
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 600,
+                                      }}
+                                    />
+                                  ) : null}
                                 </Stack>
 
                                 <Divider />
 
-                                <Stack spacing={0.5}>
-                                  <Typography variant="caption" color="text.secondary">
-                                    Preferred technician
-                                  </Typography>
-                                  <Typography variant="body2">
-                                    {u.preferredTechnicianName || "—"}
-                                  </Typography>
+                                <Stack spacing={1}>
+                                  <Box>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      Preferred technician
+                                    </Typography>
+
+                                    <Typography variant="body2">
+                                      {u.preferredTechnicianName || "—"}
+                                    </Typography>
+                                  </Box>
+
+                                  <Box>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      License / driver status
+                                    </Typography>
+
+                                    <Typography variant="body2">
+                                      {[
+                                        currentLicenseLabel || null,
+                                        currentDriverLabel || null,
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" • ") || "—"}
+                                    </Typography>
+                                  </Box>
+
+                                  {u.shirtSize ? (
+                                    <Box>
+                                      <Typography
+                                        variant="caption"
+                                        color="text.secondary"
+                                      >
+                                        Company gear
+                                      </Typography>
+
+                                      <Typography variant="body2">
+                                        Shirt size {u.shirtSize}
+                                      </Typography>
+                                    </Box>
+                                  ) : null}
                                 </Stack>
                               </Stack>
                             </CardContent>
@@ -529,17 +722,25 @@ export default function AdminUsersPage() {
           </Stack>
         </Box>
 
-        <Dialog open={createOpen} onClose={closeCreateDialog} fullWidth maxWidth="sm">
+        <Dialog
+          open={createOpen}
+          onClose={closeCreateDialog}
+          fullWidth
+          maxWidth="sm"
+        >
           <DialogTitle>Create User</DialogTitle>
 
           <DialogContent dividers>
             <Stack spacing={2}>
               <Typography variant="body2" color="text.secondary">
-                Create a Firebase login, assign the DCFlow role, and optionally store default technician pairing for helper-type users.
+                Create a Firebase login, assign the DCFlow role, and optionally
+                store default technician pairing for helper-type users.
               </Typography>
 
               {createError ? <Alert severity="error">{createError}</Alert> : null}
-              {createSuccess ? <Alert severity="success">{createSuccess}</Alert> : null}
+              {createSuccess ? (
+                <Alert severity="success">{createSuccess}</Alert>
+              ) : null}
 
               <TextField
                 label="Display Name"
@@ -632,6 +833,7 @@ export default function AdminUsersPage() {
             <Button onClick={closeCreateDialog} disabled={createSaving}>
               Cancel
             </Button>
+
             <Button
               onClick={handleCreateUser}
               disabled={createSaving}

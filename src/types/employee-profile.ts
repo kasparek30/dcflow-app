@@ -14,6 +14,45 @@ export type LaborRole =
   | "manager"
   | "other";
 
+export type ShirtSize =
+  | "XS"
+  | "S"
+  | "M"
+  | "L"
+  | "XL"
+  | "2XL"
+  | "3XL"
+  | "4XL"
+  | "5XL"
+  | "LT"
+  | "XLT"
+  | "2XLT"
+  | "3XLT"
+  | "4XLT";
+
+export type PlumbingLicenseType =
+  | "none"
+  | "apprentice"
+  | "tradesman"
+  | "journeyman"
+  | "master"
+  | "other";
+
+export type EmployeeLicenseInfo = {
+  licenseType: PlumbingLicenseType;
+
+  // License number as shown on the state license/registration
+  licenseNumber?: string;
+
+  // Example: "TX"
+  issuingState?: string;
+
+  // YYYY-MM-DD
+  expirationDate?: string;
+
+  notes?: string;
+};
+
 export type EmployeeProfile = {
   id: string;
 
@@ -35,6 +74,13 @@ export type EmployeeProfile = {
   fieldAssignable?: boolean;
   staffCoverageEligible?: boolean;
   defaultStaffCoverageWorkType?: StaffCoverageWorkType | null;
+
+  // Company gear / apparel
+  shirtSize?: ShirtSize | "";
+  gearNotes?: string;
+
+  // Plumbing license / registration info
+  licenseInfo?: EmployeeLicenseInfo;
 
   // ✅ QuickBooks link (v1)
   qboEmployeeId?: string;

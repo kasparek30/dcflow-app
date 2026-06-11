@@ -226,22 +226,22 @@ export default function StaffCoverageAdminPage() {
     return employees.find((employee) => employee.uid === employeeId) || null;
   }, [employees, employeeId]);
 
-const grossHours = useMemo(() => {
+  const grossHours = useMemo(() => {
   const start = minutesFromHHMM(startTime);
   const end = minutesFromHHMM(endTime);
 
   if (start == null || end == null || end <= start) return null;
 
   return Math.round(((end - start) / 60) * 100) / 100;
-}, [startTime, endTime]);
+    }, [startTime, endTime]);
 
-useEffect(() => {
-  setUnpaidBreakMinutes(defaultUnpaidBreakMinutes(startTime, endTime));
-}, [startTime, endTime]);
+    useEffect(() => {
+    setUnpaidBreakMinutes(defaultUnpaidBreakMinutes(startTime, endTime));
+    }, [startTime, endTime]);
 
-const scheduledHours = useMemo(() => {
-  return calculatePaidHours(startTime, endTime, unpaidBreakMinutes);
-}, [startTime, endTime, unpaidBreakMinutes]);
+    const scheduledHours = useMemo(() => {
+    return calculatePaidHours(startTime, endTime, unpaidBreakMinutes);
+    }, [startTime, endTime, unpaidBreakMinutes]);
 
   async function loadAll() {
     setLoading(true);
@@ -304,6 +304,10 @@ const scheduledHours = useMemo(() => {
               typeof data.scheduledHours === "number"
                 ? data.scheduledHours
                 : 0,
+            unpaidBreakMinutes:
+                typeof data.unpaidBreakMinutes === "number"
+                    ? data.unpaidBreakMinutes
+                    : 0,   
             status: data.status ?? "scheduled",
             active: Boolean(data.active ?? true),
             linkedTimeEntryId: data.linkedTimeEntryId ?? null,
@@ -918,10 +922,13 @@ const scheduledHours = useMemo(() => {
                         </Stack>
 
                         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                          {row.date} • {formatTime12h(row.startTime)}–
-                          {formatTime12h(row.endTime)} •{" "}
-                          {row.scheduledHours.toFixed(2)} hrs
-                        </Typography>
+                            {row.date} • {formatTime12h(row.startTime)}–
+                            {formatTime12h(row.endTime)} •{" "}
+                            {row.scheduledHours.toFixed(2)} paid hrs
+                            {typeof row.unpaidBreakMinutes === "number" && row.unpaidBreakMinutes > 0
+                                ? ` • ${row.unpaidBreakMinutes / 60}h lunch`
+                                : ""}
+                            </Typography>
 
                         {row.notes ? (
                           <Typography variant="body2" sx={{ mt: 0.75 }}>
