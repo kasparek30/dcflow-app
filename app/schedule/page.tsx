@@ -1,7 +1,7 @@
 // app/schedule/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   collection,
@@ -33,10 +33,14 @@ import {
   IconButton,
   InputAdornment,
   InputLabel,
+  ListItemIcon,
+  ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Select,
   Stack,
+  SwipeableDrawer,
   Table,
   TableBody,
   TableCell,
@@ -62,6 +66,10 @@ import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
 import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
+import FilterListRoundedIcon from "@mui/icons-material/FilterListRounded";
+import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownRounded";
+import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
+import BlockRoundedIcon from "@mui/icons-material/BlockRounded";
 import DeleteRoundedIcon from "@mui/icons-material/DeleteRounded";
 import SharedTripCard from "../../components/trips/SharedTripCard";
 import AppShell from "../../components/AppShell";
@@ -390,6 +398,57 @@ function ticketIsSchedulableByStatus(d: any) {
   return st === "new" || st === "followup" || st === "follow_up";
 }
 
+function normalizeProjectStatusValue(value: any) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replaceAll(" ", "_")
+    .replaceAll("-", "_");
+}
+
+function projectIsSchedulableByStatus(d: any) {
+  const active = typeof d?.active === "boolean" ? d.active : true;
+  if (!active) return false;
+
+  const statusValues = [
+    d?.status,
+    d?.projectStatus,
+    d?.officeStatus,
+    d?.workflowStatus,
+    d?.lifecycleStatus,
+    d?.fieldStatus,
+    d?.billingStatus,
+    d?.invoiceStatus,
+    d?.billing?.status,
+    d?.billing?.invoiceStatus,
+  ]
+    .map(normalizeProjectStatusValue)
+    .filter(Boolean);
+
+  const closedStatuses = new Set([
+    "invoiced",
+    "invoice_created",
+    "invoice_sent",
+    "paid",
+    "closed",
+    "archived",
+    "cancelled",
+    "canceled",
+    "complete",
+    "completed",
+    "project_complete",
+    "field_complete",
+    "ready_to_invoice",
+    "ready_to_bill",
+    "billed",
+  ]);
+
+  if (statusValues.some((status) => closedStatuses.has(status))) return false;
+
+  // When old project documents do not have a status yet, keep active=true projects visible.
+  return true;
+}
+
 function isCompletedStatus(status?: string) {
   const s = normalizeStatus(status);
   return s === "complete" || s === "completed";
@@ -535,13 +594,14 @@ function getPtoSummaryForDate(
 
 function formatTimeRangeForCard(t: TripDoc) {
   const w = (t.timeWindow || "").toLowerCase();
-  if (w === "all_day") return "8AM–5PM • All Day";
-  if (w === "am") return "8AM–12Noon • AM";
-  if (w === "pm") return "1PM–5PM • PM";
-  const start = t.startTime ? formatTime12h(t.startTime) : "—";
-  const end = t.endTime ? formatTime12h(t.endTime) : "—";
-  const label = formatWindowLabel(t.timeWindow);
-  return `${start}–${end} • ${label}`;
+  if (w === "all_day") return "All Day";
+  if (w === "am") return "AM";
+  if (w === "pm") return "PM";
+
+  const compact = compactTimeLabel(t.startTime, t.endTime);
+  if (compact) return compact;
+
+  return formatWindowLabel(t.timeWindow);
 }
 
 function compareTripTime(a: TripDoc, b: TripDoc) {
@@ -632,24 +692,6 @@ function monthCalendarWorkWeeks(anchor: Date) {
   }
 
   return weeks;
-}
-
-function crewConfirmUids(t: TripDoc) {
-  const uids = [
-    String(t.crew?.primaryTechUid || "").trim(),
-    String(t.crew?.helperUid || "").trim(),
-    String(t.crew?.secondaryTechUid || "").trim(),
-    String(t.crew?.secondaryHelperUid || "").trim(),
-  ].filter(Boolean);
-
-  return Array.from(new Set(uids));
-}
-
-function confirmationProgress(t: TripDoc) {
-  const required = crewConfirmUids(t);
-  const confirmedBy = t.confirmedBy || {};
-  const confirmedCount = required.filter((uid) => Boolean((confirmedBy as any)[uid])).length;
-  return { confirmedCount, requiredCount: required.length };
 }
 
 const SLOT_AM_START = 8 * 60;
@@ -1071,6 +1113,39 @@ function staffCoverageWorkTypeLabel(workType?: string | null) {
   return "Staff";
 }
 
+function initialsForName(name: string) {
+  const parts = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (parts.length === 0) return "—";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+
+  return `${parts[0].slice(0, 1)}${parts[parts.length - 1].slice(0, 1)}`.toUpperCase();
+}
+
+function splitPickerSublabel(value?: string) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return { customer: "", address: "" };
+  }
+
+  const parts = raw
+    .split(" — ")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) {
+    return { customer: raw, address: "" };
+  }
+
+  return {
+    customer: parts[0],
+    address: parts.slice(1).join(" — "),
+  };
+}
+
 export default function SchedulePage() {
   const theme = useTheme();
   const router = useRouter();
@@ -1087,20 +1162,17 @@ export default function SchedulePage() {
     appUser?.role === "dispatcher" ||
     appUser?.role === "manager";
 
-  const [view, setView] = useState<ViewMode>("week");
-  const [anchorIso, setAnchorIso] = useState<string>(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return toIsoDate(startOfWorkWeek(d));
-  });
+  const [view, setView] = useState<ViewMode>("day");
+  const [anchorIso, setAnchorIso] = useState<string>(() => todayIsoLocal());
 
   const [isMobile, setIsMobile] = useState(false);
-  const didApplyMobileDefaultRef = useRef(false);
+  const [schedulePrefsReady, setSchedulePrefsReady] = useState(false);
   const todayIso = useMemo(() => todayIsoLocal(), []);
 
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [hideCompleted, setHideCompleted] = useState<boolean>(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [loading, setLoading] = useState(true);
 
@@ -1130,6 +1202,10 @@ export default function SchedulePage() {
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
 
+  const [quickScheduleOpen, setQuickScheduleOpen] = useState(false);
+  const [quickScheduleTechUid, setQuickScheduleTechUid] = useState("");
+  const [quickScheduleDateIso, setQuickScheduleDateIso] = useState("");
+
   const [addOpen, setAddOpen] = useState(false);
   const [addTechUid, setAddTechUid] = useState("");
   const [addDateIso, setAddDateIso] = useState("");
@@ -1145,6 +1221,8 @@ export default function SchedulePage() {
     useState("");
   const [addSaving, setAddSaving] = useState(false);
   const [addErr, setAddErr] = useState("");
+  const [mobileAdvancedOpen, setMobileAdvancedOpen] = useState(false);
+  const [mobileNotesOpen, setMobileNotesOpen] = useState(false);
 
   const [openTicketsLoading, setOpenTicketsLoading] = useState(false);
   const [openTicketsErr, setOpenTicketsErr] = useState("");
@@ -1179,6 +1257,22 @@ export default function SchedulePage() {
     Record<string, StaffCoverageDoc[]>
   >({});
 
+  const [addScheduleAnchorEl, setAddScheduleAnchorEl] = useState<HTMLElement | null>(null);
+
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [blockDateIso, setBlockDateIso] = useState("");
+  const [blockTitle, setBlockTitle] = useState("");
+  const [blockWindow, setBlockWindow] = useState<"all_day" | "am" | "pm" | "custom">("am");
+  const [blockStart, setBlockStart] = useState("08:00");
+  const [blockEnd, setBlockEnd] = useState("09:00");
+  const [blockNotes, setBlockNotes] = useState("");
+  const [blockIncludeAll, setBlockIncludeAll] = useState(false);
+  const [blockAppliesToUids, setBlockAppliesToUids] = useState<string[]>([]);
+  const [blockSaving, setBlockSaving] = useState(false);
+  const [blockErr, setBlockErr] = useState("");
+
+  const addScheduleMenuOpen = Boolean(addScheduleAnchorEl);
+
   const allMeetingEmployeeUids = useMemo(
     () => meetingEmployees.map((employee) => employee.uid),
     [meetingEmployees]
@@ -1201,6 +1295,11 @@ export default function SchedulePage() {
     const selected = new Set(meetAppliesToUids);
     return meetingEmployees.filter((employee) => selected.has(employee.uid));
   }, [meetingEmployees, meetAppliesToUids]);
+
+  const selectedBlockEmployees = useMemo(() => {
+    const selected = new Set(blockAppliesToUids);
+    return meetingEmployees.filter((employee) => selected.has(employee.uid));
+  }, [meetingEmployees, blockAppliesToUids]);
 
   const employeeNamesByUid = useMemo(() => {
   const out: Record<string, string> = {};
@@ -1562,8 +1661,7 @@ const estHours =
         .map((ds) => {
           const d = ds.data() as any;
           const id = ds.id;
-          const active = typeof d.active === "boolean" ? d.active : true;
-          if (!active) return null;
+          if (!projectIsSchedulableByStatus(d)) return null;
 
           const name = String(d.projectName ?? d.name ?? d.title ?? "Project").trim();
           const customer = String(d.customerDisplayName ?? "").trim();
@@ -1616,8 +1714,29 @@ function slotDefaults(slot: SlotKey) {
     setAddNotes("");
     setAddDispatchOverrideEnabled(false);
     setAddDispatchOverrideReason("");
+    setMobileAdvancedOpen(false);
+    setMobileNotesOpen(false);
     setAddOpen(true);
     loadOpenTicketsIfNeeded();
+  }
+
+  function openQuickScheduleModal(args: { techUid: string; dateIso: string }) {
+    setQuickScheduleTechUid(args.techUid);
+    setQuickScheduleDateIso(args.dateIso);
+    setQuickScheduleOpen(true);
+  }
+
+  function closeQuickScheduleModal() {
+    setQuickScheduleOpen(false);
+  }
+
+  function chooseQuickScheduleSlot(slot: SlotKey) {
+    const techUid = String(quickScheduleTechUid || "").trim();
+    const dateIso = String(quickScheduleDateIso || "").trim();
+    if (!techUid || !dateIso) return;
+
+    closeQuickScheduleModal();
+    openAddModal({ techUid, dateIso, slot });
   }
 
   function closeAddModal() {
@@ -1631,6 +1750,8 @@ function slotDefaults(slot: SlotKey) {
     setAddNotes("");
     setAddDispatchOverrideEnabled(false);
     setAddDispatchOverrideReason("");
+    setMobileAdvancedOpen(false);
+    setMobileNotesOpen(false);
   }
 
   function currentPickerItems(): PickerItem[] {
@@ -1843,6 +1964,135 @@ closeAddModal();
     resetMeetingForm();
     setMeetDateIso(defaultDateIso);
     setMeetOpen(true);
+  }
+
+  function closeAddScheduleMenu() {
+    setAddScheduleAnchorEl(null);
+  }
+
+  function openAddScheduleMenu(event: React.MouseEvent<HTMLElement>) {
+    setAddScheduleAnchorEl(event.currentTarget);
+  }
+
+  function handleAddMeetingFromMenu() {
+    closeAddScheduleMenu();
+    openMeetingModal(range.startIso);
+  }
+
+  function handleAddStaffCoverageFromMenu() {
+    closeAddScheduleMenu();
+    router.push("/admin/staff-coverage");
+  }
+
+  function resetManualBlockForm(defaultDateIso = range.startIso) {
+    setBlockDateIso(defaultDateIso);
+    setBlockTitle("");
+    setBlockWindow("am");
+    setBlockStart("08:00");
+    setBlockEnd("09:00");
+    setBlockNotes("");
+    setBlockIncludeAll(false);
+    setBlockAppliesToUids([]);
+    setBlockErr("");
+  }
+
+  function openManualBlockModal(defaultDateIso: string) {
+    resetManualBlockForm(defaultDateIso);
+    setBlockOpen(true);
+  }
+
+  function handleAddManualBlockFromMenu() {
+    closeAddScheduleMenu();
+    openManualBlockModal(range.startIso);
+  }
+
+  function closeManualBlockModal() {
+    if (blockSaving) return;
+    setBlockOpen(false);
+    setBlockSaving(false);
+    setBlockErr("");
+  }
+
+  function setManualBlockAttendees(nextUids: Array<string | null | undefined>) {
+    const allowed = new Set(allMeetingEmployeeUids);
+    const cleaned = uniqueTrimmedStrings(nextUids).filter((uid) => allowed.has(uid));
+    setBlockAppliesToUids(cleaned);
+    setBlockIncludeAll(
+      allMeetingEmployeeUids.length > 0 && allMeetingEmployeeUids.every((uid) => cleaned.includes(uid))
+    );
+  }
+
+  async function submitManualBlock() {
+    if (!canEditSchedule) {
+      setBlockErr("Only Admin/Dispatcher/Manager can add manual schedule blocks.");
+      return;
+    }
+
+    const dateIso = String(blockDateIso || "").trim();
+    const title = String(blockTitle || "").trim();
+    const attendeeUids = uniqueTrimmedStrings(blockAppliesToUids).filter((uid) => allMeetingEmployeeUids.includes(uid));
+
+    if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return setBlockErr("Missing/invalid date.");
+    if (!title) return setBlockErr("Block title is required.");
+    if (attendeeUids.length === 0) return setBlockErr("Select at least one employee to block.");
+
+    if (blockWindow === "custom") {
+      const sMin = minutesFromHHMM(blockStart);
+      const eMin = minutesFromHHMM(blockEnd);
+      if (sMin == null || eMin == null || eMin <= sMin) {
+        return setBlockErr("Custom block end time must be after start time.");
+      }
+    }
+
+    const attendeeNames = attendeeUids.map((uid) => {
+      const employee = meetingEmployees.find((item) => item.uid === uid);
+      return employee?.displayName || uid;
+    });
+
+    const now = nowIso();
+    setBlockSaving(true);
+    setBlockErr("");
+
+    try {
+      const payload: any = {
+        active: true,
+        type: "manual_block",
+        title,
+        date: dateIso,
+        timeWindow: blockWindow,
+        startTime: blockWindow === "custom" ? blockStart : null,
+        endTime: blockWindow === "custom" ? blockEnd : null,
+        location: null,
+        notes: blockNotes.trim() || null,
+        appliesToRoles: [],
+        appliesToUids: attendeeUids,
+        appliesToNames: attendeeNames,
+        includeAllEmployees:
+          allMeetingEmployeeUids.length > 0 && allMeetingEmployeeUids.every((uid) => attendeeUids.includes(uid)),
+        blocksSchedule: true,
+        createdAt: now,
+        createdByUid: appUser?.uid || null,
+        updatedAt: now,
+        updatedByUid: appUser?.uid || null,
+      };
+
+      const created = await addDoc(collection(db, "companyEvents"), payload);
+      const newEvent: CompanyEvent = { id: created.id, ...(payload as any) };
+
+      setEventsByDate((prev) => {
+        const next = { ...prev };
+        const list = [...(next[dateIso] || [])];
+        list.push(newEvent);
+        next[dateIso] = list;
+        return next;
+      });
+
+      closeManualBlockModal();
+    } catch (e: any) {
+      setBlockErr(e?.message || "Failed to add manual block.");
+    } finally {
+      setBlockSaving(false);
+    }
   }
 
   function openEditMeetingModal(e: CompanyEvent) {
@@ -2409,19 +2659,9 @@ closeAddModal();
     if (typeof window === "undefined") return;
 
     const mq = window.matchMedia("(max-width: 860px)");
-    const apply = () => setIsMobile(Boolean(mq.matches));
-    apply();
+    const mobileNow = Boolean(mq.matches);
+    setIsMobile(mobileNow);
 
-    try {
-      mq.addEventListener("change", apply);
-      return () => mq.removeEventListener("change", apply);
-    } catch {
-      mq.addListener(apply);
-      return () => mq.removeListener(apply);
-    }
-  }, []);
-
-  useEffect(() => {
     try {
       const url = new URL(window.location.href);
       const v = (url.searchParams.get("view") || "").toLowerCase();
@@ -2430,7 +2670,11 @@ closeAddModal();
       if (v === "day" || v === "week" || v === "month") {
         setView(v);
         if (v === "day" && !d) setAnchorIso(todayIsoLocal());
+      } else {
+        setView("day");
+        setAnchorIso(todayIsoLocal());
       }
+
       if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
 
       const hide = url.searchParams.get("hideCompleted");
@@ -2442,30 +2686,26 @@ closeAddModal();
       const sf = url.searchParams.get("status");
       if (sf) setStatusFilter(sf);
     } catch {
-      // ignore url parsing issues
+      setView("day");
+      setAnchorIso(todayIsoLocal());
+    } finally {
+      setSchedulePrefsReady(true);
+    }
+
+    const apply = () => setIsMobile(Boolean(mq.matches));
+
+    try {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } catch {
+      mq.addListener(apply);
+      return () => mq.removeListener(apply);
     }
   }, []);
 
   useEffect(() => {
-    if (!isMobile) return;
-    if (didApplyMobileDefaultRef.current) return;
+    if (!schedulePrefsReady) return;
 
-    try {
-      const url = new URL(window.location.href);
-      const v = (url.searchParams.get("view") || "").toLowerCase();
-      if (!v) {
-        setView("day");
-        setAnchorIso(todayIsoLocal());
-      }
-    } catch {
-      setView("day");
-      setAnchorIso(todayIsoLocal());
-    }
-
-    didApplyMobileDefaultRef.current = true;
-  }, [isMobile]);
-
-  useEffect(() => {
     try {
       const url = new URL(window.location.href);
       url.searchParams.set("view", view);
@@ -2477,7 +2717,7 @@ closeAddModal();
     } catch {
       // ignore history update issues
     }
-  }, [view, anchorIso, hideCompleted, techFilter, statusFilter]);
+  }, [schedulePrefsReady, view, anchorIso, hideCompleted, techFilter, statusFilter]);
 
   const anchorDate = useMemo(() => fromIsoDate(anchorIso), [anchorIso]);
 
@@ -3077,6 +3317,33 @@ useEffect(() => {
     return out;
   }, [trips]);
 
+  const quickScheduleAvailability = useMemo(() => {
+    const rowKey = String(quickScheduleTechUid || "").trim();
+    const iso = String(quickScheduleDateIso || "").trim();
+
+    if (!rowKey || !iso || rowKey === "UNASSIGNED") return null;
+
+    const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
+
+    return computeCellAvailability({
+      rowKey,
+      iso,
+      cellTrips: availabilityTrips,
+      eventsByDate,
+      holidayByDate,
+      ptoByUidByDate,
+    });
+  }, [
+    quickScheduleTechUid,
+    quickScheduleDateIso,
+    fullGrid,
+    eventsByDate,
+    holidayByDate,
+    ptoByUidByDate,
+  ]);
+
+  const quickScheduleIsPast = quickScheduleDateIso ? quickScheduleDateIso < todayIso : false;
+
   function goPrev() {
     if (view === "day") {
       setAnchorIso(toIsoDate(prevWorkday(fromIsoDate(anchorIso))));
@@ -3155,6 +3422,9 @@ useEffect(() => {
     const d1 = daysForWeekOrDay[daysForWeekOrDay.length - 1];
     return `Schedule • Week (${formatShort(d0)} – ${formatShort(d1)})`;
   }, [view, anchorIso, daysForWeekOrDay]);
+
+  const hasActiveScheduleFilters =
+    techFilter !== "ALL" || statusFilter !== "ALL" || hideCompleted !== true;
 
   function renderHolidayBadge(iso: string) {
     const holiday = holidayByDate[iso];
@@ -3371,10 +3641,7 @@ function renderStaffCoverageCards(dateIso: string) {
 
     const showTechName = Boolean(opts?.showTechName);
     const techName = trip.crew?.primaryTechName || "";
-
-    const prog = isProject ? confirmationProgress(trip) : null;
-    const showProgress =
-      isProject && prog && prog.requiredCount > 0 && !isCompletedStatus(trip.status);
+    const cardStatus = isPlannedStatus(trip.status) ? undefined : trip.status;
 
     const cardKey =
       opts?.keyValue ||
@@ -3384,44 +3651,21 @@ function renderStaffCoverageCards(dateIso: string) {
       <SharedTripCard
         key={cardKey}
         title={title}
-        status={trip.status}
+        status={cardStatus}
         tripType={trip.type}
         subtitle={timeText}
         customerLine={customerLine || undefined}
-        progressText={
-          showProgress ? `Confirmed: ${prog!.confirmedCount}/${prog!.requiredCount}` : undefined
-        }
-        titleSuffix={
-          <Box
-            component="span"
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 0.75,
-              ml: 1,
-              flexWrap: "wrap",
-            }}
-          >
-            {showTechName && techName ? (
-              <Typography
-                component="span"
-                variant="caption"
-                sx={{ color: "text.secondary" }}
-              >
-                • {techName}
-              </Typography>
-            ) : null}
-
-            {trip.dispatchOverride?.enabled ? (
-              <Chip
-                size="small"
-                color="warning"
-                variant="outlined"
-                label="Override"
-                sx={{ height: 20 }}
-              />
-            ) : null}
-          </Box>
+        titleMeta={showTechName && techName ? techName : undefined}
+        trailingContent={
+          trip.dispatchOverride?.enabled ? (
+            <Chip
+              size="small"
+              color="warning"
+              variant="outlined"
+              label="Override"
+              sx={{ height: 24, borderRadius: 999, fontWeight: 800 }}
+            />
+          ) : undefined
         }
         onClick={() => {
           if (trip.link?.serviceTicketId) {
@@ -3438,6 +3682,561 @@ function renderStaffCoverageCards(dateIso: string) {
     );
   }
 
+  function renderDesktopDaySchedule() {
+    const d = daysForWeekOrDay[0] || fromIsoDate(anchorIso);
+    const iso = toIsoDate(d);
+    const isTodayCell = iso === todayIso;
+    const holiday = holidayByDate[iso];
+    const isPast = iso < todayIso;
+
+    return (
+      <Box>
+        <SectionHeader
+          title="Day schedule"
+          subtitle="Clean row view for dispatch. Use Schedule to add or override a time window."
+        />
+
+        <Stack spacing={1.15} sx={{ mt: 1.5 }}>
+          <Paper
+            elevation={0}
+            sx={{
+              px: 1.75,
+              py: 1.25,
+              borderRadius: 2.25,
+              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+              backgroundColor: isTodayCell
+                ? alpha(theme.palette.primary.main, 0.06)
+                : "background.paper",
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>
+                {formatDow(d)} • {formatDateLong(iso)}
+              </Typography>
+
+              {isTodayCell ? (
+                <Chip
+                  size="small"
+                  label="Today"
+                  color="primary"
+                  sx={{ height: 22, borderRadius: 999, fontWeight: 800 }}
+                />
+              ) : null}
+
+              {renderHolidayBadge(iso)}
+              {renderPtoBadgeSmall(iso)}
+              {renderMeetingsBadgeSmall(iso)}
+              {renderStaffCoverageBadgeSmall(iso)}
+            </Stack>
+          </Paper>
+
+          {renderStaffCoverageCards(iso)}
+
+          {rows.length === 0 ? (
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <Typography variant="body2" color="text.secondary">
+                No matching technicians or trips.
+              </Typography>
+            </Paper>
+          ) : null}
+
+          {rows.map((r) => {
+            const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+            const cellTrips = grid.get(rowKey)?.get(iso) || [];
+            const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
+            const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
+            const availability = computeCellAvailability({
+              rowKey,
+              iso,
+              cellTrips: availabilityTrips,
+              eventsByDate,
+              holidayByDate,
+              ptoByUidByDate,
+            });
+            const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
+            const orderedTrips = [...amTrips, ...pmTrips.filter((trip) => !amTrips.some((amTrip) => amTrip.id === trip.id))];
+            const canShowScheduleAction = canEditSchedule && rowKey !== "UNASSIGNED" && !isPast;
+
+            return (
+              <Paper
+                key={`desktop_day_${rowKey}_${iso}`}
+                elevation={0}
+                sx={{
+                  borderRadius: 2.25,
+                  overflow: "hidden",
+                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                  backgroundColor: isTodayCell
+                    ? alpha(theme.palette.primary.main, 0.045)
+                    : holiday
+                      ? alpha(theme.palette.warning.main, 0.06)
+                      : pto
+                        ? alpha(theme.palette.secondary.main, 0.06)
+                        : availability.meetings.length
+                          ? alpha(theme.palette.success.main, 0.035)
+                          : "background.paper",
+                }}
+              >
+                <Stack
+                  direction="row"
+                  spacing={2}
+                  alignItems="stretch"
+                  sx={{ px: 1.75, py: 1.25 }}
+                >
+                  <Stack
+                    direction="row"
+                    spacing={1.25}
+                    alignItems="center"
+                    sx={{ width: 260, minWidth: 260 }}
+                  >
+                    <Box
+                      sx={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: 999,
+                        display: "grid",
+                        placeItems: "center",
+                        flexShrink: 0,
+                        bgcolor: alpha(theme.palette.primary.main, 0.18),
+                        color: "primary.light",
+                        border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                        fontSize: 14,
+                        fontWeight: 900,
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      {initialsForName(r.label)}
+                    </Box>
+
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 850 }} noWrap>
+                        {r.label}
+                      </Typography>
+                      {pto ? (
+                        <Typography variant="caption" color="secondary.main" noWrap>
+                          PTO approved{pto.hours ? ` • ${pto.hours}h` : ""}
+                        </Typography>
+                      ) : availability.meetings.length ? (
+                        <Typography variant="caption" color="success.main" noWrap>
+                          Meeting block
+                        </Typography>
+                      ) : null}
+                    </Box>
+                  </Stack>
+
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    {holiday ? <Alert severity="warning" variant="outlined" sx={{ mb: 1 }}>{holiday.name}</Alert> : null}
+
+                    {orderedTrips.length ? (
+                      <Stack spacing={1}>
+                        {orderedTrips.map((trip) =>
+                          renderTripCard(trip, {
+                            keyValue: `desktop_day_${iso}_${rowKey}_${trip.id}`,
+                          })
+                        )}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary" sx={{ py: 1.4 }}>
+                        {holiday ? "Holiday" : pto ? "PTO" : availability.meetings.length ? "Meeting(s)" : "Open"}
+                      </Typography>
+                    )}
+                  </Box>
+
+                  <Box sx={{ width: 160, flexShrink: 0, display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
+                    {canShowScheduleAction ? (
+                      <ScheduleSlotButton
+                        label="Schedule"
+                        onClick={() => openQuickScheduleModal({ techUid: rowKey, dateIso: iso })}
+                      />
+                    ) : null}
+                  </Box>
+                </Stack>
+              </Paper>
+            );
+          })}
+        </Stack>
+      </Box>
+    );
+  }
+
+  function setAddTripTypeAndLoad(nextType: AddTripType) {
+    setAddTripType(nextType);
+    setAddSearch("");
+    setAddSelectedId("");
+    setAddAdvancedId("");
+    if (nextType === "service") loadOpenTicketsIfNeeded();
+    else loadOpenProjectsIfNeeded();
+  }
+
+  function renderMobilePickerCard(item: PickerItem) {
+    const selected = addSelectedId === item.id;
+    const sub = splitPickerSublabel(item.sublabel);
+
+    return (
+      <Paper
+        key={item.id}
+        elevation={0}
+        onClick={() => setAddSelectedId(item.id)}
+        sx={{
+          position: "relative",
+          p: 1.55,
+          borderRadius: 2.5,
+          cursor: "pointer",
+          border: `1px solid ${
+            selected ? theme.palette.primary.main : alpha("#FFFFFF", 0.1)
+          }`,
+          bgcolor: selected
+            ? alpha(theme.palette.primary.main, 0.08)
+            : alpha("#FFFFFF", 0.025),
+          boxShadow: selected
+            ? `0 0 0 1px ${alpha(theme.palette.primary.main, 0.38)}`
+            : "none",
+        }}
+      >
+        <Stack direction="row" spacing={1.25} alignItems="flex-start">
+          <Box
+            sx={{
+              width: 26,
+              height: 26,
+              borderRadius: 999,
+              mt: 3.4,
+              flexShrink: 0,
+              display: "grid",
+              placeItems: "center",
+              border: `2px solid ${selected ? theme.palette.primary.main : alpha("#FFFFFF", 0.28)}`,
+              bgcolor: selected ? theme.palette.primary.main : "transparent",
+              color: selected ? theme.palette.primary.contrastText : "transparent",
+              fontSize: 15,
+              fontWeight: 900,
+            }}
+          >
+            ✓
+          </Box>
+
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Stack
+              direction="row"
+              spacing={1}
+              justifyContent="space-between"
+              alignItems="flex-start"
+              sx={{ mb: 0.85 }}
+            >
+              <Chip
+                size="small"
+                label={item.metaLeft || (addTripType === "service" ? "New" : "Project")}
+                color="primary"
+                variant="outlined"
+                sx={{ height: 24, borderRadius: 999, fontWeight: 800 }}
+              />
+
+              {item.metaRight ? (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ pt: 0.35, fontWeight: 800, whiteSpace: "nowrap" }}
+                >
+                  {item.metaRight}
+                </Typography>
+              ) : null}
+            </Stack>
+
+            <Typography
+              variant="subtitle1"
+              sx={{
+                fontWeight: 900,
+                lineHeight: 1.15,
+                letterSpacing: "-0.02em",
+                mb: 0.7,
+              }}
+            >
+              {item.label}
+            </Typography>
+
+            {sub.customer ? (
+              <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 650 }} noWrap>
+                {sub.customer}
+              </Typography>
+            ) : null}
+
+            {sub.address ? (
+              <Typography variant="body2" color="text.secondary" noWrap>
+                {sub.address}
+              </Typography>
+            ) : null}
+
+            {item.preview ? (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{
+                  mt: 0.85,
+                  lineHeight: 1.35,
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                }}
+              >
+                {item.preview}
+              </Typography>
+            ) : null}
+          </Box>
+        </Stack>
+      </Paper>
+    );
+  }
+
+  function renderMobileAddTripContent() {
+    const pickerItems = currentPickerItems();
+    const ticketCount = addTripType === "service" ? openTicketItems.length : openProjectItems.length;
+    const isLoadingPicker = addTripType === "service" ? openTicketsLoading : openProjectsLoading;
+    const pickerErr = addTripType === "service" ? openTicketsErr : openProjectsErr;
+
+    return (
+      <>
+        <DialogTitle
+          sx={{
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
+            px: 2,
+            pt: 1.25,
+            pb: 1.5,
+            bgcolor: "background.paper",
+            borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+          }}
+        >
+          <Box
+            sx={{
+              width: 44,
+              height: 4,
+              borderRadius: 999,
+              mx: "auto",
+              mb: 1.5,
+              bgcolor: alpha("#FFFFFF", 0.22),
+            }}
+          />
+
+          <Typography variant="h5" sx={{ fontWeight: 900, letterSpacing: "-0.03em" }}>
+            Schedule Trip
+          </Typography>
+
+          <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap sx={{ mt: 1.35 }}>
+            <Chip
+              label={findTechName(addTechUid) || addTechUid || "Tech"}
+              color="primary"
+              variant="outlined"
+              sx={{ borderRadius: 999, fontWeight: 800 }}
+            />
+            <Chip
+              label={addPrimaryHelper?.name ? `Helper: ${addPrimaryHelper.name}` : "No helper"}
+              color="success"
+              variant="outlined"
+              sx={{ borderRadius: 999, fontWeight: 800 }}
+            />
+            <Chip
+              label={`${addDateIso || "Date"} • ${formatSlotLabel(addSlot)}`}
+              variant="outlined"
+              sx={{ borderRadius: 999, fontWeight: 800 }}
+            />
+          </Stack>
+        </DialogTitle>
+
+        <DialogContent
+          dividers={false}
+          sx={{
+            px: 2,
+            py: 1.75,
+            bgcolor: "background.default",
+          }}
+        >
+          <Stack spacing={1.5}>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 0.8,
+                p: 0.5,
+                borderRadius: 2.25,
+                border: `1px solid ${alpha("#FFFFFF", 0.1)}`,
+                bgcolor: alpha("#FFFFFF", 0.025),
+              }}
+            >
+              <Button
+                variant={addTripType === "service" ? "contained" : "text"}
+                onClick={() => setAddTripTypeAndLoad("service")}
+                disabled={addSaving}
+                sx={{ borderRadius: 1.75, minHeight: 44, textTransform: "none", fontWeight: 850 }}
+              >
+                Service Ticket
+              </Button>
+              <Button
+                variant={addTripType === "project" ? "contained" : "text"}
+                onClick={() => setAddTripTypeAndLoad("project")}
+                disabled={addSaving}
+                sx={{ borderRadius: 1.75, minHeight: 44, textTransform: "none", fontWeight: 850 }}
+              >
+                Project
+              </Button>
+            </Box>
+
+            <TextField
+              placeholder={addTripType === "service" ? "Search open tickets..." : "Search projects..."}
+              value={addSearch}
+              onChange={(event) => setAddSearch(event.target.value)}
+              disabled={addSaving}
+              fullWidth
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchRoundedIcon />
+                  </InputAdornment>
+                ),
+              }}
+              sx={{
+                "& .MuiOutlinedInput-root": {
+                  borderRadius: 2.25,
+                  minHeight: 56,
+                  bgcolor: alpha("#FFFFFF", 0.025),
+                },
+              }}
+            />
+
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                {addTripType === "service" ? "Open Tickets" : "Projects"}
+              </Typography>
+              <Chip
+                size="small"
+                label={isLoadingPicker ? "Loading..." : ticketCount}
+                variant="outlined"
+                sx={{ borderRadius: 999, fontWeight: 800 }}
+              />
+            </Stack>
+
+            {pickerErr ? <Alert severity="error" variant="outlined">{pickerErr}</Alert> : null}
+            {addErr ? <Alert severity="error" variant="outlined">{addErr}</Alert> : null}
+
+            {addShouldRecommendAllDay ? (
+              <Alert
+                severity="warning"
+                variant="outlined"
+                action={
+                  <Button color="warning" size="small" onClick={() => setAddSlot("all_day")} disabled={addSaving}>
+                    All Day
+                  </Button>
+                }
+              >
+                Estimated at {addEstimateHours} hours. All Day is recommended.
+              </Alert>
+            ) : null}
+
+            {addSlotConflicts.hardMessages.length > 0 ? (
+              <Alert severity="error" variant="outlined">
+                {addSlotConflicts.hardMessages[0]}
+              </Alert>
+            ) : null}
+
+            {addSlotConflicts.softMessages.length > 0 && addSlotConflicts.hardMessages.length === 0 ? (
+              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2.25, bgcolor: alpha(theme.palette.warning.main, 0.06) }}>
+                <Stack spacing={1.1}>
+                  <Alert severity="warning" variant="outlined">
+                    {addSlotConflicts.softMessages[0]}
+                  </Alert>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={addDispatchOverrideEnabled}
+                        onChange={(event) => setAddDispatchOverrideEnabled(event.target.checked)}
+                      />
+                    }
+                    label="Dispatch Override this planned overlap"
+                  />
+                  {addDispatchOverrideEnabled ? (
+                    <TextField
+                      label="Override Reason"
+                      value={addDispatchOverrideReason}
+                      onChange={(event) => setAddDispatchOverrideReason(event.target.value)}
+                      placeholder="Example: emergency callback, customer timed request..."
+                      multiline
+                      minRows={2}
+                      fullWidth
+                    />
+                  ) : null}
+                </Stack>
+              </Paper>
+            ) : null}
+
+            {pickerItems.length === 0 ? (
+              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2.25, bgcolor: alpha("#FFFFFF", 0.025) }}>
+                <Typography variant="body2" color="text.secondary">
+                  No matches found.
+                </Typography>
+              </Paper>
+            ) : (
+              <Stack spacing={1.15}>{pickerItems.map(renderMobilePickerCard)}</Stack>
+            )}
+
+            <Paper
+              variant="outlined"
+              onClick={() => setMobileAdvancedOpen((open) => !open)}
+              sx={{
+                p: 1.35,
+                borderRadius: 2.25,
+                cursor: "pointer",
+                bgcolor: alpha("#FFFFFF", 0.025),
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 850 }}>
+                    Can’t find the {addTripType === "service" ? "ticket" : "project"}?
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Search by advanced ID
+                  </Typography>
+                </Box>
+                <Typography color="text.secondary">{mobileAdvancedOpen ? "⌃" : "⌄"}</Typography>
+              </Stack>
+            </Paper>
+
+            {mobileAdvancedOpen ? (
+              <TextField
+                label="Advanced ID"
+                placeholder={addTripType === "service" ? "Service Ticket ID..." : "Project ID..."}
+                value={addAdvancedId}
+                onChange={(event) => setAddAdvancedId(event.target.value)}
+                disabled={addSaving}
+                helperText="Only use this when the item does not appear in the list."
+                fullWidth
+              />
+            ) : null}
+
+            <Button
+              variant="outlined"
+              onClick={() => setMobileNotesOpen((open) => !open)}
+              sx={{ borderRadius: 2.25, minHeight: 46, textTransform: "none", fontWeight: 800 }}
+            >
+              {mobileNotesOpen ? "Hide Dispatch Note" : "Add Dispatch Note"}
+            </Button>
+
+            {mobileNotesOpen ? (
+              <TextField
+                label="Dispatch Note"
+                value={addNotes}
+                onChange={(event) => setAddNotes(event.target.value)}
+                disabled={addSaving}
+                multiline
+                minRows={3}
+                fullWidth
+                placeholder="Optional note for the crew..."
+              />
+            ) : null}
+          </Stack>
+        </DialogContent>
+      </>
+    );
+  }
+
   const monthWeeksSafe = useMemo(() => (view === "month" ? monthWeeks : []), [view, monthWeeks]);
 
   return (
@@ -3445,158 +4244,197 @@ function renderStaffCoverageCards(dateIso: string) {
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1600, mx: "auto" }}>
           <Stack spacing={3}>
-            <Stack
-              direction={{ xs: "column", lg: "row" }}
-              spacing={2}
-              alignItems={{ xs: "flex-start", lg: "center" }}
-              justifyContent="space-between"
+            <Paper
+              elevation={0}
+              sx={{
+                p: { xs: 1.5, md: 1.75 },
+                borderRadius: 2.5,
+                border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                bgcolor: alpha("#FFFFFF", 0.025),
+              }}
             >
-              <Box sx={{ minWidth: 0 }}>
-                <Typography
-                  variant="h4"
-                  sx={{
-                    fontSize: { xs: "1.6rem", md: "2rem" },
-                    lineHeight: 1.08,
-                    fontWeight: 800,
-                    letterSpacing: "-0.03em",
-                  }}
-                >
-                  {titleText}
-                </Typography>
-
-                <Typography
-                  sx={{
-                    mt: 0.75,
-                    color: "text.secondary",
-                    fontSize: { xs: 13, md: 14 },
-                    fontWeight: 500,
-                    maxWidth: 900,
-                  }}
-                >
-                  Technician schedule, meetings, PTO, holidays, and assignment visibility.
-                </Typography>
-              </Box>
-
               <Stack
-                direction={{ xs: "column", sm: "row" }}
-                spacing={1}
-                alignItems={{ xs: "stretch", sm: "center" }}
-                sx={{ width: { xs: "100%", lg: "auto" } }}
+                direction={{ xs: "column", lg: "row" }}
+                spacing={1.5}
+                alignItems={{ xs: "stretch", lg: "center" }}
+                justifyContent="space-between"
               >
-                <Stack direction="row" spacing={1}>
-                  <IconButton onClick={goPrev} sx={{ borderRadius: 1.5 }}>
-                    <ChevronLeftRoundedIcon />
-                  </IconButton>
-
-                  <Button variant="outlined" onClick={goToday} startIcon={<TodayRoundedIcon />}>
-                    {todayButtonLabel}
-                  </Button>
-
-                  <IconButton onClick={goNext} sx={{ borderRadius: 1.5 }}>
-                    <ChevronRightRoundedIcon />
-                  </IconButton>
-                </Stack>
-
-                {canEditSchedule ? (
-                  <Button
-                    variant="contained"
-                    startIcon={<AddRoundedIcon />}
-                    onClick={() => openMeetingModal(range.startIso)}
-                  >
-                    Meeting
-                  </Button>
-                ) : null}
-
-                <ToggleButtonGroup
-                  exclusive
-                  value={view}
-                  onChange={(_, next) => {
-                    if (next) switchScheduleView(next as ViewMode);
-                  }}
-                  size="small"
-                >
-                  <ToggleButton value="day">
-                    <ViewDayRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
-                    Day
-                  </ToggleButton>
-                  <ToggleButton value="week">
-                    <ViewWeekRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
-                    Week
-                  </ToggleButton>
-                  <ToggleButton value="month">
-                    <CalendarMonthRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
-                    Month
-                  </ToggleButton>
-                </ToggleButtonGroup>
-              </Stack>
-            </Stack>
-
-            <Box>
-              <SectionHeader
-                title="Filters"
-                subtitle="Refine the schedule by technician, status, and completion state."
-              />
-
-              <Box sx={{ mt: 1.5 }}>
-                <Stack spacing={2}>
-                  <Stack
-                    direction={{ xs: "column", md: "row" }}
-                    spacing={1.5}
-                    alignItems={{ xs: "stretch", md: "center" }}
-                  >
-                    <FormControl size="small" sx={{ minWidth: 220 }}>
-                      <InputLabel>Technician</InputLabel>
-                      <Select
-                        label="Technician"
-                        value={techFilter}
-                        onChange={(e: SelectChangeEvent) => setTechFilter(e.target.value)}
+                <Box sx={{ minWidth: 0 }}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <CalendarMonthRoundedIcon sx={{ color: "primary.light" }} />
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        variant="h5"
+                        sx={{
+                          fontSize: { xs: "1.35rem", md: "1.55rem" },
+                          lineHeight: 1.1,
+                          fontWeight: 900,
+                          letterSpacing: "-0.03em",
+                        }}
                       >
-                        <MenuItem value="ALL">All</MenuItem>
-                        <MenuItem value="UNASSIGNED">Unassigned</MenuItem>
-                        {techs.map((tech) => (
-                          <MenuItem key={tech.uid} value={tech.uid}>
-                            {tech.name}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-
-                    <FormControl size="small" sx={{ minWidth: 180 }}>
-                      <InputLabel>Status</InputLabel>
-                      <Select
-                        label="Status"
-                        value={statusFilter}
-                        onChange={(e: SelectChangeEvent) => setStatusFilter(e.target.value)}
+                        Schedule
+                      </Typography>
+                      <Typography
+                        sx={{
+                          mt: 0.35,
+                          color: "text.secondary",
+                          fontSize: { xs: 12.5, md: 13.5 },
+                          fontWeight: 650,
+                        }}
                       >
-                        <MenuItem value="ALL">All</MenuItem>
-                        <MenuItem value="planned">planned</MenuItem>
-                        <MenuItem value="in_progress">in_progress</MenuItem>
-                        <MenuItem value="complete">complete</MenuItem>
-                        <MenuItem value="cancelled">cancelled</MenuItem>
-                      </Select>
-                    </FormControl>
-
-                    <FormControlLabel
-                      control={
-                        <Checkbox
-                          checked={hideCompleted}
-                          onChange={(e) => setHideCompleted(e.target.checked)}
-                        />
-                      }
-                      label="Hide completed"
-                    />
-
-                    <Box sx={{ flex: 1 }} />
-
-                    <Chip
-                      label={`Showing ${filteredTrips.length} trip(s)`}
-                      variant="outlined"
-                      sx={{ borderRadius: 1.5 }}
-                    />
+                        {titleText.replace("Schedule • ", "")}
+                      </Typography>
+                    </Box>
                   </Stack>
+                </Box>
+
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1}
+                  alignItems={{ xs: "stretch", sm: "center" }}
+                  justifyContent="flex-end"
+                  sx={{ width: { xs: "100%", lg: "auto" } }}
+                >
+                  <Stack direction="row" spacing={1} sx={{ justifyContent: { xs: "space-between", sm: "flex-start" } }}>
+                    <IconButton onClick={goPrev} sx={{ borderRadius: 1.5 }}>
+                      <ChevronLeftRoundedIcon />
+                    </IconButton>
+
+                    <Button variant="outlined" onClick={goToday} startIcon={<TodayRoundedIcon />}>
+                      {todayButtonLabel}
+                    </Button>
+
+                    <IconButton onClick={goNext} sx={{ borderRadius: 1.5 }}>
+                      <ChevronRightRoundedIcon />
+                    </IconButton>
+                  </Stack>
+
+                  <Button
+                    variant={filtersOpen || hasActiveScheduleFilters ? "contained" : "outlined"}
+                    color={hasActiveScheduleFilters ? "primary" : "inherit"}
+                    startIcon={<FilterListRoundedIcon />}
+                    onClick={() => setFiltersOpen((open) => !open)}
+                  >
+                    Filter{hasActiveScheduleFilters ? "s" : ""}
+                  </Button>
+
+                  {canEditSchedule ? (
+                    <Button
+                      variant="contained"
+                      startIcon={<AddRoundedIcon />}
+                      endIcon={<KeyboardArrowDownRoundedIcon />}
+                      onClick={openAddScheduleMenu}
+                    >
+                      Add Schedule
+                    </Button>
+                  ) : null}
+
+                  <ToggleButtonGroup
+                    exclusive
+                    value={view}
+                    onChange={(_, next) => {
+                      if (next) switchScheduleView(next as ViewMode);
+                    }}
+                    size="small"
+                    sx={{
+                      bgcolor: alpha("#FFFFFF", 0.025),
+                      borderRadius: 1.5,
+                      alignSelf: { xs: "stretch", sm: "center" },
+                    }}
+                  >
+                    <ToggleButton value="day" sx={{ flex: { xs: 1, sm: "unset" } }}>
+                      <ViewDayRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
+                      Day
+                    </ToggleButton>
+                    <ToggleButton value="week" sx={{ flex: { xs: 1, sm: "unset" } }}>
+                      <ViewWeekRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
+                      Week
+                    </ToggleButton>
+                    <ToggleButton value="month" sx={{ flex: { xs: 1, sm: "unset" } }}>
+                      <CalendarMonthRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
+                      Month
+                    </ToggleButton>
+                  </ToggleButtonGroup>
                 </Stack>
-              </Box>
-            </Box>
+              </Stack>
+            </Paper>
+
+            {filtersOpen ? (
+              <Paper
+                elevation={0}
+                sx={{
+                  p: 1.5,
+                  borderRadius: 2.25,
+                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                  bgcolor: alpha("#FFFFFF", 0.025),
+                }}
+              >
+                <SectionHeader
+                  title="Filters"
+                  subtitle="Refine the schedule by technician, status, and completion state."
+                />
+
+                <Box sx={{ mt: 1.5 }}>
+                  <Stack spacing={2}>
+                    <Stack
+                      direction={{ xs: "column", md: "row" }}
+                      spacing={1.5}
+                      alignItems={{ xs: "stretch", md: "center" }}
+                    >
+                      <FormControl size="small" sx={{ minWidth: 220 }}>
+                        <InputLabel>Technician</InputLabel>
+                        <Select
+                          label="Technician"
+                          value={techFilter}
+                          onChange={(e: SelectChangeEvent) => setTechFilter(e.target.value)}
+                        >
+                          <MenuItem value="ALL">All</MenuItem>
+                          <MenuItem value="UNASSIGNED">Unassigned</MenuItem>
+                          {techs.map((tech) => (
+                            <MenuItem key={tech.uid} value={tech.uid}>
+                              {tech.name}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <FormControl size="small" sx={{ minWidth: 180 }}>
+                        <InputLabel>Status</InputLabel>
+                        <Select
+                          label="Status"
+                          value={statusFilter}
+                          onChange={(e: SelectChangeEvent) => setStatusFilter(e.target.value)}
+                        >
+                          <MenuItem value="ALL">All</MenuItem>
+                          <MenuItem value="planned">planned</MenuItem>
+                          <MenuItem value="in_progress">in_progress</MenuItem>
+                          <MenuItem value="complete">complete</MenuItem>
+                          <MenuItem value="cancelled">cancelled</MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={hideCompleted}
+                            onChange={(e) => setHideCompleted(e.target.checked)}
+                          />
+                        }
+                        label="Hide completed"
+                      />
+
+                      <Box sx={{ flex: 1 }} />
+
+                      <Chip
+                        label={`Showing ${filteredTrips.length} trip(s)`}
+                        variant="outlined"
+                        sx={{ borderRadius: 1.5 }}
+                      />
+                    </Stack>
+                  </Stack>
+                </Box>
+              </Paper>
+            ) : null}
 
             {(techsError ||
   tripsError ||
@@ -3867,16 +4705,9 @@ function renderStaffCoverageCards(dateIso: string) {
                                 const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
                                 const isPast = iso < todayIso;
 
-                                const canShowAmPlus =
+                                const canShowScheduleAction =
                                   canEditSchedule &&
                                   rowKey !== "UNASSIGNED" &&
-                                  !availability.amHardBusy &&
-                                  !isPast;
-
-                                const canShowPmPlus =
-                                  canEditSchedule &&
-                                  rowKey !== "UNASSIGNED" &&
-                                  !availability.pmHardBusy &&
                                   !isPast;
 
                                 return (
@@ -3922,45 +4753,14 @@ function renderStaffCoverageCards(dateIso: string) {
                                           />
                                         ) : null}
 
-                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                          {canShowAmPlus ? (
-                                            <ScheduleSlotButton
-                                              label={availability.amSoftBusy ? "Override AM" : "Add AM"}
-                                              onClick={() =>
-                                                openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })
-                                              }
-                                            />
-                                          ) : null}
-
-                                          {canShowPmPlus ? (
-                                            <ScheduleSlotButton
-                                              label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
-                                              onClick={() =>
-                                                openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })
-                                              }
-                                            />
-                                          ) : null}
-
-                                          {canEditSchedule &&
-                                          rowKey !== "UNASSIGNED" &&
-                                          !availability.allDayHardBusy &&
-                                          !isPast ? (
-                                            <ScheduleSlotButton
-                                              label={
-                                                availability.allDaySoftBusy
-                                                  ? "Override All Day"
-                                                  : "Add All Day"
-                                              }
-                                              onClick={() =>
-                                                openAddModal({
-                                                  techUid: rowKey,
-                                                  dateIso: iso,
-                                                  slot: "all_day",
-                                                })
-                                              }
-                                            />
-                                          ) : null}
-                                        </Stack>
+                                        {canShowScheduleAction ? (
+                                          <ScheduleSlotButton
+                                            label="Schedule"
+                                            onClick={() =>
+                                              openQuickScheduleModal({ techUid: rowKey, dateIso: iso })
+                                            }
+                                          />
+                                        ) : null}
 
                                         {amTrips.length ? (
                                           <Stack spacing={1}>
@@ -3998,6 +4798,8 @@ function renderStaffCoverageCards(dateIso: string) {
                       );
                     })}
                   </Stack>
+                ) : view === "day" ? (
+                  renderDesktopDaySchedule()
                 ) : (
                   <Box>
                     <SectionHeader
@@ -4012,12 +4814,14 @@ function renderStaffCoverageCards(dateIso: string) {
                         sx={{
                           borderRadius: 1,
                           boxShadow: "none",
+                          maxWidth: "100%",
+                          overflowX: "auto",
                         }}
                       >
-                        <Table sx={{ minWidth: Math.max(900, 220 + daysForWeekOrDay.length * 260) }}>
+                        <Table sx={{ minWidth: Math.max(920, 200 + daysForWeekOrDay.length * 235), tableLayout: "fixed" }}>
                           <TableHead>
                             <TableRow>
-                              <TableCell sx={{ width: 220, fontWeight: 600 }}>Technician</TableCell>
+                              <TableCell sx={{ width: 200, fontWeight: 600 }}>Technician</TableCell>
 
                               {daysForWeekOrDay.map((d) => {
                                 const iso = toIsoDate(d);
@@ -4027,7 +4831,8 @@ function renderStaffCoverageCards(dateIso: string) {
                                   <TableCell
                                     key={iso}
                                     sx={{
-                                      minWidth: 260,
+                                      minWidth: 235,
+                                      width: 235,
                                       fontWeight: 600,
                                       bgcolor: isTodayCell
                                         ? alpha(theme.palette.primary.main, 0.12)
@@ -4083,7 +4888,7 @@ function renderStaffCoverageCards(dateIso: string) {
 
                                 return (
                                   <TableRow key={r.key}>
-                                    <TableCell sx={{ verticalAlign: "top", width: 220 }}>
+                                    <TableCell sx={{ verticalAlign: "top", width: 200 }}>
                                       <Stack direction="row" spacing={1} alignItems="center">
                                         <GroupsRoundedIcon sx={{ fontSize: 18, color: "primary.light" }} />
                                         <Typography variant="subtitle2">{r.label}</Typography>
@@ -4108,16 +4913,9 @@ function renderStaffCoverageCards(dateIso: string) {
                                       const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
                                       const isPast = iso < todayIso;
 
-                                      const canShowAmPlus =
+                                      const canShowScheduleAction =
                                         canEditSchedule &&
                                         rowKey !== "UNASSIGNED" &&
-                                        !availability.amHardBusy &&
-                                        !isPast;
-
-                                      const canShowPmPlus =
-                                        canEditSchedule &&
-                                        rowKey !== "UNASSIGNED" &&
-                                        !availability.pmHardBusy &&
                                         !isPast;
 
                                       return (
@@ -4157,45 +4955,14 @@ function renderStaffCoverageCards(dateIso: string) {
                                               />
                                             ) : null}
 
-                                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                              {canShowAmPlus ? (
-                                                <ScheduleSlotButton
-                                                  label={availability.amSoftBusy ? "Override AM" : "Add AM"}
-                                                  onClick={() =>
-                                                    openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })
-                                                  }
-                                                />
-                                              ) : null}
-
-                                              {canShowPmPlus ? (
-                                                <ScheduleSlotButton
-                                                  label={availability.pmSoftBusy ? "Override PM" : "Add PM"}
-                                                  onClick={() =>
-                                                    openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })
-                                                  }
-                                                />
-                                              ) : null}
-
-                                              {canEditSchedule &&
-                                              rowKey !== "UNASSIGNED" &&
-                                              !availability.allDayHardBusy &&
-                                              !isPast ? (
-                                                <ScheduleSlotButton
-                                                  label={
-                                                    availability.allDaySoftBusy
-                                                      ? "Override All Day"
-                                                      : "Add All Day"
-                                                  }
-                                                  onClick={() =>
-                                                    openAddModal({
-                                                      techUid: rowKey,
-                                                      dateIso: iso,
-                                                      slot: "all_day",
-                                                    })
-                                                  }
-                                                />
-                                              ) : null}
-                                            </Stack>
+                                            {canShowScheduleAction ? (
+                                              <ScheduleSlotButton
+                                                label="Schedule"
+                                                onClick={() =>
+                                                  openQuickScheduleModal({ techUid: rowKey, dateIso: iso })
+                                                }
+                                              />
+                                            ) : null}
 
                                             {amTrips.length ? (
                                               <Stack spacing={1}>
@@ -4247,7 +5014,217 @@ function renderStaffCoverageCards(dateIso: string) {
           </Stack>
         </Box>
 
-        <Dialog open={addOpen} onClose={closeAddModal} fullWidth maxWidth="md">
+        <Menu
+          anchorEl={addScheduleAnchorEl}
+          open={addScheduleMenuOpen}
+          onClose={closeAddScheduleMenu}
+          anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+          transformOrigin={{ vertical: "top", horizontal: "right" }}
+          PaperProps={{
+            sx: {
+              mt: 1,
+              minWidth: 230,
+              borderRadius: 2,
+              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+              bgcolor: "background.paper",
+              backgroundImage: "none",
+            },
+          }}
+        >
+          <MenuItem onClick={handleAddMeetingFromMenu}>
+            <ListItemIcon>
+              <EventNoteRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Meeting" secondary="Create a company meeting" />
+          </MenuItem>
+
+          <MenuItem onClick={handleAddStaffCoverageFromMenu}>
+            <ListItemIcon>
+              <SupportAgentRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Staff Coverage" secondary="Schedule office / dispatch coverage" />
+          </MenuItem>
+
+          <MenuItem onClick={handleAddManualBlockFromMenu}>
+            <ListItemIcon>
+              <BlockRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Manual Block" secondary="Block time without payroll entries" />
+          </MenuItem>
+        </Menu>
+
+        <SwipeableDrawer
+          anchor="bottom"
+          open={quickScheduleOpen}
+          onOpen={() => setQuickScheduleOpen(true)}
+          onClose={closeQuickScheduleModal}
+          disableSwipeToOpen={false}
+          PaperProps={{
+            sx: {
+              borderTopLeftRadius: 22,
+              borderTopRightRadius: 22,
+              backgroundColor: "background.paper",
+              backgroundImage: "none",
+              pb: "calc(12px + env(safe-area-inset-bottom))",
+            },
+          }}
+        >
+          <Box sx={{ px: 2, pt: 1.25, pb: 2 }}>
+            <Box
+              sx={{
+                width: 42,
+                height: 4,
+                borderRadius: 999,
+                mx: "auto",
+                mb: 2,
+                bgcolor: alpha("#FFFFFF", 0.2),
+              }}
+            />
+
+            <Stack spacing={1.35}>
+              <Box>
+                <Typography variant="h6" sx={{ fontWeight: 850, letterSpacing: "-0.02em" }}>
+                  Schedule for
+                </Typography>
+                <Typography variant="h6" sx={{ fontWeight: 850, letterSpacing: "-0.02em" }}>
+                  {findTechName(quickScheduleTechUid) || "Technician"}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {quickScheduleDateIso ? formatDateLong(quickScheduleDateIso) : "Choose a time window."}
+                </Typography>
+              </Box>
+
+              {[
+                {
+                  slot: "am" as SlotKey,
+                  title: "AM",
+                  subtitle: "Morning",
+                  disabled: quickScheduleIsPast || Boolean(quickScheduleAvailability?.amHardBusy),
+                  action: quickScheduleAvailability?.amSoftBusy ? "Override AM" : "Add AM",
+                },
+                {
+                  slot: "pm" as SlotKey,
+                  title: "PM",
+                  subtitle: "Afternoon",
+                  disabled: quickScheduleIsPast || Boolean(quickScheduleAvailability?.pmHardBusy),
+                  action: quickScheduleAvailability?.pmSoftBusy ? "Override PM" : "Add PM",
+                },
+                {
+                  slot: "all_day" as SlotKey,
+                  title: "All Day",
+                  subtitle: "Full day",
+                  disabled: quickScheduleIsPast || Boolean(quickScheduleAvailability?.allDayHardBusy),
+                  action: quickScheduleAvailability?.allDaySoftBusy ? "Override All Day" : "Add All Day",
+                },
+              ].map((option) => (
+                <Button
+                  key={option.slot}
+                  fullWidth
+                  variant="outlined"
+                  disabled={option.disabled}
+                  onClick={() => chooseQuickScheduleSlot(option.slot)}
+                  sx={{
+                    justifyContent: "space-between",
+                    minHeight: 68,
+                    borderRadius: 2,
+                    px: 1.5,
+                    textTransform: "none",
+                    borderColor: alpha("#FFFFFF", 0.1),
+                    bgcolor: alpha("#FFFFFF", 0.025),
+                    "&:hover": {
+                      borderColor: alpha(theme.palette.primary.main, 0.28),
+                      bgcolor: alpha(theme.palette.primary.main, 0.06),
+                    },
+                  }}
+                >
+                  <Box sx={{ textAlign: "left", minWidth: 0 }}>
+                    <Typography sx={{ fontWeight: 850, color: "text.primary" }}>
+                      {option.title}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {option.subtitle}
+                    </Typography>
+                  </Box>
+
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: option.action.startsWith("Override")
+                        ? "warning.main"
+                        : "primary.light",
+                      fontWeight: 850,
+                    }}
+                  >
+                    {option.disabled ? "Unavailable" : option.action}
+                  </Typography>
+                </Button>
+              ))}
+
+              <Button
+                fullWidth
+                variant="outlined"
+                disabled
+                sx={{
+                  justifyContent: "space-between",
+                  minHeight: 68,
+                  borderRadius: 2,
+                  px: 1.5,
+                  textTransform: "none",
+                  borderColor: alpha("#FFFFFF", 0.08),
+                }}
+              >
+                <Box sx={{ textAlign: "left", minWidth: 0 }}>
+                  <Typography sx={{ fontWeight: 850, color: "text.primary" }}>
+                    Custom Time
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Coming soon
+                  </Typography>
+                </Box>
+
+                <Typography variant="body2" sx={{ fontWeight: 850 }}>
+                  —
+                </Typography>
+              </Button>
+
+              {quickScheduleIsPast ? (
+                <Alert severity="info" variant="outlined">
+                  Past dates cannot be scheduled.
+                </Alert>
+              ) : null}
+
+              <Button
+                fullWidth
+                variant="outlined"
+                onClick={closeQuickScheduleModal}
+                sx={{ mt: 0.5, minHeight: 48, borderRadius: 2, textTransform: "none" }}
+              >
+                Cancel
+              </Button>
+            </Stack>
+          </Box>
+        </SwipeableDrawer>
+
+        <Dialog
+          open={addOpen}
+          onClose={closeAddModal}
+          fullScreen={isMobile}
+          fullWidth
+          maxWidth="md"
+          PaperProps={{
+            sx: {
+              borderRadius: isMobile ? 0 : 2,
+              bgcolor: "background.paper",
+              backgroundImage: "none",
+              overflow: "hidden",
+            },
+          }}
+        >
+          {isMobile ? (
+            renderMobileAddTripContent()
+          ) : (
+            <>
+
           <DialogTitle>Schedule Trip</DialogTitle>
           <DialogContent dividers>
             <Stack spacing={2}>
@@ -4499,23 +5476,244 @@ function renderStaffCoverageCards(dateIso: string) {
               {addErr ? <Alert severity="error">{addErr}</Alert> : null}
             </Stack>
           </DialogContent>
+            </>
+          )}
 
-          <DialogActions>
-            <Button onClick={closeAddModal} disabled={addSaving}>
+          <DialogActions
+            sx={{
+              position: isMobile ? "sticky" : "static",
+              bottom: 0,
+              zIndex: 3,
+              gap: 1,
+              px: isMobile ? 2 : undefined,
+              py: isMobile ? 1.5 : undefined,
+              bgcolor: "background.paper",
+              borderTop: isMobile ? `1px solid ${alpha("#FFFFFF", 0.1)}` : "none",
+              "& > :not(style) ~ :not(style)": { ml: 0 },
+            }}
+          >
+            <Button
+              onClick={closeAddModal}
+              disabled={addSaving}
+              fullWidth={isMobile}
+              sx={{ borderRadius: isMobile ? 2 : undefined, minHeight: isMobile ? 48 : undefined }}
+            >
               Cancel
             </Button>
             <Button
               onClick={submitAddTrip}
               disabled={
                 addSaving ||
+                !Boolean(String(addSelectedId || addAdvancedId || "").trim()) ||
                 addSlotConflicts.hardMessages.length > 0 ||
                 (addSlotConflicts.softMessages.length > 0 &&
                   (!addDispatchOverrideEnabled ||
                     !Boolean(addDispatchOverrideReason.trim())))
               }
               variant="contained"
+              fullWidth={isMobile}
+              sx={{ borderRadius: isMobile ? 2 : undefined, minHeight: isMobile ? 48 : undefined, fontWeight: 850 }}
             >
               {addSaving ? "Scheduling…" : "Schedule Trip"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={blockOpen}
+          onClose={closeManualBlockModal}
+          fullScreen={isMobile}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: {
+              borderRadius: isMobile ? 0 : 2,
+              backgroundImage: "none",
+            },
+          }}
+        >
+          <DialogTitle>Manual Schedule Block</DialogTitle>
+
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" color="text.secondary">
+                Use this to block one or more employees on the schedule without creating meeting payroll entries.
+              </Typography>
+
+              {blockErr ? <Alert severity="error">{blockErr}</Alert> : null}
+
+              <TextField
+                label="Date"
+                type="date"
+                value={blockDateIso}
+                onChange={(e) => setBlockDateIso(e.target.value)}
+                disabled={blockSaving}
+                fullWidth
+                required
+                InputLabelProps={{ shrink: true }}
+                helperText={blockDateIso ? formatDateLong(blockDateIso) : "Choose a date."}
+              />
+
+              <TextField
+                label="Block Title"
+                value={blockTitle}
+                onChange={(e) => setBlockTitle(e.target.value)}
+                disabled={blockSaving}
+                placeholder="Training, shop work, unavailable, etc."
+                required
+              />
+
+              <FormControl fullWidth>
+                <InputLabel>Time Window</InputLabel>
+                <Select
+                  label="Time Window"
+                  value={blockWindow}
+                  onChange={(e: SelectChangeEvent) => setBlockWindow(e.target.value as "all_day" | "am" | "pm" | "custom")}
+                  disabled={blockSaving}
+                >
+                  <MenuItem value="am">AM</MenuItem>
+                  <MenuItem value="pm">PM</MenuItem>
+                  <MenuItem value="all_day">All Day</MenuItem>
+                  <MenuItem value="custom">Custom</MenuItem>
+                </Select>
+              </FormControl>
+
+              {blockWindow === "custom" ? (
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                  <TextField
+                    label="Start"
+                    type="time"
+                    value={blockStart}
+                    onChange={(e) => setBlockStart(e.target.value)}
+                    disabled={blockSaving}
+                    fullWidth
+                    required
+                    InputLabelProps={{ shrink: true }}
+                    inputProps={{ step: 300 }}
+                  />
+                  <TextField
+                    label="End"
+                    type="time"
+                    value={blockEnd}
+                    onChange={(e) => setBlockEnd(e.target.value)}
+                    disabled={blockSaving}
+                    fullWidth
+                    required
+                    InputLabelProps={{ shrink: true }}
+                    inputProps={{ step: 300 }}
+                  />
+                </Stack>
+              ) : null}
+
+              <Paper variant="outlined" sx={{ borderRadius: 1, overflow: "hidden" }}>
+                <Box sx={{ px: 1.5, py: 1.25, borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}` }}>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <Typography variant="subtitle2">Employees to block</Typography>
+                    <Chip
+                      size="small"
+                      label={`${blockAppliesToUids.length} selected`}
+                      color={blockAppliesToUids.length === 0 ? "warning" : "default"}
+                      variant="outlined"
+                      sx={{ borderRadius: 1.5 }}
+                    />
+                  </Stack>
+
+                  <FormControlLabel
+                    sx={{ mt: 0.75 }}
+                    control={
+                      <Checkbox
+                        checked={blockIncludeAll}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setManualBlockAttendees(allMeetingEmployeeUids);
+                          } else {
+                            setBlockIncludeAll(false);
+                            setBlockAppliesToUids([]);
+                          }
+                        }}
+                        disabled={blockSaving || allMeetingEmployeeUids.length === 0}
+                      />
+                    }
+                    label="Block all active employees"
+                  />
+                </Box>
+
+                <Box sx={{ maxHeight: 260, overflow: "auto" }}>
+                  {meetingEmployees.map((employee) => {
+                    const checked = blockAppliesToUids.includes(employee.uid);
+                    return (
+                      <Box
+                        key={employee.uid}
+                        sx={{
+                          px: 1.5,
+                          py: 1.1,
+                          borderBottom: `1px solid ${alpha("#FFFFFF", 0.06)}`,
+                        }}
+                      >
+                        <FormControlLabel
+                          sx={{ alignItems: "flex-start", m: 0, width: "100%" }}
+                          control={
+                            <Checkbox
+                              checked={checked}
+                              disabled={blockSaving}
+                              onChange={() => {
+                                const next = checked
+                                  ? blockAppliesToUids.filter((uid) => uid !== employee.uid)
+                                  : [...blockAppliesToUids, employee.uid];
+                                setManualBlockAttendees(next);
+                              }}
+                            />
+                          }
+                          label={
+                            <Box sx={{ pt: 0.35 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                {employee.displayName}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {formatRoleLabel(employee.role)}
+                              </Typography>
+                            </Box>
+                          }
+                        />
+                      </Box>
+                    );
+                  })}
+                </Box>
+              </Paper>
+
+              <TextField
+                label="Notes (optional)"
+                value={blockNotes}
+                onChange={(e) => setBlockNotes(e.target.value)}
+                disabled={blockSaving}
+                multiline
+                minRows={3}
+                placeholder="Reason for the block..."
+              />
+
+              {selectedBlockEmployees.length ? (
+                <Typography variant="caption" color="text.secondary">
+                  This will block {selectedBlockEmployees.length} employee(s) on Schedule. No meeting time entries will be created.
+                </Typography>
+              ) : null}
+            </Stack>
+          </DialogContent>
+
+          <DialogActions>
+            <Button onClick={closeManualBlockModal} disabled={blockSaving}>
+              Cancel
+            </Button>
+            <Button
+              onClick={submitManualBlock}
+              disabled={blockSaving || !blockTitle.trim() || blockAppliesToUids.length === 0}
+              variant="contained"
+            >
+              {blockSaving ? "Saving…" : "Add Block"}
             </Button>
           </DialogActions>
         </Dialog>
