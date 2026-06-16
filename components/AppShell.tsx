@@ -229,6 +229,7 @@ const MOBILE_BOTTOM_NAV_HEIGHT = 68;
 const MOBILE_ACTIVE_TRIP_HEIGHT = 138;
 const MOBILE_TOP_REJECTED_OVERLAY_HEIGHT = 128;
 const REJECTED_BANNER_DISMISS_KEY = "dcflow_dismissedRejectedBannerKey";
+const SHOW_DISPATCHER_BOARD_NAV = false;
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
@@ -1712,7 +1713,8 @@ export default function AppShell({
     role === "apprentice";
 
   const showDispatch =
-    role === "admin" || role === "dispatcher" || role === "manager";
+  SHOW_DISPATCHER_BOARD_NAV &&
+  (role === "admin" || role === "dispatcher" || role === "manager");
 
   const showSchedule =
     role === "admin" ||

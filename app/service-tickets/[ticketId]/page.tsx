@@ -52,7 +52,6 @@ import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
-import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
@@ -1326,6 +1325,84 @@ function formatTime12h(hhmm?: string) {
   if (hh === 0) hh = 12;
   if (mmRaw === 0) return `${hh}${ampm}`;
   return `${hh}:${String(mmRaw).padStart(2, "0")}${ampm}`;
+}
+
+function formatTripDateLabel(value?: string) {
+  const clean = safeStr(value);
+  if (!clean) return "No date";
+
+  const parsed = new Date(`${clean}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return clean;
+
+  const today = isoTodayLocal();
+
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = `${tomorrowDate.getFullYear()}-${String(
+    tomorrowDate.getMonth() + 1
+  ).padStart(2, "0")}-${String(tomorrowDate.getDate()).padStart(2, "0")}`;
+
+  const displayDate = parsed.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+
+  if (clean === today) return `Today · ${displayDate}`;
+  if (clean === tomorrow) return `Tomorrow · ${displayDate}`;
+
+  return displayDate;
+}
+
+function formatTripTimeDisplay(hhmm?: string) {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return "—";
+
+  const [hhRaw, mmRaw] = hhmm.split(":").map((x) => Number(x));
+  if (!Number.isFinite(hhRaw) || !Number.isFinite(mmRaw)) return "—";
+
+  if (hhRaw === 12 && mmRaw === 0) return "12N";
+
+  const ampm = hhRaw >= 12 ? "PM" : "AM";
+  let hh = hhRaw % 12;
+  if (hh === 0) hh = 12;
+
+  if (mmRaw === 0) return `${hh}${ampm}`;
+  return `${hh}:${String(mmRaw).padStart(2, "0")}${ampm}`;
+}
+
+function formatTripTimeRange(start?: string, end?: string) {
+  const startLabel = formatTripTimeDisplay(start);
+  const endLabel = formatTripTimeDisplay(end);
+
+  if (startLabel === "—" && endLabel === "—") return "No time set";
+  return `${startLabel} – ${endLabel}`;
+}
+
+function formatTimerStateLabel(value?: string | null) {
+  switch (String(value || "").trim().toLowerCase()) {
+    case "running":
+      return "Running";
+    case "paused":
+      return "Paused";
+    case "complete":
+      return "Complete";
+    case "not_started":
+      return "Not Started";
+    default:
+      return value ? String(value) : "Not Started";
+  }
+}
+
+function formatMinutesDuration(value?: number | null) {
+  const total = Math.max(0, Math.round(Number(value || 0)));
+
+  if (total < 60) return `${total} min`;
+
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
 }
 
 function collectDispatchOverrideConflicts(args: {
@@ -6436,42 +6513,29 @@ Supply line`}
                     }}
                   >
                     <ServiceTicketLocationCard
-                    customerDisplayName={ticket.customerDisplayName}
-                    customerHref={
-                      ticket.customerId ? `/customers/${ticket.customerId}` : undefined
-                    }
-                    serviceAddressLine1={ticket.serviceAddressLine1}
-                    serviceAddressLine2={ticket.serviceAddressLine2}
-                    serviceCity={ticket.serviceCity}
-                    serviceState={ticket.serviceState}
-                    servicePostalCode={ticket.servicePostalCode}
-                    customerPhone={customerPhone}
-                    customerEmail={customerEmail}
-                    showEmail={!isFieldUser}
-                  />
+                      customerDisplayName={ticket.customerDisplayName}
+                      customerHref={
+                        ticket.customerId ? `/customers/${ticket.customerId}` : undefined
+                      }
+                      serviceAddressLine1={ticket.serviceAddressLine1}
+                      serviceAddressLine2={ticket.serviceAddressLine2}
+                      serviceCity={ticket.serviceCity}
+                      serviceState={ticket.serviceState}
+                      servicePostalCode={ticket.servicePostalCode}
+                      customerPhone={customerPhone}
+                      customerEmail={customerEmail}
+                      showEmail={!isFieldUser}
+                      canEditServiceLocation={canDispatch}
+                      editServiceLocationDisabled={isInvoicedTicket}
+                      onEditServiceLocation={openEditLocationDialog}
+                    />
                   </Box>
-
-                  {canDispatch ? (
-                    <Button
-                      variant="outlined"
-                      startIcon={<LocationOnRoundedIcon />}
-                      onClick={openEditLocationDialog}
-                      disabled={isInvoicedTicket}
-                      sx={{
-                        alignSelf: { xs: "stretch", sm: "flex-start" },
-                        borderRadius: 999,
-                        fontWeight: 700,
-                      }}
-                    >
-                      Edit Service Location
-                    </Button>
-                  ) : null}
 
                   {locationOk ? <Alert severity="success">{locationOk}</Alert> : null}
                 </Stack>
 
                 <Section
-                  title="Ticket Overview"
+                  title="Job Details"
                   icon={<AssignmentTurnedInRoundedIcon color="primary" />}
                 >
                   {canDispatch ? (
@@ -6990,19 +7054,16 @@ Supply line`}
                           key={trip.id}
                           variant="outlined"
                           sx={{
-                            p: 1.5,
-                            borderRadius: 1,
-                            borderColor: runningTrip
-                              ? alpha(theme.palette.primary.main, 0.26)
-                              : pausedTrip
-                                ? alpha(theme.palette.warning.main, 0.3)
-                                : "divider",
-                            backgroundColor: runningTrip
-                              ? alpha(theme.palette.primary.main, 0.05)
-                              : pausedTrip
-                                ? alpha(theme.palette.warning.main, 0.08)
-                                : "background.paper",
-                          }}
+  p: { xs: 1.25, sm: 1.5 },
+  borderRadius: 2.25,
+  borderColor: runningTrip
+    ? alpha(theme.palette.primary.main, 0.28)
+    : pausedTrip
+      ? alpha(theme.palette.warning.main, 0.3)
+      : alpha(theme.palette.divider, 0.72),
+  bgcolor: alpha(theme.palette.background.paper, 0.96),
+  boxShadow: "none",
+}}
                         >
                           <Stack spacing={1.5}>
                             <Stack
@@ -7011,45 +7072,91 @@ Supply line`}
                               alignItems="flex-start"
                               flexWrap="wrap"
                             >
-                              <Box>
-                                <Typography variant="subtitle1" fontWeight={700}>
-                                  {trip.date} • {formatTripWindow(String(trip.timeWindow || ""))} •{" "}
-                                  {trip.startTime}-{trip.endTime}
-                                </Typography>
+                              <Box sx={{ minWidth: 0, flex: 1 }}>
+<Typography
+  variant="caption"
+  color="text.secondary"
+  fontWeight={750}
+  sx={{
+    display: "block",
+    lineHeight: 1.1,
+    mb: 0.4,
+    letterSpacing: "0.01em",
+  }}
+>
+  Scheduled Visit
+</Typography>
 
-                                <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 0.75 }}>
-                                  <Chip
-                                    size="small"
-                                    label={
-                                      pausedTrip
-                                        ? "Paused"
-                                        : runningTrip
-                                          ? "In Progress"
-                                          : formatLifecycleTripStatus(trip.status)
-                                    }
-                                    color={
-                                      pausedTrip
-                                        ? "warning"
-                                        : runningTrip
-                                          ? "info"
-                                          : getTripTone(trip.status)
-                                    }
-                                  />
-                                  <Chip
-                                    size="small"
-                                    label={`Timer: ${timerState}`}
-                                    variant="outlined"
-                                  />
-                                  {trip.dispatchOverride?.enabled ? (
-                                    <Chip
-                                      size="small"
-                                      color="warning"
-                                      variant="outlined"
-                                      label="Dispatch Override"
-                                    />
-                                  ) : null}
-                                </Stack>
-                              </Box>
+<Typography
+  variant="h6"
+  fontWeight={800}
+  sx={{
+    lineHeight: 1.15,
+    overflowWrap: "anywhere",
+    color: "text.primary",
+  }}
+>
+  {formatTripDateLabel(trip.date)}
+</Typography>
+
+<Typography
+  variant="h5"
+  fontWeight={800}
+  color="primary.main"
+  sx={{
+    mt: 0.35,
+    lineHeight: 1.1,
+    fontSize: { xs: "1.35rem", sm: "1.45rem" },
+  }}
+>
+  {formatTripTimeRange(trip.startTime, trip.endTime)}
+</Typography>
+
+  <Stack
+    direction="row"
+    spacing={0.85}
+    alignItems="center"
+    flexWrap="wrap"
+    useFlexGap
+    sx={{ mt: 1 }}
+  >
+    <Chip
+      size="small"
+      label={
+        pausedTrip
+          ? "Paused"
+          : runningTrip
+            ? "In Progress"
+            : formatLifecycleTripStatus(trip.status)
+      }
+      color={
+        pausedTrip
+          ? "warning"
+          : runningTrip
+            ? "info"
+            : getTripTone(trip.status)
+      }
+      sx={{ borderRadius: 1.5, fontWeight: 800 }}
+    />
+
+    <Chip
+      size="small"
+      label={`Timer ${formatTimerStateLabel(timerState)}`}
+      variant="outlined"
+      sx={{ borderRadius: 1.5, fontWeight: 750 }}
+    />
+
+    {trip.dispatchOverride?.enabled ? (
+      <Chip
+        size="small"
+        color="warning"
+        variant="outlined"
+        label="Dispatch Override"
+        sx={{ borderRadius: 1.5, fontWeight: 800 }}
+      />
+    ) : null}
+  </Stack>
+</Box>
 
                               {canDispatch ? (
                                 <Stack direction="row" spacing={1}>
@@ -7188,29 +7295,144 @@ Supply line`}
                               ) : null}
                             </Stack>
 
-                            <Typography variant="body2" color="text.secondary">
-                              Tech: <strong>{trip.crew?.primaryTechName || "Unassigned"}</strong>
-                              {trip.crew?.helperName
-                                ? ` • Helper: ${trip.crew.helperName}`
-                                : ""}
-                              {trip.crew?.secondaryTechName
-                                ? ` • 2nd Tech: ${trip.crew.secondaryTechName}`
-                                : ""}
-                              {trip.crew?.secondaryHelperName
-                                ? ` • 2nd Helper: ${trip.crew.secondaryHelperName}`
-                                : ""}
-                            </Typography>
+                            <Paper
+  variant="outlined"
+  sx={{
+    p: 1,
+    borderRadius: 1,
+    bgcolor: alpha(theme.palette.background.default, 0.16),
+    borderColor: alpha(theme.palette.divider, 0.65),
+  }}
+>
+  <Stack spacing={0.75}>
+    <Typography
+      variant="caption"
+      color="text.secondary"
+      fontWeight={750}
+    >
+      Crew
+    </Typography>
 
-                            <Typography variant="body2" color="text.secondary">
-                              Timer minutes: <strong>{billableMinutes}</strong> (gross{" "}
-                              {grossMinutes} - paused {pausedMinutes})
-                            </Typography>
+    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+      <Chip
+        size="small"
+        variant="outlined"
+        label={`${trip.crew?.primaryTechName || "Unassigned"} · Tech`}
+        sx={{ borderRadius: 1.5, fontWeight: 700 }}
+      />
+
+      {trip.crew?.helperName ? (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`${trip.crew.helperName} · Helper`}
+          sx={{ borderRadius: 1.5, fontWeight: 700 }}
+        />
+      ) : null}
+
+      {trip.crew?.secondaryTechName ? (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`${trip.crew.secondaryTechName} · 2nd Tech`}
+          sx={{ borderRadius: 1.5, fontWeight: 700 }}
+        />
+      ) : null}
+
+      {trip.crew?.secondaryHelperName ? (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`${trip.crew.secondaryHelperName} · 2nd Helper`}
+          sx={{ borderRadius: 1.5, fontWeight: 700 }}
+        />
+      ) : null}
+    </Stack>
+  </Stack>
+</Paper>
+
+<Paper
+  variant="outlined"
+  sx={{
+    p: 1,
+    borderRadius: 1,
+    bgcolor: alpha(theme.palette.background.default, 0.14),
+    borderColor: alpha(theme.palette.divider, 0.6),
+  }}
+>
+  <Stack
+    direction={{ xs: "column", sm: "row" }}
+    spacing={1}
+    divider={
+      isMobile ? undefined : (
+        <Divider
+          orientation="vertical"
+          flexItem
+          sx={{ borderColor: alpha(theme.palette.divider, 0.55) }}
+        />
+      )
+    }
+  >
+    <Box sx={{ minWidth: 0, flex: 1 }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        fontWeight={750}
+      >
+        Net Time
+      </Typography>
+      <Typography variant="body2" fontWeight={800}>
+        {formatMinutesDuration(billableMinutes)}
+      </Typography>
+    </Box>
+
+    <Box sx={{ minWidth: 0, flex: 1 }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        fontWeight={750}
+      >
+        Gross
+      </Typography>
+      <Typography variant="body2" fontWeight={750}>
+        {formatMinutesDuration(grossMinutes)}
+      </Typography>
+    </Box>
+
+    <Box sx={{ minWidth: 0, flex: 1 }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        fontWeight={750}
+      >
+        Paused
+      </Typography>
+      <Typography variant="body2" fontWeight={750}>
+        {formatMinutesDuration(pausedMinutes)}
+      </Typography>
+    </Box>
+  </Stack>
+</Paper>
 
                             {trip.dispatchOverride?.enabled ? (
-                              <Alert severity="warning" variant="outlined">
-                                Dispatch Override: {trip.dispatchOverride.reason || "No reason entered."}
-                              </Alert>
-                            ) : null}
+  <Alert
+    severity="warning"
+    variant="outlined"
+    sx={{
+      borderRadius: 1.5,
+      bgcolor: alpha(theme.palette.warning.main, 0.055),
+      borderColor: alpha(theme.palette.warning.main, 0.38),
+      py: 0.75,
+      "& .MuiAlert-icon": {
+        color: "warning.main",
+      },
+    }}
+  >
+    <Typography variant="body2" fontWeight={750}>
+      Dispatch Override: {trip.dispatchOverride.reason || "No reason entered."}
+    </Typography>
+  </Alert>
+) : null}
 
                             {normalizeTripStatus(trip.status) === "complete" ? (
                               <>
@@ -7295,7 +7517,7 @@ Supply line`}
 
                             <TextField
                               id={`trip-work-notes-${trip.id}`}
-                              label="Work Notes"
+                              label="Field Notes"
                               multiline
                               minRows={3}
                               value={tripWorkNotes[trip.id] ?? ""}
@@ -7313,18 +7535,25 @@ Supply line`}
                             />
 
                             <Button
-                              variant="outlined"
-                              startIcon={<NoteAltOutlinedIcon />}
-                              onClick={() => handleSaveWorkNotes(trip)}
-                              disabled={
-                                !canAct ||
-                                normalizeTripStatus(trip.status) === "cancelled" ||
-                                savingThis ||
-                                isInvoicedTicket
-                              }
-                            >
-                              Save Notes
-                            </Button>
+  variant="outlined"
+  size="small"
+  startIcon={<NoteAltOutlinedIcon />}
+  onClick={() => handleSaveWorkNotes(trip)}
+  disabled={
+    !canAct ||
+    normalizeTripStatus(trip.status) === "cancelled" ||
+    savingThis ||
+    isInvoicedTicket
+  }
+  sx={{
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    fontWeight: 750,
+    px: 1.5,
+  }}
+>
+  Save Field Notes
+</Button>
 
                             {showFinishPanel && !isMobile ? (
                               <Paper
@@ -7733,7 +7962,7 @@ Supply line`}
                   </Stack>
                 </Section>
 
-                <Section title="Billing Packet" icon={<ReceiptLongRoundedIcon color="primary" />}>
+                <Section title="Billing" icon={<ReceiptLongRoundedIcon color="primary" />}>
                   {canCloseFollowUpWithoutReturnVisit ? (
                     <Alert
                       severity="warning"
@@ -7980,7 +8209,7 @@ Supply line`}
                   )}
                 </Section>
 
-<Section title="System Activity" icon={<BuildRoundedIcon color="primary" />}>
+<Section title="Activity Log" icon={<BuildRoundedIcon color="primary" />}>
   <Stack spacing={1.5}>
     <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
       <Stack spacing={0.5}>
