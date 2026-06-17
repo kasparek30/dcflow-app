@@ -7,6 +7,7 @@ import {
 } from "./ocr";
 import { parseSupplierInvoiceText } from "./supplier-invoice-parser";
 import { importSupplierMaterialsToTrip } from "./import-supplier-materials-to-trip";
+import { importSupplierMaterialsToMaterialOrder } from "./import-supplier-materials-to-material-order";
 
 type SavedAttachment = {
   id?: string;
@@ -31,13 +32,43 @@ type LinkableInvoiceAttachment = {
   pageNumber?: number | null;
 };
 
+type AppendPurchaseOrderResult =
+  | {
+      ok: true;
+      reason: string;
+      sourceType: string | null;
+      serviceTicketId: string | null;
+      projectId: string | null;
+      materialOrderId: string | null;
+      tripId: string | null;
+    }
+  | {
+      ok: false;
+      reason: string;
+      sourceType?: string | null;
+      serviceTicketId?: string | null;
+      projectId?: string | null;
+      materialOrderId?: string | null;
+      tripId?: string | null;
+    };
+
+type SupplierMaterialImportResult =
+  | Awaited<ReturnType<typeof importSupplierMaterialsToTrip>>
+  | Awaited<ReturnType<typeof importSupplierMaterialsToMaterialOrder>>;
+
 function clean(value: unknown) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function extractPoCodes(text: string) {
   const source = String(text || "").toUpperCase();
-  const matches = source.match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/g) || [];
+
+  // Service ticket POs: S001A
+  // Bid project POs: P001A
+  // T&M project POs: T001A
+  // Material order POs: M001A
+  const matches = source.match(/\b[SPTM]\d{3,}[A-Z]{1,2}\b/g) || [];
+
   return Array.from(new Set(matches));
 }
 
@@ -55,7 +86,10 @@ function buildDownloadUrl(bucketName: string, storagePath: string) {
   )}/o/${encodeURIComponent(storagePath)}?alt=media`;
 }
 
-function isMooreInvoiceText(text: string, parsed?: ReturnType<typeof parseSupplierInvoiceText> | null) {
+function isMooreInvoiceText(
+  text: string,
+  parsed?: ReturnType<typeof parseSupplierInvoiceText> | null
+) {
   const source = String(text || "").toUpperCase();
   return parsed?.vendorName === "MOORE SUPPLY" || source.includes("MOORE SUPPLY");
 }
@@ -142,7 +176,7 @@ async function appendAttachmentToPurchaseOrder(args: {
   attachment: SavedAttachment;
   ocrText: string;
   parsedInvoice: ReturnType<typeof parseSupplierInvoiceText> | null;
-}) {
+}): Promise<AppendPurchaseOrderResult> {
   const now = new Date().toISOString();
 
   const poRef = adminFirestore.collection("purchaseOrders").doc(args.poCode);
@@ -180,7 +214,7 @@ async function appendAttachmentToPurchaseOrder(args: {
 
   const existingAttachmentIndex = incomingAttachmentId
     ? existingAttachments.findIndex(
-        (existing: any) => String(existing.id || "") === incomingAttachmentId,
+        (existing: any) => String(existing.id || "") === incomingAttachmentId
       )
     : -1;
 
@@ -188,7 +222,7 @@ async function appendAttachmentToPurchaseOrder(args: {
 
   const nextAttachments = attachmentWasRefreshed
     ? existingAttachments.map((existing: any, index: number) =>
-        index === existingAttachmentIndex ? nextAttachment : existing,
+        index === existingAttachmentIndex ? nextAttachment : existing
       )
     : [...existingAttachments, nextAttachment];
 
@@ -233,7 +267,39 @@ async function appendAttachmentToPurchaseOrder(args: {
     reason: attachmentWasRefreshed
       ? "Attachment refreshed on PO."
       : "Attachment linked to PO.",
+    sourceType: String(po.sourceType || "").trim() || null,
+    serviceTicketId: po.serviceTicketId ? String(po.serviceTicketId) : null,
+    projectId: po.projectId ? String(po.projectId) : null,
+    materialOrderId: po.materialOrderId ? String(po.materialOrderId) : null,
+    tripId: po.tripId ? String(po.tripId) : null,
   };
+}
+
+async function importSupplierMaterialsForMatchedPo(args: {
+  poCode: string;
+  supplierInvoiceId: string;
+  parsedInvoice: ReturnType<typeof parseSupplierInvoiceText> | null;
+  linkResult: AppendPurchaseOrderResult;
+}) {
+  if (!args.linkResult.ok) {
+    return null;
+  }
+
+  const sourceType = clean(args.linkResult.sourceType).toLowerCase();
+
+  if (sourceType === "material_order" || args.linkResult.materialOrderId) {
+    return importSupplierMaterialsToMaterialOrder({
+      poCode: args.poCode,
+      supplierInvoiceId: args.supplierInvoiceId,
+      parsedInvoice: args.parsedInvoice,
+    });
+  }
+
+  return importSupplierMaterialsToTrip({
+    poCode: args.poCode,
+    supplierInvoiceId: args.supplierInvoiceId,
+    parsedInvoice: args.parsedInvoice,
+  });
 }
 
 export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
@@ -312,10 +378,12 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
           const pageText = await extractTextFromPdfBuffer(pageBuffer);
           const pageParsed = parseSupplierInvoiceText(pageText);
           const pagePoCodes = Array.from(
-            new Set([
-              ...extractPoCodes(pageText),
-              pageParsed.poCode || "",
-            ].filter(Boolean))
+            new Set(
+              [
+                ...extractPoCodes(pageText),
+                pageParsed.poCode || "",
+              ].filter(Boolean)
+            )
           );
 
           pagePoCodes.forEach((code) => detectedPoCodes.add(code));
@@ -379,10 +447,12 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
       }
 
       const poCodes = Array.from(
-        new Set([
-          ...extractPoCodes(fullText),
-          fullParsed.poCode || "",
-        ].filter(Boolean))
+        new Set(
+          [
+            ...extractPoCodes(fullText),
+            fullParsed.poCode || "",
+          ].filter(Boolean)
+        )
       );
 
       poCodes.forEach((code) => detectedPoCodes.add(code));
@@ -431,11 +501,11 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
 
   let matchedPoCode: string | null = null;
   let linkReason: string | null = null;
-  let materialImport: Awaited<ReturnType<typeof importSupplierMaterialsToTrip>> | null =
-    null;
+  let materialImport: SupplierMaterialImportResult | null = null;
+
   const materialImports: Array<{
     poCode: string;
-    result: Awaited<ReturnType<typeof importSupplierMaterialsToTrip>>;
+    result: SupplierMaterialImportResult | null;
   }> = [];
 
   for (const item of linkableAttachments) {
@@ -450,14 +520,16 @@ export async function processSupplierInvoiceOcr(args: { invoiceId: string }) {
 
     if (linkResult.ok) {
       if (!matchedPoCode) matchedPoCode = item.poCode;
+
       matchedPoCodes.add(item.poCode);
       linked += 1;
       linkReason = linkResult.reason;
 
-      const importResult = await importSupplierMaterialsToTrip({
+      const importResult = await importSupplierMaterialsForMatchedPo({
         poCode: item.poCode,
         supplierInvoiceId: invoiceId,
         parsedInvoice: item.parsedInvoice,
+        linkResult,
       });
 
       materialImport = importResult;

@@ -3,7 +3,10 @@ import { doc, runTransaction, type Firestore } from "firebase/firestore";
 
 export type PurchaseOrderStatus = "open" | "matched" | "cancelled" | "closed";
 
-export type PurchaseOrderSourceType = "service_ticket" | "project";
+export type PurchaseOrderSourceType =
+  | "service_ticket"
+  | "project"
+  | "material_order";
 
 export type PurchaseOrderRecord = {
   poCode: string;
@@ -15,6 +18,8 @@ export type PurchaseOrderRecord = {
 
   serviceTicketId: string | null;
   projectId: string | null;
+  materialOrderId: string | null;
+
   projectType: string | null;
   projectStageKey: string | null;
 
@@ -24,6 +29,9 @@ export type PurchaseOrderRecord = {
   billingPeriodSequence: number | null;
   billingPeriodLabel: string | null;
   billingPeriodStatus: string | null;
+
+  materialOrderNumber: number | null;
+  materialOrderCode: string | null;
 
   requestedByUid: string | null;
   requestedByName: string | null;
@@ -61,6 +69,10 @@ export function formatBidProjectCode(projectNumber: number) {
 
 export function formatTimeMaterialsProjectCode(projectNumber: number) {
   return `T${padTicketNumber(projectNumber)}`;
+}
+
+export function formatMaterialOrderCode(materialOrderNumber: number) {
+  return `M${padTicketNumber(materialOrderNumber)}`;
 }
 
 function getNextPoSuffix(index: number) {
@@ -104,6 +116,10 @@ function readNestedString(data: FirestoreData, path: string[]) {
   return readString(current);
 }
 
+function readArray(value: unknown) {
+  return Array.isArray(value) ? value : [];
+}
+
 function isProjectTripType(value: unknown) {
   return readLower(value) === "project";
 }
@@ -144,6 +160,52 @@ function getProjectBaseCode(args: {
   return formatBidProjectCode(args.projectNumber);
 }
 
+function normalizePoNumbers(value: unknown, nextPoCode: string) {
+  const existing = readArray(value)
+    .map((item) => readUpper(item))
+    .filter(Boolean);
+
+  const unique = Array.from(new Set(existing));
+
+  if (!unique.includes(nextPoCode)) {
+    unique.push(nextPoCode);
+  }
+
+  return unique;
+}
+
+function normalizeMaterialOrderPurchaseOrders(args: {
+  existing: unknown;
+  poCode: string;
+  vendorName: string | null;
+  stamp: string;
+  requestedByUid: string | null;
+  requestedByName: string | null;
+}) {
+  const existing = readArray(args.existing).filter(
+    (item) => item && typeof item === "object"
+  ) as FirestoreData[];
+
+  const withoutDuplicate = existing.filter(
+    (item) => readUpper(item.poNumber) !== args.poCode
+  );
+
+  return [
+    ...withoutDuplicate,
+    {
+      poNumber: args.poCode,
+      supplierName: args.vendorName,
+      generatedAt: args.stamp,
+      generatedByUid: args.requestedByUid,
+      generatedByName: args.requestedByName,
+      supplierInvoiceId: null,
+      supplierInvoiceNumber: null,
+      supplierInvoiceMatchedAt: null,
+      totalCost: null,
+    },
+  ];
+}
+
 export async function reserveNextServiceTicketNumber(db: Firestore) {
   const counterRef = doc(db, "systemCounters", "serviceTickets");
 
@@ -173,6 +235,39 @@ export async function reserveNextServiceTicketNumber(db: Firestore) {
     return {
       ticketNumber: nextTicketNumber,
       ticketCode: formatServiceTicketCode(nextTicketNumber),
+    };
+  });
+}
+
+export async function reserveNextMaterialOrderNumber(db: Firestore) {
+  const counterRef = doc(db, "systemCounters", "materialOrders");
+
+  return runTransaction(db, async (tx) => {
+    const counterSnap = await tx.get(counterRef);
+
+    const counterData = counterSnap.exists()
+      ? (counterSnap.data() as FirestoreData)
+      : {};
+
+    const current = readNumber(counterData.nextNumber, 1);
+    const nextMaterialOrderNumber =
+      Number.isFinite(current) && current > 0 ? Math.floor(current) : 1;
+
+    const nextCounterValue = nextMaterialOrderNumber + 1;
+    const stamp = nowIso();
+
+    tx.set(
+      counterRef,
+      {
+        nextNumber: nextCounterValue,
+        updatedAt: stamp,
+      },
+      { merge: true }
+    );
+
+    return {
+      materialOrderNumber: nextMaterialOrderNumber,
+      materialOrderCode: formatMaterialOrderCode(nextMaterialOrderNumber),
     };
   });
 }
@@ -267,6 +362,8 @@ export async function generatePurchaseOrderForTrip(args: {
 
       serviceTicketId,
       projectId: null,
+      materialOrderId: null,
+
       projectType: null,
       projectStageKey: null,
 
@@ -276,6 +373,9 @@ export async function generatePurchaseOrderForTrip(args: {
       billingPeriodSequence: null,
       billingPeriodLabel: null,
       billingPeriodStatus: null,
+
+      materialOrderNumber: null,
+      materialOrderCode: null,
 
       requestedByUid: args.requestedByUid || null,
       requestedByName: args.requestedByName || null,
@@ -441,6 +541,8 @@ export async function generatePurchaseOrderForProjectTrip(args: {
 
       serviceTicketId: null,
       projectId,
+      materialOrderId: null,
+
       projectType,
       projectStageKey: projectStageKey || null,
 
@@ -453,6 +555,9 @@ export async function generatePurchaseOrderForProjectTrip(args: {
           : null,
       billingPeriodLabel: readString(trip.billingPeriodLabel) || null,
       billingPeriodStatus: readString(trip.billingPeriodStatus) || null,
+
+      materialOrderNumber: null,
+      materialOrderCode: null,
 
       requestedByUid: args.requestedByUid || null,
       requestedByName: args.requestedByName || null,
@@ -500,6 +605,171 @@ export async function generatePurchaseOrderForProjectTrip(args: {
       {
         updatedAt: stamp,
         updatedByUid: args.requestedByUid || null,
+      },
+      { merge: true }
+    );
+
+    return record;
+  });
+}
+
+export async function generatePurchaseOrderForMaterialOrder(args: {
+  db: Firestore;
+  materialOrderId: string;
+  vendorName?: string | null;
+  notes?: string | null;
+  requestedByUid?: string | null;
+  requestedByName?: string | null;
+}) {
+  const materialOrderId = readString(args.materialOrderId);
+  if (!materialOrderId) throw new Error("Missing material order ID.");
+
+  const materialOrderRef = doc(args.db, "materialOrders", materialOrderId);
+  const materialOrderCounterRef = doc(args.db, "systemCounters", "materialOrders");
+
+  return runTransaction(args.db, async (tx) => {
+    const materialOrderSnap = await tx.get(materialOrderRef);
+    if (!materialOrderSnap.exists()) throw new Error("Material order not found.");
+
+    const materialOrder = materialOrderSnap.data() as FirestoreData;
+
+    const materialOrderStatus = readLower(materialOrder.status);
+    if (materialOrderStatus === "cancelled" || materialOrderStatus === "invoiced") {
+      throw new Error("PO numbers cannot be generated for cancelled or invoiced material orders.");
+    }
+
+    const existingMaterialOrderNumber = readNumber(
+      materialOrder.materialOrderNumber,
+      0
+    );
+    const existingMaterialOrderCode = readUpper(materialOrder.materialOrderCode);
+
+    let counterSnap = null as Awaited<ReturnType<typeof tx.get>> | null;
+
+    if (
+      !existingMaterialOrderNumber ||
+      existingMaterialOrderNumber <= 0 ||
+      !existingMaterialOrderCode
+    ) {
+      counterSnap = await tx.get(materialOrderCounterRef);
+    }
+
+    const stamp = nowIso();
+
+    let materialOrderNumber = existingMaterialOrderNumber;
+    let materialOrderCode = existingMaterialOrderCode;
+
+    if (
+      !Number.isFinite(materialOrderNumber) ||
+      materialOrderNumber <= 0 ||
+      !materialOrderCode
+    ) {
+      const counterData = counterSnap?.exists()
+        ? (counterSnap.data() as FirestoreData)
+        : {};
+
+      const current = readNumber(counterData.nextNumber, 1);
+      materialOrderNumber =
+        Number.isFinite(current) && current > 0 ? Math.floor(current) : 1;
+      materialOrderCode = formatMaterialOrderCode(materialOrderNumber);
+    }
+
+    const nextPoIndex = Number.isFinite(readNumber(materialOrder.nextPoIndex, 0))
+      ? Math.max(0, readNumber(materialOrder.nextPoIndex, 0))
+      : 0;
+
+    const poSuffix = getNextPoSuffix(nextPoIndex);
+    const poCode = `${materialOrderCode}${poSuffix}`.toUpperCase();
+    const poRef = doc(args.db, "purchaseOrders", poCode);
+
+    const existingPoSnap = await tx.get(poRef);
+
+    if (existingPoSnap.exists()) {
+      throw new Error(`PO ${poCode} already exists. Try again.`);
+    }
+
+    const vendorName = readString(args.vendorName) || null;
+    const notes = readString(args.notes) || null;
+    const requestedByUid = args.requestedByUid || null;
+    const requestedByName = args.requestedByName || null;
+
+    const record: PurchaseOrderRecord = {
+      poCode,
+      poIndex: nextPoIndex,
+      poSuffix,
+      status: "open",
+
+      sourceType: "material_order",
+
+      serviceTicketId: null,
+      projectId: null,
+      materialOrderId,
+
+      projectType: null,
+      projectStageKey: null,
+
+      tripId: "",
+
+      billingPeriodId: null,
+      billingPeriodSequence: null,
+      billingPeriodLabel: null,
+      billingPeriodStatus: null,
+
+      materialOrderNumber,
+      materialOrderCode,
+
+      requestedByUid,
+      requestedByName,
+
+      createdAt: stamp,
+      updatedAt: stamp,
+
+      vendorName,
+      notes,
+      matchedInvoiceId: null,
+      matchedAttachmentIds: [],
+      invoiceEmailMessageId: null,
+    };
+
+    if (
+      !existingMaterialOrderNumber ||
+      existingMaterialOrderNumber <= 0 ||
+      !existingMaterialOrderCode
+    ) {
+      tx.set(
+        materialOrderCounterRef,
+        {
+          nextNumber: materialOrderNumber + 1,
+          updatedAt: stamp,
+        },
+        { merge: true }
+      );
+    }
+
+    tx.set(poRef, record);
+
+    const nextStatus =
+      materialOrderStatus === "draft" ? "po_created" : materialOrderStatus || "po_created";
+
+    tx.set(
+      materialOrderRef,
+      {
+        materialOrderNumber,
+        materialOrderCode,
+        nextPoIndex: nextPoIndex + 1,
+        poNumbers: normalizePoNumbers(materialOrder.poNumbers, poCode),
+        purchaseOrders: normalizeMaterialOrderPurchaseOrders({
+          existing: materialOrder.purchaseOrders,
+          poCode,
+          vendorName,
+          stamp,
+          requestedByUid,
+          requestedByName,
+        }),
+        status: nextStatus,
+        updatedAt: stamp,
+        updatedByUid: requestedByUid,
+        updatedByName: requestedByName,
       },
       { merge: true }
     );
@@ -570,6 +840,73 @@ export async function ensureServiceTicketNumber(args: {
     return {
       ticketNumber,
       ticketCode,
+    };
+  });
+}
+
+export async function ensureMaterialOrderNumber(args: {
+  db: Firestore;
+  materialOrderId: string;
+}) {
+  const materialOrderId = readString(args.materialOrderId);
+  if (!materialOrderId) throw new Error("Missing material order ID.");
+
+  const materialOrderRef = doc(args.db, "materialOrders", materialOrderId);
+  const counterRef = doc(args.db, "systemCounters", "materialOrders");
+
+  return runTransaction(args.db, async (tx) => {
+    const materialOrderSnap = await tx.get(materialOrderRef);
+    if (!materialOrderSnap.exists()) throw new Error("Material order not found.");
+
+    const materialOrder = materialOrderSnap.data() as FirestoreData;
+    const existingNumber = readNumber(materialOrder.materialOrderNumber, 0);
+    const existingCode = readUpper(materialOrder.materialOrderCode);
+
+    if (Number.isFinite(existingNumber) && existingNumber > 0 && existingCode) {
+      return {
+        materialOrderNumber: existingNumber,
+        materialOrderCode: existingCode,
+      };
+    }
+
+    const counterSnap = await tx.get(counterRef);
+    const counterData = counterSnap.exists()
+      ? (counterSnap.data() as FirestoreData)
+      : {};
+
+    const current = readNumber(counterData.nextNumber, 1);
+    const materialOrderNumber =
+      Number.isFinite(current) && current > 0 ? Math.floor(current) : 1;
+    const materialOrderCode = formatMaterialOrderCode(materialOrderNumber);
+    const stamp = nowIso();
+
+    const existingNextPoIndex = readNumber(materialOrder.nextPoIndex, 0);
+
+    tx.set(
+      counterRef,
+      {
+        nextNumber: materialOrderNumber + 1,
+        updatedAt: stamp,
+      },
+      { merge: true }
+    );
+
+    tx.set(
+      materialOrderRef,
+      {
+        materialOrderNumber,
+        materialOrderCode,
+        nextPoIndex: Number.isFinite(existingNextPoIndex)
+          ? Math.max(0, existingNextPoIndex)
+          : 0,
+        updatedAt: stamp,
+      },
+      { merge: true }
+    );
+
+    return {
+      materialOrderNumber,
+      materialOrderCode,
     };
   });
 }

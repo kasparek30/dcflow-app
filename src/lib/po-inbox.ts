@@ -32,10 +32,12 @@ type SupplierInvoiceOcrRunResult = {
   ok: boolean;
   status?: string;
   matchedPoCode?: string | null;
+  matchedPoCodes?: string[];
   parsedInvoiceNumber?: string | null;
   parsedInvoiceTotal?: number | null;
   parsedLineItemCount?: number;
   materialImport?: unknown;
+  materialImports?: unknown;
   error?: string;
 };
 
@@ -70,7 +72,13 @@ function requiredEnv(name: string) {
 
 function extractPoCodes(text: string) {
   const source = String(text || "").toUpperCase();
-  const matches = source.match(/\b[SPT]\d{3,}[A-Z]{1,2}\b/g) || [];
+
+  // Service ticket POs: S001A
+  // Bid project POs: P001A
+  // T&M project POs: T001A
+  // Material order POs: M001A
+  const matches = source.match(/\b[SPTM]\d{3,}[A-Z]{1,2}\b/g) || [];
+
   return Array.from(new Set(matches));
 }
 
@@ -247,10 +255,12 @@ async function runSupplierInvoiceOcr(
       ok: true,
       status: result.status,
       matchedPoCode: result.matchedPoCode,
+      matchedPoCodes: result.matchedPoCodes,
       parsedInvoiceNumber: result.parsedInvoiceNumber,
       parsedInvoiceTotal: result.parsedInvoiceTotal,
       parsedLineItemCount: result.parsedLineItemCount,
       materialImport: result.materialImport,
+      materialImports: result.materialImports,
     };
   } catch (err) {
     return {
@@ -298,7 +308,10 @@ async function saveUnmatchedSupplierInvoice(args: {
     uid: args.uid || null,
     detectedPoCodes: [],
     matchedPoCode: null,
+    matchedPoCodes: [],
     serviceTicketId: null,
+    projectId: null,
+    materialOrderId: null,
     attachmentCount: args.attachments.length,
     pdfAttachmentCount: savedAttachments.length,
     attachments: savedAttachments,
@@ -327,6 +340,76 @@ async function saveUnmatchedSupplierInvoice(args: {
     created: true,
     invoiceId,
     attachments: savedAttachments,
+  };
+}
+
+async function saveMatchedSupplierInvoiceForOcr(args: {
+  subject: string;
+  from: string;
+  messageId: string;
+  uid: number | string | null;
+  detectedPoCodes: string[];
+  matchedPoCode: string | null;
+  savedAttachments: SavedPoAttachment[];
+  attachmentCount: number;
+}) {
+  const invoiceId = safeProcessedEmailId("supplier_invoice", args.messageId);
+  const now = new Date().toISOString();
+
+  const invoiceRef = adminFirestore.collection("supplierInvoiceInbox").doc(invoiceId);
+  const existing = await invoiceRef.get();
+
+  if (existing.exists) {
+    return {
+      created: false,
+      invoiceId,
+      attachments: [],
+    };
+  }
+
+  await invoiceRef.set({
+    status: "ocr_pending",
+    sourceType: "supplier_email",
+    emailSubject: args.subject || null,
+    emailFrom: args.from || null,
+    messageId: args.messageId,
+    uid: args.uid || null,
+    detectedPoCodes: args.detectedPoCodes,
+    matchedPoCode: args.matchedPoCode,
+    matchedPoCodes: args.detectedPoCodes,
+    serviceTicketId: null,
+    projectId: null,
+    materialOrderId: null,
+    attachmentCount: args.attachmentCount,
+    pdfAttachmentCount: args.savedAttachments.length,
+    attachments: args.savedAttachments,
+    createdAt: now,
+    updatedAt: now,
+    createdAtServer: FieldValue.serverTimestamp(),
+  });
+
+  await adminFirestore
+    .collection("poInboxProcessedEmails")
+    .doc(invoiceId)
+    .set({
+      scope: "supplierInvoiceInbox",
+      invoiceId,
+      messageId: args.messageId,
+      subject: args.subject,
+      from: args.from,
+      uid: args.uid || null,
+      detectedPoCodes: args.detectedPoCodes,
+      matchedPoCode: args.matchedPoCode,
+      attachmentCount: args.attachmentCount,
+      pdfAttachmentCount: args.savedAttachments.length,
+      processedAt: now,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+  return {
+    created: true,
+    invoiceId,
+    attachments: args.savedAttachments,
   };
 }
 
@@ -432,14 +515,14 @@ export async function scanPoInbox(options?: {
 }): Promise<PoInboxScanResult> {
   const mailboxName = "INBOX";
 
-const scanLimit = Math.max(1, Math.min(Number(options?.scanLimit || 50), 100));
-const maxFullMessagesPerRun = Math.max(
-  1,
-  Math.min(Number(options?.maxFullMessagesPerRun || 5), 10)
-);
-const targetSubjectContains = cleanText(options?.targetSubjectContains).toLowerCase();
+  const scanLimit = Math.max(1, Math.min(Number(options?.scanLimit || 50), 100));
+  const maxFullMessagesPerRun = Math.max(
+    1,
+    Math.min(Number(options?.maxFullMessagesPerRun || 5), 10)
+  );
+  const targetSubjectContains = cleanText(options?.targetSubjectContains).toLowerCase();
 
-let fullMessagesFetched = 0;
+  let fullMessagesFetched = 0;
 
   const client = new ImapFlow({
     host: requiredEnv("PO_INBOX_HOST"),
@@ -535,46 +618,67 @@ let fullMessagesFetched = 0;
             continue;
           }
 
+          if (
+            supplierStatus.exists &&
+            shouldRetrySupplierInvoiceOcr(supplierStatus.status)
+          ) {
+            const ocrRun = await runSupplierInvoiceOcr(supplierInvoiceId);
+            result.supplierInvoiceOcrRuns.push(ocrRun);
+
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid: lightMessage.uid || null,
+              subject,
+              from,
+              messageId,
+              detectedPoCodes,
+              reason: `Retried supplier invoice OCR as ${supplierInvoiceId}. ${formatOcrStatusText(
+                ocrRun
+              )}`,
+            });
+            continue;
+          }
+
           const supplierByUid = await getExistingSupplierInvoiceByUid(
-  lightMessage.uid || null
-);
+            lightMessage.uid || null
+          );
 
-if (
-  supplierByUid.exists &&
-  isFinalSupplierInvoiceStatus(supplierByUid.status)
-) {
-  result.skipped += 1;
-  result.debug.scannedEmails.push({
-    uid: lightMessage.uid || null,
-    subject,
-    from,
-    messageId,
-    detectedPoCodes,
-    reason: `Skipped: supplier invoice already finalized by UID as ${supplierByUid.invoiceId}.`,
-  });
-  continue;
-}
+          if (
+            supplierByUid.exists &&
+            isFinalSupplierInvoiceStatus(supplierByUid.status)
+          ) {
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid: lightMessage.uid || null,
+              subject,
+              from,
+              messageId,
+              detectedPoCodes,
+              reason: `Skipped: supplier invoice already finalized by UID as ${supplierByUid.invoiceId}.`,
+            });
+            continue;
+          }
 
-if (
-  supplierByUid.exists &&
-  shouldRetrySupplierInvoiceOcr(supplierByUid.status)
-) {
-  const ocrRun = await runSupplierInvoiceOcr(supplierByUid.invoiceId);
-  result.supplierInvoiceOcrRuns.push(ocrRun);
+          if (
+            supplierByUid.exists &&
+            shouldRetrySupplierInvoiceOcr(supplierByUid.status)
+          ) {
+            const ocrRun = await runSupplierInvoiceOcr(supplierByUid.invoiceId);
+            result.supplierInvoiceOcrRuns.push(ocrRun);
 
-  result.skipped += 1;
-  result.debug.scannedEmails.push({
-    uid: lightMessage.uid || null,
-    subject,
-    from,
-    messageId,
-    detectedPoCodes,
-    reason: `Retried supplier invoice OCR by UID as ${supplierByUid.invoiceId}. ${formatOcrStatusText(
-      ocrRun
-    )}`,
-  });
-  continue;
-}
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid: lightMessage.uid || null,
+              subject,
+              from,
+              messageId,
+              detectedPoCodes,
+              reason: `Retried supplier invoice OCR by UID as ${supplierByUid.invoiceId}. ${formatOcrStatusText(
+                ocrRun
+              )}`,
+            });
+            continue;
+          }
 
           if (
             detectedPoCodes.length > 0 &&
@@ -603,20 +707,20 @@ if (
           });
 
           if (
-  targetSubjectContains &&
-  !subject.toLowerCase().includes(targetSubjectContains)
-) {
-  result.skipped += 1;
-  result.debug.scannedEmails.push({
-    uid: lightMessage.uid || null,
-    subject,
-    from,
-    messageId,
-    detectedPoCodes,
-    reason: `Skipped targeted scan: subject does not include "${targetSubjectContains}".`,
-  });
-  continue;
-}
+            targetSubjectContains &&
+            !subject.toLowerCase().includes(targetSubjectContains)
+          ) {
+            result.skipped += 1;
+            result.debug.scannedEmails.push({
+              uid: lightMessage.uid || null,
+              subject,
+              from,
+              messageId,
+              detectedPoCodes,
+              reason: `Skipped targeted scan: subject does not include "${targetSubjectContains}".`,
+            });
+            continue;
+          }
 
           if (detectedPoCodes.length === 0 && !likelySupplierInvoice) {
             result.skipped += 1;
@@ -753,6 +857,8 @@ if (
 
           let messageHadMatch = false;
           const messageReasons: string[] = [];
+          let firstMatchedPoCode: string | null = null;
+          let firstMatchedSavedAttachments: SavedPoAttachment[] = [];
 
           for (const poCode of detectedPoCodes) {
             const poRef = adminFirestore.collection("purchaseOrders").doc(poCode);
@@ -785,6 +891,14 @@ if (
               messageId,
               attachments: allAttachments,
             });
+
+            if (!firstMatchedPoCode) {
+              firstMatchedPoCode = poCode;
+            }
+
+            if (firstMatchedSavedAttachments.length === 0 && savedAttachments.length > 0) {
+              firstMatchedSavedAttachments = savedAttachments;
+            }
 
             await adminFirestore.runTransaction(async (tx) => {
               const livePo = await tx.get(poRef);
@@ -835,6 +949,41 @@ if (
               messageId,
               attachmentCount: savedAttachments.length,
             });
+          }
+
+          if (messageHadMatch && firstMatchedSavedAttachments.length > 0) {
+            const matchedInvoice = await saveMatchedSupplierInvoiceForOcr({
+              subject,
+              from,
+              messageId,
+              uid: lightMessage.uid || null,
+              detectedPoCodes,
+              matchedPoCode: firstMatchedPoCode,
+              savedAttachments: firstMatchedSavedAttachments,
+              attachmentCount: allAttachments.length,
+            });
+
+            let ocrRun: SupplierInvoiceOcrRunResult | null = null;
+
+            if (matchedInvoice.created) {
+              ocrRun = await runSupplierInvoiceOcr(matchedInvoice.invoiceId);
+              result.supplierInvoiceOcrRuns.push(ocrRun);
+            } else {
+              const existingStatus = await getExistingSupplierInvoiceStatus(
+                matchedInvoice.invoiceId
+              );
+
+              if (shouldRetrySupplierInvoiceOcr(existingStatus.status)) {
+                ocrRun = await runSupplierInvoiceOcr(matchedInvoice.invoiceId);
+                result.supplierInvoiceOcrRuns.push(ocrRun);
+              }
+            }
+
+            messageReasons.push(
+              `Supplier invoice OCR queued as ${matchedInvoice.invoiceId}. ${formatOcrStatusText(
+                ocrRun
+              )}`
+            );
           }
 
           if (messageHadMatch && lightMessage.uid) {

@@ -1,12 +1,14 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import AlternateEmailRoundedIcon from "@mui/icons-material/AlternateEmailRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
 import PlaceOutlinedIcon from "@mui/icons-material/PlaceOutlined";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import ServiceTicketMapPreview from "./ServiceTicketMapPreview";
 import {
   buildPreferredMapsHref,
@@ -33,6 +35,7 @@ type Props = {
 
 export default function ServiceTicketLocationCard({
   customerDisplayName,
+  customerHref,
   serviceAddressLine1,
   serviceAddressLine2,
   serviceCity,
@@ -71,6 +74,7 @@ export default function ServiceTicketLocationCard({
   );
 
   const cleanCustomerName = String(customerDisplayName || "").trim();
+  const cleanCustomerHref = String(customerHref || "").trim();
   const phoneHref = buildTelHref(customerPhone);
   const mapsHref = buildPreferredMapsHref(mapsAddress, preferAppleMaps);
 
@@ -96,14 +100,56 @@ export default function ServiceTicketLocationCard({
           />
 
           <Stack spacing={0.1} sx={{ minWidth: 0 }}>
-            <Typography
-              variant="h6"
-              fontWeight={800}
-              noWrap
-              sx={{ minWidth: 0, maxWidth: "100%" }}
-            >
-              {cleanCustomerName || "Customer"}
-            </Typography>
+            {cleanCustomerHref ? (
+              <Stack
+                component={Link}
+                href={cleanCustomerHref}
+                direction="row"
+                spacing={0.5}
+                alignItems="center"
+                sx={{
+                  minWidth: 0,
+                  maxWidth: "100%",
+                  color: "primary.main",
+                  textDecoration: "none",
+                  width: "fit-content",
+                  "&:hover": {
+                    textDecoration: "underline",
+                  },
+                }}
+              >
+                <Typography
+                  variant="h6"
+                  fontWeight={900}
+                  noWrap
+                  sx={{
+                    minWidth: 0,
+                    maxWidth: "100%",
+                    color: "inherit",
+                  }}
+                >
+                  {cleanCustomerName || "Customer"}
+                </Typography>
+
+                <OpenInNewRoundedIcon
+                  sx={{
+                    fontSize: 16,
+                    flexShrink: 0,
+                    color: "primary.main",
+                    opacity: 0.8,
+                  }}
+                />
+              </Stack>
+            ) : (
+              <Typography
+                variant="h6"
+                fontWeight={800}
+                noWrap
+                sx={{ minWidth: 0, maxWidth: "100%" }}
+              >
+                {cleanCustomerName || "Customer"}
+              </Typography>
+            )}
 
             <Typography
               variant="caption"
