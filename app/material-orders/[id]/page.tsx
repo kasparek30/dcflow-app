@@ -67,6 +67,7 @@ type SavingAction =
   | "ready_for_pickup"
   | "picked_up"
   | "ready_to_bill"
+  | "invoiced"
   | "cancelled";
 
 type MaterialOrderDoc = MaterialOrder & {
@@ -732,6 +733,7 @@ export default function MaterialOrderDetailPage() {
   }));
 
   const [customerPriceInput, setCustomerPriceInput] = useState("");
+  const [invoiceNumberInput, setInvoiceNumberInput] = useState("");
   const [pickedUpByName, setPickedUpByName] = useState("");
   const [pickupNotes, setPickupNotes] = useState("");
   const [cancelReason, setCancelReason] = useState("");
@@ -790,6 +792,13 @@ export default function MaterialOrderDetailPage() {
         typeof nextOrder.customerPriceTotal === "number"
           ? String(nextOrder.customerPriceTotal)
           : ""
+      );
+      setInvoiceNumberInput(
+        safeStr(
+          nextOrder.billing?.qboInvoiceNumber ||
+            (nextOrder.billing as any)?.invoiceNumber ||
+            ""
+        )
       );
       setPickedUpByName(nextOrder.pickup?.pickedUpByName || "");
       setPickupNotes(nextOrder.pickup?.pickupNotes || "");
@@ -1185,9 +1194,22 @@ export default function MaterialOrderDetailPage() {
       return;
     }
 
+    const isAlreadyInvoiced =
+      normalize(order.status) === "invoiced" ||
+      normalize(order.billing?.status) === "invoiced" ||
+      Boolean(
+        safeStr(order.billing?.qboInvoiceNumber) ||
+          safeStr((order.billing as any)?.invoiceNumber) ||
+          safeStr((order.billing as any)?.invoicedAt),
+      );
+
+    const nextStatus: MaterialOrderStatus = isAlreadyInvoiced
+      ? "invoiced"
+      : "picked_up";
+
     await updateOrder(
       {
-        status: "picked_up" satisfies MaterialOrderStatus,
+        status: nextStatus,
         pickup: {
           ...(order.pickup || {}),
           status: "picked_up",
@@ -1217,6 +1239,34 @@ export default function MaterialOrderDetailPage() {
         },
       },
       "ready_to_bill"
+    );
+  }
+
+  async function handleMarkInvoiced() {
+    if (!order) return;
+
+    const invoiceNumber = invoiceNumberInput.trim();
+    const stamp = nowIso();
+
+    await updateOrder(
+      {
+        status: "invoiced" satisfies MaterialOrderStatus,
+        billing: {
+          ...(order.billing || {}),
+          status: "invoiced",
+          qboInvoiceNumber:
+            invoiceNumber || order.billing?.qboInvoiceNumber || null,
+          invoiceNumber:
+            invoiceNumber ||
+            (order.billing as any)?.invoiceNumber ||
+            order.billing?.qboInvoiceNumber ||
+            null,
+          invoicedAt: stamp,
+          invoicedByUid: appUser?.uid || null,
+          invoicedByName: getUserName(),
+        },
+      },
+      "invoiced"
     );
   }
 
@@ -2311,8 +2361,64 @@ export default function MaterialOrderDetailPage() {
 
                           <InfoRow
                             label="QBO Invoice"
-                            value={order.billing?.qboInvoiceNumber || "—"}
+                            value={
+                              order.billing?.qboInvoiceNumber ||
+                              (order.billing as any)?.invoiceNumber ||
+                              "—"
+                            }
                           />
+
+                          <InfoRow
+                            label="Invoiced"
+                            value={
+                              normalize(order.billing?.status) === "invoiced"
+                                ? `${formatDateTime((order.billing as any)?.invoicedAt)} by ${
+                                    (order.billing as any)?.invoicedByName || "—"
+                                  }`
+                                : "—"
+                            }
+                          />
+
+                          <Divider />
+
+                          <TextField
+                            label="Invoice number / QBO invoice number"
+                            value={invoiceNumberInput}
+                            onChange={(e) => setInvoiceNumberInput(e.target.value)}
+                            fullWidth
+                            placeholder="Optional, but recommended"
+                            disabled={
+                              normalize(order.status) === "cancelled" ||
+                              normalize(order.status) === "invoiced" ||
+                              normalize(order.billing?.status) === "invoiced"
+                            }
+                            helperText="Use this after the customer has actually been billed/invoiced."
+                          />
+
+                          <Button
+                            type="button"
+                            variant="contained"
+                            color="success"
+                            onClick={handleMarkInvoiced}
+                            disabled={
+                              savingAction !== "" ||
+                              normalize(order.status) === "cancelled" ||
+                              normalize(order.status) === "invoiced" ||
+                              normalize(order.billing?.status) === "invoiced"
+                            }
+                            startIcon={
+                              savingAction === "invoiced" ? (
+                                <CircularProgress size={18} color="inherit" />
+                              ) : (
+                                <ReceiptLongRoundedIcon />
+                              )
+                            }
+                            sx={{ borderRadius: 2, fontWeight: 850 }}
+                          >
+                            {savingAction === "invoiced"
+                              ? "Marking Invoiced..."
+                              : "Mark Invoiced / Billed"}
+                          </Button>
                         </Stack>
                       </Box>
                     </SectionSurface>
@@ -2426,9 +2532,9 @@ export default function MaterialOrderDetailPage() {
                             onClick={handleMarkPickedUp}
                             disabled={
                               savingAction !== "" ||
+                              normalize(order.pickup?.status) === "picked_up" ||
                               normalize(order.status) === "picked_up" ||
-                              normalize(order.status) === "cancelled" ||
-                              normalize(order.status) === "invoiced"
+                              normalize(order.status) === "cancelled"
                             }
                             startIcon={
                               savingAction === "picked_up" ? (
@@ -2450,6 +2556,7 @@ export default function MaterialOrderDetailPage() {
                             disabled={
                               savingAction !== "" ||
                               normalize(order.billing?.status) === "ready_to_bill" ||
+                              normalize(order.billing?.status) === "invoiced" ||
                               normalize(order.status) === "cancelled" ||
                               normalize(order.status) === "invoiced"
                             }

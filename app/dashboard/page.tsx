@@ -240,6 +240,10 @@ type DashboardMaterialOrderDoc = {
     readyToBillAt?: string | null;
     readyToBillByName?: string | null;
     qboInvoiceNumber?: string | null;
+    qboInvoiceId?: string | null;
+    invoiceNumber?: string | null;
+    invoiceId?: string | null;
+    invoicedAt?: string | null;
   } | null;
   poNumbers?: string[] | null;
   purchaseOrders?: Array<{
@@ -259,20 +263,15 @@ type DashboardMaterialOrderDoc = {
   updatedAt?: string | null;
 };
 
-type ReadyMaterialOrderItem = {
+type PendingMaterialOrderItem = {
   id: string;
   href: string;
-  materialOrderCode: string;
   customerDisplayName: string;
   requestSummary: string;
-  contactLine: string;
-  poNumbers: string[];
-  supplierCostTotal: number | null;
-  customerPriceTotal: number | null;
-  readyAt?: string | null;
-  readyByName?: string | null;
-  pickupStatus: string;
-  qboInvoiceNumber?: string | null;
+  statusLabel: string;
+  statusTone: "warning" | "success" | "info" | "primary" | "default";
+  urgencyRank: number;
+  updatedAt?: string | null;
 };
 
 function safeTrim(x: unknown) {
@@ -342,23 +341,98 @@ function formatDateOnly(value?: string | null) {
   });
 }
 
-function formatDashboardMoney(value?: number | null) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return "—";
+function hasMaterialOrderInvoiceSignal(order: DashboardMaterialOrderDoc) {
+  const billing = (order.billing || {}) as Record<string, unknown>;
 
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(amount);
+  return Boolean(
+    safeTrim(billing.qboInvoiceNumber) ||
+      safeTrim(billing.qboInvoiceId) ||
+      safeTrim(billing.invoiceNumber) ||
+      safeTrim(billing.invoiceId) ||
+      safeTrim(billing.invoicedAt),
+  );
 }
 
-function formatMaterialOrderPickupStatus(status?: string | null) {
-  const normalized = normalizeStatus(status);
-  if (normalized === "ready_for_pickup") return "Ready for Pickup";
-  if (normalized === "picked_up") return "Picked Up";
-  if (normalized === "received") return "Received";
-  return "Not Ready";
+function getPendingMaterialOrderStatus(order: DashboardMaterialOrderDoc) {
+  const orderStatus = normalizeStatus(order.status);
+  const billingStatus = normalizeStatus(order.billing?.status);
+  const pickupStatus = normalizeStatus(order.pickup?.status);
+  const hasPo =
+    (Array.isArray(order.poNumbers) && order.poNumbers.length > 0) ||
+    (Array.isArray(order.purchaseOrders) && order.purchaseOrders.length > 0);
+  const isInvoiced =
+    orderStatus === "invoiced" || billingStatus === "invoiced" || hasMaterialOrderInvoiceSignal(order);
+  const isPickedUp = orderStatus === "picked_up" || pickupStatus === "picked_up";
+
+  if (orderStatus === "cancelled" || orderStatus === "closed" || billingStatus === "closed") {
+    return null;
+  }
+
+  if (isInvoiced && isPickedUp) {
+    return null;
+  }
+
+  if (isInvoiced && !isPickedUp) {
+    return {
+      label: "Billed — Waiting for Pickup",
+      tone: "success" as const,
+      rank: 1,
+    };
+  }
+
+  if (billingStatus === "ready_to_bill" || orderStatus === "ready_to_bill") {
+    return {
+      label: "Needs Invoice",
+      tone: "warning" as const,
+      rank: 2,
+    };
+  }
+
+  if (isPickedUp) {
+    return {
+      label: "Picked Up — Needs Invoice",
+      tone: "warning" as const,
+      rank: 3,
+    };
+  }
+
+  if (orderStatus === "ready_for_pickup" || pickupStatus === "ready_for_pickup") {
+    return {
+      label: "Ready for Pickup",
+      tone: "success" as const,
+      rank: 4,
+    };
+  }
+
+  if (orderStatus === "received" || pickupStatus === "received") {
+    return {
+      label: "Received — Prep for Pickup",
+      tone: "info" as const,
+      rank: 5,
+    };
+  }
+
+  if (orderStatus === "ordered") {
+    return {
+      label: "Waiting for Delivery",
+      tone: "primary" as const,
+      rank: 6,
+    };
+  }
+
+  if (orderStatus === "po_created" || hasPo) {
+    return {
+      label: "Needs Ordering",
+      tone: "primary" as const,
+      rank: 7,
+    };
+  }
+
+  return {
+    label: "Needs PO",
+    tone: "warning" as const,
+    rank: 8,
+  };
 }
 
 function ticketSort(a: DashboardTicketItem, b: DashboardTicketItem) {
@@ -760,76 +834,36 @@ function buildReadyInvoiceItems(
   });
 }
 
-function getMaterialOrderPoNumbers(order: DashboardMaterialOrderDoc) {
-  const fromPoNumbers = Array.isArray(order.poNumbers) ? order.poNumbers : [];
-
-  const fromPurchaseOrders = Array.isArray(order.purchaseOrders)
-    ? order.purchaseOrders.map((po) => safeTrim(po?.poNumber)).filter(Boolean)
-    : [];
-
-  const fromSupplierInvoices = Array.isArray(order.supplierInvoices)
-    ? order.supplierInvoices.map((invoice) => safeTrim(invoice?.poNumber)).filter(Boolean)
-    : [];
-
-  return Array.from(
-    new Set(
-      [...fromPoNumbers, ...fromPurchaseOrders, ...fromSupplierInvoices].map((po) =>
-        po.toUpperCase(),
-      ),
-    ),
-  );
-}
-
-function getMaterialOrderSupplierCostTotal(order: DashboardMaterialOrderDoc) {
-  const direct = Number(order.supplierCostTotal);
-  if (Number.isFinite(direct) && direct > 0) return direct;
-
-  if (Array.isArray(order.supplierInvoices) && order.supplierInvoices.length > 0) {
-    const total = order.supplierInvoices.reduce((sum, invoice) => {
-      const amount = Number(invoice?.total || 0);
-      return Number.isFinite(amount) ? sum + amount : sum;
-    }, 0);
-
-    return total > 0 ? total : null;
-  }
-
-  return null;
-}
-
-function buildReadyMaterialOrderItems(materialOrders: DashboardMaterialOrderDoc[]) {
+function buildPendingMaterialOrderItems(materialOrders: DashboardMaterialOrderDoc[]) {
   return materialOrders
-    .filter((order) => normalizeStatus(order.billing?.status) === "ready_to_bill")
     .map((order) => {
-      const poNumbers = getMaterialOrderPoNumbers(order);
-      const contactLine = [order.contactName, order.contactPhone]
-        .map(safeTrim)
-        .filter(Boolean)
-        .join(" • ");
+      const statusMeta = getPendingMaterialOrderStatus(order);
+      if (!statusMeta) return null;
 
       return {
         id: order.id,
         href: `/material-orders/${order.id}`,
-        materialOrderCode: safeTrim(order.materialOrderCode) || "Material Order",
         customerDisplayName: safeTrim(order.customerDisplayName) || "Customer",
         requestSummary: safeTrim(order.requestSummary) || "Material Order",
-        contactLine,
-        poNumbers,
-        supplierCostTotal: getMaterialOrderSupplierCostTotal(order),
-        customerPriceTotal:
-          Number.isFinite(Number(order.customerPriceTotal)) && Number(order.customerPriceTotal) >= 0
-            ? Number(order.customerPriceTotal)
-            : null,
-        readyAt: safeTrim(order.billing?.readyToBillAt) || safeTrim(order.updatedAt) || undefined,
-        readyByName: safeTrim(order.billing?.readyToBillByName) || undefined,
-        pickupStatus: formatMaterialOrderPickupStatus(order.pickup?.status),
-        qboInvoiceNumber: safeTrim(order.billing?.qboInvoiceNumber) || undefined,
-      } satisfies ReadyMaterialOrderItem;
+        statusLabel: statusMeta.label,
+        statusTone: statusMeta.tone,
+        urgencyRank: statusMeta.rank,
+        updatedAt: safeTrim(order.updatedAt) || safeTrim(order.createdAt) || undefined,
+      } satisfies PendingMaterialOrderItem;
     })
+    .filter(Boolean)
     .sort((a, b) => {
-      const aMs = parseFlexibleDateMs(a.readyAt) || 0;
-      const bMs = parseFlexibleDateMs(b.readyAt) || 0;
-      return aMs - bMs;
-    });
+      const left = a as PendingMaterialOrderItem;
+      const right = b as PendingMaterialOrderItem;
+
+      if (left.urgencyRank !== right.urgencyRank) {
+        return left.urgencyRank - right.urgencyRank;
+      }
+
+      const aMs = parseFlexibleDateMs(left.updatedAt) || 0;
+      const bMs = parseFlexibleDateMs(right.updatedAt) || 0;
+      return bMs - aMs;
+    }) as PendingMaterialOrderItem[];
 }
 
 function getFieldStatusMeta(status?: string | null, timerState?: string | null) {
@@ -1181,93 +1215,45 @@ function ReadyInvoiceProjectRow({ item }: { item: ReadyInvoiceProjectItem }) {
   );
 }
 
-function ReadyMaterialOrderRow({ item }: { item: ReadyMaterialOrderItem }) {
+function PendingMaterialOrderRow({ item }: { item: PendingMaterialOrderItem }) {
   return (
     <Box sx={{ py: 1.25 }}>
-      <Stack spacing={1.1}>
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={1.2}
-          justifyContent="space-between"
-          alignItems={{ xs: "flex-start", md: "center" }}
-        >
-          <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography variant="subtitle1" fontWeight={800} noWrap>
-                {item.materialOrderCode}
-              </Typography>
-              <Chip size="small" label="Ready to Bill" color="success" variant="filled" sx={{ fontWeight: 800 }} />
-            </Stack>
-
-            <Typography variant="body2" color="text.secondary" noWrap sx={{ mt: 0.25 }}>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={1.2}
+        justifyContent="space-between"
+        alignItems={{ xs: "flex-start", md: "center" }}
+      >
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="subtitle1" fontWeight={800} noWrap>
               {item.customerDisplayName}
             </Typography>
-          </Box>
 
-          <Button
-            component={Link}
-            href={item.href}
-            variant="contained"
-            color="success"
-            endIcon={<ArrowForwardRoundedIcon />}
-            sx={{ borderRadius: 999, boxShadow: "none", flexShrink: 0 }}
-          >
-            Open Order
-          </Button>
-        </Stack>
-
-        <Typography variant="body2" sx={{ fontWeight: 650 }}>
-          {item.requestSummary}
-        </Typography>
-
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Chip
-            size="small"
-            icon={<Inventory2RoundedIcon sx={{ fontSize: 14 }} />}
-            label={item.pickupStatus}
-            variant="outlined"
-            sx={{ fontWeight: 700 }}
-          />
-
-          <Chip
-            size="small"
-            icon={<AccessTimeRoundedIcon sx={{ fontSize: 14 }} />}
-            label={`Ready ${formatDateOnly(item.readyAt)}${item.readyByName ? ` by ${item.readyByName}` : ""}`}
-            variant="outlined"
-            sx={{ fontWeight: 700 }}
-          />
-
-          {item.poNumbers.length > 0 ? (
-            <Chip size="small" label={`PO ${item.poNumbers.join(", ")}`} variant="outlined" sx={{ fontWeight: 700 }} />
-          ) : (
-            <Chip size="small" label="No PO" color="warning" variant="outlined" sx={{ fontWeight: 700 }} />
-          )}
-        </Stack>
-
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Chip size="small" label={`Supplier Cost: ${formatDashboardMoney(item.supplierCostTotal)}`} variant="outlined" sx={{ fontWeight: 700 }} />
-          <Chip
-            size="small"
-            label={`Customer Price: ${formatDashboardMoney(item.customerPriceTotal)}`}
-            color={item.customerPriceTotal === null ? "warning" : "success"}
-            variant="outlined"
-            sx={{ fontWeight: 700 }}
-          />
-
-          {item.contactLine ? (
             <Chip
               size="small"
-              icon={<PersonRoundedIcon sx={{ fontSize: 14 }} />}
-              label={item.contactLine}
-              variant="outlined"
-              sx={{ fontWeight: 700 }}
+              label={item.statusLabel}
+              color={item.statusTone}
+              variant={item.statusTone === "default" ? "outlined" : "filled"}
+              sx={{ fontWeight: 800 }}
             />
-          ) : null}
+          </Stack>
 
-          {item.qboInvoiceNumber ? (
-            <Chip size="small" label={`Invoice #${item.qboInvoiceNumber}`} color="success" variant="outlined" sx={{ fontWeight: 700 }} />
-          ) : null}
-        </Stack>
+          <Typography variant="body2" color="text.secondary" noWrap sx={{ mt: 0.35 }}>
+            {item.requestSummary}
+          </Typography>
+        </Box>
+
+        <Button
+          component={Link}
+          href={item.href}
+          variant="outlined"
+          color="primary"
+          endIcon={<ArrowForwardRoundedIcon />}
+          sx={{ borderRadius: 999, flexShrink: 0 }}
+        >
+          Open Order
+        </Button>
       </Stack>
     </Box>
   );
@@ -1421,6 +1407,36 @@ function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
   );
 }
 
+function LiveFieldWorkSection({ activeItems }: { activeItems: ActiveWorkItem[] }) {
+  return (
+    <SectionCard
+      title="Live Field Work"
+      subtitle="Compact visibility into active service and project trips and who is assigned in the field."
+      icon={<MyLocationRoundedIcon />}
+      count={activeItems.length}
+      accent="neutral"
+    >
+      <Stack spacing={1.25}>
+        {activeItems.length === 0 ? (
+          <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+            No active field work is showing right now.
+          </Alert>
+        ) : (
+          <>
+            <AreaSnapshotCard activeItems={activeItems} />
+
+            <Stack spacing={1.25}>
+              {activeItems.map((item) => (
+                <ActiveWorkRow key={item.id} item={item} />
+              ))}
+            </Stack>
+          </>
+        )}
+      </Stack>
+    </SectionCard>
+  );
+}
+
 export default function DashboardPage() {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -1488,7 +1504,7 @@ export default function DashboardPage() {
     );
 
     const unsubMaterialOrders = onSnapshot(
-      query(collection(db, "materialOrders"), where("billing.status", "==", "ready_to_bill"), limit(50)),
+      query(collection(db, "materialOrders"), limit(200)),
       (snap) => {
         const items = snap.docs.map((docSnap) => {
           const data = docSnap.data() as any;
@@ -1694,8 +1710,8 @@ export default function DashboardPage() {
     [dashboardProjects, dashboardProjectTrips],
   );
 
-  const readyMaterialOrders = useMemo(
-    () => buildReadyMaterialOrderItems(dashboardMaterialOrders),
+  const pendingMaterialOrders = useMemo(
+    () => buildPendingMaterialOrderItems(dashboardMaterialOrders),
     [dashboardMaterialOrders],
   );
 
@@ -1707,9 +1723,9 @@ export default function DashboardPage() {
       ...reviewTickets.map((x) => `ticket_rev_${x.id}`),
       ...projectFollowUps.map((x) => `project_fu_${x.projectId}`),
       ...readyInvoiceProjects.map((x) => `project_bill_${x.projectId}`),
-      ...readyMaterialOrders.map((x) => `material_bill_${x.id}`),
+      ...pendingMaterialOrders.map((x) => `material_pending_${x.id}`),
     ]).size;
-  }, [followUpTickets, reviewTickets, projectFollowUps, readyInvoiceProjects, readyMaterialOrders]);
+  }, [followUpTickets, reviewTickets, projectFollowUps, readyInvoiceProjects, pendingMaterialOrders]);
 
   const visibleCardCount = useMemo(() => {
     return (
@@ -1718,7 +1734,7 @@ export default function DashboardPage() {
       activeItems.length +
       projectFollowUps.length +
       readyInvoiceProjects.length +
-      readyMaterialOrders.length
+      pendingMaterialOrders.length
     );
   }, [
     reviewTickets.length,
@@ -1726,7 +1742,7 @@ export default function DashboardPage() {
     activeItems.length,
     projectFollowUps.length,
     readyInvoiceProjects.length,
-    readyMaterialOrders.length,
+    pendingMaterialOrders.length,
   ]);
 
   return (
@@ -1792,10 +1808,10 @@ export default function DashboardPage() {
                       />
 
                       <Chip
-                        label={`${readyMaterialOrders.length} material order${readyMaterialOrders.length === 1 ? "" : "s"}`}
+                        label={`${pendingMaterialOrders.length} material order${pendingMaterialOrders.length === 1 ? "" : "s"}`}
                         size="small"
-                        color={readyMaterialOrders.length > 0 ? "success" : "default"}
-                        variant={readyMaterialOrders.length > 0 ? "filled" : "outlined"}
+                        color={pendingMaterialOrders.length > 0 ? "success" : "default"}
+                        variant={pendingMaterialOrders.length > 0 ? "filled" : "outlined"}
                         sx={{ borderRadius: 999, fontWeight: 800 }}
                       />
                     </Stack>
@@ -1815,8 +1831,8 @@ export default function DashboardPage() {
 
                       <Typography variant="body1" color="text.secondary" sx={{ mt: 1, maxWidth: 940 }}>
                         This dashboard keeps office action items front and center while also giving dispatch a compact
-                        view of live field work, project follow-ups, billing-ready projects, material orders ready to
-                        bill, current assignments, and active trip status across service and project work.
+                        view of live field work, project follow-ups, billing-ready projects, pending material orders,
+                        current assignments, and active trip status across service and project work.
                       </Typography>
                     </Box>
                   </Stack>
@@ -1845,6 +1861,10 @@ export default function DashboardPage() {
               </Alert>
             ) : null}
 
+            <Box sx={{ display: { xs: "block", xl: "none" } }}>
+              <LiveFieldWorkSection activeItems={activeItems} />
+            </Box>
+
             <Box
               sx={{
                 display: "grid",
@@ -1870,17 +1890,17 @@ export default function DashboardPage() {
                   </SectionCard>
                 ) : null}
 
-                {readyMaterialOrders.length > 0 ? (
+                {pendingMaterialOrders.length > 0 ? (
                   <SectionCard
-                    title="Material Orders Ready to Bill"
-                    subtitle="Materials-only customer orders that are ready for billing follow-through."
+                    title="Pending Material Orders"
+                    subtitle="Materials-only orders still waiting on delivery, pickup, billing, or invoicing."
                     icon={<Inventory2RoundedIcon />}
-                    count={readyMaterialOrders.length}
+                    count={pendingMaterialOrders.length}
                     accent="success"
                   >
                     <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
-                      {readyMaterialOrders.map((item) => (
-                        <ReadyMaterialOrderRow key={item.id} item={item} />
+                      {pendingMaterialOrders.map((item) => (
+                        <PendingMaterialOrderRow key={item.id} item={item} />
                       ))}
                     </Stack>
                   </SectionCard>
@@ -1902,7 +1922,7 @@ export default function DashboardPage() {
                   </SectionCard>
                 ) : null}
 
-                {reviewTickets.length === 0 && followUpTickets.length === 0 && readyMaterialOrders.length === 0 ? (
+                {reviewTickets.length === 0 && followUpTickets.length === 0 && pendingMaterialOrders.length === 0 ? (
                   <Card
                     elevation={0}
                     sx={{
@@ -1917,7 +1937,7 @@ export default function DashboardPage() {
                           Billing and service workflow is clear
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
-                          There are no current service tickets or material orders in the office review queues.
+                          There are no current service tickets or pending material orders in the office review queues.
                         </Typography>
 
                         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
@@ -1947,31 +1967,9 @@ export default function DashboardPage() {
               </Stack>
 
               <Stack spacing={2}>
-                <SectionCard
-                  title="Live Field Work"
-                  subtitle="Compact visibility into active service and project trips and who is assigned in the field."
-                  icon={<MyLocationRoundedIcon />}
-                  count={activeItems.length}
-                  accent="neutral"
-                >
-                  <Stack spacing={1.25}>
-                    {activeItems.length === 0 ? (
-                      <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
-                        No active field work is showing right now.
-                      </Alert>
-                    ) : (
-                      <>
-                        <AreaSnapshotCard activeItems={activeItems} />
-
-                        <Stack spacing={1.25}>
-                          {activeItems.map((item) => (
-                            <ActiveWorkRow key={item.id} item={item} />
-                          ))}
-                        </Stack>
-                      </>
-                    )}
-                  </Stack>
-                </SectionCard>
+                <Box sx={{ display: { xs: "none", xl: "block" } }}>
+                  <LiveFieldWorkSection activeItems={activeItems} />
+                </Box>
 
                 <SectionCard
                   title="Today at a Glance"
@@ -1987,7 +1985,7 @@ export default function DashboardPage() {
                       { label: "Follow-Up", value: followUpTickets.length },
                       { label: "Project Follow-Ups", value: projectFollowUps.length },
                       { label: "Ready To Invoice", value: readyInvoiceProjects.length },
-                      { label: "Material Orders", value: readyMaterialOrders.length },
+                      { label: "Pending Materials", value: pendingMaterialOrders.length },
                       { label: "Attention Total", value: attentionCount },
                     ].map((item) => (
                       <Box
