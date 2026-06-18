@@ -62,6 +62,7 @@ import TvRoundedIcon from "@mui/icons-material/TvRounded";
 import FolderRoundedIcon from "@mui/icons-material/FolderRounded";
 import PeopleAltRoundedIcon from "@mui/icons-material/PeopleAltRounded";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import Inventory2RoundedIcon from "@mui/icons-material/Inventory2Rounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import AccessTimeFilledRoundedIcon from "@mui/icons-material/AccessTimeFilledRounded";
 import ViewWeekRoundedIcon from "@mui/icons-material/ViewWeekRounded";
@@ -602,6 +603,8 @@ function getMobilePageLabel(pathname: string) {
   if (pathname.startsWith("/office-display")) return "Office Display";
   if (pathname.startsWith("/projects")) return "Projects";
   if (pathname.startsWith("/customers")) return "Customers";
+  if (pathname.startsWith("/material-orders/")) return "Material Order";
+  if (pathname.startsWith("/material-orders")) return "Material Orders";
   if (pathname.startsWith("/service-tickets/")) return "Service Ticket";
   if (pathname.startsWith("/service-tickets")) return "Service Tickets";
   if (pathname.startsWith("/time-entries")) return "Time Entries";
@@ -1731,6 +1734,12 @@ export default function AppShell({
 
   const showProjects =
     role === "admin" || role === "dispatcher" || role === "manager";
+
+  const showMaterialOrders =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager" ||
+    role === "billing";
 
   const showWorkload = false;
 
@@ -3167,6 +3176,15 @@ export default function AppShell({
       icon: <ReceiptLongRoundedIcon />,
       badgeCount: newUntouchedServiceTicketCount,
     },
+    ...(showMaterialOrders
+  ? [
+      {
+        href: "/material-orders",
+        label: "Material Orders",
+        icon: <Inventory2RoundedIcon />,
+      },
+    ]
+  : []),
     ...(showTimeEntries
       ? [
           {

@@ -3,14 +3,19 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  updateDoc,
+} from "firebase/firestore";
 import {
   Alert,
   Box,
   Button,
   Card,
-  CardContent,
   Chip,
   CircularProgress,
   Dialog,
@@ -18,16 +23,18 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  MenuItem,
   Paper,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { alpha, useTheme } from "@mui/material/styles";
+import { alpha } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import ContactPhoneRoundedIcon from "@mui/icons-material/ContactPhoneRounded";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import Inventory2RoundedIcon from "@mui/icons-material/Inventory2Rounded";
 import LocalShippingRoundedIcon from "@mui/icons-material/LocalShippingRounded";
@@ -35,6 +42,7 @@ import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
 import PlaceRoundedIcon from "@mui/icons-material/PlaceRounded";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import ShoppingCartRoundedIcon from "@mui/icons-material/ShoppingCartRounded";
 import StorefrontRoundedIcon from "@mui/icons-material/StorefrontRounded";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
@@ -46,11 +54,13 @@ import { db } from "../../../src/lib/firebase";
 import { generatePurchaseOrderForMaterialOrder } from "../../../src/lib/purchase-orders";
 import type {
   MaterialOrder,
+  MaterialOrderPickupLocationType,
   MaterialOrderStatus,
 } from "../../../src/types/material-order";
 
 type SavingAction =
   | ""
+  | "details"
   | "pricing"
   | "ordered"
   | "received"
@@ -64,6 +74,50 @@ type MaterialOrderDoc = MaterialOrder & {
   updatedAt?: unknown;
 };
 
+type CustomerAddressOption = {
+  id: string;
+  label: string;
+  line1: string;
+  line2: string;
+  city: string;
+  state: string;
+  postalCode: string;
+};
+
+type CustomerOption = {
+  id: string;
+  displayName: string;
+  contactName?: string;
+  phone?: string;
+  email?: string;
+  serviceAddresses: CustomerAddressOption[];
+};
+
+type EditMaterialOrderForm = {
+  customerId: string;
+  customerDisplayName: string;
+
+  contactName: string;
+  contactPhone: string;
+  contactEmail: string;
+
+  pickupLocationType: MaterialOrderPickupLocationType;
+  pickupLocationNotes: string;
+  targetPickupDate: string;
+
+  serviceAddressId: string;
+  serviceAddressLabel: string;
+  serviceAddressLine1: string;
+  serviceAddressLine2: string;
+  serviceCity: string;
+  serviceState: string;
+  servicePostalCode: string;
+
+  requestSummary: string;
+  requestDetails: string;
+  internalNotes: string;
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -74,6 +128,11 @@ function normalize(s: unknown) {
 
 function safeStr(x: unknown) {
   return String(x ?? "").trim();
+}
+
+function cleanNullable(value: unknown) {
+  const cleaned = safeStr(value);
+  return cleaned || null;
 }
 
 function formatAddress(params: {
@@ -216,6 +275,19 @@ function getStatusLabel(status?: string) {
       return "Cancelled";
     default:
       return "Unknown";
+  }
+}
+
+function getPickupStatusLabel(status?: string) {
+  switch (normalize(status)) {
+    case "not_ready":
+      return "Not Ready";
+    case "ready_for_pickup":
+      return "Ready for Pickup";
+    case "picked_up":
+      return "Picked Up";
+    default:
+      return "Not Ready";
   }
 }
 
@@ -385,6 +457,174 @@ function mapMaterialOrder(id: string, data: any): MaterialOrderDoc {
   };
 }
 
+function getCustomerDisplayNameFromData(data: any) {
+  const firstLast = [data.firstName, data.lastName].map(safeStr).filter(Boolean).join(" ");
+
+  return (
+    safeStr(data.displayName) ||
+    safeStr(data.customerDisplayName) ||
+    safeStr(data.name) ||
+    safeStr(data.companyName) ||
+    safeStr(data.businessName) ||
+    firstLast ||
+    "Unnamed Customer"
+  );
+}
+
+function getCustomerPhoneFromData(data: any) {
+  return (
+    safeStr(data.phonePrimary) ||
+    safeStr(data.primaryPhone) ||
+    safeStr(data.phone) ||
+    safeStr(data.phoneNumber) ||
+    safeStr(data.mobilePhone) ||
+    safeStr(data.cellPhone) ||
+    safeStr(data.contactPhone)
+  );
+}
+
+function getCustomerEmailFromData(data: any) {
+  return (
+    safeStr(data.emailPrimary) ||
+    safeStr(data.primaryEmail) ||
+    safeStr(data.email) ||
+    safeStr(data.contactEmail)
+  );
+}
+
+function mapAddressOption(raw: any, fallbackId: string): CustomerAddressOption | null {
+  const line1 =
+    safeStr(raw?.line1) ||
+    safeStr(raw?.addressLine1) ||
+    safeStr(raw?.street1) ||
+    safeStr(raw?.street) ||
+    safeStr(raw?.address);
+
+  const line2 =
+    safeStr(raw?.line2) ||
+    safeStr(raw?.addressLine2) ||
+    safeStr(raw?.street2);
+
+  const city = safeStr(raw?.city);
+  const state = safeStr(raw?.state);
+  const postalCode =
+    safeStr(raw?.postalCode) ||
+    safeStr(raw?.zip) ||
+    safeStr(raw?.zipCode);
+
+  if (!line1 && !city && !state && !postalCode) return null;
+
+  const label =
+    safeStr(raw?.label) ||
+    safeStr(raw?.name) ||
+    safeStr(raw?.addressLabel) ||
+    line1 ||
+    "Address";
+
+  return {
+    id: safeStr(raw?.id) || safeStr(raw?.addressId) || fallbackId,
+    label,
+    line1,
+    line2,
+    city,
+    state,
+    postalCode,
+  };
+}
+
+function getCustomerAddressOptions(data: any): CustomerAddressOption[] {
+  const options: CustomerAddressOption[] = [];
+
+  const serviceAddresses = Array.isArray(data.serviceAddresses)
+    ? data.serviceAddresses
+    : Array.isArray(data.addresses)
+      ? data.addresses
+      : [];
+
+  serviceAddresses.forEach((address: any, index: number) => {
+    const mapped = mapAddressOption(address, `address_${index}`);
+    if (mapped) options.push(mapped);
+  });
+
+  const topLevelAddress = mapAddressOption(
+    {
+      id: "primary",
+      label: "Primary",
+      line1:
+        data.serviceAddressLine1 ||
+        data.billingAddressLine1 ||
+        data.addressLine1 ||
+        data.line1,
+      line2:
+        data.serviceAddressLine2 ||
+        data.billingAddressLine2 ||
+        data.addressLine2 ||
+        data.line2,
+      city: data.serviceCity || data.billingCity || data.city,
+      state: data.serviceState || data.billingState || data.state,
+      postalCode:
+        data.servicePostalCode ||
+        data.billingPostalCode ||
+        data.postalCode ||
+        data.zip,
+    },
+    "primary"
+  );
+
+  if (topLevelAddress) {
+    const duplicate = options.some(
+      (address) =>
+        normalize(address.line1) === normalize(topLevelAddress.line1) &&
+        normalize(address.city) === normalize(topLevelAddress.city) &&
+        normalize(address.postalCode) === normalize(topLevelAddress.postalCode)
+    );
+
+    if (!duplicate) options.unshift(topLevelAddress);
+  }
+
+  return options;
+}
+
+function mapCustomer(id: string, data: any): CustomerOption {
+  const displayName = getCustomerDisplayNameFromData(data);
+
+  return {
+    id,
+    displayName,
+    contactName: safeStr(data.contactName) || displayName,
+    phone: getCustomerPhoneFromData(data),
+    email: getCustomerEmailFromData(data),
+    serviceAddresses: getCustomerAddressOptions(data),
+  };
+}
+
+function makeEditForm(order: MaterialOrderDoc): EditMaterialOrderForm {
+  return {
+    customerId: order.customerId || "",
+    customerDisplayName: order.customerDisplayName || "",
+
+    contactName: order.contactName || "",
+    contactPhone: order.contactPhone || "",
+    contactEmail: order.contactEmail || "",
+
+    pickupLocationType: order.pickupLocationType || "office_pickup",
+    pickupLocationNotes: order.pickupLocationNotes || "",
+    targetPickupDate: order.targetPickupDate || "",
+
+    serviceAddressId: order.serviceAddressId || "",
+    serviceAddressLabel: order.serviceAddressLabel || "",
+    serviceAddressLine1: order.serviceAddressLine1 || "",
+    serviceAddressLine2: order.serviceAddressLine2 || "",
+    serviceCity: order.serviceCity || "",
+    serviceState: order.serviceState || "",
+    servicePostalCode: order.servicePostalCode || "",
+
+    requestSummary: order.requestSummary || "",
+    requestDetails: order.requestDetails || "",
+    internalNotes: order.internalNotes || "",
+  };
+}
+
 function SectionSurface({ children }: { children: React.ReactNode }) {
   return (
     <Card
@@ -445,8 +685,6 @@ function InfoRow({
 }
 
 export default function MaterialOrderDetailPage() {
-  const theme = useTheme();
-  const router = useRouter();
   const params = useParams();
   const { appUser } = useAuthContext();
 
@@ -464,6 +702,35 @@ export default function MaterialOrderDetailPage() {
   const [actionOk, setActionOk] = useState("");
   const [savingAction, setSavingAction] = useState<SavingAction>("");
 
+  const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const [customersError, setCustomersError] = useState("");
+
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [selectedEditCustomerId, setSelectedEditCustomerId] = useState("");
+  const [editForm, setEditForm] = useState<EditMaterialOrderForm>(() => ({
+    customerId: "",
+    customerDisplayName: "",
+    contactName: "",
+    contactPhone: "",
+    contactEmail: "",
+    pickupLocationType: "office_pickup",
+    pickupLocationNotes: "",
+    targetPickupDate: "",
+    serviceAddressId: "",
+    serviceAddressLabel: "",
+    serviceAddressLine1: "",
+    serviceAddressLine2: "",
+    serviceCity: "",
+    serviceState: "",
+    servicePostalCode: "",
+    requestSummary: "",
+    requestDetails: "",
+    internalNotes: "",
+  }));
+
   const [customerPriceInput, setCustomerPriceInput] = useState("");
   const [pickedUpByName, setPickedUpByName] = useState("");
   const [pickupNotes, setPickupNotes] = useState("");
@@ -475,6 +742,27 @@ export default function MaterialOrderDetailPage() {
   const [poGenerating, setPoGenerating] = useState(false);
   const [poError, setPoError] = useState("");
   const [poOk, setPoOk] = useState("");
+
+  const loadCustomers = useCallback(async () => {
+    setCustomersLoading(true);
+    setCustomersError("");
+
+    try {
+      const snap = await getDocs(collection(db, "customers"));
+
+      const next = snap.docs
+        .map((docSnap) => mapCustomer(docSnap.id, docSnap.data()))
+        .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+      setCustomers(next);
+    } catch (err: unknown) {
+      setCustomersError(
+        err instanceof Error ? err.message : "Failed to load customers."
+      );
+    } finally {
+      setCustomersLoading(false);
+    }
+  }, []);
 
   const loadOrder = useCallback(async () => {
     if (!orderId) {
@@ -516,6 +804,10 @@ export default function MaterialOrderDetailPage() {
     loadOrder();
   }, [loadOrder]);
 
+  useEffect(() => {
+    loadCustomers();
+  }, [loadCustomers]);
+
   function getUserName() {
     return (
       String((appUser as any)?.displayName || "").trim() ||
@@ -533,6 +825,130 @@ export default function MaterialOrderDetailPage() {
     } catch {
       // Non-blocking clipboard fallback.
     }
+  }
+
+  const selectedEditCustomer = useMemo(() => {
+    return customers.find((customer) => customer.id === selectedEditCustomerId) || null;
+  }, [customers, selectedEditCustomerId]);
+
+  const selectedCustomerAddresses = selectedEditCustomer?.serviceAddresses || [];
+
+  const filteredCustomers = useMemo(() => {
+    const q = normalize(customerSearch);
+
+    const source = q
+      ? customers.filter((customer) => {
+          const haystack = normalize(
+            [
+              customer.displayName,
+              customer.contactName,
+              customer.phone,
+              customer.email,
+            ].join(" ")
+          );
+
+          return haystack.includes(q);
+        })
+      : customers;
+
+    return source.slice(0, 12);
+  }, [customers, customerSearch]);
+
+  function setEditField<K extends keyof EditMaterialOrderForm>(
+    key: K,
+    value: EditMaterialOrderForm[K]
+  ) {
+    setEditForm((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  }
+
+  function applyAddressToEditForm(address: CustomerAddressOption) {
+    setEditForm((prev) => ({
+      ...prev,
+      serviceAddressId: address.id,
+      serviceAddressLabel: address.label,
+      serviceAddressLine1: address.line1,
+      serviceAddressLine2: address.line2,
+      serviceCity: address.city,
+      serviceState: address.state,
+      servicePostalCode: address.postalCode,
+    }));
+  }
+
+  function handleSelectEditCustomer(customer: CustomerOption) {
+    setSelectedEditCustomerId(customer.id);
+    setCustomerSearch(customer.displayName);
+
+    const firstAddress = customer.serviceAddresses[0] || null;
+
+    setEditForm((prev) => ({
+      ...prev,
+      customerId: customer.id,
+      customerDisplayName: customer.displayName,
+      contactName:
+        prev.contactName && prev.contactName !== order?.customerDisplayName
+          ? prev.contactName
+          : customer.contactName || customer.displayName,
+      contactPhone: customer.phone || prev.contactPhone,
+      contactEmail: customer.email || prev.contactEmail,
+
+      ...(firstAddress
+        ? {
+            serviceAddressId: firstAddress.id,
+            serviceAddressLabel: firstAddress.label,
+            serviceAddressLine1: firstAddress.line1,
+            serviceAddressLine2: firstAddress.line2,
+            serviceCity: firstAddress.city,
+            serviceState: firstAddress.state,
+            servicePostalCode: firstAddress.postalCode,
+          }
+        : {}),
+    }));
+  }
+
+  function handleSelectCustomerAddress(addressId: string) {
+    if (!addressId) {
+      setEditForm((prev) => ({
+        ...prev,
+        serviceAddressId: "",
+        serviceAddressLabel: "",
+      }));
+      return;
+    }
+
+    const selected = selectedCustomerAddresses.find(
+      (address) => address.id === addressId
+    );
+
+    if (selected) {
+      applyAddressToEditForm(selected);
+    }
+  }
+
+  function openEditDialog() {
+    if (!order) return;
+
+    const nextForm = makeEditForm(order);
+
+    setEditForm(nextForm);
+    setSelectedEditCustomerId(order.customerId || "");
+    setCustomerSearch(order.customerDisplayName || "");
+    setEditError("");
+    setActionError("");
+    setActionOk("");
+    setEditDialogOpen(true);
+
+    if (customers.length === 0 && !customersLoading) {
+      void loadCustomers();
+    }
+  }
+
+  function closeEditDialog() {
+    if (savingAction === "details") return;
+    setEditDialogOpen(false);
+    setEditError("");
   }
 
   function openGeneratePoDialog() {
@@ -591,8 +1007,11 @@ export default function MaterialOrderDetailPage() {
     }
   }
 
-  async function updateOrder(payload: Record<string, unknown>, action: SavingAction) {
-    if (!order) return;
+  async function updateOrder(
+    payload: Record<string, unknown>,
+    action: SavingAction
+  ): Promise<boolean> {
+    if (!order) return false;
 
     setActionError("");
     setActionOk("");
@@ -608,12 +1027,77 @@ export default function MaterialOrderDetailPage() {
 
       await loadOrder();
       setActionOk("Material order updated.");
+      return true;
     } catch (err: unknown) {
       setActionError(
         err instanceof Error ? err.message : "Failed to update material order."
       );
+      return false;
     } finally {
       setSavingAction("");
+    }
+  }
+
+  async function handleSaveEditDetails() {
+    if (!order) return;
+
+    setEditError("");
+
+    if (!editForm.customerId.trim()) {
+      setEditError("Select a billing party/customer account.");
+      return;
+    }
+
+    if (!editForm.customerDisplayName.trim()) {
+      setEditError("Billing party display name is required.");
+      return;
+    }
+
+    if (!editForm.contactName.trim()) {
+      setEditError("Contact person is required.");
+      return;
+    }
+
+    if (!editForm.contactPhone.trim()) {
+      setEditError("Contact phone is required.");
+      return;
+    }
+
+    if (!editForm.requestSummary.trim()) {
+      setEditError("Request summary is required.");
+      return;
+    }
+
+    const ok = await updateOrder(
+      {
+        customerId: editForm.customerId.trim(),
+        customerDisplayName: editForm.customerDisplayName.trim(),
+
+        contactName: editForm.contactName.trim(),
+        contactPhone: editForm.contactPhone.trim(),
+        contactEmail: cleanNullable(editForm.contactEmail),
+
+        pickupLocationType: editForm.pickupLocationType,
+        pickupLocationNotes: cleanNullable(editForm.pickupLocationNotes),
+        targetPickupDate: cleanNullable(editForm.targetPickupDate),
+
+        serviceAddressId: cleanNullable(editForm.serviceAddressId),
+        serviceAddressLabel: cleanNullable(editForm.serviceAddressLabel),
+        serviceAddressLine1: cleanNullable(editForm.serviceAddressLine1),
+        serviceAddressLine2: cleanNullable(editForm.serviceAddressLine2),
+        serviceCity: cleanNullable(editForm.serviceCity),
+        serviceState: cleanNullable(editForm.serviceState),
+        servicePostalCode: cleanNullable(editForm.servicePostalCode),
+
+        requestSummary: editForm.requestSummary.trim(),
+        requestDetails: cleanNullable(editForm.requestDetails),
+        internalNotes: cleanNullable(editForm.internalNotes),
+      },
+      "details"
+    );
+
+    if (ok) {
+      setEditDialogOpen(false);
     }
   }
 
@@ -817,6 +1301,334 @@ export default function MaterialOrderDetailPage() {
   return (
     <ProtectedPage fallbackTitle="Material Order">
       <AppShell appUser={appUser}>
+        <Dialog
+          open={editDialogOpen}
+          onClose={closeEditDialog}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle>Edit Material Order Details</DialogTitle>
+
+          <DialogContent dividers>
+            <Stack spacing={2.5}>
+              {editError ? <Alert severity="error">{editError}</Alert> : null}
+
+              {customersError ? (
+                <Alert severity="warning" variant="outlined">
+                  Customer list warning: {customersError}
+                </Alert>
+              ) : null}
+
+              <Alert severity="info" variant="outlined">
+                Reassigning the billing party updates the customer account linked to this
+                material order. Contact and address fields can still be adjusted manually
+                before saving.
+              </Alert>
+
+              <Stack spacing={1.25}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 850 }}>
+                  Billing Party / Customer Account
+                </Typography>
+
+                <TextField
+                  label="Search customers"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  fullWidth
+                  placeholder="Search by customer name, phone, or email"
+                  InputProps={{
+                    startAdornment: (
+                      <SearchRoundedIcon
+                        fontSize="small"
+                        sx={{ mr: 1, color: "text.secondary" }}
+                      />
+                    ),
+                  }}
+                />
+
+                <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                  {customersLoading ? (
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 1 }}>
+                      <CircularProgress size={18} />
+                      <Typography variant="body2" color="text.secondary">
+                        Loading customers...
+                      </Typography>
+                    </Stack>
+                  ) : filteredCustomers.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
+                      No matching customers found.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.75}>
+                      {filteredCustomers.map((customer) => {
+                        const selected = customer.id === editForm.customerId;
+
+                        return (
+                          <Button
+                            key={customer.id}
+                            type="button"
+                            variant={selected ? "contained" : "outlined"}
+                            onClick={() => handleSelectEditCustomer(customer)}
+                            sx={{
+                              justifyContent: "flex-start",
+                              borderRadius: 1,
+                              textAlign: "left",
+                              py: 1,
+                            }}
+                          >
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography
+                                variant="body2"
+                                sx={{ fontWeight: 850, textTransform: "none" }}
+                              >
+                                {customer.displayName}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  color: selected ? "inherit" : "text.secondary",
+                                  textTransform: "none",
+                                }}
+                              >
+                                {[customer.phone, customer.email]
+                                  .map(safeStr)
+                                  .filter(Boolean)
+                                  .join(" • ") || "No phone/email saved"}
+                              </Typography>
+                            </Box>
+                          </Button>
+                        );
+                      })}
+                    </Stack>
+                  )}
+                </Paper>
+
+                <TextField
+                  label="Billing party display name"
+                  value={editForm.customerDisplayName}
+                  onChange={(e) =>
+                    setEditField("customerDisplayName", e.target.value)
+                  }
+                  fullWidth
+                  required
+                />
+              </Stack>
+
+              <Divider />
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                  gap: 2,
+                }}
+              >
+                <TextField
+                  label="Contact person"
+                  value={editForm.contactName}
+                  onChange={(e) => setEditField("contactName", e.target.value)}
+                  fullWidth
+                  required
+                />
+
+                <TextField
+                  label="Contact phone"
+                  value={editForm.contactPhone}
+                  onChange={(e) => setEditField("contactPhone", e.target.value)}
+                  fullWidth
+                  required
+                />
+
+                <TextField
+                  label="Contact email"
+                  value={editForm.contactEmail}
+                  onChange={(e) => setEditField("contactEmail", e.target.value)}
+                  fullWidth
+                />
+
+                <TextField
+                  select
+                  label="Pickup type"
+                  value={editForm.pickupLocationType}
+                  onChange={(e) =>
+                    setEditField(
+                      "pickupLocationType",
+                      e.target.value as MaterialOrderPickupLocationType
+                    )
+                  }
+                  fullWidth
+                >
+                  <MenuItem value="office_pickup">Customer Pickup at Office</MenuItem>
+                  <MenuItem value="customer_site">Customer / Facility Location</MenuItem>
+                  <MenuItem value="other">Other</MenuItem>
+                </TextField>
+
+                <TextField
+                  label="Target pickup date"
+                  type="date"
+                  value={editForm.targetPickupDate}
+                  onChange={(e) => setEditField("targetPickupDate", e.target.value)}
+                  fullWidth
+                  InputLabelProps={{ shrink: true }}
+                />
+
+                <TextField
+                  label="Pickup / location notes"
+                  value={editForm.pickupLocationNotes}
+                  onChange={(e) =>
+                    setEditField("pickupLocationNotes", e.target.value)
+                  }
+                  fullWidth
+                />
+              </Box>
+
+              <Divider />
+
+              <Stack spacing={1.25}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 850 }}>
+                  Address Context
+                </Typography>
+
+                <TextField
+                  select
+                  label="Saved customer address"
+                  value={editForm.serviceAddressId}
+                  onChange={(e) => handleSelectCustomerAddress(e.target.value)}
+                  fullWidth
+                  helperText={
+                    selectedCustomerAddresses.length > 0
+                      ? "Selecting an address will populate the manual address fields below."
+                      : "No saved addresses available for the selected customer."
+                  }
+                >
+                  <MenuItem value="">Manual / no saved address</MenuItem>
+                  {selectedCustomerAddresses.map((address) => (
+                    <MenuItem key={address.id} value={address.id}>
+                      {address.label} —{" "}
+                      {formatAddress({
+                        addressLine1: address.line1,
+                        addressLine2: address.line2,
+                        city: address.city,
+                        state: address.state,
+                        postalCode: address.postalCode,
+                      })}
+                    </MenuItem>
+                  ))}
+                </TextField>
+
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                    gap: 2,
+                  }}
+                >
+                  <TextField
+                    label="Address label"
+                    value={editForm.serviceAddressLabel}
+                    onChange={(e) =>
+                      setEditField("serviceAddressLabel", e.target.value)
+                    }
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="Address line 1"
+                    value={editForm.serviceAddressLine1}
+                    onChange={(e) =>
+                      setEditField("serviceAddressLine1", e.target.value)
+                    }
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="Address line 2"
+                    value={editForm.serviceAddressLine2}
+                    onChange={(e) =>
+                      setEditField("serviceAddressLine2", e.target.value)
+                    }
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="City"
+                    value={editForm.serviceCity}
+                    onChange={(e) => setEditField("serviceCity", e.target.value)}
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="State"
+                    value={editForm.serviceState}
+                    onChange={(e) => setEditField("serviceState", e.target.value)}
+                    fullWidth
+                  />
+
+                  <TextField
+                    label="ZIP"
+                    value={editForm.servicePostalCode}
+                    onChange={(e) =>
+                      setEditField("servicePostalCode", e.target.value)
+                    }
+                    fullWidth
+                  />
+                </Box>
+              </Stack>
+
+              <Divider />
+
+              <Stack spacing={2}>
+                <TextField
+                  label="Request summary"
+                  value={editForm.requestSummary}
+                  onChange={(e) => setEditField("requestSummary", e.target.value)}
+                  fullWidth
+                  required
+                />
+
+                <TextField
+                  label="Request details"
+                  value={editForm.requestDetails}
+                  onChange={(e) => setEditField("requestDetails", e.target.value)}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+
+                <TextField
+                  label="Internal notes"
+                  value={editForm.internalNotes}
+                  onChange={(e) => setEditField("internalNotes", e.target.value)}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+              </Stack>
+            </Stack>
+          </DialogContent>
+
+          <DialogActions>
+            <Button onClick={closeEditDialog} disabled={savingAction === "details"}>
+              Cancel
+            </Button>
+
+            <Button
+              variant="contained"
+              onClick={handleSaveEditDetails}
+              disabled={savingAction === "details"}
+              startIcon={
+                savingAction === "details" ? (
+                  <CircularProgress size={18} color="inherit" />
+                ) : (
+                  <CheckCircleRoundedIcon />
+                )
+              }
+            >
+              {savingAction === "details" ? "Saving..." : "Save Details"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Dialog
           open={poDialogOpen}
           onClose={closeGeneratePoDialog}
@@ -1022,6 +1834,16 @@ export default function MaterialOrderDetailPage() {
                         spacing={1}
                         alignItems={{ xs: "stretch", sm: "center" }}
                       >
+                        <Button
+                          type="button"
+                          variant="outlined"
+                          startIcon={<EditRoundedIcon />}
+                          onClick={openEditDialog}
+                          sx={{ borderRadius: 2, minHeight: 40 }}
+                        >
+                          Edit Details
+                        </Button>
+
                         <Button
                           type="button"
                           variant="contained"
@@ -1754,7 +2576,7 @@ export default function MaterialOrderDetailPage() {
 
                           <InfoRow
                             label="Pickup Status"
-                            value={getStatusLabel(order.pickup?.status)}
+                            value={getPickupStatusLabel(order.pickup?.status)}
                           />
 
                           <InfoRow

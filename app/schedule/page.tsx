@@ -15,6 +15,7 @@ import {
   updateDoc,
   where,
   writeBatch,
+  arrayUnion,
 } from "firebase/firestore";
 import {
   Alert,
@@ -57,6 +58,7 @@ import { alpha, useTheme } from "@mui/material/styles";
 import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import TodayRoundedIcon from "@mui/icons-material/TodayRounded";
+import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import ViewWeekRoundedIcon from "@mui/icons-material/ViewWeekRounded";
 import ViewDayRoundedIcon from "@mui/icons-material/ViewDayRounded";
@@ -164,6 +166,12 @@ type ProjectSummary = {
   name: string;
 };
 
+type ProjectStageOption = {
+  key: string;
+  label: string;
+  status: string;
+};
+
 type TechFilterValue = "ALL" | "UNASSIGNED" | string;
 type AddTripType = "service" | "project";
 type HalfDaySlotKey = "am" | "pm";
@@ -176,6 +184,9 @@ type MeetingRoleFilter =
   | "manager"
   | "dispatcher"
   | "admin";
+
+type MonthAvailabilityMode = "leads" | "helpers" | "all_field";
+type MonthAvailabilityStatus = "open" | "booked" | "partial" | "pto" | "other";
 
 type CompanyHoliday = {
   id: string;
@@ -236,6 +247,7 @@ type PickerItem = {
   preview?: string;
   estimatedHours?: number | null;
   ticketStatus?: string | null;
+  projectStageOptions?: ProjectStageOption[];
 };
 
 type AddSlotConflictSummary = {
@@ -258,6 +270,14 @@ type StaffCoverageDoc = {
   scheduledHours: number;
   status: "scheduled" | "clocked_in" | "completed" | "cancelled" | string;
   notes?: string | null;
+};
+
+type TripHelperSlot = "helper" | "secondaryHelper" | "add";
+
+type TripHelperEntry = {
+  slot: Exclude<TripHelperSlot, "add">;
+  uid: string;
+  name: string;
 };
 
 const MEETING_ELIGIBLE_ROLES = [
@@ -447,6 +467,183 @@ function projectIsSchedulableByStatus(d: any) {
 
   // When old project documents do not have a status yet, keep active=true projects visible.
   return true;
+}
+
+
+function normalizeProjectType(value: any) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replaceAll(" ", "_")
+    .replaceAll("-", "_");
+}
+
+function normalizeStageStatus(value: any) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replaceAll(" ", "_")
+    .replaceAll("-", "_");
+}
+
+function isOpenProjectStageStatus(value: any) {
+  const status = normalizeStageStatus(value);
+
+  if (!status) return true;
+
+  const closedStatuses = new Set([
+    "complete",
+    "completed",
+    "field_complete",
+    "ready_to_invoice",
+    "ready_to_bill",
+    "invoiced",
+    "invoice_created",
+    "invoice_sent",
+    "paid",
+    "closed",
+    "archived",
+    "cancelled",
+    "canceled",
+  ]);
+
+  return !closedStatuses.has(status);
+}
+
+function projectStageLabel(stageKey: string) {
+  const key = String(stageKey || "").trim();
+
+  const labels: Record<string, string> = {
+    roughIn: "Rough-In",
+    topOutVent: "Top-Out / Vent",
+    trimFinish: "Trim / Finish",
+    billingPeriod: "Billing Period",
+    currentBillingPeriod: "Current Billing Period",
+  };
+
+  if (labels[key]) return labels[key];
+
+  return key
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function stageStatusFromProjectData(projectData: any, stageKey: string) {
+  const stage = projectData?.stages?.[stageKey];
+
+  const candidates = [
+    stage?.status,
+    stage?.stageStatus,
+    stage?.workflowStatus,
+    projectData?.stageStatuses?.[stageKey],
+    projectData?.stageStatus?.[stageKey],
+    projectData?.stagesStatus?.[stageKey],
+    projectData?.[`${stageKey}Status`],
+  ];
+
+  return candidates
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || "not_started";
+}
+
+function extractProjectStageOptions(projectData: any): ProjectStageOption[] {
+  const type = normalizeProjectType(
+    projectData?.projectType ??
+      projectData?.type ??
+      projectData?.jobType ??
+      projectData?.billingType ??
+      projectData?.contractType
+  );
+
+  const knownStageKeys =
+    type === "new_construction" || type === "newconstruction"
+      ? ["roughIn", "topOutVent", "trimFinish"]
+      : type === "remodel"
+        ? ["roughIn", "trimFinish"]
+        : [] as string[];
+
+  const stageKeysFromObject =
+    projectData?.stages && typeof projectData.stages === "object" && !Array.isArray(projectData.stages)
+      ? Object.keys(projectData.stages)
+      : [];
+
+  const billingPeriods =
+    Array.isArray(projectData?.billingPeriods)
+      ? projectData.billingPeriods
+      : Array.isArray(projectData?.billing?.periods)
+        ? projectData.billing.periods
+        : [];
+
+  if (
+    type === "time_materials" ||
+    type === "time_and_materials" ||
+    type === "t_m" ||
+    type === "tm"
+  ) {
+    const periodOptions = billingPeriods
+      .map((period: any, index: number) => {
+        const key = String(period?.id ?? period?.key ?? period?.billingPeriodId ?? `billingPeriod_${index + 1}`).trim();
+        const label = String(period?.label ?? period?.name ?? period?.title ?? `Billing Period ${index + 1}`).trim();
+        const status = String(period?.status ?? period?.billingStatus ?? "open").trim() || "open";
+
+        if (!key || !isOpenProjectStageStatus(status)) return null;
+
+        return {
+          key,
+          label,
+          status,
+        } satisfies ProjectStageOption;
+      })
+      .filter(Boolean) as ProjectStageOption[];
+
+    if (periodOptions.length) return periodOptions;
+
+    return [
+      {
+        key: "currentBillingPeriod",
+        label: "Current Billing Period",
+        status: "open",
+      },
+    ];
+  }
+
+  const stageKeys = Array.from(
+    new Set([
+      ...knownStageKeys,
+      ...stageKeysFromObject,
+    ])
+  ).filter(Boolean);
+
+  return stageKeys
+    .map((stageKey) => {
+      const stageData = projectData?.stages?.[stageKey] || {};
+      const status = stageStatusFromProjectData(projectData, stageKey);
+
+      if (!isOpenProjectStageStatus(status)) return null;
+
+      return {
+        key: stageKey,
+        label: String(stageData?.label ?? stageData?.name ?? stageData?.title ?? projectStageLabel(stageKey)).trim(),
+        status,
+      } satisfies ProjectStageOption;
+    })
+    .filter(Boolean) as ProjectStageOption[];
+}
+
+function projectStageStatusLabel(status: string) {
+  const normalized = normalizeStageStatus(status);
+  if (!normalized || normalized === "not_started") return "Not Started";
+  if (normalized === "in_progress") return "In Progress";
+  if (normalized === "scheduled") return "Scheduled";
+  if (normalized === "open") return "Open";
+
+  return normalized
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function isCompletedStatus(status?: string) {
@@ -1013,6 +1210,153 @@ function computeAddSlotConflict(args: {
   } satisfies AddSlotConflictSummary;
 }
 
+
+function tripSlotKeyForConflict(trip: TripDoc): SlotKey {
+  const w = String(trip.timeWindow || "").toLowerCase();
+
+  if (w === "am" || w === "pm" || w === "all_day") return w;
+
+  const selectedSlots = selectedSlotsForWindow(w, trip.startTime, trip.endTime);
+  if (selectedSlots.length > 1) return "all_day";
+  return selectedSlots[0] || "all_day";
+}
+
+function tripTimeRangeMinutes(trip: TripDoc) {
+  const startFromField = minutesFromHHMM(trip.startTime);
+  const endFromField = minutesFromHHMM(trip.endTime);
+
+  if (startFromField != null && endFromField != null && endFromField > startFromField) {
+    return {
+      start: startFromField,
+      end: endFromField,
+      isExact: true,
+    };
+  }
+
+  const w = String(trip.timeWindow || "").toLowerCase();
+  if (w === "am") {
+    return { start: SLOT_AM_START, end: SLOT_AM_END, isExact: false };
+  }
+  if (w === "pm") {
+    return { start: SLOT_PM_START, end: SLOT_PM_END, isExact: false };
+  }
+
+  return { start: SLOT_AM_START, end: SLOT_PM_END, isExact: false };
+}
+
+function tripsOverlapByExactTime(a: TripDoc, b: TripDoc) {
+  const aRange = tripTimeRangeMinutes(a);
+  const bRange = tripTimeRangeMinutes(b);
+  return aRange.start < bRange.end && aRange.end > bRange.start;
+}
+
+function tripBlocksEventWindowByExactTime(
+  trip: TripDoc,
+  windowValue: string,
+  startTime?: string | null,
+  endTime?: string | null
+) {
+  const tripRange = tripTimeRangeMinutes(trip);
+  const w = String(windowValue || "").toLowerCase();
+
+  if (w === "all_day") return true;
+
+  if (w === "am") {
+    return tripRange.start < SLOT_AM_END && tripRange.end > SLOT_AM_START;
+  }
+
+  if (w === "pm") {
+    return tripRange.start < SLOT_PM_END && tripRange.end > SLOT_PM_START;
+  }
+
+  const eventStart = minutesFromHHMM(String(startTime || ""));
+  const eventEnd = minutesFromHHMM(String(endTime || ""));
+  if (eventStart == null || eventEnd == null || eventEnd <= eventStart) {
+    return true;
+  }
+
+  return tripRange.start < eventEnd && tripRange.end > eventStart;
+}
+
+function tripHelperEntries(trip: TripDoc): TripHelperEntry[] {
+  const entries: TripHelperEntry[] = [];
+
+  const helperUid = String(trip.crew?.helperUid || "").trim();
+  if (helperUid) {
+    entries.push({
+      slot: "helper",
+      uid: helperUid,
+      name: String(trip.crew?.helperName || "Helper").trim() || "Helper",
+    });
+  }
+
+  const secondaryHelperUid = String(trip.crew?.secondaryHelperUid || "").trim();
+  if (secondaryHelperUid) {
+    entries.push({
+      slot: "secondaryHelper",
+      uid: secondaryHelperUid,
+      name: String(trip.crew?.secondaryHelperName || "Helper").trim() || "Helper",
+    });
+  }
+
+  return entries;
+}
+
+function crewWithHelperAssigned(
+  crew: TripCrew | null | undefined,
+  slot: TripHelperSlot,
+  helper: HelperOption
+): TripCrew {
+  const next: TripCrew = { ...(crew || {}) };
+
+  const targetSlot: Exclude<TripHelperSlot, "add"> =
+    slot === "add"
+      ? String(next.helperUid || "").trim()
+        ? "secondaryHelper"
+        : "helper"
+      : slot;
+
+  if (targetSlot === "helper") {
+    next.helperUid = helper.uid;
+    next.helperName = helper.name;
+  } else {
+    next.secondaryHelperUid = helper.uid;
+    next.secondaryHelperName = helper.name;
+  }
+
+  return next;
+}
+
+function crewWithHelperRemoved(
+  crew: TripCrew | null | undefined,
+  slot: Exclude<TripHelperSlot, "add">
+): TripCrew {
+  const next: TripCrew = { ...(crew || {}) };
+
+  if (slot === "helper") {
+    if (String(next.secondaryHelperUid || "").trim()) {
+      next.helperUid = next.secondaryHelperUid || null;
+      next.helperName = next.secondaryHelperName || null;
+      next.secondaryHelperUid = null;
+      next.secondaryHelperName = null;
+    } else {
+      next.helperUid = null;
+      next.helperName = null;
+    }
+  } else {
+    next.secondaryHelperUid = null;
+    next.secondaryHelperName = null;
+  }
+
+  return next;
+}
+
+function helperIsAlreadyOnTrip(trip: TripDoc, helperUid: string) {
+  const uid = String(helperUid || "").trim();
+  if (!uid) return false;
+  return tripHelperEntries(trip).some((entry) => entry.uid === uid);
+}
+
 function InfoChip({
   icon,
   label,
@@ -1173,6 +1517,7 @@ export default function SchedulePage() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [hideCompleted, setHideCompleted] = useState<boolean>(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [monthAvailabilityMode, setMonthAvailabilityMode] = useState<MonthAvailabilityMode>("leads");
 
   const [loading, setLoading] = useState(true);
 
@@ -1214,6 +1559,7 @@ export default function SchedulePage() {
   const [addSearch, setAddSearch] = useState("");
   const [addSelectedId, setAddSelectedId] = useState("");
   const [addAdvancedId, setAddAdvancedId] = useState("");
+  const [addProjectStageKey, setAddProjectStageKey] = useState("");
   const [addNotes, setAddNotes] = useState("");
   const [addDispatchOverrideEnabled, setAddDispatchOverrideEnabled] =
     useState(false);
@@ -1271,6 +1617,12 @@ export default function SchedulePage() {
   const [blockSaving, setBlockSaving] = useState(false);
   const [blockErr, setBlockErr] = useState("");
 
+  const [helperEditOpen, setHelperEditOpen] = useState(false);
+  const [helperEditTripId, setHelperEditTripId] = useState("");
+  const [helperEditSlot, setHelperEditSlot] = useState<TripHelperSlot>("add");
+  const [helperEditSaving, setHelperEditSaving] = useState(false);
+  const [helperEditErr, setHelperEditErr] = useState("");
+
   const addScheduleMenuOpen = Boolean(addScheduleAnchorEl);
 
   const allMeetingEmployeeUids = useMemo(
@@ -1295,6 +1647,22 @@ export default function SchedulePage() {
     const selected = new Set(meetAppliesToUids);
     return meetingEmployees.filter((employee) => selected.has(employee.uid));
   }, [meetingEmployees, meetAppliesToUids]);
+
+  const helperEditTrip = useMemo(() => {
+    const id = String(helperEditTripId || "").trim();
+    if (!id) return null;
+    return trips.find((trip) => trip.id === id) || null;
+  }, [helperEditTripId, trips]);
+
+  const helperEditEntries = useMemo(() => {
+    if (!helperEditTrip) return [] as TripHelperEntry[];
+    return tripHelperEntries(helperEditTrip);
+  }, [helperEditTrip]);
+
+  const helperEditExistingEntry = useMemo(() => {
+    if (!helperEditTrip || helperEditSlot === "add") return null;
+    return helperEditEntries.find((entry) => entry.slot === helperEditSlot) || null;
+  }, [helperEditTrip, helperEditSlot, helperEditEntries]);
 
   const selectedBlockEmployees = useMemo(() => {
     const selected = new Set(blockAppliesToUids);
@@ -1350,6 +1718,16 @@ const selectedAddPickerItem = useMemo(() => {
   const base = addTripType === "service" ? openTicketItems : openProjectItems;
   return base.find((item) => item.id === id) || null;
 }, [addSelectedId, addAdvancedId, addTripType, openTicketItems, openProjectItems]);
+
+const selectedProjectStageOptions = useMemo(() => {
+  if (addTripType !== "project") return [] as ProjectStageOption[];
+  return selectedAddPickerItem?.projectStageOptions || [];
+}, [addTripType, selectedAddPickerItem]);
+
+const selectedProjectStage = useMemo(() => {
+  if (addTripType !== "project") return null;
+  return selectedProjectStageOptions.find((stage) => stage.key === addProjectStageKey) || null;
+}, [addTripType, selectedProjectStageOptions, addProjectStageKey]);
 
 const addEstimateHours = addTripType === "service" ? selectedAddPickerItem?.estimatedHours ?? null : null;
 const addShouldRecommendAllDay =
@@ -1480,6 +1858,22 @@ const addSlotConflicts = useMemo(() => {
   ptoByUidByDate,
   eventsByDate,
 ]);
+
+  useEffect(() => {
+    if (addTripType !== "project") {
+      if (addProjectStageKey) setAddProjectStageKey("");
+      return;
+    }
+
+    if (!selectedProjectStageOptions.length) {
+      if (addProjectStageKey) setAddProjectStageKey("");
+      return;
+    }
+
+    if (!selectedProjectStageOptions.some((stage) => stage.key === addProjectStageKey)) {
+      setAddProjectStageKey("");
+    }
+  }, [addTripType, selectedProjectStageOptions, addProjectStageKey]);
 
   useEffect(() => {
     if (addSlotConflicts.softMessages.length === 0) {
@@ -1663,6 +2057,9 @@ const estHours =
           const id = ds.id;
           if (!projectIsSchedulableByStatus(d)) return null;
 
+          const stageOptions = extractProjectStageOptions(d);
+          if (stageOptions.length === 0) return null;
+
           const name = String(d.projectName ?? d.name ?? d.title ?? "Project").trim();
           const customer = String(d.customerDisplayName ?? "").trim();
           const line1 = String(d.serviceAddressLine1 ?? "").trim();
@@ -1672,6 +2069,9 @@ const estHours =
             id,
             label: name || "Project",
             sublabel: `${customer || "Customer"}${line1 ? ` — ${line1}` : ""}${city ? `, ${city}` : ""}`,
+            metaLeft: "Project",
+            metaRight: `${stageOptions.length} open stage${stageOptions.length === 1 ? "" : "s"}`,
+            projectStageOptions: stageOptions,
           } as PickerItem;
         })
         .filter(Boolean) as PickerItem[];
@@ -1711,6 +2111,7 @@ function slotDefaults(slot: SlotKey) {
     setAddSearch("");
     setAddSelectedId("");
     setAddAdvancedId("");
+    setAddProjectStageKey("");
     setAddNotes("");
     setAddDispatchOverrideEnabled(false);
     setAddDispatchOverrideReason("");
@@ -1721,8 +2122,19 @@ function slotDefaults(slot: SlotKey) {
   }
 
   function openQuickScheduleModal(args: { techUid: string; dateIso: string }) {
-    setQuickScheduleTechUid(args.techUid);
-    setQuickScheduleDateIso(args.dateIso);
+    const techUid = String(args.techUid || "").trim();
+    const dateIso = String(args.dateIso || "").trim();
+
+    if (dateIso && holidayByDate[dateIso]) {
+      return;
+    }
+
+    if (techUid && dateIso && ptoByUidByDate[techUid]?.[dateIso]) {
+      return;
+    }
+
+    setQuickScheduleTechUid(techUid);
+    setQuickScheduleDateIso(dateIso);
     setQuickScheduleOpen(true);
   }
 
@@ -1747,11 +2159,18 @@ function slotDefaults(slot: SlotKey) {
     setAddSearch("");
     setAddSelectedId("");
     setAddAdvancedId("");
+    setAddProjectStageKey("");
     setAddNotes("");
     setAddDispatchOverrideEnabled(false);
     setAddDispatchOverrideReason("");
     setMobileAdvancedOpen(false);
     setMobileNotesOpen(false);
+  }
+
+  function selectAddPickerItem(itemId: string) {
+    setAddSelectedId(itemId);
+    setAddAdvancedId("");
+    setAddProjectStageKey("");
   }
 
   function currentPickerItems(): PickerItem[] {
@@ -1786,6 +2205,20 @@ function slotDefaults(slot: SlotKey) {
 
     if (!linkId) {
       return setAddErr(addTripType === "service" ? "Choose an open Service Ticket." : "Choose a Project.");
+    }
+
+    if (addTripType === "project") {
+      if (advancedId && !chosenId) {
+        return setAddErr("Choose the project from the list so DCFlow can verify its open stages.");
+      }
+
+      if (!addProjectStageKey) {
+        return setAddErr("Choose an open project stage before scheduling this project trip.");
+      }
+
+      if (!selectedProjectStageOptions.some((stage) => stage.key === addProjectStageKey)) {
+        return setAddErr("That project stage is not open for scheduling. Choose another stage.");
+      }
     }
 
 const livePrimaryHelper = helpers
@@ -1890,8 +2323,10 @@ actualMinutes: null,
         link: {
           serviceTicketId: addTripType === "service" ? linkId : null,
           projectId: addTripType === "project" ? linkId : null,
-          projectStageKey: null,
+          projectStageKey: addTripType === "project" ? addProjectStageKey : null,
+          stageKey: addTripType === "project" ? addProjectStageKey : null,
         },
+        projectStageKey: addTripType === "project" ? addProjectStageKey : null,
         notes: addNotes.trim() || null,
         cancelReason: null,
         createdAt: now,
@@ -1930,6 +2365,20 @@ if (addTripType === "service") {
   });
 }
 
+if (addTripType === "project") {
+  const projectUpdatePayload: any = {
+    [`stages.${addProjectStageKey}.scheduledTripIds`]: arrayUnion(created.id),
+    [`stages.${addProjectStageKey}.lastScheduledTripId`]: created.id,
+    updatedAt: now,
+  };
+
+  if (normalizeStageStatus(selectedProjectStage?.status) !== "in_progress") {
+    projectUpdatePayload[`stages.${addProjectStageKey}.status`] = "scheduled";
+  }
+
+  await updateDoc(doc(db, "projects", linkId), projectUpdatePayload);
+}
+
 const newTrip: TripDoc = { id: created.id, ...(payload as any) };
 setTrips((prev) => [...prev, newTrip].sort(compareTripTime));
 
@@ -1939,6 +2388,344 @@ closeAddModal();
     } finally {
       setAddSaving(false);
     }
+  }
+
+
+  function openHelperEditDialog(args: { tripId: string; slot: TripHelperSlot }) {
+    setHelperEditTripId(args.tripId);
+    setHelperEditSlot(args.slot);
+    setHelperEditErr("");
+    setHelperEditSaving(false);
+    setHelperEditOpen(true);
+  }
+
+  function closeHelperEditDialog() {
+    if (helperEditSaving) return;
+    setHelperEditOpen(false);
+    setHelperEditTripId("");
+    setHelperEditSlot("add");
+    setHelperEditErr("");
+    setHelperEditSaving(false);
+  }
+
+  function helperConflictMessagesForTrip(trip: TripDoc, helperUid: string) {
+    const dateIso = String(trip.date || "").trim();
+    if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) {
+      return { hardMessages: ["This trip is missing a valid date."], softMessages: [] as string[] };
+    }
+
+    const uid = String(helperUid || "").trim();
+    const employeeName = employeeNamesByUid[uid] || uid || "Helper";
+    const employeeRole = employeeRolesByUid[uid] || "employee";
+    const hard = new Set<string>();
+    const soft = new Set<string>();
+
+    const holiday = holidayByDate[dateIso];
+    if (holiday) {
+      hard.add(`That date is a company holiday (${holiday.name}).`);
+    }
+
+    const pto = ptoByUidByDate[uid]?.[dateIso];
+    if (pto) {
+      hard.add(`${employeeName} is on approved PTO for ${dateIso}.`);
+    }
+
+    const overlappingEvents = (eventsByDate[dateIso] || []).filter(
+      (event) =>
+        eventAppliesToUid(event, uid, employeeRole) &&
+        tripBlocksEventWindowByExactTime(trip, event.timeWindow || "all_day", event.startTime, event.endTime)
+    );
+
+    for (const event of overlappingEvents) {
+      hard.add(`${employeeName} is blocked by ${meetingChipLabel(event)}.`);
+    }
+
+    const overlappingTrips = trips.filter(
+      (existingTrip) =>
+        existingTrip.id !== trip.id &&
+        existingTrip.active !== false &&
+        normalizeStatus(existingTrip.status) !== "cancelled" &&
+        String(existingTrip.date || "").trim() === dateIso &&
+        isEmployeeOnTrip(existingTrip, uid) &&
+        tripsOverlapByExactTime(trip, existingTrip)
+    );
+
+    for (const existingTrip of overlappingTrips) {
+      const status = normalizeStatus(existingTrip.status);
+      const detail = formatTimeRangeForCard(existingTrip);
+
+      if (status === "in_progress") {
+        hard.add(`${employeeName} already has an overlapping in-progress trip (${detail}).`);
+      } else if (status === "planned") {
+        soft.add(`${employeeName} already has an overlapping planned trip (${detail}).`);
+      }
+    }
+
+    const targetLeadUid = String(trip.crew?.primaryTechUid || "").trim();
+
+    const otherDayAssignments = trips.filter(
+      (existingTrip) =>
+        existingTrip.id !== trip.id &&
+        existingTrip.active !== false &&
+        normalizeStatus(existingTrip.status) !== "cancelled" &&
+        String(existingTrip.date || "").trim() === dateIso &&
+        isEmployeeOnTrip(existingTrip, uid) &&
+        !tripsOverlapByExactTime(trip, existingTrip)
+    );
+
+    for (const existingTrip of otherDayAssignments) {
+      const existingLeadUid = String(existingTrip.crew?.primaryTechUid || "").trim();
+
+      if (targetLeadUid && existingLeadUid === targetLeadUid) {
+        continue;
+      }
+
+      const leadName = existingTrip.crew?.primaryTechName || "another crew";
+      const detail = formatTimeRangeForCard(existingTrip);
+      hard.add(`${employeeName} is already assigned to ${leadName} on another trip that day (${detail}).`);
+    }
+
+    return {
+      hardMessages: Array.from(hard),
+      softMessages: Array.from(soft),
+    };
+  }
+
+  function helperUnavailableReasonForTrip(trip: TripDoc, helper: HelperOption) {
+    if (helperIsAlreadyOnTrip(trip, helper.uid)) {
+      return "Already on this trip";
+    }
+
+    const conflicts = helperConflictMessagesForTrip(trip, helper.uid);
+    return conflicts.hardMessages[0] || conflicts.softMessages[0] || "";
+  }
+
+  function serviceTicketCrewUpdatePayload(nextCrew: TripCrew) {
+    const primaryTechUid = String(nextCrew.primaryTechUid || "").trim();
+    const helperIds = uniqueTrimmedStrings([
+      nextCrew.helperUid,
+      nextCrew.secondaryHelperUid,
+    ]);
+
+    const helperNames = helperIds
+      .map((uid) => employeeNamesByUid[uid] || "")
+      .filter(Boolean);
+
+    const assignedTechnicianIds = uniqueTrimmedStrings([
+      primaryTechUid,
+      nextCrew.secondaryTechUid,
+      ...helperIds,
+    ]);
+
+    return {
+      helperIds: helperIds.length ? helperIds : null,
+      helperNames: helperNames.length ? helperNames : null,
+      assignedTechnicianIds,
+      updatedAt: nowIso(),
+    };
+  }
+
+  async function syncServiceTicketCrewFromTrip(trip: TripDoc, nextCrew: TripCrew) {
+    const serviceTicketId = String(trip.link?.serviceTicketId || "").trim();
+    if (!serviceTicketId) return;
+
+    await updateDoc(doc(db, "serviceTickets", serviceTicketId), serviceTicketCrewUpdatePayload(nextCrew));
+  }
+
+  async function assignHelperToTrip(helper: HelperOption) {
+    if (!helperEditTrip) return;
+    if (!canEditSchedule) {
+      setHelperEditErr("Only Admin/Dispatcher/Manager can update scheduled helpers.");
+      return;
+    }
+
+    if (!isPlannedStatus(helperEditTrip.status)) {
+      setHelperEditErr("Helper quick edits are only available before the trip has started.");
+      return;
+    }
+
+    const existingEntries = tripHelperEntries(helperEditTrip);
+    if (helperEditSlot === "add" && existingEntries.length >= 2) {
+      setHelperEditErr("This trip already has two helpers assigned.");
+      return;
+    }
+
+    if (helperIsAlreadyOnTrip(helperEditTrip, helper.uid)) {
+      setHelperEditErr(`${helper.name} is already assigned to this trip.`);
+      return;
+    }
+
+    const conflicts = helperConflictMessagesForTrip(helperEditTrip, helper.uid);
+    if (conflicts.hardMessages.length > 0) {
+      setHelperEditErr(conflicts.hardMessages[0]);
+      return;
+    }
+
+    if (conflicts.softMessages.length > 0) {
+      setHelperEditErr(conflicts.softMessages[0]);
+      return;
+    }
+
+    const nextCrew = crewWithHelperAssigned(helperEditTrip.crew, helperEditSlot, helper);
+    const now = nowIso();
+
+    setHelperEditSaving(true);
+    setHelperEditErr("");
+
+    try {
+      await updateDoc(doc(db, "trips", helperEditTrip.id), {
+        crew: nextCrew,
+        updatedAt: now,
+        updatedByUid: appUser?.uid || null,
+      });
+
+      await syncServiceTicketCrewFromTrip(helperEditTrip, nextCrew);
+
+      setTrips((prev) =>
+        prev.map((trip) =>
+          trip.id === helperEditTrip.id
+            ? {
+                ...trip,
+                crew: nextCrew,
+                updatedAt: now,
+              }
+            : trip
+        )
+      );
+
+      closeHelperEditDialog();
+    } catch (e: any) {
+      setHelperEditErr(e?.message || "Failed to update helper assignment.");
+    } finally {
+      setHelperEditSaving(false);
+    }
+  }
+
+  async function removeHelperFromTrip() {
+    if (!helperEditTrip || helperEditSlot === "add") return;
+
+    if (!canEditSchedule) {
+      setHelperEditErr("Only Admin/Dispatcher/Manager can update scheduled helpers.");
+      return;
+    }
+
+    if (!isPlannedStatus(helperEditTrip.status)) {
+      setHelperEditErr("Helper quick edits are only available before the trip has started.");
+      return;
+    }
+
+    const nextCrew = crewWithHelperRemoved(helperEditTrip.crew, helperEditSlot);
+    const now = nowIso();
+
+    setHelperEditSaving(true);
+    setHelperEditErr("");
+
+    try {
+      await updateDoc(doc(db, "trips", helperEditTrip.id), {
+        crew: nextCrew,
+        updatedAt: now,
+        updatedByUid: appUser?.uid || null,
+      });
+
+      await syncServiceTicketCrewFromTrip(helperEditTrip, nextCrew);
+
+      setTrips((prev) =>
+        prev.map((trip) =>
+          trip.id === helperEditTrip.id
+            ? {
+                ...trip,
+                crew: nextCrew,
+                updatedAt: now,
+              }
+            : trip
+        )
+      );
+
+      closeHelperEditDialog();
+    } catch (e: any) {
+      setHelperEditErr(e?.message || "Failed to remove helper.");
+    } finally {
+      setHelperEditSaving(false);
+    }
+  }
+
+  function renderTripHelperChips(trip: TripDoc) {
+    const entries = tripHelperEntries(trip);
+    const editable = canEditSchedule && isPlannedStatus(trip.status);
+    const canAddHelper = editable && entries.length < 2;
+
+    if (entries.length === 0 && !canAddHelper) return null;
+
+    return (
+      <Stack
+        direction="row"
+        spacing={0.75}
+        alignItems="center"
+        flexWrap="wrap"
+        useFlexGap
+        onClick={(event) => event.stopPropagation()}
+        sx={{ pl: { xs: "66px", md: "64px" } }}
+      >
+        <GroupsRoundedIcon
+          titleAccess="Helpers"
+          sx={{
+            fontSize: 17,
+            color: "text.secondary",
+            mr: 0.25,
+            flexShrink: 0,
+          }}
+        />
+
+        {entries.map((entry) => (
+          <Chip
+            key={`${trip.id}_${entry.slot}_${entry.uid}`}
+            size="small"
+            label={entry.name}
+            variant="outlined"
+            clickable={editable}
+            onClick={
+              editable
+                ? (event) => {
+                    event.stopPropagation();
+                    openHelperEditDialog({ tripId: trip.id, slot: entry.slot });
+                  }
+                : undefined
+            }
+            sx={{
+              height: 26,
+              borderRadius: 999,
+              fontWeight: 800,
+              maxWidth: 140,
+              "& .MuiChip-label": {
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            }}
+          />
+        ))}
+
+        {canAddHelper ? (
+          <Chip
+            size="small"
+            icon={<AddRoundedIcon sx={{ fontSize: 16 }} />}
+            label="Add"
+            color="primary"
+            variant="outlined"
+            clickable
+            onClick={(event) => {
+              event.stopPropagation();
+              openHelperEditDialog({ tripId: trip.id, slot: "add" });
+            }}
+            sx={{
+              height: 26,
+              borderRadius: 999,
+              fontWeight: 850,
+            }}
+          />
+        ) : null}
+      </Stack>
+    );
   }
 
   function resetMeetingForm() {
@@ -2667,9 +3454,13 @@ closeAddModal();
       const v = (url.searchParams.get("view") || "").toLowerCase();
       const d = (url.searchParams.get("date") || "").trim();
 
-      if (v === "day" || v === "week" || v === "month") {
+      if (v === "day" || v === "week") {
         setView(v);
         if (v === "day" && !d) setAnchorIso(todayIsoLocal());
+      } else if (v === "month") {
+        // Month view is intentionally hidden from the main Schedule UI.
+        // Old / bookmarked month URLs are routed to Week view instead.
+        setView("week");
       } else {
         setView("day");
         setAnchorIso(todayIsoLocal());
@@ -3653,9 +4444,11 @@ function renderStaffCoverageCards(dateIso: string) {
         title={title}
         status={cardStatus}
         tripType={trip.type}
+        cardBorderRadius={1}
         subtitle={timeText}
         customerLine={customerLine || undefined}
         titleMeta={showTechName && techName ? techName : undefined}
+        crewChips={renderTripHelperChips(trip)}
         trailingContent={
           trip.dispatchOverride?.enabled ? (
             <Chip
@@ -3667,18 +4460,213 @@ function renderStaffCoverageCards(dateIso: string) {
             />
           ) : undefined
         }
-        onClick={() => {
-          if (trip.link?.serviceTicketId) {
-            router.push(`/service-tickets/${trip.link.serviceTicketId}`);
-            return;
-          }
-          if (trip.link?.projectId) {
-            router.push(`/projects/${trip.link.projectId}`);
-            return;
-          }
-          router.push("/schedule");
-        }}
+        onClick={() => openTripFromSchedule(trip)}
       />
+    );
+  }
+
+  function openTripFromSchedule(trip: TripDoc) {
+    if (trip.link?.serviceTicketId) {
+      router.push(`/service-tickets/${trip.link.serviceTicketId}`);
+      return;
+    }
+    if (trip.link?.projectId) {
+      router.push(`/projects/${trip.link.projectId}`);
+      return;
+    }
+    router.push("/schedule");
+  }
+
+  function tripDisplayInfo(trip: TripDoc) {
+    const type = (trip.type || "").toLowerCase();
+    const isService = type === "service";
+    const isProject = type === "project";
+
+    const ticketId = String(trip.link?.serviceTicketId || "").trim();
+    const ticket = ticketId ? ticketMap[ticketId] : undefined;
+
+    const projectId = String(trip.link?.projectId || "").trim();
+    const project = projectId ? projectMap[projectId] : undefined;
+
+    const title = isService
+      ? ticket?.issueSummary || "Service Ticket"
+      : isProject
+        ? project?.name || "Project"
+        : "Trip";
+
+    const customerLine =
+      isService && ticket
+        ? `${ticket.customerDisplayName || "Customer"}${ticket.serviceAddressLine1 ? ` • ${ticket.serviceAddressLine1}` : ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
+        : isProject
+          ? "Project"
+          : "";
+
+    return {
+      title,
+      customerLine,
+      timeText: formatTimeRangeForCard(trip),
+    };
+  }
+
+  function renderCompactTripHelperChips(trip: TripDoc) {
+    const entries = tripHelperEntries(trip);
+    const editable = canEditSchedule && isPlannedStatus(trip.status);
+    const canAddHelper = editable && entries.length < 2;
+
+    if (entries.length === 0 && !canAddHelper) return null;
+
+    return (
+      <Stack
+        direction="row"
+        spacing={0.5}
+        alignItems="center"
+        flexWrap="wrap"
+        useFlexGap
+        onClick={(event) => event.stopPropagation()}
+      >
+        <GroupsRoundedIcon
+          titleAccess="Helpers"
+          sx={{ fontSize: 14, color: "text.secondary", flexShrink: 0 }}
+        />
+
+        {entries.map((entry) => (
+          <Chip
+            key={`compact_${trip.id}_${entry.slot}_${entry.uid}`}
+            size="small"
+            label={entry.name}
+            variant="outlined"
+            clickable={editable}
+            onClick={
+              editable
+                ? (event) => {
+                    event.stopPropagation();
+                    openHelperEditDialog({ tripId: trip.id, slot: entry.slot });
+                  }
+                : undefined
+            }
+            sx={{
+              height: 22,
+              borderRadius: 999,
+              fontSize: 10.5,
+              fontWeight: 850,
+              maxWidth: 108,
+              "& .MuiChip-label": {
+                px: 0.75,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            }}
+          />
+        ))}
+
+        {canAddHelper ? (
+          <Chip
+            size="small"
+            icon={<AddRoundedIcon sx={{ fontSize: 14 }} />}
+            label="Add"
+            color="primary"
+            variant="outlined"
+            clickable
+            onClick={(event) => {
+              event.stopPropagation();
+              openHelperEditDialog({ tripId: trip.id, slot: "add" });
+            }}
+            sx={{
+              height: 22,
+              borderRadius: 999,
+              fontSize: 10.5,
+              fontWeight: 850,
+              "& .MuiChip-label": { px: 0.65 },
+            }}
+          />
+        ) : null}
+      </Stack>
+    );
+  }
+
+  function renderCompactWeekTripBlock(trip: TripDoc, keyValue: string) {
+    const info = tripDisplayInfo(trip);
+    const cardStatus = isPlannedStatus(trip.status) ? "" : String(trip.status || "");
+
+    return (
+      <Paper
+        key={keyValue}
+        elevation={0}
+        onClick={() => openTripFromSchedule(trip)}
+        sx={{
+          p: 0.9,
+          borderRadius: 1,
+          border: `1px solid ${alpha("#FFFFFF", 0.09)}`,
+          bgcolor: alpha("#FFFFFF", 0.025),
+          cursor: "pointer",
+          transition: "border-color 160ms ease, background-color 160ms ease",
+          "&:hover": {
+            borderColor: alpha(theme.palette.primary.main, 0.32),
+            bgcolor: alpha(theme.palette.primary.main, 0.055),
+          },
+        }}
+      >
+        <Stack spacing={0.6}>
+          <Stack direction="row" spacing={0.6} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 900,
+                lineHeight: 1.15,
+                minWidth: 0,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {info.title}
+            </Typography>
+
+            {cardStatus ? (
+              <Chip
+                size="small"
+                label={cardStatus}
+                variant="outlined"
+                sx={{
+                  height: 20,
+                  borderRadius: 999,
+                  fontSize: 10,
+                  fontWeight: 850,
+                  flexShrink: 0,
+                  maxWidth: 76,
+                  "& .MuiChip-label": { px: 0.65, overflow: "hidden", textOverflow: "ellipsis" },
+                }}
+              />
+            ) : null}
+          </Stack>
+
+          <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0 }}>
+            <ScheduleRoundedIcon sx={{ fontSize: 14, color: "text.secondary", flexShrink: 0 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }} noWrap>
+              {info.timeText}
+            </Typography>
+            {trip.dispatchOverride?.enabled ? (
+              <Chip
+                size="small"
+                color="warning"
+                variant="outlined"
+                label="Override"
+                sx={{ height: 19, borderRadius: 999, fontSize: 9.5, fontWeight: 850 }}
+              />
+            ) : null}
+          </Stack>
+
+          {info.customerLine ? (
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 650 }} noWrap>
+              {info.customerLine}
+            </Typography>
+          ) : null}
+
+          {renderCompactTripHelperChips(trip)}
+        </Stack>
+      </Paper>
     );
   }
 
@@ -3755,7 +4743,12 @@ function renderStaffCoverageCards(dateIso: string) {
             });
             const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
             const orderedTrips = [...amTrips, ...pmTrips.filter((trip) => !amTrips.some((amTrip) => amTrip.id === trip.id))];
-            const canShowScheduleAction = canEditSchedule && rowKey !== "UNASSIGNED" && !isPast;
+            const canShowScheduleAction =
+              canEditSchedule &&
+              rowKey !== "UNASSIGNED" &&
+              !isPast &&
+              !pto &&
+              !holiday;
 
             return (
               <Paper
@@ -3863,6 +4856,7 @@ function renderStaffCoverageCards(dateIso: string) {
     setAddSearch("");
     setAddSelectedId("");
     setAddAdvancedId("");
+    setAddProjectStageKey("");
     if (nextType === "service") loadOpenTicketsIfNeeded();
     else loadOpenProjectsIfNeeded();
   }
@@ -3875,7 +4869,7 @@ function renderStaffCoverageCards(dateIso: string) {
       <Paper
         key={item.id}
         elevation={0}
-        onClick={() => setAddSelectedId(item.id)}
+        onClick={() => selectAddPickerItem(item.id)}
         sx={{
           position: "relative",
           p: 1.55,
@@ -4038,6 +5032,14 @@ function renderStaffCoverageCards(dateIso: string) {
               variant="outlined"
               sx={{ borderRadius: 999, fontWeight: 800 }}
             />
+            {addTripType === "project" && selectedProjectStage ? (
+              <Chip
+                label={`Stage: ${selectedProjectStage.label}`}
+                color="warning"
+                variant="outlined"
+                sx={{ borderRadius: 999, fontWeight: 800 }}
+              />
+            ) : null}
           </Stack>
         </DialogTitle>
 
@@ -4176,6 +5178,27 @@ function renderStaffCoverageCards(dateIso: string) {
               <Stack spacing={1.15}>{pickerItems.map(renderMobilePickerCard)}</Stack>
             )}
 
+            {addTripType === "project" && selectedAddPickerItem ? (
+              <FormControl fullWidth required error={!addProjectStageKey}>
+                <InputLabel>Project Stage</InputLabel>
+                <Select
+                  label="Project Stage"
+                  value={addProjectStageKey}
+                  onChange={(event: SelectChangeEvent) => setAddProjectStageKey(event.target.value)}
+                  disabled={addSaving || selectedProjectStageOptions.length === 0}
+                >
+                  {selectedProjectStageOptions.map((stage) => (
+                    <MenuItem key={stage.key} value={stage.key}>
+                      {stage.label} • {projectStageStatusLabel(stage.status)}
+                    </MenuItem>
+                  ))}
+                </Select>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, px: 0.25 }}>
+                  Completed project stages are hidden.
+                </Typography>
+              </FormControl>
+            ) : null}
+
             <Paper
               variant="outlined"
               onClick={() => setMobileAdvancedOpen((open) => !open)}
@@ -4204,7 +5227,10 @@ function renderStaffCoverageCards(dateIso: string) {
                 label="Advanced ID"
                 placeholder={addTripType === "service" ? "Service Ticket ID..." : "Project ID..."}
                 value={addAdvancedId}
-                onChange={(event) => setAddAdvancedId(event.target.value)}
+                onChange={(event) => {
+                  setAddAdvancedId(event.target.value);
+                  setAddProjectStageKey("");
+                }}
                 disabled={addSaving}
                 helperText="Only use this when the item does not appear in the list."
                 fullWidth
@@ -4238,6 +5264,604 @@ function renderStaffCoverageCards(dateIso: string) {
   }
 
   const monthWeeksSafe = useMemo(() => (view === "month" ? monthWeeks : []), [view, monthWeeks]);
+
+  const monthWorkdayDates = useMemo(() => {
+    if (view !== "month") return [] as Date[];
+    return monthWeeksSafe.flat().filter(Boolean) as Date[];
+  }, [view, monthWeeksSafe]);
+
+  const monthAvailabilityEmployees = useMemo(() => {
+    const leadItems = techs.map((tech) => ({
+      uid: tech.uid,
+      name: tech.name,
+      role: "technician",
+      initials: initialsForName(tech.name),
+      group: "Lead",
+    }));
+
+    const helperItems = helpers.map((helper) => ({
+      uid: helper.uid,
+      name: helper.name,
+      role: helper.laborRole || "helper",
+      initials: initialsForName(helper.name),
+      group: formatRoleLabel(helper.laborRole || "helper"),
+    }));
+
+    let items =
+      monthAvailabilityMode === "helpers"
+        ? helperItems
+        : monthAvailabilityMode === "all_field"
+          ? [...leadItems, ...helperItems]
+          : leadItems;
+
+    if (monthAvailabilityMode === "leads" && techFilter !== "ALL" && techFilter !== "UNASSIGNED") {
+      items = items.filter((item) => item.uid === techFilter);
+    }
+
+    return items.sort((a, b) => {
+      const byGroup = a.group.localeCompare(b.group);
+      if (monthAvailabilityMode === "all_field" && byGroup !== 0) return byGroup;
+      return a.name.localeCompare(b.name);
+    });
+  }, [techs, helpers, monthAvailabilityMode, techFilter]);
+
+  const monthAvailabilityByEmployee = useMemo(() => {
+    const out: Record<
+      string,
+      Record<
+        string,
+        {
+          status: MonthAvailabilityStatus;
+          label: string;
+          detail: string;
+          amBooked: boolean;
+          pmBooked: boolean;
+          tripCount: number;
+        }
+      >
+    > = {};
+
+    for (const employee of monthAvailabilityEmployees) {
+      out[employee.uid] = {};
+
+      for (const date of monthWorkdayDates) {
+        const iso = toIsoDate(date);
+        const holiday = holidayByDate[iso];
+        const pto = ptoByUidByDate[employee.uid]?.[iso];
+        const employeeEvents = (eventsByDate[iso] || []).filter((event) =>
+          eventAppliesToUid(event, employee.uid, employee.role)
+        );
+        const blockingEvent = employeeEvents.find((event) => event.blocksSchedule !== false);
+
+        const employeeTrips = trips.filter(
+          (trip) =>
+            trip.active !== false &&
+            normalizeStatus(trip.status) !== "cancelled" &&
+            normalizeStatus(trip.status) !== "canceled" &&
+            String(trip.date || "").trim() === iso &&
+            isEmployeeOnTrip(trip, employee.uid)
+        );
+
+        const amBooked = employeeTrips.some((trip) => tripBlocksSlot(trip, "am"));
+        const pmBooked = employeeTrips.some((trip) => tripBlocksSlot(trip, "pm"));
+        const tripCount = employeeTrips.length;
+
+        let status: MonthAvailabilityStatus = "open";
+        let label = "Open";
+        let detail = "No trips scheduled";
+
+        if (holiday) {
+          status = "other";
+          label = "Holiday";
+          detail = holiday.name;
+        } else if (pto) {
+          status = "pto";
+          label = "PTO";
+          detail = pto.hours ? `${pto.hours}h approved` : "Approved PTO";
+        } else if (blockingEvent) {
+          status = "other";
+          label = "Other";
+          detail = meetingChipLabel(blockingEvent);
+        } else if (amBooked && pmBooked) {
+          status = "booked";
+          label = "Booked";
+          detail = `${tripCount} trip${tripCount === 1 ? "" : "s"}`;
+        } else if (amBooked || pmBooked) {
+          status = "partial";
+          label = "Partial";
+          detail = amBooked ? "AM booked / PM open" : "AM open / PM booked";
+        }
+
+        out[employee.uid][iso] = {
+          status,
+          label,
+          detail,
+          amBooked,
+          pmBooked,
+          tripCount,
+        };
+      }
+    }
+
+    return out;
+  }, [monthAvailabilityEmployees, monthWorkdayDates, trips, holidayByDate, ptoByUidByDate, eventsByDate]);
+
+  const monthOverviewByDate = useMemo(() => {
+    const out: Record<
+      string,
+      { open: number; booked: number; partial: number; pto: number; other: number; total: number }
+    > = {};
+
+    for (const date of monthWorkdayDates) {
+      const iso = toIsoDate(date);
+      const summary = { open: 0, booked: 0, partial: 0, pto: 0, other: 0, total: monthAvailabilityEmployees.length };
+
+      for (const employee of monthAvailabilityEmployees) {
+        const status = monthAvailabilityByEmployee[employee.uid]?.[iso]?.status || "open";
+        summary[status] += 1;
+      }
+
+      out[iso] = summary;
+    }
+
+    return out;
+  }, [monthWorkdayDates, monthAvailabilityEmployees, monthAvailabilityByEmployee]);
+
+  function monthStatusChip(status: MonthAvailabilityStatus, label: string, size: "small" | "medium" = "small") {
+    const tone =
+      status === "open"
+        ? {
+            color: theme.palette.success.light,
+            border: alpha(theme.palette.success.main, 0.32),
+            bg: alpha(theme.palette.success.main, 0.08),
+          }
+        : status === "booked"
+          ? {
+              color: theme.palette.primary.light,
+              border: alpha(theme.palette.primary.main, 0.34),
+              bg: alpha(theme.palette.primary.main, 0.1),
+            }
+          : status === "partial"
+            ? {
+                color: theme.palette.warning.light,
+                border: alpha(theme.palette.warning.main, 0.36),
+                bg: alpha(theme.palette.warning.main, 0.1),
+              }
+            : status === "pto"
+              ? {
+                  color: theme.palette.error.light,
+                  border: alpha(theme.palette.error.main, 0.36),
+                  bg: alpha(theme.palette.error.main, 0.09),
+                }
+              : {
+                  color: theme.palette.text.secondary,
+                  border: alpha("#FFFFFF", 0.16),
+                  bg: alpha("#FFFFFF", 0.05),
+                };
+
+    return (
+      <Chip
+        size={size}
+        label={label}
+        variant="outlined"
+        sx={{
+          height: size === "small" ? 24 : 30,
+          borderRadius: 1.5,
+          fontWeight: 850,
+          color: tone.color,
+          borderColor: tone.border,
+          bgcolor: tone.bg,
+          "& .MuiChip-label": { px: size === "small" ? 1 : 1.25 },
+        }}
+      />
+    );
+  }
+
+  function goToScheduleDay(dateIso: string) {
+    setView("day");
+    setAnchorIso(dateIso);
+  }
+
+  function renderMonthAvailabilityDayTile(date: Date) {
+    const iso = toIsoDate(date);
+    const summary = monthOverviewByDate[iso] || { open: 0, booked: 0, partial: 0, pto: 0, other: 0, total: 0 };
+    const isTodayCell = iso === todayIso;
+    const holiday = holidayByDate[iso];
+
+    return (
+      <Paper
+        variant="outlined"
+        onClick={() => goToScheduleDay(iso)}
+        sx={{
+          p: 1.15,
+          minHeight: 132,
+          height: "100%",
+          borderRadius: 1,
+          cursor: "pointer",
+          borderColor: isTodayCell ? alpha(theme.palette.primary.main, 0.65) : alpha("#FFFFFF", 0.09),
+          bgcolor: isTodayCell
+            ? alpha(theme.palette.primary.main, 0.08)
+            : holiday
+              ? alpha(theme.palette.warning.main, 0.055)
+              : alpha("#FFFFFF", 0.025),
+          boxShadow: isTodayCell ? `inset 0 0 0 1px ${alpha(theme.palette.primary.main, 0.35)}` : "none",
+          "&:hover": {
+            borderColor: alpha(theme.palette.primary.main, 0.45),
+            bgcolor: alpha(theme.palette.primary.main, 0.055),
+          },
+        }}
+      >
+        <Stack spacing={0.9} sx={{ height: "100%" }}>
+          <Stack direction="row" spacing={0.75} alignItems="flex-start" justifyContent="space-between">
+            <Box>
+              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 900 }}>
+                {formatDow(date)}
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 950 }}>
+                {formatShort(date)}
+              </Typography>
+            </Box>
+            {isTodayCell ? (
+              <Chip size="small" label="Today" color="primary" sx={{ height: 20, borderRadius: 999, fontWeight: 850 }} />
+            ) : holiday ? (
+              <Chip size="small" label="Holiday" color="warning" variant="outlined" sx={{ height: 20, borderRadius: 999, fontWeight: 850 }} />
+            ) : null}
+          </Stack>
+
+          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0.65 }}>
+            {monthStatusChip("open", `Open ${summary.open}`)}
+            {monthStatusChip("booked", `Booked ${summary.booked}`)}
+            {monthStatusChip("partial", `Partial ${summary.partial}`)}
+            {monthStatusChip("pto", `PTO ${summary.pto}`)}
+          </Box>
+
+          <Box sx={{ mt: "auto" }}>
+            {summary.other ? monthStatusChip("other", `Other ${summary.other}`) : (
+              <Typography variant="caption" color="text.secondary">
+                {summary.total} total tracked
+              </Typography>
+            )}
+          </Box>
+        </Stack>
+      </Paper>
+    );
+  }
+
+  function renderWeeklyAvailabilityMatrix(week: Array<Date | null>, weekIndex: number) {
+    const realDates = week.filter(Boolean) as Date[];
+    const weekTitle = realDates.length ? `Week of ${formatDateLong(toIsoDate(realDates[0]))}` : `Week ${weekIndex + 1}`;
+    const matrixMinWidth = 760;
+
+    return (
+      <Paper
+        key={`availability_week_${weekIndex}`}
+        elevation={0}
+        sx={{
+          borderRadius: 2,
+          border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+          bgcolor: alpha("#FFFFFF", 0.025),
+          overflow: "hidden",
+        }}
+      >
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1}
+          alignItems={{ xs: "stretch", md: "center" }}
+          justifyContent="space-between"
+          sx={{ p: 1.25, borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}` }}
+        >
+          <Box>
+            <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+              {weekTitle}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Team availability shown in a Monday–Friday calendar row.
+            </Typography>
+          </Box>
+
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            {monthStatusChip("open", "Open")}
+            {monthStatusChip("booked", "Booked")}
+            {monthStatusChip("partial", "Partial")}
+            {monthStatusChip("pto", "PTO")}
+            {monthStatusChip("other", "Other")}
+          </Stack>
+        </Stack>
+
+        <TableContainer sx={{ maxWidth: "100%", overflowX: "auto" }}>
+          <Table sx={{ minWidth: matrixMinWidth, tableLayout: "fixed" }}>
+            <TableHead>
+              <TableRow>
+                <TableCell
+                  sx={{
+                    width: 190,
+                    position: "sticky",
+                    left: 0,
+                    zIndex: 3,
+                    bgcolor: "background.paper",
+                    borderRight: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    fontWeight: 900,
+                  }}
+                >
+                  Team Member
+                </TableCell>
+                {week.map((date, dayIndex) => {
+                  if (!date) {
+                    return (
+                      <TableCell key={`matrix_empty_head_${weekIndex}_${dayIndex}`} align="center" sx={{ width: 112, opacity: 0.35 }}>
+                        —
+                      </TableCell>
+                    );
+                  }
+
+                  const iso = toIsoDate(date);
+                  const isTodayCell = iso === todayIso;
+                  return (
+                    <TableCell
+                      key={`matrix_head_${iso}`}
+                      align="center"
+                      sx={{
+                        width: 112,
+                        bgcolor: isTodayCell ? alpha(theme.palette.primary.main, 0.12) : alpha("#FFFFFF", 0.015),
+                        borderLeft: isTodayCell ? `1px solid ${alpha(theme.palette.primary.main, 0.35)}` : undefined,
+                        borderRight: isTodayCell ? `1px solid ${alpha(theme.palette.primary.main, 0.35)}` : undefined,
+                      }}
+                    >
+                      <Typography variant="caption" sx={{ fontWeight: 900 }}>
+                        {formatDow(date)}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                        {formatShort(date)}
+                      </Typography>
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            </TableHead>
+
+            <TableBody>
+              {monthAvailabilityEmployees.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={1 + week.length}>
+                    <Typography variant="body2" color="text.secondary">
+                      No employees found for this view.
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                monthAvailabilityEmployees.map((employee) => (
+                  <TableRow key={`availability_${weekIndex}_${employee.uid}`} hover>
+                    <TableCell
+                      sx={{
+                        width: 190,
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 2,
+                        bgcolor: "background.paper",
+                        borderRight: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      }}
+                    >
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                        <Box
+                          sx={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 999,
+                            display: "grid",
+                            placeItems: "center",
+                            flexShrink: 0,
+                            bgcolor: alpha(theme.palette.primary.main, 0.18),
+                            color: "primary.light",
+                            border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
+                            fontSize: 12,
+                            fontWeight: 950,
+                          }}
+                        >
+                          {employee.initials}
+                        </Box>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="body2" sx={{ fontWeight: 900 }} noWrap>
+                            {employee.name}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            {employee.group}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    </TableCell>
+
+                    {week.map((date, dayIndex) => {
+                      if (!date) {
+                        return (
+                          <TableCell key={`empty_availability_${weekIndex}_${employee.uid}_${dayIndex}`} align="center" sx={{ opacity: 0.35 }}>
+                            —
+                          </TableCell>
+                        );
+                      }
+
+                      const iso = toIsoDate(date);
+                      const cell = monthAvailabilityByEmployee[employee.uid]?.[iso];
+                      const isTodayCell = iso === todayIso;
+
+                      return (
+                        <TableCell
+                          key={`availability_${employee.uid}_${iso}`}
+                          align="center"
+                          onClick={() => goToScheduleDay(iso)}
+                          sx={{
+                            width: 112,
+                            cursor: "pointer",
+                            bgcolor: isTodayCell ? alpha(theme.palette.primary.main, 0.08) : "transparent",
+                            borderLeft: isTodayCell ? `1px solid ${alpha(theme.palette.primary.main, 0.35)}` : undefined,
+                            borderRight: isTodayCell ? `1px solid ${alpha(theme.palette.primary.main, 0.35)}` : undefined,
+                            "&:hover": { bgcolor: alpha(theme.palette.primary.main, 0.055) },
+                          }}
+                        >
+                          <Stack spacing={0.45} alignItems="center">
+                            {monthStatusChip(cell?.status || "open", cell?.label || "Open")}
+                            {cell?.status === "partial" ? (
+                              <Typography variant="caption" color="text.secondary" noWrap>
+                                {cell.amBooked ? "AM busy" : "PM busy"}
+                              </Typography>
+                            ) : cell?.tripCount ? (
+                              <Typography variant="caption" color="text.secondary" noWrap>
+                                {cell.tripCount} trip{cell.tripCount === 1 ? "" : "s"}
+                              </Typography>
+                            ) : cell?.detail && cell.status !== "open" ? (
+                              <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 96 }}>
+                                {cell.detail}
+                              </Typography>
+                            ) : null}
+                          </Stack>
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Paper>
+    );
+  }
+
+  function renderMonthAvailabilityView() {
+    return (
+      <Box>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1.25}
+          alignItems={{ xs: "stretch", md: "center" }}
+          justifyContent="space-between"
+        >
+          <SectionHeader
+            title="Monthly Availability"
+            subtitle="Calendar-style capacity overview. Click a date to open the detailed Day schedule."
+          />
+
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={monthAvailabilityMode}
+            onChange={(_, next) => {
+              if (next) setMonthAvailabilityMode(next as MonthAvailabilityMode);
+            }}
+            sx={{
+              bgcolor: alpha("#FFFFFF", 0.035),
+              borderRadius: 2,
+              width: { xs: "100%", md: "auto" },
+              "& .MuiToggleButton-root": {
+                px: 1.75,
+                textTransform: "none",
+                fontWeight: 850,
+              },
+            }}
+          >
+            <ToggleButton value="leads">Leads</ToggleButton>
+            <ToggleButton value="helpers">Helpers</ToggleButton>
+            <ToggleButton value="all_field">All Field</ToggleButton>
+          </ToggleButtonGroup>
+        </Stack>
+
+        <Stack spacing={2.25} sx={{ mt: 1.5 }}>
+          <Paper
+            elevation={0}
+            sx={{
+              p: 1.25,
+              borderRadius: 2,
+              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+              bgcolor: alpha("#FFFFFF", 0.025),
+              overflow: "hidden",
+            }}
+          >
+            <Stack spacing={1}>
+              <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                  Month Calendar
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                  {monthAvailabilityEmployees.length} employee{monthAvailabilityEmployees.length === 1 ? "" : "s"} tracked
+                </Typography>
+              </Stack>
+
+              <Box sx={{ overflowX: "auto", pb: 0.5 }}>
+                <Box sx={{ minWidth: 860 }}>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(5, minmax(150px, 1fr))",
+                      border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      borderBottom: "none",
+                      borderRadius: "8px 8px 0 0",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {["Mon", "Tue", "Wed", "Thu", "Fri"].map((day) => (
+                      <Box
+                        key={`month_header_${day}`}
+                        sx={{
+                          px: 1.25,
+                          py: 0.9,
+                          bgcolor: alpha("#FFFFFF", 0.035),
+                          borderRight: day !== "Fri" ? `1px solid ${alpha("#FFFFFF", 0.08)}` : "none",
+                        }}
+                      >
+                        <Typography variant="caption" sx={{ fontWeight: 950, color: "text.secondary" }}>
+                          {day}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(5, minmax(150px, 1fr))",
+                      borderLeft: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      borderTop: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    }}
+                  >
+                    {monthWeeksSafe.map((week, weekIndex) =>
+                      week.map((date, dayIndex) => (
+                        <Box
+                          key={`month_calendar_${weekIndex}_${dayIndex}`}
+                          sx={{
+                            minHeight: 154,
+                            p: 0.75,
+                            borderRight: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                            borderBottom: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                            bgcolor: date ? "transparent" : alpha("#FFFFFF", 0.015),
+                          }}
+                        >
+                          {date ? renderMonthAvailabilityDayTile(date) : null}
+                        </Box>
+                      ))
+                    )}
+                  </Box>
+                </Box>
+              </Box>
+            </Stack>
+          </Paper>
+
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
+              <Box>
+                <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                  Team Availability by Week
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Same calendar rhythm as the month above, with employee rows for who is open, booked, partial, or out.
+                </Typography>
+              </Box>
+            </Stack>
+
+            {monthWeeksSafe.map((week, weekIndex) => renderWeeklyAvailabilityMatrix(week, weekIndex))}
+          </Stack>
+        </Stack>
+      </Box>
+    );
+  }
 
   return (
     <ProtectedPage fallbackTitle="Schedule">
@@ -4350,10 +5974,7 @@ function renderStaffCoverageCards(dateIso: string) {
                       <ViewWeekRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
                       Week
                     </ToggleButton>
-                    <ToggleButton value="month" sx={{ flex: { xs: 1, sm: "unset" } }}>
-                      <CalendarMonthRoundedIcon sx={{ mr: 0.75, fontSize: 18 }} />
-                      Month
-                    </ToggleButton>
+                    {/* Month view is hidden for now. Day and Week are the primary dispatch views. */}
                   </ToggleButtonGroup>
                 </Stack>
               </Stack>
@@ -4460,177 +6081,7 @@ function renderStaffCoverageCards(dateIso: string) {
               </Box>
             ) : null}
 
-            {!loading && view === "month" ? (
-              <Box>
-                <SectionHeader
-                  title="Month view"
-                  subtitle="Monday through Friday calendar grid."
-                />
-
-                <Box sx={{ mt: 1.5, overflowX: "auto" }}>
-                  <TableContainer
-                    component={Paper}
-                    variant="outlined"
-                    sx={{
-                      borderRadius: 1,
-                      boxShadow: "none",
-                    }}
-                  >
-                    <Table sx={{ minWidth: 900 }}>
-                      <TableHead>
-                        <TableRow>
-                          {["Mon", "Tue", "Wed", "Thu", "Fri"].map((d) => (
-                            <TableCell key={d} sx={{ fontWeight: 600 }}>
-                              {d}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      </TableHead>
-
-                      <TableBody>
-                        {monthWeeksSafe.map((week, idx) => (
-                          <TableRow key={`week-${idx}`}>
-                            {week.map((cellDate, cIdx) => {
-                              if (!cellDate) {
-                                return (
-                                  <TableCell
-                                    key={`empty-${idx}-${cIdx}`}
-                                    sx={{ verticalAlign: "top", height: 180, bgcolor: alpha("#FFFFFF", 0.02) }}
-                                  />
-                                );
-                              }
-
-                              const iso = toIsoDate(cellDate);
-                              const isTodayCell = iso === todayIso;
-                              const dayTrips = filteredTrips.filter((trip) => String(trip.date || "") === iso);
-                              const holiday = holidayByDate[iso];
-                              const ptoNames = ptoNamesByDate[iso] || [];
-                              const meets = eventsByDate[iso] || [];
-
-                              return (
-                                <TableCell
-                                  key={iso}
-                                  sx={{
-                                    verticalAlign: "top",
-                                    height: 180,
-                                    bgcolor: isTodayCell
-                                      ? alpha(theme.palette.primary.main, 0.12)
-                                      : holiday
-                                        ? alpha(theme.palette.warning.main, 0.08)
-                                        : ptoNames.length
-                                          ? alpha(theme.palette.secondary.main, 0.08)
-                                          : meets.length
-                                            ? alpha(theme.palette.success.main, 0.06)
-                                            : "transparent",
-                                    boxShadow: isTodayCell
-                                      ? `inset 0 0 0 2px ${alpha(theme.palette.primary.main, 0.72)}`
-                                      : undefined,
-                                  }}
-                                >
-                                  <Stack spacing={1}>
-                                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                                      <Stack direction="row" spacing={0.75} alignItems="center">
-                                        <Typography variant="subtitle2">{cellDate.getDate()}</Typography>
-                                        {isTodayCell ? (
-                                          <Chip
-                                            size="small"
-                                            label="Today"
-                                            color="primary"
-                                            variant="filled"
-                                            sx={{ height: 22, borderRadius: 1.5, fontWeight: 700 }}
-                                          />
-                                        ) : null}
-                                      </Stack>
-                                      <Typography variant="caption" color="text.secondary">
-                                        {iso}
-                                      </Typography>
-                                    </Stack>
-
-                                    <Stack spacing={0.75}>
-                                      {holiday ? (
-                                        <Chip
-                                          size="small"
-                                          icon={<CelebrationRoundedIcon sx={{ fontSize: 15 }} />}
-                                          label={holiday.name}
-                                          color="warning"
-                                          variant="outlined"
-                                          sx={{ width: "fit-content" }}
-                                        />
-                                      ) : null}
-
-                                      {ptoNames.length ? (
-                                        <Chip
-                                          size="small"
-                                          icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
-                                          label={ptoNames.length === 1 ? `PTO: ${ptoNames[0]}` : `PTO: ${ptoNames.length} employees`}
-                                          color="secondary"
-                                          variant="outlined"
-                                          sx={{ width: "fit-content" }}
-                                        />
-                                      ) : null}
-
-                                      {meets.length === 1 ? (
-                                        <Chip
-                                          size="small"
-                                          icon={<CampaignRoundedIcon sx={{ fontSize: 15 }} />}
-                                          label={meetingChipLabel(meets[0])}
-                                          color="success"
-                                          variant="outlined"
-                                          clickable={canEditSchedule}
-                                          onClick={canEditSchedule ? () => openEditMeetingModal(meets[0]) : undefined}
-                                          sx={{
-                                            width: "fit-content",
-                                            maxWidth: "100%",
-                                            cursor: canEditSchedule ? "pointer" : "default",
-                                            "& .MuiChip-label": {
-                                              overflow: "hidden",
-                                              textOverflow: "ellipsis",
-                                              whiteSpace: "nowrap",
-                                            },
-                                          }}
-                                        />
-                                      ) : meets.length > 1 ? (
-                                        <Chip
-                                          size="small"
-                                          icon={<CampaignRoundedIcon sx={{ fontSize: 15 }} />}
-                                          label={`Meetings: ${meets.length}`}
-                                          color="success"
-                                          variant="outlined"
-                                          sx={{ width: "fit-content" }}
-                                        />
-                                      ) : null}
-                                    </Stack>
-
-                                    <Stack spacing={0.75}>
-                                      {dayTrips.slice(0, 6).map((trip) =>
-                                        renderTripCard(trip, {
-                                          showTechName: techFilter === "ALL",
-                                          keyValue: `month_${iso}_${trip.id}`,
-                                        })
-                                      )}
-                                      {dayTrips.length > 6 ? (
-                                        <Typography variant="caption" color="text.secondary">
-                                          +{dayTrips.length - 6} more…
-                                        </Typography>
-                                      ) : null}
-                                      {dayTrips.length === 0 && !holiday && ptoNames.length === 0 && meets.length === 0 ? (
-                                        <Typography variant="caption" color="text.secondary">
-                                          —
-                                        </Typography>
-                                      ) : null}
-                                    </Stack>
-                                  </Stack>
-                                </TableCell>
-                              );
-                            })}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </Box>
-              </Box>
-            ) : null}
+            {!loading && view === "month" ? renderMonthAvailabilityView() : null}
 
             {!loading && view !== "month" ? (
               <>
@@ -4708,7 +6159,9 @@ function renderStaffCoverageCards(dateIso: string) {
                                 const canShowScheduleAction =
                                   canEditSchedule &&
                                   rowKey !== "UNASSIGNED" &&
-                                  !isPast;
+                                  !isPast &&
+                                  !pto &&
+                                  !holiday;
 
                                 return (
                                   <Card
@@ -4803,8 +6256,8 @@ function renderStaffCoverageCards(dateIso: string) {
                 ) : (
                   <Box>
                     <SectionHeader
-                      title="Week / day view"
-                      subtitle="Technician rows with daily assignment cells."
+                      title="Week route board"
+                      subtitle="Compact desktop board for route visibility. Click a trip for full details."
                     />
 
                     <Box sx={{ mt: 1.5 }}>
@@ -4916,7 +6369,9 @@ function renderStaffCoverageCards(dateIso: string) {
                                       const canShowScheduleAction =
                                         canEditSchedule &&
                                         rowKey !== "UNASSIGNED" &&
-                                        !isPast;
+                                        !isPast &&
+                                        !pto &&
+                                        !holiday;
 
                                       return (
                                         <TableCell
@@ -4965,21 +6420,23 @@ function renderStaffCoverageCards(dateIso: string) {
                                             ) : null}
 
                                             {amTrips.length ? (
-                                              <Stack spacing={1}>
+                                              <Stack spacing={0.85}>
                                                 {amTrips.map((trip) =>
-                                                  renderTripCard(trip, {
-                                                    keyValue: `desk_am_${iso}_${rowKey}_${trip.id}`,
-                                                  })
+                                                  renderCompactWeekTripBlock(
+                                                    trip,
+                                                    `desk_am_${iso}_${rowKey}_${trip.id}`
+                                                  )
                                                 )}
                                               </Stack>
                                             ) : null}
 
                                             {pmTrips.length ? (
-                                              <Stack spacing={1}>
+                                              <Stack spacing={0.85}>
                                                 {pmTrips.map((trip) =>
-                                                  renderTripCard(trip, {
-                                                    keyValue: `desk_pm_${iso}_${rowKey}_${trip.id}`,
-                                                  })
+                                                  renderCompactWeekTripBlock(
+                                                    trip,
+                                                    `desk_pm_${iso}_${rowKey}_${trip.id}`
+                                                  )
                                                 )}
                                               </Stack>
                                             ) : null}
@@ -5254,6 +6711,12 @@ function renderStaffCoverageCards(dateIso: string) {
     <Typography variant="body2" color="text.secondary">
       Date: <strong>{addDateIso}</strong> • Window: <strong>{formatSlotLabel(addSlot)}</strong>
     </Typography>
+
+    {addTripType === "project" && selectedProjectStage ? (
+      <Typography variant="body2" color="text.secondary">
+        Project Stage: <strong>{selectedProjectStage.label}</strong>
+      </Typography>
+    ) : null}
   </Stack>
 </Paper>
 
@@ -5268,6 +6731,7 @@ function renderStaffCoverageCards(dateIso: string) {
                     setAddSearch("");
                     setAddSelectedId("");
                     setAddAdvancedId("");
+                    setAddProjectStageKey("");
                     if (v === "service") loadOpenTicketsIfNeeded();
                     else loadOpenProjectsIfNeeded();
                   }}
@@ -5338,7 +6802,7 @@ function renderStaffCoverageCards(dateIso: string) {
                       return (
                         <Box
                           key={it.id}
-                          onClick={() => setAddSelectedId(it.id)}
+                          onClick={() => selectAddPickerItem(it.id)}
                           sx={{
                             px: 1.5,
                             py: 1.25,
@@ -5399,6 +6863,27 @@ function renderStaffCoverageCards(dateIso: string) {
                 </Box>
               </Paper>
 
+              {addTripType === "project" && selectedAddPickerItem ? (
+                <FormControl fullWidth required error={!addProjectStageKey}>
+                  <InputLabel>Project Stage</InputLabel>
+                  <Select
+                    label="Project Stage"
+                    value={addProjectStageKey}
+                    onChange={(e: SelectChangeEvent) => setAddProjectStageKey(e.target.value)}
+                    disabled={addSaving || selectedProjectStageOptions.length === 0}
+                  >
+                    {selectedProjectStageOptions.map((stage) => (
+                      <MenuItem key={stage.key} value={stage.key}>
+                        {stage.label} • {projectStageStatusLabel(stage.status)}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, px: 0.25 }}>
+                    Completed project stages are hidden and cannot be scheduled.
+                  </Typography>
+                </FormControl>
+              ) : null}
+
               {addShouldRecommendAllDay ? (
                 <Alert
                   severity="warning"
@@ -5422,7 +6907,10 @@ function renderStaffCoverageCards(dateIso: string) {
                 label="Advanced ID (optional)"
                 placeholder={addTripType === "service" ? "Service Ticket ID…" : "Project ID…"}
                 value={addAdvancedId}
-                onChange={(e) => setAddAdvancedId(e.target.value)}
+                onChange={(e) => {
+                  setAddAdvancedId(e.target.value);
+                  setAddProjectStageKey("");
+                }}
                 disabled={addSaving}
                 helperText="Only use if you need to schedule something not in the list."
               />
@@ -5505,6 +6993,7 @@ function renderStaffCoverageCards(dateIso: string) {
               disabled={
                 addSaving ||
                 !Boolean(String(addSelectedId || addAdvancedId || "").trim()) ||
+                (addTripType === "project" && !Boolean(addProjectStageKey)) ||
                 addSlotConflicts.hardMessages.length > 0 ||
                 (addSlotConflicts.softMessages.length > 0 &&
                   (!addDispatchOverrideEnabled ||
@@ -5515,6 +7004,152 @@ function renderStaffCoverageCards(dateIso: string) {
               sx={{ borderRadius: isMobile ? 2 : undefined, minHeight: isMobile ? 48 : undefined, fontWeight: 850 }}
             >
               {addSaving ? "Scheduling…" : "Schedule Trip"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={helperEditOpen}
+          onClose={closeHelperEditDialog}
+          fullScreen={isMobile}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{
+            sx: {
+              borderRadius: isMobile ? 0 : 2,
+              backgroundImage: "none",
+            },
+          }}
+        >
+          <DialogTitle>
+            {helperEditSlot === "add" ? "Add Helper" : "Edit Helper"}
+          </DialogTitle>
+
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              {helperEditTrip ? (
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 2,
+                    bgcolor: alpha(theme.palette.primary.main, 0.04),
+                  }}
+                >
+                  <Stack spacing={0.5}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                      {helperEditTrip.link?.serviceTicketId
+                        ? ticketMap[String(helperEditTrip.link.serviceTicketId || "")]?.issueSummary || "Service Ticket"
+                        : helperEditTrip.link?.projectId
+                          ? projectMap[String(helperEditTrip.link.projectId || "")]?.name || "Project"
+                          : "Trip"}
+                    </Typography>
+
+                    <Typography variant="body2" color="text.secondary">
+                      {formatDateLong(String(helperEditTrip.date || ""))} • {formatTimeRangeForCard(helperEditTrip)}
+                    </Typography>
+
+                    <Typography variant="body2" color="text.secondary">
+                      Lead: <strong>{helperEditTrip.crew?.primaryTechName || "—"}</strong>
+                    </Typography>
+
+                    {helperEditExistingEntry ? (
+                      <Typography variant="body2" color="text.secondary">
+                        Current helper: <strong>{helperEditExistingEntry.name}</strong>
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                </Paper>
+              ) : null}
+
+              {helperEditErr ? <Alert severity="error" variant="outlined">{helperEditErr}</Alert> : null}
+
+              {helperEditTrip && !isPlannedStatus(helperEditTrip.status) ? (
+                <Alert severity="info" variant="outlined">
+                  Helper quick edits are locked after a trip has started.
+                </Alert>
+              ) : null}
+
+              {helperEditExistingEntry ? (
+                <Button
+                  color="error"
+                  variant="outlined"
+                  disabled={helperEditSaving || !helperEditTrip || !isPlannedStatus(helperEditTrip.status)}
+                  onClick={removeHelperFromTrip}
+                  sx={{ borderRadius: 2, minHeight: 44, textTransform: "none", fontWeight: 850 }}
+                >
+                  Remove {helperEditExistingEntry.name}
+                </Button>
+              ) : null}
+
+              <Box>
+                <Typography variant="subtitle2" sx={{ fontWeight: 900, mb: 1 }}>
+                  {helperEditExistingEntry ? "Reassign to" : "Choose helper"}
+                </Typography>
+
+                <Stack spacing={1}>
+                  {helpers.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      No active helpers or apprentices found.
+                    </Typography>
+                  ) : (
+                    helpers.map((helper) => {
+                      const unavailableReason = helperEditTrip
+                        ? helperUnavailableReasonForTrip(helperEditTrip, helper)
+                        : "";
+
+                      const disabled =
+                        helperEditSaving ||
+                        !helperEditTrip ||
+                        !isPlannedStatus(helperEditTrip.status) ||
+                        Boolean(unavailableReason);
+
+                      return (
+                        <Button
+                          key={helper.uid}
+                          variant="outlined"
+                          disabled={disabled}
+                          onClick={() => assignHelperToTrip(helper)}
+                          sx={{
+                            justifyContent: "space-between",
+                            minHeight: 48,
+                            borderRadius: 2,
+                            textTransform: "none",
+                            fontWeight: 800,
+                            gap: 1.5,
+                          }}
+                        >
+                          <span>{helper.name}</span>
+                          <Typography
+                            component="span"
+                            variant="caption"
+                            color={unavailableReason ? "error.main" : "text.secondary"}
+                            sx={{
+                              textAlign: "right",
+                              maxWidth: { xs: 190, sm: 260 },
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {unavailableReason || formatRoleLabel(helper.laborRole)}
+                          </Typography>
+                        </Button>
+                      );
+                    })
+                  )}
+                </Stack>
+              </Box>
+
+              <Typography variant="caption" color="text.secondary">
+                PTO, company holiday, meeting, in-progress trip, and planned-trip conflicts are checked before saving.
+              </Typography>
+            </Stack>
+          </DialogContent>
+
+          <DialogActions>
+            <Button onClick={closeHelperEditDialog} disabled={helperEditSaving}>
+              Close
             </Button>
           </DialogActions>
         </Dialog>
@@ -6059,4 +7694,3 @@ function renderStaffCoverageCards(dateIso: string) {
     </ProtectedPage>
   );
 }
-// deploy retry after queued Cloud Build

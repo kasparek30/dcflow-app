@@ -34,6 +34,7 @@ type SharedTripCardProps = {
   footer?: React.ReactNode;
   trailingContent?: React.ReactNode;
   titleSuffix?: React.ReactNode;
+  cardBorderRadius?: number;
   onClick?: () => void;
 };
 
@@ -77,6 +78,7 @@ export default function SharedTripCard({
   footer,
   trailingContent,
   titleSuffix,
+  cardBorderRadius,
   onClick,
 }: SharedTripCardProps) {
   const theme = useTheme();
@@ -296,7 +298,7 @@ export default function SharedTripCard({
     <Card
       variant="outlined"
       sx={{
-        borderRadius: { xs: 3, md: 2.25 },
+        borderRadius: cardBorderRadius ?? { xs: 3, md: 2.25 },
         overflow: "hidden",
         borderColor: alpha("#FFFFFF", theme.palette.mode === "dark" ? 0.09 : 0.14),
         backgroundColor:
