@@ -61,6 +61,7 @@ import ProtectedPage from "../../../components/ProtectedPage";
 import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
+import { buildCustomerIndexPayload } from "../../../src/lib/customer-search-index";
 import type { Customer } from "../../../src/types/customer";
 
 type CustomerDetailPageProps = {
@@ -167,6 +168,72 @@ function buildInlineAddress(
 ) {
   const parts = [line1, line2, city, state, postal].map((x) => safeStr(x)).filter(Boolean);
   return parts.join(", ");
+}
+
+function looksLikePoBox(value?: string | null) {
+  const normalized = safeStr(value).toLowerCase();
+
+  if (!normalized) return false;
+
+  return (
+    /\bp\s*\.?\s*o\s*\.?\s*box\b/.test(normalized) ||
+    /\bpost\s+office\s+box\b/.test(normalized) ||
+    /\bpo\s+box\b/.test(normalized)
+  );
+}
+
+function addressLooksLikePoBox(params: {
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+}) {
+  return looksLikePoBox(
+    [
+      params.addressLine1,
+      params.addressLine2,
+      params.city,
+      params.state,
+      params.postalCode,
+    ]
+      .map((x) => safeStr(x))
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function serviceAddressLooksBillingLike(addr: Partial<NormalizedServiceAddress>) {
+  const source = safeStr(addr.source).toLowerCase();
+  const label = safeStr(addr.label).toLowerCase();
+  const notes = safeStr(addr.notes).toLowerCase();
+
+  return (
+    source === "qbo_bill" ||
+    source === "billing" ||
+    source === "mailing" ||
+    label.includes("billing") ||
+    label.includes("mailing") ||
+    notes.includes("billing address") ||
+    notes.includes("mailing address")
+  );
+}
+
+function isUsableServiceAddress(addr: Partial<NormalizedServiceAddress>) {
+  if (addr.active === false) return false;
+  if (serviceAddressLooksBillingLike(addr)) return false;
+
+  const addressLine1 = safeStr(addr.addressLine1);
+
+  if (!addressLine1) return false;
+
+  return !addressLooksLikePoBox({
+    addressLine1,
+    addressLine2: addr.addressLine2,
+    city: addr.city,
+    state: addr.state,
+    postalCode: addr.postalCode,
+  });
 }
 
 function formatDateTime(value?: string) {
@@ -435,6 +502,8 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
   const [issueDetails, setIssueDetails] = useState("");
   const [estimatedDurationHours, setEstimatedDurationHours] = useState("1");
   const [selectedAddressKey, setSelectedAddressKey] = useState("");
+  const [returnToCreateTicketAfterAddressSave, setReturnToCreateTicketAfterAddressSave] =
+    useState(false);
 
   useEffect(() => {
     async function loadCustomer() {
@@ -675,7 +744,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
     const services =
       (customer.serviceAddresses || [])
-        .filter((a) => a.active !== false)
+        .filter((a) => isUsableServiceAddress(a))
         .map((a) => ({
           key: `service:${a.id}`,
           label: `${a.label || "Service Address"}${a.isPrimary ? " (Primary)" : ""}`,
@@ -694,23 +763,19 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         a.label.localeCompare(b.label)
     );
 
-    const billing: AddressChoice = {
-      key: "billing",
-      label: "Billing Address",
-      addressLine1: customer.billingAddressLine1 || "",
-      addressLine2: customer.billingAddressLine2 || undefined,
-      city: customer.billingCity || "",
-      state: customer.billingState || "",
-      postalCode: customer.billingPostalCode || "",
-      source: "billing",
-    };
-
-    return [...services, billing];
+    return services;
   }, [customer]);
 
   useEffect(() => {
-    if (!selectedAddressKey && addressChoices.length) {
-      const primary = addressChoices.find((a) => a.source === "service" && a.isPrimary);
+    if (!addressChoices.length) {
+      if (selectedAddressKey) setSelectedAddressKey("");
+      return;
+    }
+
+    const stillValid = addressChoices.some((a) => a.key === selectedAddressKey);
+
+    if (!stillValid) {
+      const primary = addressChoices.find((a) => a.isPrimary);
       setSelectedAddressKey(primary?.key || addressChoices[0].key);
     }
   }, [addressChoices, selectedAddressKey]);
@@ -974,7 +1039,17 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         billAddrPostalCode: safeStr(editBillPostal),
       };
 
-      await updateDoc(doc(db, "customers", customer.id), payload);
+      const indexPayload = buildCustomerIndexPayload({
+        ...(rawCustomer || {}),
+        ...customer,
+        ...payload,
+        serviceAddresses: customer.serviceAddresses ?? [],
+      });
+
+      await updateDoc(doc(db, "customers", customer.id), {
+        ...payload,
+        ...indexPayload,
+      });
 
       setCustomer((prev) =>
         prev
@@ -997,6 +1072,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       setRawCustomer((prev: any) => ({
         ...(prev || {}),
         ...payload,
+        ...indexPayload,
       }));
 
       setEditOk(
@@ -1022,6 +1098,46 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
     e.preventDefault();
     if (!customer) return;
 
+    const addressLine1 = serviceAddressLine1.trim();
+    const city = serviceCity.trim();
+    const state = serviceState.trim();
+    const postalCode = servicePostalCode.trim();
+
+    if (!addressLine1) {
+      setServiceAddressError("Address line 1 is required.");
+      return;
+    }
+
+    if (!city) {
+      setServiceAddressError("City is required.");
+      return;
+    }
+
+    if (!state) {
+      setServiceAddressError("State is required.");
+      return;
+    }
+
+    if (!postalCode) {
+      setServiceAddressError("Postal code is required.");
+      return;
+    }
+
+    if (
+      addressLooksLikePoBox({
+        addressLine1,
+        addressLine2: serviceAddressLine2,
+        city,
+        state,
+        postalCode,
+      })
+    ) {
+      setServiceAddressError(
+        "PO Box addresses cannot be saved as service locations. Enter the physical address where work will be performed."
+      );
+      return;
+    }
+
     setServiceAddressError("");
     setSavingAddress(true);
 
@@ -1031,11 +1147,11 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
       const nextAddressForState = {
         id: createId(),
         label: serviceLabel.trim() || undefined,
-        addressLine1: serviceAddressLine1.trim(),
+        addressLine1,
         addressLine2: serviceAddressLine2.trim() || undefined,
-        city: serviceCity.trim(),
-        state: serviceState.trim(),
-        postalCode: servicePostalCode.trim(),
+        city,
+        state,
+        postalCode,
         notes: serviceNotes.trim() || undefined,
         active: true,
         isPrimary: serviceIsPrimary,
@@ -1063,9 +1179,16 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         source: addr.source ?? null,
       }));
 
+      const indexPayload = buildCustomerIndexPayload({
+        ...(rawCustomer || {}),
+        ...customer,
+        serviceAddresses: updatedAddressesForFirestore,
+      });
+
       await updateDoc(doc(db, "customers", customer.id), {
         serviceAddresses: updatedAddressesForFirestore,
         updatedAt: timestamp,
+        ...indexPayload,
       });
 
       setCustomer({
@@ -1078,10 +1201,17 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         ...(prev || {}),
         serviceAddresses: updatedAddressesForFirestore,
         updatedAt: timestamp,
+        ...indexPayload,
       }));
 
+      setSelectedAddressKey(`service:${nextAddressForState.id}`);
       resetServiceAddressForm();
       setShowAddServiceAddress(false);
+
+      if (returnToCreateTicketAfterAddressSave) {
+        setReturnToCreateTicketAfterAddressSave(false);
+        setShowCreateTicket(true);
+      }
     } catch (err: unknown) {
       setServiceAddressError(err instanceof Error ? err.message : "Failed to add service address.");
     } finally {
@@ -1144,9 +1274,16 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         source: addr.source ?? null,
       }));
 
+      const indexPayload = buildCustomerIndexPayload({
+        ...(rawCustomer || {}),
+        ...customer,
+        serviceAddresses: updatedAddressesForFirestore,
+      });
+
       await updateDoc(doc(db, "customers", customer.id), {
         serviceAddresses: updatedAddressesForFirestore,
         updatedAt: timestamp,
+        ...indexPayload,
       });
 
       setCustomer({
@@ -1159,6 +1296,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
         ...(prev || {}),
         serviceAddresses: updatedAddressesForFirestore,
         updatedAt: timestamp,
+        ...indexPayload,
       }));
 
       setDeleteAddressTargetId(null);
@@ -1194,22 +1332,45 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
 
       const addr = getAddressFromKey(selectedAddressKey);
       if (!addr) {
-        setTicketError("Please choose a service or billing address.");
+        setTicketError(
+          "A physical service address is required before creating a service ticket. Billing addresses cannot be used."
+        );
+        return;
+      }
+
+      if (addr.source !== "service") {
+        setTicketError(
+          "Billing addresses cannot be used to create service tickets. Add the physical service address where work will be performed."
+        );
+        return;
+      }
+
+      if (
+        addressLooksLikePoBox({
+          addressLine1: addr.addressLine1,
+          addressLine2: addr.addressLine2,
+          city: addr.city,
+          state: addr.state,
+          postalCode: addr.postalCode,
+        })
+      ) {
+        setTicketError(
+          "PO Box addresses cannot be used for service tickets. Add the physical service address where work will be performed."
+        );
         return;
       }
 
       const hours = Math.max(0.25, Number(estimatedDurationHours || "1"));
       const minutes = Math.max(1, Math.round(hours * 60));
 
-      const serviceAddressId =
-        addr.source === "service" ? addr.key.replace("service:", "") : null;
+      const serviceAddressId = addr.key.replace("service:", "");
 
       const payload = {
         customerId: customer.id,
         customerDisplayName: customer.displayName || "",
 
         serviceAddressId,
-        serviceAddressLabel: addr.source === "service" ? addr.label : "Billing Address",
+        serviceAddressLabel: addr.label,
         serviceAddressLine1: addr.addressLine1 || "",
         serviceAddressLine2: addr.addressLine2 || null,
         serviceCity: addr.city || "",
@@ -1251,7 +1412,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
           status: "new",
           issueSummary: sum,
           issueDetails: issueDetails.trim() || undefined,
-          serviceAddressLabel: addr.source === "service" ? addr.label : "Billing Address",
+          serviceAddressLabel: addr.label,
           serviceAddressLine1: addr.addressLine1 || undefined,
           assignedTechnicianName: undefined,
           createdAt: now,
@@ -1471,8 +1632,8 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                           variant="contained"
                           startIcon={<DescriptionRoundedIcon />}
                           onClick={() => {
-                            setShowCreateTicket(true);
                             setTicketError("");
+                            setShowCreateTicket(true);
                           }}
                           sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
                         >
@@ -2390,6 +2551,31 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 onSubmit={handleCreateServiceTicket}
                 sx={{ display: "grid", gap: 2, pt: 0.5 }}
               >
+                {addressChoices.length === 0 ? (
+                  <Alert severity="warning" sx={{ borderRadius: 3 }}>
+                    <Stack spacing={1.5} alignItems="flex-start">
+                      <Typography variant="body2">
+                        This customer does not have a valid physical service address. Billing
+                        addresses and PO Boxes cannot be used to create service tickets.
+                      </Typography>
+                      <Button
+                        type="button"
+                        variant="outlined"
+                        size="small"
+                        startIcon={<AddHomeRoundedIcon />}
+                        onClick={() => {
+                          setReturnToCreateTicketAfterAddressSave(true);
+                          setShowCreateTicket(false);
+                          resetServiceAddressForm();
+                          setShowAddServiceAddress(true);
+                        }}
+                        sx={{ borderRadius: 99, fontWeight: 700 }}
+                      >
+                        Add Service Location
+                      </Button>
+                    </Stack>
+                  </Alert>
+                ) : null}
                 <Box
                   sx={{
                     display: "grid",
@@ -2427,15 +2613,15 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 />
 
                 <FormControl fullWidth>
-                  <InputLabel id="ticket-address-label">Address for this ticket</InputLabel>
+                  <InputLabel id="ticket-address-label">Service address for this ticket</InputLabel>
                   <Select
                     labelId="ticket-address-label"
                     value={selectedAddressKey}
-                    label="Address for this ticket"
+                    label="Service address for this ticket"
                     onChange={(e) => setSelectedAddressKey(String(e.target.value))}
                   >
                     {addressChoices.length === 0 ? (
-                      <MenuItem value="">No addresses found</MenuItem>
+                      <MenuItem value="">No valid service addresses found</MenuItem>
                     ) : (
                       addressChoices.map((a) => (
                         <MenuItem key={a.key} value={a.key}>
@@ -2461,7 +2647,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                       }}
                     >
                       <Typography variant="body2" color="text.secondary">
-                        Using address
+                        Using service address
                       </Typography>
                       <Typography variant="body1" sx={{ fontWeight: 700, mt: 0.5 }}>
                         {buildInlineAddress(
@@ -2498,7 +2684,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
                 form="create-ticket-form"
                 variant="contained"
                 startIcon={<DescriptionRoundedIcon />}
-                disabled={ticketSaving}
+                disabled={ticketSaving || addressChoices.length === 0}
                 sx={{ borderRadius: 99, fontWeight: 700, boxShadow: "none" }}
               >
                 {ticketSaving ? "Creating..." : "Create Ticket"}
@@ -2511,6 +2697,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
           open={showAddServiceAddress}
           onClose={() => {
             if (!savingAddress) {
+              setReturnToCreateTicketAfterAddressSave(false);
               setShowAddServiceAddress(false);
               resetServiceAddressForm();
             }
@@ -2650,6 +2837,7 @@ export default function CustomerDetailPage({ params }: CustomerDetailPageProps) 
           <DialogActions sx={{ px: 3, py: 2 }}>
             <Button
               onClick={() => {
+                setReturnToCreateTicketAfterAddressSave(false);
                 setShowAddServiceAddress(false);
                 resetServiceAddressForm();
               }}

@@ -349,6 +349,64 @@ function formatAddress(params: {
   return [line1, line2].filter(Boolean).join(" • ");
 }
 
+function normalizeAddressSearchValue(value?: string | null) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ");
+}
+
+function looksLikePoBox(value?: string | null) {
+  const normalized = normalizeAddressSearchValue(value);
+  if (!normalized) return false;
+
+  return (
+    /\bpo\s*box\b/.test(normalized) ||
+    /\bp\s*o\s*box\b/.test(normalized) ||
+    /\bpost office box\b/.test(normalized)
+  );
+}
+
+function looksLikePoBoxAddress(addr?: {
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+} | null) {
+  return looksLikePoBox(addr?.addressLine1) || looksLikePoBox(addr?.addressLine2);
+}
+
+function isBillingAddressCandidate(addr?: AvailableServiceAddressOption | null) {
+  if (!addr) return false;
+
+  const label = normalizeAddressSearchValue(addr.label);
+  const source = normalizeAddressSearchValue(addr.source);
+
+  return (
+    addr.isBillingFallback === true ||
+    source === "qbo_bill" ||
+    label === "billing" ||
+    label === "billing address" ||
+    label === "mailing" ||
+    label === "mailing address" ||
+    label.includes("billing") ||
+    label.includes("mailing")
+  );
+}
+
+function isValidServiceAddressCandidate(addr?: AvailableServiceAddressOption | null) {
+  if (!addr) return false;
+  if (addr.active === false) return false;
+  if (isBillingAddressCandidate(addr)) return false;
+  if (looksLikePoBoxAddress(addr)) return false;
+
+  return Boolean(
+    safeStr(addr.addressLine1) &&
+      safeStr(addr.city) &&
+      safeStr(addr.state) &&
+      safeStr(addr.postalCode)
+  );
+}
+
 function getCustomerSearchText(customer: CustomerOption) {
   return [
     customer.displayName,
@@ -1197,32 +1255,19 @@ export default function NewServiceTicketPage() {
   }, [customers, selectedCustomerId]);
 
   const activeServiceAddressCount = useMemo(() => {
-    return selectedCustomer?.serviceAddresses.filter((addr) => addr.active !== false).length ?? 0;
+    return (
+      selectedCustomer?.serviceAddresses.filter((addr) =>
+        isValidServiceAddressCandidate(addr)
+      ).length ?? 0
+    );
   }, [selectedCustomer]);
 
   const availableServiceAddresses = useMemo<AvailableServiceAddressOption[]>(() => {
     if (!selectedCustomer) return [];
 
-    const activeAddresses = selectedCustomer.serviceAddresses.filter(
-      (addr) => addr.active !== false
-    );
-
-    if (activeAddresses.length === 0) {
-      return [
-        {
-          id: "billing-fallback",
-          label: "Billing Address",
-          addressLine1: selectedCustomer.billingAddressLine1,
-          addressLine2: selectedCustomer.billingAddressLine2,
-          city: selectedCustomer.billingCity,
-          state: selectedCustomer.billingState,
-          postalCode: selectedCustomer.billingPostalCode,
-          active: true,
-          isPrimary: true,
-          isBillingFallback: true,
-        },
-      ];
-    }
+    const activeAddresses = selectedCustomer.serviceAddresses
+      .filter((addr) => addr.active !== false)
+      .filter((addr) => isValidServiceAddressCandidate(addr));
 
     return [...activeAddresses].sort((a, b) => {
       if (a.isPrimary && !b.isPrimary) return -1;
@@ -1252,6 +1297,33 @@ export default function NewServiceTicketPage() {
       null
     );
   }, [availableServiceAddresses, selectedServiceAddressId]);
+
+  const serviceAddressGuardMessage = useMemo(() => {
+    if (!selectedCustomer) return "";
+
+    if (activeServiceAddressCount === 0) {
+      return "This customer does not have a valid service address saved. Billing and mailing addresses cannot be used to create service tickets. Add the physical service address before continuing.";
+    }
+
+    if (!selectedServiceAddressId || !selectedServiceAddress) {
+      return "Select a valid physical service address before creating this service ticket.";
+    }
+
+    if (isBillingAddressCandidate(selectedServiceAddress)) {
+      return "Billing and mailing addresses cannot be used to create service tickets. Select or add a physical service address.";
+    }
+
+    if (looksLikePoBoxAddress(selectedServiceAddress)) {
+      return "PO Box addresses cannot be used as service locations. Add the physical address where work will be performed.";
+    }
+
+    return "";
+  }, [
+    selectedCustomer,
+    activeServiceAddressCount,
+    selectedServiceAddressId,
+    selectedServiceAddress,
+  ]);
 
   const currentTechnicians = useMemo(() => {
     const currentUids = new Set<string>();
@@ -1633,6 +1705,13 @@ export default function NewServiceTicketPage() {
       return;
     }
 
+    if (looksLikePoBox(addressLine1) || looksLikePoBox(quickServiceAddressLine2)) {
+      setQuickAddError(
+        "PO Box addresses cannot be used as service locations. Enter the physical address where work will be performed."
+      );
+      return;
+    }
+
     if (!city) {
       setQuickAddError("City is required.");
       return;
@@ -1724,8 +1803,22 @@ export default function NewServiceTicketPage() {
       availableServiceAddresses.find((addr) => addr.id === selectedServiceAddressId) ??
       availableServiceAddresses[0];
 
-    if (!chosenAddress) {
-      setError("Please select a service address.");
+    if (!chosenAddress || !selectedServiceAddressId) {
+      setError("A physical service address is required before creating a service ticket.");
+      return;
+    }
+
+    if (isBillingAddressCandidate(chosenAddress)) {
+      setError(
+        "Billing and mailing addresses cannot be used to create service tickets. Add or select the physical service address."
+      );
+      return;
+    }
+
+    if (looksLikePoBoxAddress(chosenAddress)) {
+      setError(
+        "PO Box addresses cannot be used as service locations. Add the physical address where work will be performed."
+      );
       return;
     }
 
@@ -1860,7 +1953,7 @@ export default function NewServiceTicketPage() {
         ticketCode: ticketNumberInfo.ticketCode,
         nextPoIndex: 0,
 
-        serviceAddressId: chosenAddress.isBillingFallback ? null : chosenAddress.id,
+        serviceAddressId: chosenAddress.id,
         serviceAddressLabel: chosenAddress.label ?? null,
         serviceAddressLine1: chosenAddress.addressLine1,
         serviceAddressLine2: chosenAddress.addressLine2 ?? null,
@@ -2027,7 +2120,7 @@ export default function NewServiceTicketPage() {
             </Box>
 
             {customersLoading ? (
-              <Card variant="outlined" sx={{ borderRadius: 4 }}>
+              <Card variant="outlined" sx={{ borderRadius: 1 }}>
                 <CardContent sx={{ py: 5 }}>
                   <Stack direction="row" spacing={2} alignItems="center" justifyContent="center">
                     <CircularProgress size={24} />
@@ -2043,7 +2136,7 @@ export default function NewServiceTicketPage() {
 
             {!customersLoading && !customersError ? (
               <Box component="form" onSubmit={handleSubmit}>
-                <Card variant="outlined" sx={{ borderRadius: 4, overflow: "hidden" }}>
+                <Card variant="outlined" sx={{ borderRadius: 1, overflow: "hidden" }}>
                   <CardContent sx={{ p: 0 }}>
                     <Stack divider={<Divider />} spacing={0}>
                       <Box sx={{ p: { xs: 2, sm: 3 } }}>
@@ -2081,7 +2174,7 @@ export default function NewServiceTicketPage() {
                             <Card
                               variant="outlined"
                               sx={{
-                                borderRadius: 3,
+                                borderRadius: 1,
                                 bgcolor: "action.hover",
                                 borderColor: "primary.main",
                               }}
@@ -2146,7 +2239,7 @@ export default function NewServiceTicketPage() {
                               <Card
                                 variant="outlined"
                                 sx={{
-                                  borderRadius: 4,
+                                  borderRadius: 1,
                                   borderStyle: "dashed",
                                   bgcolor: "background.default",
                                 }}
@@ -2163,7 +2256,7 @@ export default function NewServiceTicketPage() {
                                   <Card
                                     key={customer.id}
                                     variant="outlined"
-                                    sx={{ borderRadius: 4, overflow: "hidden" }}
+                                    sx={{ borderRadius: 1, overflow: "hidden" }}
                                   >
                                     <CardActionArea onClick={() => handleSelectCustomer(customer.id)}>
                                       <CardContent>
@@ -2235,13 +2328,15 @@ export default function NewServiceTicketPage() {
                               disabled={!selectedCustomer}
                               helperText={
                                 selectedCustomer
-                                  ? "Choose an existing location, or quick add a new one from this list."
+                                  ? "Only saved physical service addresses can be used. Billing, mailing, and PO Box addresses are blocked."
                                   : "Select a customer first."
                               }
                             >
                               <MenuItem value="">
                                 {selectedCustomer
-                                  ? "Select a service address"
+                                  ? activeServiceAddressCount > 0
+                                    ? "Select a service address"
+                                    : "No valid service address saved"
                                   : "Select a customer first"}
                               </MenuItem>
 
@@ -2269,6 +2364,12 @@ export default function NewServiceTicketPage() {
                                 </MenuItem>
                               ) : null}
                             </TextField>
+
+                            {serviceAddressGuardMessage ? (
+                              <Alert severity="warning" sx={{ borderRadius: 1 }}>
+                                {serviceAddressGuardMessage}
+                              </Alert>
+                            ) : null}
 
                             {selectedServiceAddress ? (
                               <Card
@@ -2302,7 +2403,7 @@ export default function NewServiceTicketPage() {
                                 variant="outlined"
                                 sx={{
                                   p: { xs: 2, sm: 2.5 },
-                                  borderRadius: 4,
+                                  borderRadius: 1,
                                   bgcolor: "background.default",
                                 }}
                               >
@@ -2633,7 +2734,7 @@ export default function NewServiceTicketPage() {
                               </Stack>
 
                               {!canDispatch ? (
-                                <Alert severity="info" sx={{ mt: 2, borderRadius: 3 }}>
+                                <Alert severity="info" sx={{ mt: 2, borderRadius: 1 }}>
                                   Only Admin, Dispatcher, and Manager roles can schedule during
                                   ticket creation.
                                 </Alert>
@@ -3011,7 +3112,7 @@ export default function NewServiceTicketPage() {
                                           variant="outlined"
                                           sx={{
                                             p: 1.5,
-                                            borderRadius: 3,
+                                            borderRadius: 1,
                                             borderColor: alpha(
                                               theme.palette.warning.main,
                                               0.4
@@ -3182,7 +3283,7 @@ export default function NewServiceTicketPage() {
                                         <Alert
                                           severity="info"
                                           variant="outlined"
-                                          sx={{ borderRadius: 3 }}
+                                          sx={{ borderRadius: 1 }}
                                         >
                                           Loading availability for {selectedDate}...
                                         </Alert>
@@ -3228,7 +3329,7 @@ export default function NewServiceTicketPage() {
                 <Card
                   variant="outlined"
                   sx={{
-                    borderRadius: 4,
+                    borderRadius: 1,
                     position: "sticky",
                     bottom: 16,
                     zIndex: 2,
@@ -3269,7 +3370,12 @@ export default function NewServiceTicketPage() {
                         <Button
                           type="submit"
                           variant="contained"
-                          disabled={saving || quickAddSaving || availabilityLoading}
+                          disabled={
+                            saving ||
+                            quickAddSaving ||
+                            availabilityLoading ||
+                            Boolean(serviceAddressGuardMessage)
+                          }
                           startIcon={
                             saving ? (
                               <CircularProgress size={18} color="inherit" />
