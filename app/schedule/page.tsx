@@ -1708,8 +1708,30 @@ const defaultHelpersForAddTech = useMemo(() => {
     .slice(0, 2);
 }, [helpers, addTechUid]);
 
-const addPrimaryHelper = defaultHelpersForAddTech[0] || null;
-const addSecondaryHelper = defaultHelpersForAddTech[1] || null;
+const unavailableDefaultHelpersForAddTrip = useMemo(() => {
+  const dateIso = String(addDateIso || "").trim();
+  if (!dateIso) return [] as HelperOption[];
+
+  return defaultHelpersForAddTech.filter((helper) =>
+    Boolean(ptoByUidByDate[helper.uid]?.[dateIso])
+  );
+}, [addDateIso, defaultHelpersForAddTech, ptoByUidByDate]);
+
+const availableDefaultHelpersForAddTrip = useMemo(() => {
+  const unavailable = new Set(unavailableDefaultHelpersForAddTrip.map((helper) => helper.uid));
+  return defaultHelpersForAddTech.filter((helper) => !unavailable.has(helper.uid)).slice(0, 2);
+}, [defaultHelpersForAddTech, unavailableDefaultHelpersForAddTrip]);
+
+const unavailableDefaultHelperMessage = unavailableDefaultHelpersForAddTrip.length
+  ? `${unavailableDefaultHelpersForAddTrip
+      .map((helper) => helper.name)
+      .join(", ")} ${
+      unavailableDefaultHelpersForAddTrip.length === 1 ? "is" : "are"
+    } unavailable for ${addDateIso}. Removed from the default crew for this trip.`
+  : "";
+
+const addPrimaryHelper = availableDefaultHelpersForAddTrip[0] || null;
+const addSecondaryHelper = availableDefaultHelpersForAddTrip[1] || null;
 
 const selectedAddPickerItem = useMemo(() => {
   const id = String(addSelectedId || addAdvancedId || "").trim();
@@ -2221,15 +2243,19 @@ function slotDefaults(slot: SlotKey) {
       }
     }
 
-const livePrimaryHelper = helpers
+const liveDefaultHelpers = helpers
   .filter(
     (helper) =>
       String(helper.defaultPairedTechUid || "").trim() === techUid
   )
   .slice(0, 2);
 
-const liveHelperUid = livePrimaryHelper[0]?.uid || "";
-const liveSecondaryHelperUid = livePrimaryHelper[1]?.uid || "";
+const liveAvailableDefaultHelpers = liveDefaultHelpers.filter(
+  (helper) => !ptoByUidByDate[helper.uid]?.[dateIso]
+);
+
+const liveHelperUid = liveAvailableDefaultHelpers[0]?.uid || "";
+const liveSecondaryHelperUid = liveAvailableDefaultHelpers[1]?.uid || "";
 
 const liveConflicts = computeAddSlotConflict({
   techUid,
@@ -5023,7 +5049,7 @@ function renderStaffCoverageCards(dateIso: string) {
             />
             <Chip
               label={addPrimaryHelper?.name ? `Helper: ${addPrimaryHelper.name}` : "No helper"}
-              color="success"
+              color={addPrimaryHelper?.name ? "success" : "warning"}
               variant="outlined"
               sx={{ borderRadius: 999, fontWeight: 800 }}
             />
@@ -5129,6 +5155,12 @@ function renderStaffCoverageCards(dateIso: string) {
                 }
               >
                 Estimated at {addEstimateHours} hours. All Day is recommended.
+              </Alert>
+            ) : null}
+
+            {unavailableDefaultHelperMessage ? (
+              <Alert severity="warning" variant="outlined">
+                {unavailableDefaultHelperMessage}
               </Alert>
             ) : null}
 
@@ -6701,6 +6733,12 @@ function renderStaffCoverageCards(dateIso: string) {
     <Typography variant="body2" color="text.secondary">
       Helper: <strong>{addPrimaryHelper?.name || "—"}</strong>
     </Typography>
+
+    {unavailableDefaultHelperMessage ? (
+      <Alert severity="warning" variant="outlined" sx={{ mt: 0.5 }}>
+        {unavailableDefaultHelperMessage}
+      </Alert>
+    ) : null}
 
     {addSecondaryHelper ? (
       <Typography variant="body2" color="text.secondary">

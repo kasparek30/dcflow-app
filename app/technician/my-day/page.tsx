@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   orderBy,
@@ -444,6 +445,264 @@ function formatPtoDateRange(startDate?: string, endDate?: string) {
   return `${start} → ${end}`;
 }
 
+type CrewPositionForPtoGuard =
+  | "primaryTech"
+  | "helper"
+  | "secondaryTech"
+  | "secondaryHelper";
+
+type CrewPtoGuardEntry = {
+  uid: string;
+  name: string;
+  position: CrewPositionForPtoGuard;
+  label: string;
+};
+
+type CrewPtoStartGuardResult = {
+  cleanedCrew: TripCrew;
+  changed: boolean;
+  warnings: string[];
+  blockingMessages: string[];
+  removedUids: string[];
+};
+
+function getCrewEntriesForPtoGuard(crew?: TripCrew | null): CrewPtoGuardEntry[] {
+  const entries: CrewPtoGuardEntry[] = [];
+
+  const add = (args: {
+    uid?: string | null;
+    name?: string | null;
+    position: CrewPositionForPtoGuard;
+    label: string;
+    fallbackName: string;
+  }) => {
+    const uid = String(args.uid || "").trim();
+    if (!uid) return;
+
+    entries.push({
+      uid,
+      name: String(args.name || "").trim() || args.fallbackName,
+      position: args.position,
+      label: args.label,
+    });
+  };
+
+  add({
+    uid: crew?.primaryTechUid,
+    name: crew?.primaryTechName,
+    position: "primaryTech",
+    label: "lead tech",
+    fallbackName: "Lead Tech",
+  });
+
+  add({
+    uid: crew?.helperUid,
+    name: crew?.helperName,
+    position: "helper",
+    label: "helper",
+    fallbackName: "Helper",
+  });
+
+  add({
+    uid: crew?.secondaryTechUid,
+    name: crew?.secondaryTechName,
+    position: "secondaryTech",
+    label: "secondary tech",
+    fallbackName: "Secondary Tech",
+  });
+
+  add({
+    uid: crew?.secondaryHelperUid,
+    name: crew?.secondaryHelperName,
+    position: "secondaryHelper",
+    label: "secondary helper",
+    fallbackName: "Secondary Helper",
+  });
+
+  return entries;
+}
+
+function getApprovedPtoForDate(
+  requests: PtoRequestLite[],
+  employeeId: string,
+  date: string
+) {
+  const uid = String(employeeId || "").trim();
+  const targetDate = String(date || "").trim();
+
+  if (!uid || !targetDate) return null;
+
+  return (
+    requests.find(
+      (request) =>
+        request.active !== false &&
+        String(request.employeeId || "").trim() === uid &&
+        String(request.status || "").trim().toLowerCase() === "approved" &&
+        isoDateFallsInRange(targetDate, request.startDate, request.endDate)
+    ) || null
+  );
+}
+
+function clearCrewPositionForPtoGuard(
+  crew: TripCrew,
+  position: CrewPositionForPtoGuard
+): TripCrew {
+  const next = { ...crew };
+
+  if (position === "primaryTech") {
+    next.primaryTechUid = null;
+    next.primaryTechName = null;
+  }
+
+  if (position === "helper") {
+    next.helperUid = null;
+    next.helperName = null;
+  }
+
+  if (position === "secondaryTech") {
+    next.secondaryTechUid = null;
+    next.secondaryTechName = null;
+  }
+
+  if (position === "secondaryHelper") {
+    next.secondaryHelperUid = null;
+    next.secondaryHelperName = null;
+  }
+
+  return next;
+}
+
+function hasLeadTechForPtoGuard(crew?: TripCrew | null) {
+  return Boolean(
+    String(crew?.primaryTechUid || "").trim() ||
+      String(crew?.secondaryTechUid || "").trim()
+  );
+}
+
+async function loadApprovedPtoRequestsForCrewOnTrip(trip: Trip) {
+  const crewEntries = getCrewEntriesForPtoGuard(trip.crew);
+  const uniqueCrewUids = Array.from(new Set(crewEntries.map((entry) => entry.uid)));
+
+  if (!trip.date || uniqueCrewUids.length === 0) return [] as PtoRequestLite[];
+
+  const snaps = await Promise.all(
+    uniqueCrewUids.map((uid) =>
+      getDocs(query(collection(db, "ptoRequests"), where("employeeId", "==", uid))).catch(
+        () => null
+      )
+    )
+  );
+
+  const rows: PtoRequestLite[] = [];
+
+  for (const snap of snaps) {
+    if (!snap) continue;
+
+    for (const ds of snap.docs) {
+      const d = ds.data() as any;
+      const request: PtoRequestLite = {
+        id: ds.id,
+        employeeId: String(d.employeeId || "").trim(),
+        employeeName: String(d.employeeName || "").trim() || undefined,
+        startDate: String(d.startDate || "").trim(),
+        endDate: String(d.endDate || d.startDate || "").trim(),
+        status: String(d.status || "").trim().toLowerCase(),
+        notes: d.notes ?? null,
+        active: typeof d.active === "boolean" ? d.active : true,
+      };
+
+      if (
+        request.active !== false &&
+        request.status === "approved" &&
+        isoDateFallsInRange(String(trip.date || ""), request.startDate, request.endDate)
+      ) {
+        rows.push(request);
+      }
+    }
+  }
+
+  return rows;
+}
+
+async function resolveCrewPtoStartGuard(trip: Trip): Promise<CrewPtoStartGuardResult> {
+  const originalCrew = trip.crew || {};
+  let cleanedCrew: TripCrew = { ...originalCrew };
+  const warnings: string[] = [];
+  const blockingMessages: string[] = [];
+  const removedUids: string[] = [];
+
+  const tripDate = String(trip.date || "").trim();
+  if (!tripDate) {
+    return { cleanedCrew, changed: false, warnings, blockingMessages, removedUids };
+  }
+
+  const approvedRequests = await loadApprovedPtoRequestsForCrewOnTrip(trip);
+  const crewEntries = getCrewEntriesForPtoGuard(originalCrew);
+
+  for (const entry of crewEntries) {
+    const approvedPto = getApprovedPtoForDate(approvedRequests, entry.uid, tripDate);
+    if (!approvedPto) continue;
+
+    const dateRange = formatPtoDateRange(approvedPto.startDate, approvedPto.endDate);
+
+    if (entry.position === "primaryTech") {
+      blockingMessages.push(
+        `${entry.name} is assigned as the lead tech but has approved PTO (${dateRange}). Assign an available lead tech before starting this trip.`
+      );
+      continue;
+    }
+
+    if (entry.position === "secondaryTech") {
+      cleanedCrew = clearCrewPositionForPtoGuard(cleanedCrew, entry.position);
+      removedUids.push(entry.uid);
+      warnings.push(
+        `${entry.name} was removed as secondary tech because they have approved PTO (${dateRange}).`
+      );
+      continue;
+    }
+
+    cleanedCrew = clearCrewPositionForPtoGuard(cleanedCrew, entry.position);
+    removedUids.push(entry.uid);
+    warnings.push(
+      `${entry.name} was removed as ${entry.label} because they have approved PTO (${dateRange}).`
+    );
+  }
+
+  if (!hasLeadTechForPtoGuard(cleanedCrew)) {
+    blockingMessages.push(
+      "This trip has no available lead tech assigned. Dispatch must assign a lead tech before work can start."
+    );
+  }
+
+  return {
+    cleanedCrew,
+    changed: removedUids.length > 0,
+    warnings,
+    blockingMessages,
+    removedUids,
+  };
+}
+
+function buildPtoGuardedTripFromSnapshot(tripId: string, data: any): Trip {
+  return {
+    id: tripId,
+    active: typeof data.active === "boolean" ? data.active : true,
+    type: data.type ?? undefined,
+    status: data.status ?? undefined,
+    date: data.date ?? undefined,
+    timeWindow: data.timeWindow ?? undefined,
+    startTime: data.startTime ?? undefined,
+    endTime: data.endTime ?? undefined,
+    crew: data.crew ?? undefined,
+    link: data.link ?? undefined,
+    cancelReason: data.cancelReason ?? null,
+    confirmedBy: (data.confirmedBy ?? null) as any,
+    completedAt: data.completedAt ?? null,
+    completedByUid: data.completedByUid ?? null,
+    timerState: data.timerState ?? null,
+  };
+}
+
 async function startProjectTripFromMyDay(args: {
   tripId: string;
   startedByUid: string;
@@ -454,6 +713,16 @@ async function startProjectTripFromMyDay(args: {
 
   const stamp = nowIso();
   const tripRef = doc(db, "trips", tripId);
+
+  const guardSnap = await getDoc(tripRef);
+  if (!guardSnap.exists()) throw new Error("Trip not found.");
+
+  const guardTrip = buildPtoGuardedTripFromSnapshot(tripId, guardSnap.data() as any);
+  const ptoGuard = await resolveCrewPtoStartGuard(guardTrip);
+
+  if (ptoGuard.blockingMessages.length > 0) {
+    throw new Error(ptoGuard.blockingMessages[0]);
+  }
 
   const result = await runTransaction(db, async (tx) => {
     const tripSnap = await tx.get(tripRef);
@@ -475,6 +744,7 @@ async function startProjectTripFromMyDay(args: {
         alreadyStarted: true,
         projectId: String(tripData.link?.projectId || "").trim() || null,
         projectStageKey: String(tripData.link?.projectStageKey || "").trim() || null,
+        crewWarnings: ptoGuard.warnings,
       };
     }
 
@@ -486,6 +756,9 @@ async function startProjectTripFromMyDay(args: {
       completedAt: null,
       completedByUid: null,
       active: true,
+      crew: ptoGuard.cleanedCrew,
+      crewConfirmed: ptoGuard.cleanedCrew,
+      startCrewAvailabilityWarnings: ptoGuard.warnings,
       updatedAt: stamp,
       updatedByUid: startedByUid || null,
     });
@@ -494,6 +767,7 @@ async function startProjectTripFromMyDay(args: {
       alreadyStarted: false,
       projectId: String(tripData.link?.projectId || "").trim() || null,
       projectStageKey: String(tripData.link?.projectStageKey || "").trim() || null,
+      crewWarnings: ptoGuard.warnings,
     };
   });
 
@@ -526,6 +800,16 @@ async function startServiceTripFromMyDay(args: {
   const stamp = nowIso();
   const tripRef = doc(db, "trips", tripId);
 
+  const guardSnap = await getDoc(tripRef);
+  if (!guardSnap.exists()) throw new Error("Trip not found.");
+
+  const guardTrip = buildPtoGuardedTripFromSnapshot(tripId, guardSnap.data() as any);
+  const ptoGuard = await resolveCrewPtoStartGuard(guardTrip);
+
+  if (ptoGuard.blockingMessages.length > 0) {
+    throw new Error(ptoGuard.blockingMessages[0]);
+  }
+
   const result = await runTransaction(db, async (tx) => {
     const tripSnap = await tx.get(tripRef);
     if (!tripSnap.exists()) throw new Error("Trip not found.");
@@ -546,6 +830,7 @@ async function startServiceTripFromMyDay(args: {
       return {
         alreadyStarted: true,
         serviceTicketId: String(tripData.link?.serviceTicketId || "").trim() || null,
+        crewWarnings: ptoGuard.warnings,
       };
     }
 
@@ -557,6 +842,9 @@ async function startServiceTripFromMyDay(args: {
       completedAt: null,
       completedByUid: null,
       active: true,
+      crew: ptoGuard.cleanedCrew,
+      crewConfirmed: ptoGuard.cleanedCrew,
+      startCrewAvailabilityWarnings: ptoGuard.warnings,
       updatedAt: stamp,
       updatedByUid: startedByUid || null,
     });
@@ -564,6 +852,7 @@ async function startServiceTripFromMyDay(args: {
     return {
       alreadyStarted: false,
       serviceTicketId: String(tripData.link?.serviceTicketId || "").trim() || null,
+      crewWarnings: ptoGuard.warnings,
     };
   });
 
@@ -652,6 +941,7 @@ export default function TechnicianMyDayPage() {
   const [trips, setTrips] = useState<Trip[]>([]);
   const [override, setOverride] = useState<DailyCrewOverride | null>(null);
   const [error, setError] = useState("");
+  const [startWarning, setStartWarning] = useState("");
 
   const [employeesLoading, setEmployeesLoading] = useState(true);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
@@ -1264,12 +1554,17 @@ export default function TechnicianMyDayPage() {
 
     setStartBusyTripId(item.id);
     setError("");
+    setStartWarning("");
 
     try {
       const res = await startProjectTripFromMyDay({
         tripId: item.id,
         startedByUid: myUid || whoUid,
       });
+
+      if (res.crewWarnings?.length) {
+        setStartWarning(res.crewWarnings.join(" "));
+      }
 
       setTrips((prev) =>
         prev.map((trip) =>
@@ -1308,12 +1603,17 @@ export default function TechnicianMyDayPage() {
 
     setStartBusyTripId(item.id);
     setError("");
+    setStartWarning("");
 
     try {
       const res = await startServiceTripFromMyDay({
         tripId: item.id,
         startedByUid: myUid || whoUid,
       });
+
+      if (res.crewWarnings?.length) {
+        setStartWarning(res.crewWarnings.join(" "));
+      }
 
       setTrips((prev) =>
         prev.map((trip) =>
@@ -1951,6 +2251,12 @@ async function handleGeneratePo(item: MyDayItem) {
               </Alert>
             ) : null}
 
+            {startWarning ? (
+              <Alert severity="warning" sx={{ borderRadius: 4 }}>
+                {startWarning}
+              </Alert>
+            ) : null}
+
             {!loading && !error ? (
               items.length === 0 ? (
                 <Alert severity={currentPto ? "warning" : "info"} variant="outlined" sx={{ borderRadius: 4 }}>
@@ -1970,6 +2276,7 @@ async function handleGeneratePo(item: MyDayItem) {
 
                     const canStartProject =
                       isProject &&
+                      !currentPto &&
                       !item.isActive &&
                       !isCompleted &&
                       item.status !== "cancelled" &&
@@ -1977,6 +2284,7 @@ async function handleGeneratePo(item: MyDayItem) {
 
                     const canStartService =
                       isService &&
+                      !currentPto &&
                       !item.isActive &&
                       !isCompleted &&
                       item.status !== "cancelled" &&

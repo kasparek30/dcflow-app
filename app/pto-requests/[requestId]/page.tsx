@@ -1,3 +1,5 @@
+// app/pto-requests/[requestId]/page.tsx
+
 "use client";
 
 import Link from "next/link";
@@ -10,18 +12,29 @@ import {
   getDocs,
   query,
   updateDoc,
+  where,
+  writeBatch,
 } from "firebase/firestore";
 import {
   Alert,
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
+  FormControl,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
+import type { SelectChangeEvent } from "@mui/material/Select";
 import { alpha, useTheme } from "@mui/material/styles";
 import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
@@ -42,6 +55,20 @@ import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
 import { normalizeCompanyHoliday } from "../../../src/lib/trip-availability";
+import {
+  applyCrewStaffingImpactAction,
+  buildCrewStaffingImpactTrips,
+  buildServiceTicketAssignmentFromCrew,
+  formatCrewStaffingDateRange,
+  getDefaultCrewStaffingActionForImpact,
+  getCrewStaffingReplacementRole,
+  isReplacementCandidateForImpact,
+  type CrewStaffingActionSelection,
+  type CrewStaffingImpactTrip,
+  type CrewStaffingReplacementCandidate,
+  type CrewStaffingTicketLite,
+  type CrewStaffingTripLite,
+} from "../../../src/lib/crew-staffing-impact";
 import type {
   PTORequest,
   PTORequestDayType,
@@ -74,6 +101,30 @@ type UnavailabilityLite = {
   source: string;
   ptoRequestId?: string;
   active: boolean;
+};
+
+type ImpactActionByTripId = Record<string, CrewStaffingActionSelection>;
+
+type RawUserLite = {
+  uid: string;
+  displayName: string;
+  role: string;
+  active: boolean;
+};
+
+type RawEmployeeProfileLite = {
+  userUid: string;
+  displayName: string;
+  employmentStatus: string;
+  laborRole: string;
+};
+
+type PtoCandidateRequestLite = {
+  id: string;
+  employeeId: string;
+  startDate: string;
+  endDate: string;
+  status: string;
 };
 
 function formatStatus(status: PTORequest["status"]) {
@@ -186,6 +237,75 @@ function buildTimingLabel(request: PTORequest) {
   )}`;
 }
 
+function normalizeRole(value?: string | null) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function ptoRangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+  const rangeAStart = String(aStart || "").trim();
+  const rangeAEnd = String(aEnd || aStart || "").trim();
+  const rangeBStart = String(bStart || "").trim();
+  const rangeBEnd = String(bEnd || bStart || "").trim();
+
+  if (!rangeAStart || !rangeAEnd || !rangeBStart || !rangeBEnd) return false;
+  return rangeAStart <= rangeBEnd && rangeBStart <= rangeAEnd;
+}
+
+function isCandidateUnavailableDuringRequest(
+  candidateUid: string,
+  request: PTORequest,
+  ptoRequests: PtoCandidateRequestLite[]
+) {
+  const uid = String(candidateUid || "").trim();
+  if (!uid) return false;
+
+  return ptoRequests.some((pto) => {
+    if (String(pto.employeeId || "").trim() !== uid) return false;
+    if (String(pto.id || "").trim() === request.id) return false;
+    if (String(pto.status || "").trim().toLowerCase() !== "approved") return false;
+    return ptoRangesOverlap(request.startDate, request.endDate, pto.startDate, pto.endDate);
+  });
+}
+
+function formatTripTimeRange(start?: string | null, end?: string | null) {
+  const startLabel = formatTime12h(start);
+  const endLabel = formatTime12h(end);
+  if (startLabel === "—" && endLabel === "—") return "No time set";
+  return `${startLabel}–${endLabel}`;
+}
+
+function getImpactCustomerLabel(impact: CrewStaffingImpactTrip) {
+  return (
+    String(impact.ticket?.customerDisplayName || "").trim() ||
+    String(impact.ticket?.issueSummary || "").trim() ||
+    String(impact.trip.link?.projectId || "Project Trip").trim() ||
+    "Trip"
+  );
+}
+
+function encodeImpactAction(action?: CrewStaffingActionSelection | null) {
+  if (!action) return "needs_staffing::";
+  return [action.type, action.replacementUid || "", action.replacementName || ""].join("::");
+}
+
+function decodeImpactAction(value: string): CrewStaffingActionSelection {
+  const [type, replacementUid, replacementName] = String(value || "").split("::");
+  const safeType =
+    type === "remove_worker" ||
+    type === "replace_worker" ||
+    type === "needs_staffing" ||
+    type === "reschedule_trip" ||
+    type === "review_only"
+      ? type
+      : "needs_staffing";
+
+  return {
+    type: safeType,
+    replacementUid: replacementUid || null,
+    replacementName: replacementName || null,
+  };
+}
+
 export default function PTORequestDetailPage({ params }: Props) {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -201,6 +321,17 @@ export default function PTORequestDetailPage({ params }: Props) {
 
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
+
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactDialogOpen, setImpactDialogOpen] = useState(false);
+  const [impactTrips, setImpactTrips] = useState<CrewStaffingImpactTrip[]>([]);
+  const [impactActions, setImpactActions] = useState<ImpactActionByTripId>({});
+  const [leadReplacementCandidates, setLeadReplacementCandidates] = useState<
+    CrewStaffingReplacementCandidate[]
+  >([]);
+  const [helperReplacementCandidates, setHelperReplacementCandidates] = useState<
+    CrewStaffingReplacementCandidate[]
+  >([]);
 
   const canReview =
     appUser?.role === "admin" ||
@@ -291,7 +422,245 @@ export default function PTORequestDetailPage({ params }: Props) {
     return canReview && requestItem.status === "pending";
   }, [canReview, requestItem]);
 
+  function getCandidatesForImpact(impact: CrewStaffingImpactTrip) {
+    const replacementRole = getCrewStaffingReplacementRole(impact.primaryAffectedPosition);
+    const baseCandidates =
+      replacementRole === "lead" ? leadReplacementCandidates : helperReplacementCandidates;
+
+    return baseCandidates.filter((candidate) =>
+      isReplacementCandidateForImpact(candidate, impact, requestItem?.employeeId || "")
+    );
+  }
+
+  function getActionOptionsForImpact(impact: CrewStaffingImpactTrip) {
+    const candidates = getCandidatesForImpact(impact);
+    const replacementRole = getCrewStaffingReplacementRole(impact.primaryAffectedPosition);
+
+    if (impact.isInProgress) {
+      return [
+        {
+          value: encodeImpactAction({ type: "review_only" }),
+          label: "Review manually — trip is in progress",
+        },
+      ];
+    }
+
+    const base =
+      replacementRole === "lead"
+        ? [
+            {
+              value: encodeImpactAction({ type: "needs_staffing" }),
+              label: "Remove lead tech + mark Needs Staffing",
+            },
+            {
+              value: encodeImpactAction({ type: "reschedule_trip" }),
+              label: "Remove lead tech + needs reschedule",
+            },
+          ]
+        : [
+            {
+              value: encodeImpactAction({ type: "remove_worker" }),
+              label: "Remove helper",
+            },
+            {
+              value: encodeImpactAction({ type: "needs_staffing" }),
+              label: "Remove helper + mark Needs Staffing",
+            },
+          ];
+
+    const replacementOptions = candidates.map((candidate) => ({
+      value: encodeImpactAction({
+        type: "replace_worker",
+        replacementUid: candidate.uid,
+        replacementName: candidate.name,
+      }),
+      label:
+        replacementRole === "lead"
+          ? `Replace lead with ${candidate.name}`
+          : `Replace helper with ${candidate.name}`,
+    }));
+
+    return [...base, ...replacementOptions];
+  }
+
+  async function loadPtoImpactReview() {
+    if (!requestItem) return null;
+
+    setImpactLoading(true);
+    setError("");
+    setSaveMsg("");
+
+    try {
+      const [tripSnap, usersSnap, profilesSnap, ptoSnap] = await Promise.all([
+        getDocs(
+          query(
+            collection(db, "trips"),
+            where("date", ">=", requestItem.startDate),
+            where("date", "<=", requestItem.endDate)
+          )
+        ),
+        getDocs(query(collection(db, "users"))),
+        getDocs(query(collection(db, "employeeProfiles"))),
+        getDocs(query(collection(db, "ptoRequests"))),
+      ]);
+
+      const trips: CrewStaffingTripLite[] = tripSnap.docs.map((docSnap) => {
+        const trip = docSnap.data() as any;
+        return {
+          id: docSnap.id,
+          active: trip.active ?? true,
+          type: trip.type ?? "service",
+          status: trip.status ?? "planned",
+          date: trip.date ?? "",
+          timeWindow: trip.timeWindow ?? "custom",
+          startTime: trip.startTime ?? "",
+          endTime: trip.endTime ?? "",
+          crew: trip.crew ?? null,
+          link: trip.link ?? null,
+          notes: trip.notes ?? null,
+        };
+      });
+
+      const serviceTicketIds = Array.from(
+        new Set(
+          trips
+            .map((trip) => String(trip.link?.serviceTicketId || "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      const ticketEntries = await Promise.all(
+        serviceTicketIds.map(async (serviceTicketId) => {
+          const snap = await getDoc(doc(db, "serviceTickets", serviceTicketId));
+          if (!snap.exists()) return [serviceTicketId, null] as const;
+
+          const ticket = snap.data() as any;
+          return [
+            serviceTicketId,
+            {
+              id: serviceTicketId,
+              customerDisplayName: ticket.customerDisplayName ?? null,
+              issueSummary: ticket.issueSummary ?? null,
+              serviceAddressLine1: ticket.serviceAddressLine1 ?? null,
+              serviceCity: ticket.serviceCity ?? null,
+              serviceState: ticket.serviceState ?? null,
+              status: ticket.status ?? null,
+            } satisfies CrewStaffingTicketLite,
+          ] as const;
+        })
+      );
+
+      const ticketsById = Object.fromEntries(ticketEntries);
+      const nextImpacts = buildCrewStaffingImpactTrips({
+        employeeUid: requestItem.employeeId,
+        trips,
+        ticketsById,
+      });
+
+      const ptoRequests: PtoCandidateRequestLite[] = ptoSnap.docs.map((docSnap) => {
+        const data = docSnap.data() as any;
+        return {
+          id: docSnap.id,
+          employeeId: String(data.employeeId || "").trim(),
+          startDate: String(data.startDate || "").trim(),
+          endDate: String(data.endDate || data.startDate || "").trim(),
+          status: String(data.status || "pending").trim().toLowerCase(),
+        };
+      });
+
+      const rawUsers: RawUserLite[] = usersSnap.docs.map((docSnap) => {
+        const user = docSnap.data() as any;
+        return {
+          uid: String(user.uid || docSnap.id).trim(),
+          displayName: String(user.displayName || user.name || "Unnamed").trim(),
+          role: String(user.role || "").trim(),
+          active: Boolean(user.active ?? true),
+        };
+      });
+
+      const rawProfiles: RawEmployeeProfileLite[] = profilesSnap.docs.map((docSnap) => {
+        const profile = docSnap.data() as any;
+        return {
+          userUid: String(profile.userUid || "").trim(),
+          displayName: String(profile.displayName || "Unnamed").trim(),
+          employmentStatus: String(profile.employmentStatus || "current").trim(),
+          laborRole: String(profile.laborRole || "").trim(),
+        };
+      });
+
+      const nextLeadCandidates: CrewStaffingReplacementCandidate[] = rawUsers
+        .filter((user) => user.active)
+        .filter((user) => {
+          const role = normalizeRole(user.role);
+          return role === "technician" || role === "manager";
+        })
+        .map((user) => ({
+          uid: user.uid,
+          name: user.displayName,
+          role: "lead" as const,
+          unavailable: isCandidateUnavailableDuringRequest(user.uid, requestItem, ptoRequests),
+          unavailableReason: "Approved PTO",
+        }))
+        .filter((candidate) => candidate.uid !== requestItem.employeeId)
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const nextHelperCandidates: CrewStaffingReplacementCandidate[] = rawProfiles
+        .filter(
+          (profile) =>
+            normalizeRole(profile.employmentStatus || "current") === "current" &&
+            (normalizeRole(profile.laborRole) === "helper" ||
+              normalizeRole(profile.laborRole) === "apprentice")
+        )
+        .map((profile) => ({
+          uid: profile.userUid,
+          name: profile.displayName,
+          role: "helper" as const,
+          unavailable: isCandidateUnavailableDuringRequest(profile.userUid, requestItem, ptoRequests),
+          unavailableReason: "Approved PTO",
+        }))
+        .filter((candidate) => Boolean(candidate.uid) && candidate.uid !== requestItem.employeeId)
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const nextActions: ImpactActionByTripId = {};
+      for (const impact of nextImpacts) {
+        nextActions[impact.trip.id] = getDefaultCrewStaffingActionForImpact(impact);
+      }
+
+      setImpactTrips(nextImpacts);
+      setImpactActions(nextActions);
+      setLeadReplacementCandidates(nextLeadCandidates);
+      setHelperReplacementCandidates(nextHelperCandidates);
+
+      return nextImpacts;
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to review affected trips.");
+      return null;
+    } finally {
+      setImpactLoading(false);
+    }
+  }
+
   async function handleApprove() {
+    if (!requestItem || !appUser?.uid) return;
+
+    const impacts = await loadPtoImpactReview();
+    if (!impacts) return;
+
+    if (impacts.length > 0) {
+      setImpactDialogOpen(true);
+      return;
+    }
+
+    await approvePtoRequestWithImpactActions({});
+  }
+
+  async function handleApproveImpactConfirmed() {
+    await approvePtoRequestWithImpactActions(impactActions);
+  }
+
+  async function approvePtoRequestWithImpactActions(
+    impactActionsToApply: ImpactActionByTripId = {}
+  ) {
     if (!requestItem || !appUser?.uid) return;
 
     setSaving(true);
@@ -479,6 +848,77 @@ export default function PTORequestDetailPage({ params }: Props) {
         }
       }
 
+      let updatedTripCount = 0;
+      let flaggedTripCount = 0;
+
+      if (impactTrips.length > 0) {
+        const batch = writeBatch(db);
+        let batchHasWrites = false;
+        const dateRangeLabel = formatCrewStaffingDateRange(
+          requestItem.startDate,
+          requestItem.endDate
+        );
+
+        for (const impact of impactTrips) {
+          const action =
+            impactActionsToApply[impact.trip.id] ||
+            getDefaultCrewStaffingActionForImpact(impact);
+
+          const result = applyCrewStaffingImpactAction({
+            trip: impact.trip,
+            employeeUid: requestItem.employeeId,
+            employeeName: requestItem.employeeName,
+            action,
+            approvedPtoRequestId: requestItem.id,
+            approvedPtoDateRange: dateRangeLabel,
+            updatedAt: nowIso,
+          });
+
+          const tripRef = doc(db, "trips", impact.trip.id);
+          batch.update(tripRef, {
+            crew: result.nextCrew,
+            crewConfirmed: null,
+            staffingStatus: result.staffingStatus,
+            staffingIssue: result.staffingIssue,
+            updatedAt: nowIso,
+            updatedByUid: appUser.uid,
+          });
+          batchHasWrites = true;
+          updatedTripCount += 1;
+          if (result.needsStaffing) flaggedTripCount += 1;
+
+          const serviceTicketId = String(impact.trip.link?.serviceTicketId || "").trim();
+          if (serviceTicketId) {
+            const ticketRef = doc(db, "serviceTickets", serviceTicketId);
+            batch.update(ticketRef, {
+              ...buildServiceTicketAssignmentFromCrew(result.nextCrew),
+              staffingStatus: result.staffingStatus,
+              staffingIssue: result.staffingIssue,
+              updatedAt: nowIso,
+              updatedByUid: appUser.uid,
+            });
+
+            const activityRef = doc(
+              collection(db, "serviceTickets", serviceTicketId, "activity")
+            );
+            batch.set(activityRef, {
+              type: "pto_staffing_impact_review",
+              title: "PTO Staffing Update",
+              description: `${requestItem.employeeName} was approved for PTO and this trip was reviewed for staffing impact.`,
+              details: result.activityDetails,
+              createdAt: nowIso,
+              createdByUid: appUser.uid,
+              createdByName: appUser.displayName || "Unknown Approver",
+              createdByRole: appUser.role || null,
+            });
+          }
+        }
+
+        if (batchHasWrites) {
+          await batch.commit();
+        }
+      }
+
       await updateDoc(doc(db, "ptoRequests", requestItem.id), {
         status: "approved",
         approvedAt: nowIso,
@@ -500,12 +940,16 @@ export default function PTORequestDetailPage({ params }: Props) {
         updatedAt: nowIso,
       });
 
+      setImpactDialogOpen(false);
+
       setSaveMsg(
         `PTO request approved. Created ${createdTimeEntryCount} PTO time entr${
           createdTimeEntryCount === 1 ? "y" : "ies"
-        } and ${createdUnavailabilityCount} unavailability block${
+        }, ${createdUnavailabilityCount} unavailability block${
           createdUnavailabilityCount === 1 ? "" : "s"
-        }.`
+        }, and reviewed ${updatedTripCount} affected trip${
+          updatedTripCount === 1 ? "" : "s"
+        }${flaggedTripCount > 0 ? ` (${flaggedTripCount} flagged for staffing)` : ""}.`
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to approve PTO request.");
@@ -559,6 +1003,218 @@ export default function PTORequestDetailPage({ params }: Props) {
   return (
     <ProtectedPage fallbackTitle="PTO Request Detail">
       <AppShell appUser={appUser}>
+        <Dialog
+          open={impactDialogOpen}
+          onClose={() => {
+            if (!saving) setImpactDialogOpen(false);
+          }}
+          fullWidth
+          maxWidth="lg"
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              justifyContent="space-between"
+              alignItems={{ xs: "flex-start", sm: "center" }}
+            >
+              <Box>
+                <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                  Approve PTO & Review Affected Trips
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Review planned and in-progress trips before this PTO becomes final.
+                </Typography>
+              </Box>
+
+              <Chip
+                color="warning"
+                icon={<ScheduleRoundedIcon />}
+                label={`${impactTrips.length} affected trip${impactTrips.length === 1 ? "" : "s"}`}
+                sx={{ borderRadius: 999, fontWeight: 700 }}
+              />
+            </Stack>
+          </DialogTitle>
+
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Alert severity="info" icon={<InfoRoundedIcon />}>
+                {requestItem?.employeeName || "This employee"} is assigned to {impactTrips.length} open trip
+                {impactTrips.length === 1 ? "" : "s"} during this PTO period. Choose how DCFlow should update each trip before approving.
+              </Alert>
+
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 1.25,
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    md: "1fr 1fr 1fr",
+                  },
+                }}
+              >
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 3,
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <Typography variant="h4" sx={{ fontWeight: 850 }}>
+                    {impactTrips.length}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    affected trips
+                  </Typography>
+                </Paper>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 3,
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <Typography variant="h4" sx={{ fontWeight: 850 }}>
+                    {impactTrips.filter((impact) => impact.isInProgress).length}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    in-progress review only
+                  </Typography>
+                </Paper>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 3,
+                    border: `1px solid ${theme.palette.divider}`,
+                  }}
+                >
+                  <Typography variant="h4" sx={{ fontWeight: 850 }}>
+                    {leadReplacementCandidates.filter((c) => !c.unavailable).length +
+                      helperReplacementCandidates.filter((c) => !c.unavailable).length}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    available replacements
+                  </Typography>
+                </Paper>
+              </Box>
+
+              <Stack spacing={1.25}>
+                {impactTrips.map((impact) => {
+                  const selectedAction =
+                    impactActions[impact.trip.id] ||
+                    getDefaultCrewStaffingActionForImpact(impact);
+                  const options = getActionOptionsForImpact(impact);
+
+                  return (
+                    <Paper
+                      key={impact.trip.id}
+                      elevation={0}
+                      sx={{
+                        p: 1.5,
+                        borderRadius: 3,
+                        border: `1px solid ${theme.palette.divider}`,
+                        backgroundColor: impact.isInProgress
+                          ? alpha(theme.palette.warning.main, 0.06)
+                          : theme.palette.background.paper,
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gap: 1.5,
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            md: "1fr 1.15fr 1.5fr",
+                          },
+                          alignItems: "center",
+                        }}
+                      >
+                        <Stack spacing={0.5}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                            {impact.trip.date || "No date"} • {formatTripTimeRange(impact.trip.startTime, impact.trip.endTime)}
+                          </Typography>
+                          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                            <Chip
+                              size="small"
+                              label={impact.affectedRoleLabel}
+                              color={getCrewStaffingReplacementRole(impact.primaryAffectedPosition) === "lead" ? "primary" : "default"}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
+                            <Chip
+                              size="small"
+                              label={impact.status || "planned"}
+                              color={impact.isInProgress ? "warning" : "default"}
+                              variant="outlined"
+                              sx={{ borderRadius: 999 }}
+                            />
+                          </Stack>
+                        </Stack>
+
+                        <Stack spacing={0.35}>
+                          <Typography variant="body2" sx={{ fontWeight: 750 }}>
+                            {getImpactCustomerLabel(impact)}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Lead: {impact.trip.crew?.primaryTechName || "None"} • Helper: {impact.trip.crew?.helperName || "None"}
+                          </Typography>
+                        </Stack>
+
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Staffing Action</InputLabel>
+                          <Select
+                            label="Staffing Action"
+                            value={encodeImpactAction(selectedAction)}
+                            onChange={(event: SelectChangeEvent) => {
+                              const nextAction = decodeImpactAction(event.target.value);
+                              setImpactActions((prev) => ({
+                                ...prev,
+                                [impact.trip.id]: nextAction,
+                              }));
+                            }}
+                            disabled={saving}
+                          >
+                            {options.map((option) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                {option.label}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </Box>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+            </Stack>
+          </DialogContent>
+
+          <DialogActions sx={{ p: 2 }}>
+            <Button
+              type="button"
+              variant="outlined"
+              onClick={() => setImpactDialogOpen(false)}
+              disabled={saving}
+              sx={{ borderRadius: 999 }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="contained"
+              onClick={handleApproveImpactConfirmed}
+              disabled={saving || impactLoading}
+              startIcon={<CheckCircleRoundedIcon />}
+              sx={{ borderRadius: 999 }}
+            >
+              {saving ? "Saving..." : "Approve PTO & Update Trips"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Box sx={{ maxWidth: 1200, mx: "auto", pb: 4 }}>
           <Stack spacing={3}>
             <Paper

@@ -1282,6 +1282,78 @@ function dateFallsWithinPto(date: string, request: PtoRequestLite) {
   return date >= String(request.startDate || "") && date <= String(request.endDate || "");
 }
 
+function getApprovedPtoForEmployeeOnDate(
+  employeeId: string,
+  date: string,
+  requests: PtoRequestLite[]
+) {
+  const uid = String(employeeId || "").trim();
+  const targetDate = String(date || "").trim();
+
+  if (!uid || !targetDate) return null;
+
+  return (
+    requests.find(
+      (request) =>
+        String(request.employeeId || "").trim() === uid &&
+        String(request.status || "").trim().toLowerCase() === "approved" &&
+        dateFallsWithinPto(targetDate, request)
+    ) || null
+  );
+}
+
+function getPtoUnavailableMessage(name: string, request: PtoRequestLite) {
+  const cleanName = String(name || "Employee").trim();
+  const start = String(request.startDate || "").trim();
+  const end = String(request.endDate || request.startDate || "").trim();
+
+  if (start && end && start !== end) {
+    return `${cleanName} has approved PTO from ${start} to ${end}.`;
+  }
+
+  if (start) {
+    return `${cleanName} has approved PTO on ${start}.`;
+  }
+
+  return `${cleanName} has approved PTO.`;
+}
+
+function getCrewPtoStartBlockMessage(args: {
+  crew: TripCrew | null;
+  date: string;
+  ptoRequests: PtoRequestLite[];
+}) {
+  const crew = args.crew || {};
+  const members = [
+    { uid: crew.primaryTechUid, name: crew.primaryTechName || "Lead Tech" },
+    { uid: crew.helperUid, name: crew.helperName || "Helper" },
+    { uid: crew.secondaryTechUid, name: crew.secondaryTechName || "Secondary Tech" },
+    { uid: crew.secondaryHelperUid, name: crew.secondaryHelperName || "Secondary Helper" },
+  ]
+    .map((member) => ({
+      uid: String(member.uid || "").trim(),
+      name: String(member.name || "Crew Member").trim(),
+    }))
+    .filter((member) => member.uid);
+
+  for (const member of members) {
+    const approvedPto = getApprovedPtoForEmployeeOnDate(
+      member.uid,
+      args.date,
+      args.ptoRequests
+    );
+
+    if (approvedPto) {
+      return `${getPtoUnavailableMessage(
+        member.name,
+        approvedPto
+      )} Update the crew before starting this trip.`;
+    }
+  }
+
+  return "";
+}
+
 function tripHasCrewUidGeneric(trip: any, uid: string) {
   if (!uid) return false;
   return (
@@ -4159,6 +4231,17 @@ Supply line`}
     }
 
     const startCrew = trip.crewConfirmed || trip.crew || null;
+    const ptoStartBlockMessage = getCrewPtoStartBlockMessage({
+      crew: startCrew,
+      date: trip.date || isoTodayLocal(),
+      ptoRequests,
+    });
+
+    if (ptoStartBlockMessage) {
+      setTripErr(trip.id, ptoStartBlockMessage);
+      return;
+    }
+
     const runningConflicts = await findRunningTripsForCrewUids({
       crewUids: crewUidsFromCrew(startCrew),
       excludeTripId: trip.id,
@@ -4297,6 +4380,17 @@ Supply line`}
     }
 
     const resumeCrew = trip.crewConfirmed || trip.crew || null;
+    const ptoResumeBlockMessage = getCrewPtoStartBlockMessage({
+      crew: resumeCrew,
+      date: trip.date || isoTodayLocal(),
+      ptoRequests,
+    });
+
+    if (ptoResumeBlockMessage) {
+      setTripErr(trip.id, ptoResumeBlockMessage);
+      return;
+    }
+
     const runningConflicts = await findRunningTripsForCrewUids({
       crewUids: crewUidsFromCrew(resumeCrew),
       excludeTripId: trip.id,
@@ -5183,17 +5277,67 @@ Supply line`}
       primaryTechUid = myUid;
       primaryTechName = appUser?.displayName || "Technician";
 
-      helperUid =
+      const techPto = getApprovedPtoForEmployeeOnDate(
+        myUid,
+        isoTodayLocal(),
+        ptoRequests
+      );
+
+      if (techPto) {
+        alert(
+          `${getPtoUnavailableMessage(
+            primaryTechName,
+            techPto
+          )} You cannot claim and start a service ticket while marked unavailable.`
+        );
+        return;
+      }
+
+      const defaultHelper =
         helperCandidates.find(
           (h) => String(h.defaultPairedTechUid || "").trim() === myUid
-        )?.uid || "";
+        ) || null;
 
-      helperName = helperUid
-        ? helperCandidates.find((h) => h.uid === helperUid)?.name || "Helper"
-        : null;
+      if (defaultHelper?.uid) {
+        const helperPto = getApprovedPtoForEmployeeOnDate(
+          defaultHelper.uid,
+          isoTodayLocal(),
+          ptoRequests
+        );
+
+        if (helperPto) {
+          alert(
+            `${getPtoUnavailableMessage(
+              defaultHelper.name,
+              helperPto
+            )} ${defaultHelper.name} was removed from this trip. The ticket will start with ${primaryTechName} only.`
+          );
+          helperUid = "";
+          helperName = null;
+        } else {
+          helperUid = defaultHelper.uid;
+          helperName = defaultHelper.name || "Helper";
+        }
+      }
     } else {
       const claimantProfile = helperCandidates.find((h) => h.uid === myUid);
       const pairedTechUid = String(claimantProfile?.defaultPairedTechUid || "").trim();
+
+      const claimantPto = getApprovedPtoForEmployeeOnDate(
+        myUid,
+        isoTodayLocal(),
+        ptoRequests
+      );
+
+      if (claimantPto) {
+        alert(
+          `${getPtoUnavailableMessage(
+            appUser?.displayName || claimantProfile?.name || "You",
+            claimantPto
+          )} You cannot claim and start a service ticket while marked unavailable.`
+        );
+        return;
+      }
 
       if (!pairedTechUid) {
         alert(
@@ -5216,6 +5360,22 @@ Supply line`}
       if (!pairedTech) {
         alert(
           "Your default paired technician could not be found as an active technician. Ask the office to update your pairing."
+        );
+        return;
+      }
+
+      const pairedTechPto = getApprovedPtoForEmployeeOnDate(
+        pairedTech.uid,
+        isoTodayLocal(),
+        ptoRequests
+      );
+
+      if (pairedTechPto) {
+        alert(
+          `${getPtoUnavailableMessage(
+            pairedTech.displayName || "Technician",
+            pairedTechPto
+          )} Ask the office to assign you to another available lead tech before using Claim & Start.`
         );
         return;
       }
