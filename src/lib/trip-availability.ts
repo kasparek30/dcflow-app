@@ -1,4 +1,5 @@
-//src/lib/trip-availability.ts
+// src/lib/trip-availability.ts
+
 export type TripTimeWindow = "am" | "pm" | "all_day" | "custom";
 
 export type TripCrew = {
@@ -265,6 +266,11 @@ function toMinutes(hhmm?: string) {
   return hh * 60 + mm;
 }
 
+function getCurrentLocalMinutes() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
 function buildSlotRange(args: {
   timeWindow: TripTimeWindow | string;
   startTime?: string;
@@ -294,6 +300,34 @@ function buildSlotRange(args: {
   };
 }
 
+function getEffectiveSlotRangeForDate(
+  date: string,
+  slotRange: { startMinutes: number; endMinutes: number } | null
+) {
+  if (!slotRange) return null;
+
+  const safeDate = normalizeDateValue(date);
+  const today = formatLocalIsoDate(new Date());
+
+  if (safeDate !== today) {
+    return slotRange;
+  }
+
+  const nowMinutes = getCurrentLocalMinutes();
+
+  // If the slot is already over, it should not create a new partial-day PTO block.
+  if (nowMinutes >= slotRange.endMinutes) {
+    return null;
+  }
+
+  // For today, only evaluate PTO against the remaining part of the slot.
+  // This fixes all_day trips still looking like 8AM-5PM after morning PTO has ended.
+  return {
+    ...slotRange,
+    startMinutes: Math.max(slotRange.startMinutes, nowMinutes),
+  };
+}
+
 function rangesOverlap(
   a: { startMinutes: number; endMinutes: number },
   b: { startMinutes: number; endMinutes: number }
@@ -317,6 +351,39 @@ function normalizeRequestDayType(value?: string | null): "full_day" | "partial_d
     : "full_day";
 }
 
+function getRequestDayTypeForRequest(request: PtoRequestLite): "full_day" | "partial_day" {
+  const explicitType = normalizeRequestDayType(request.requestDayType);
+
+  if (explicitType === "partial_day") {
+    return "partial_day";
+  }
+
+  const partialDayType = String(request.partialDayType || "").trim().toLowerCase();
+  const partialStart = String(request.partialStartTime || "").trim();
+  const partialEnd = String(request.partialEndTime || "").trim();
+  const hoursPerDay =
+    typeof request.hoursPerDay === "number" && Number.isFinite(request.hoursPerDay)
+      ? request.hoursPerDay
+      : null;
+
+  // Some older/created records may not have requestDayType set correctly.
+  // If they contain partial-day fields, treat them as partial-day PTO.
+  if (partialDayType === "am" || partialDayType === "pm" || partialDayType === "custom") {
+    return "partial_day";
+  }
+
+  if (partialStart && partialEnd) {
+    return "partial_day";
+  }
+
+  // A 4-hour approved PTO request should not behave like full-day PTO.
+  if (hoursPerDay !== null && hoursPerDay > 0 && hoursPerDay < 8) {
+    return "partial_day";
+  }
+
+  return "full_day";
+}
+
 function normalizePartialDayType(
   value?: string | null
 ): "am" | "pm" | "custom" {
@@ -328,7 +395,7 @@ function normalizePartialDayType(
 }
 
 function getPtoRangeForRequest(request: PtoRequestLite) {
-  const requestDayType = normalizeRequestDayType(request.requestDayType);
+  const requestDayType = getRequestDayTypeForRequest(request);
 
   if (requestDayType !== "partial_day") {
     return {
@@ -345,7 +412,7 @@ function getPtoRangeForRequest(request: PtoRequestLite) {
     return {
       startMinutes: toMinutes(am.start) ?? 480,
       endMinutes: toMinutes(am.end) ?? 720,
-      label: "AM",
+      label: `${formatTime12h(am.start)}–${formatTime12h(am.end)}`,
     };
   }
 
@@ -354,7 +421,7 @@ function getPtoRangeForRequest(request: PtoRequestLite) {
     return {
       startMinutes: toMinutes(pm.start) ?? 780,
       endMinutes: toMinutes(pm.end) ?? 1020,
-      label: "PM",
+      label: `${formatTime12h(pm.start)}–${formatTime12h(pm.end)}`,
     };
   }
 
@@ -375,6 +442,22 @@ function getPtoRangeForRequest(request: PtoRequestLite) {
     };
   }
 
+  // Last-resort fallback for older 4-hour records with missing partial times.
+  // Default these to morning PTO instead of incorrectly blocking the full day.
+  if (
+    typeof request.hoursPerDay === "number" &&
+    Number.isFinite(request.hoursPerDay) &&
+    request.hoursPerDay > 0 &&
+    request.hoursPerDay <= 4
+  ) {
+    const am = windowToTimes("am");
+    return {
+      startMinutes: toMinutes(am.start) ?? 480,
+      endMinutes: toMinutes(am.end) ?? 720,
+      label: `${formatTime12h(am.start)}–${formatTime12h(am.end)}`,
+    };
+  }
+
   return {
     startMinutes: 0,
     endMinutes: 24 * 60,
@@ -391,19 +474,21 @@ function ptoRequestOverlapsSlot(args: {
     return false;
   }
 
-  const requestDayType = normalizeRequestDayType(args.request.requestDayType);
+  const requestDayType = getRequestDayTypeForRequest(args.request);
 
   if (requestDayType !== "partial_day") {
     return true;
   }
 
-  if (!args.slotRange) {
-    return true;
+  const effectiveSlotRange = getEffectiveSlotRangeForDate(args.date, args.slotRange);
+
+  if (!effectiveSlotRange) {
+    return false;
   }
 
   const ptoRange = getPtoRangeForRequest(args.request);
 
-  return rangesOverlap(args.slotRange, {
+  return rangesOverlap(effectiveSlotRange, {
     startMinutes: ptoRange.startMinutes,
     endMinutes: ptoRange.endMinutes,
   });

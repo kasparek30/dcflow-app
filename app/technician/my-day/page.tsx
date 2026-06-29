@@ -212,6 +212,11 @@ type PtoRequestLite = {
   startDate: string;
   endDate: string;
   status: string;
+  hoursPerDay?: number | null;
+  requestDayType?: "full_day" | "partial_day" | string | null;
+  partialDayType?: "am" | "pm" | "custom" | string | null;
+  partialStartTime?: string | null;
+  partialEndTime?: string | null;
   notes?: string | null;
   active?: boolean;
 };
@@ -445,6 +450,112 @@ function formatPtoDateRange(startDate?: string, endDate?: string) {
   return `${start} → ${end}`;
 }
 
+function timeToMinutes(hhmm?: string | null) {
+  const raw = String(hhmm || "").trim();
+  if (!/^\d{2}:\d{2}$/.test(raw)) return null;
+
+  const [hh, mm] = raw.split(":").map(Number);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+
+  return hh * 60 + mm;
+}
+
+function currentLocalMinutes() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function formatPtoTimeRangeForDisplay(pto: PtoRequestLite) {
+  const range = getPtoMinutesRange(pto);
+
+  if (!range) return "All Day";
+  if (range.label) return range.label;
+
+  return "Partial Day";
+}
+
+function getPtoMinutesRange(pto: PtoRequestLite): {
+  startMinutes: number;
+  endMinutes: number;
+  label: string;
+} | null {
+  const requestDayType = String(pto.requestDayType || "").trim().toLowerCase();
+  const partialDayType = String(pto.partialDayType || "").trim().toLowerCase();
+
+  const hasExplicitPartial =
+    requestDayType === "partial_day" ||
+    partialDayType === "am" ||
+    partialDayType === "pm" ||
+    partialDayType === "custom" ||
+    Boolean(String(pto.partialStartTime || "").trim() && String(pto.partialEndTime || "").trim());
+
+  const hoursPerDay =
+    typeof pto.hoursPerDay === "number" && Number.isFinite(pto.hoursPerDay)
+      ? pto.hoursPerDay
+      : null;
+
+  const looksLikePartialByHours =
+    hoursPerDay !== null && hoursPerDay > 0 && hoursPerDay < 8;
+
+  if (!hasExplicitPartial && !looksLikePartialByHours) {
+    return null;
+  }
+
+  if (partialDayType === "am") {
+    return {
+      startMinutes: 8 * 60,
+      endMinutes: 12 * 60,
+      label: "8AM–12PM",
+    };
+  }
+
+  if (partialDayType === "pm") {
+    return {
+      startMinutes: 13 * 60,
+      endMinutes: 17 * 60,
+      label: "1PM–5PM",
+    };
+  }
+
+  const start = String(pto.partialStartTime || "").trim();
+  const end = String(pto.partialEndTime || "").trim();
+  const startMinutes = timeToMinutes(start);
+  const endMinutes = timeToMinutes(end);
+
+  if (startMinutes !== null && endMinutes !== null && endMinutes > startMinutes) {
+    return {
+      startMinutes,
+      endMinutes,
+      label: `${formatTimeRange12h(start, end) || `${start}–${end}`}`,
+    };
+  }
+
+  // Safe fallback for older 4-hour records that were intended as morning PTO.
+  if (looksLikePartialByHours && hoursPerDay !== null && hoursPerDay <= 4) {
+    return {
+      startMinutes: 8 * 60,
+      endMinutes: 12 * 60,
+      label: "8AM–12PM",
+    };
+  }
+
+  return null;
+}
+
+function isPtoActiveNow(pto: PtoRequestLite, todayIso: string) {
+  if (!isoDateFallsInRange(todayIso, pto.startDate, pto.endDate)) return false;
+
+  const range = getPtoMinutesRange(pto);
+
+  // Full-day PTO remains active all day.
+  if (!range) return true;
+
+  const nowMinutes = currentLocalMinutes();
+
+  return nowMinutes >= range.startMinutes && nowMinutes < range.endMinutes;
+}
+
 type CrewPositionForPtoGuard =
   | "primaryTech"
   | "helper"
@@ -600,6 +711,7 @@ async function loadApprovedPtoRequestsForCrewOnTrip(trip: Trip) {
 
     for (const ds of snap.docs) {
       const d = ds.data() as any;
+
       const request: PtoRequestLite = {
         id: ds.id,
         employeeId: String(d.employeeId || "").trim(),
@@ -607,6 +719,14 @@ async function loadApprovedPtoRequestsForCrewOnTrip(trip: Trip) {
         startDate: String(d.startDate || "").trim(),
         endDate: String(d.endDate || d.startDate || "").trim(),
         status: String(d.status || "").trim().toLowerCase(),
+        hoursPerDay:
+          typeof d.hoursPerDay === "number" && Number.isFinite(d.hoursPerDay)
+            ? d.hoursPerDay
+            : null,
+        requestDayType: d.requestDayType ?? null,
+        partialDayType: d.partialDayType ?? null,
+        partialStartTime: d.partialStartTime ?? null,
+        partialEndTime: d.partialEndTime ?? null,
         notes: d.notes ?? null,
         active: typeof d.active === "boolean" ? d.active : true,
       };
@@ -614,7 +734,7 @@ async function loadApprovedPtoRequestsForCrewOnTrip(trip: Trip) {
       if (
         request.active !== false &&
         request.status === "approved" &&
-        isoDateFallsInRange(String(trip.date || ""), request.startDate, request.endDate)
+        isPtoActiveNow(request, String(trip.date || ""))
       ) {
         rows.push(request);
       }
@@ -1179,20 +1299,28 @@ export default function TechnicianMyDayPage() {
             const matches = snap.docs
               .map((ds) => {
                 const d = ds.data() as any;
-                return {
-                  id: ds.id,
-                  employeeId: String(d.employeeId || "").trim(),
-                  employeeName: String(d.employeeName || "").trim() || undefined,
-                  startDate: String(d.startDate || "").trim(),
-                  endDate: String(d.endDate || d.startDate || "").trim(),
-                  status: String(d.status || "").trim().toLowerCase(),
-                  notes: d.notes ?? null,
-                  active: typeof d.active === "boolean" ? d.active : true,
-                } as PtoRequestLite;
+return {
+  id: ds.id,
+  employeeId: String(d.employeeId || "").trim(),
+  employeeName: String(d.employeeName || "").trim() || undefined,
+  startDate: String(d.startDate || "").trim(),
+  endDate: String(d.endDate || d.startDate || "").trim(),
+  status: String(d.status || "").trim().toLowerCase(),
+  hoursPerDay:
+    typeof d.hoursPerDay === "number" && Number.isFinite(d.hoursPerDay)
+      ? d.hoursPerDay
+      : null,
+  requestDayType: d.requestDayType ?? null,
+  partialDayType: d.partialDayType ?? null,
+  partialStartTime: d.partialStartTime ?? null,
+  partialEndTime: d.partialEndTime ?? null,
+  notes: d.notes ?? null,
+  active: typeof d.active === "boolean" ? d.active : true,
+} as PtoRequestLite;
               })
               .filter((pto) => pto.active !== false)
               .filter((pto) => pto.status === "approved")
-              .filter((pto) => isoDateFallsInRange(todayIso, pto.startDate, pto.endDate))
+              .filter((pto) => isPtoActiveNow(pto, todayIso))
               .sort((a, b) => {
                 const aKey = `${a.startDate}_${a.endDate}_${a.id}`;
                 const bKey = `${b.startDate}_${b.endDate}_${b.id}`;
@@ -2093,7 +2221,9 @@ async function handleGeneratePo(item: MyDayItem) {
                 >
                   <SectionHeader
                     title="Approved PTO"
-                    subtitle="This employee is out on approved PTO today."
+                    subtitle={`This employee is currently out on approved PTO${
+  currentPto ? ` (${formatPtoTimeRangeForDisplay(currentPto)})` : ""
+}.`}
                     icon={<BeachAccessRoundedIcon color="warning" />}
                   />
                 </Box>
@@ -2128,7 +2258,7 @@ async function handleGeneratePo(item: MyDayItem) {
                     </Stack>
 
                     <Typography variant="body2" color="text.secondary">
-                      PTO coverage includes today.
+PTO coverage is active right now.
                     </Typography>
 
                     {currentPto.notes ? (
