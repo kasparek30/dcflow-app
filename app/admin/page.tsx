@@ -26,10 +26,11 @@ import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
 import AccountBalanceRoundedIcon from "@mui/icons-material/AccountBalanceRounded";
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
+import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
+import LocalShippingRoundedIcon from "@mui/icons-material/LocalShippingRounded";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
-import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
 
 type AdminToolCardProps = {
   href: string;
@@ -213,16 +214,23 @@ export default function AdminHomePage() {
       href: "/admin/employee-profiles",
       title: "Employee Profiles",
       description:
-        "Labor roles, pairing defaults, technician/helper relationships, payroll metadata, and employee-level settings.",
+        "Labor roles, pairing defaults, technician/helper relationships, payroll metadata, driver eligibility, license tracking, and employee-level settings.",
       icon: <BadgeRoundedIcon sx={{ fontSize: 22 }} />,
     },
     {
-  href: "/admin/staff-coverage",
-  title: "Staff Coverage",
-  description:
-    "Schedule part-time dispatch, office, billing, and admin coverage while creating linked payroll time entries.",
-  icon: <SupportAgentRoundedIcon sx={{ fontSize: 22 }} />,
-},
+      href: "/admin/fleet-vehicles",
+      title: "Fleet Vehicles",
+      description:
+        "Manage company trucks, assigned drivers, odometer readings, registration, insurance, year-end mileage, and maintenance logs.",
+      icon: <LocalShippingRoundedIcon sx={{ fontSize: 22 }} />,
+    },
+    {
+      href: "/admin/staff-coverage",
+      title: "Staff Coverage",
+      description:
+        "Schedule part-time dispatch, office, billing, and admin coverage while creating linked payroll time entries.",
+      icon: <SupportAgentRoundedIcon sx={{ fontSize: 22 }} />,
+    },
     {
       href: "/admin/daily-crew-overrides",
       title: "Daily Crew Overrides",
@@ -331,8 +339,8 @@ export default function AdminHomePage() {
                     maxWidth: 960,
                   }}
                 >
-                  Employee setup, crew structure, PTO controls, syncing utilities, and internal
-                  operations tools for DCFlow.
+                  Employee setup, crew structure, fleet vehicles, PTO controls, syncing
+                  utilities, and internal operations tools for DCFlow.
                 </Typography>
               </Box>
 
@@ -367,7 +375,7 @@ export default function AdminHomePage() {
             <Box>
               <SectionHeader
                 title="People & operations"
-                subtitle="Core staffing and workforce administration tools."
+                subtitle="Core staffing, fleet, and workforce administration tools."
               />
 
               <Box

@@ -3705,84 +3705,271 @@ Supply line`}
   }
 
   async function handleSaveTicketOverview() {
-    if (!canDispatch || !ticket?.id) return;
+  if (!canDispatch || !ticket?.id) return;
 
-    if (ticket.status === "invoiced") {
-      setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+  if (ticket.status === "invoiced") {
+    setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
+    return;
+  }
+
+  setTicketEditErr("");
+  setTicketEditOk("");
+  setTicketEditSaving(true);
+
+  try {
+    const hours = Number(ticketEstimatedHoursEdit);
+
+    if (!Number.isFinite(hours) || hours < 1) {
+      setTicketEditErr("Estimated duration must be at least 1 hour.");
       return;
     }
 
-    setTicketEditErr("");
-    setTicketEditOk("");
-    setTicketEditSaving(true);
+    if (!Number.isInteger(hours * 2)) {
+      setTicketEditErr("Estimated duration must use 0.5 hour increments.");
+      return;
+    }
 
-    try {
-      const hours = Number(ticketEstimatedHoursEdit);
+    const estimatedDurationMinutes = Math.round(hours * 60);
 
-      if (!Number.isFinite(hours) || hours < 1) {
-        setTicketEditErr("Estimated duration must be at least 1 hour.");
-        return;
+    const summary = ticketIssueSummaryEdit.trim();
+    if (!summary) {
+      setTicketEditErr("Issue summary is required.");
+      return;
+    }
+
+    const nextStatus = ticketStatusEdit as TicketStatus;
+    const guard = getLocalManualTicketStatusError({
+      nextStatus,
+      currentStatus: ticket.status,
+      trips,
+    });
+
+    if (guard) {
+      setTicketEditErr(guard);
+      return;
+    }
+
+    const now = nowIso();
+
+    const ticketRef = doc(db, "serviceTickets", ticket.id);
+
+    if (nextStatus === "cancelled") {
+      const today = isoTodayLocal();
+
+      const linkedTripsById = new Map<string, TripDoc>();
+
+      const linkedTripQueries = [
+        query(
+          collection(db, "trips"),
+          where("link.serviceTicketId", "==", ticket.id)
+        ),
+        query(
+          collection(db, "trips"),
+          where("serviceTicketId", "==", ticket.id)
+        ),
+      ];
+
+      const linkedTripSnaps = await Promise.all(
+        linkedTripQueries.map(async (qTrips) => {
+          try {
+            return await getDocs(qTrips);
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      for (const snap of linkedTripSnaps) {
+        if (!snap) continue;
+
+        for (const tripDoc of snap.docs) {
+          const data = tripDoc.data() as any;
+          const mappedTrip = mapTripLikeFromDoc({
+            id: tripDoc.id,
+            data: () => data,
+          });
+
+          linkedTripsById.set(tripDoc.id, mappedTrip);
+        }
       }
 
-      if (!Number.isInteger(hours * 2)) {
-        setTicketEditErr("Estimated duration must use 0.5 hour increments.");
-        return;
+      const plannedTripsToDelete = Array.from(linkedTripsById.values()).filter(
+        (trip) => {
+          const status = normalizeTripStatus(trip.status);
+          const type = String(trip.type || "").trim().toLowerCase();
+          const tripDate = String(trip.date || "").trim();
+
+          return (
+            type === "service" &&
+            status === "planned" &&
+            (!tripDate || tripDate >= today)
+          );
+        }
+      );
+
+      const plannedTripIdsToDelete = new Set(
+        plannedTripsToDelete.map((trip) => trip.id)
+      );
+
+      const batch = writeBatch(db);
+
+      batch.update(
+        ticketRef,
+        stripUndefined({
+          status: "cancelled",
+          issueSummary: summary,
+          estimatedDurationMinutes,
+          issueDetails: ticketIssueDetailsEdit.trim() || null,
+          assignedTechnicianId: null,
+          assignedTechnicianName: null,
+          primaryTechnicianId: null,
+          secondaryTechnicianId: null,
+          secondaryTechnicianName: null,
+          helperIds: null,
+          helperNames: null,
+          assignedTechnicianIds: null,
+          scheduledDate: null,
+          scheduledStartTime: null,
+          scheduledEndTime: null,
+          scheduledTimeWindow: null,
+          scheduledTripId: null,
+          activeTripId: null,
+          cancelledAt: now,
+          cancelledByUid: myUid || null,
+          updatedAt: now,
+          updatedByUid: myUid || null,
+        })
+      );
+
+      for (const plannedTrip of plannedTripsToDelete) {
+        batch.delete(doc(db, "trips", plannedTrip.id));
       }
 
-      const estimatedDurationMinutes = Math.round(hours * 60);
+      const activityRef = doc(
+        collection(db, "serviceTickets", ticket.id, "activity")
+      );
 
-      const summary = ticketIssueSummaryEdit.trim();
-      if (!summary) {
-        setTicketEditErr("Issue summary is required.");
-        return;
-      }
+      const activityEntry: ServiceTicketActivityEntry = {
+        id: activityRef.id,
+        type: "service_ticket_cancelled",
+        title: "Service Ticket Cancelled",
+        description:
+          plannedTripsToDelete.length > 0
+            ? "Service ticket was cancelled and future planned service trips were removed from the schedule."
+            : "Service ticket was cancelled.",
+        details: [
+          `Cancelled ticket: ${ticket.id}`,
+          `Deleted planned trips: ${plannedTripsToDelete.length}`,
+          ...plannedTripsToDelete.map(
+            (trip) =>
+              `${trip.date || "No date"} ${trip.startTime || "—"}-${
+                trip.endTime || "—"
+              } • Trip ${trip.id}`
+          ),
+        ],
+        createdAt: now,
+        createdByName: appUser?.displayName || "System",
+        createdByRole: appUser?.role || null,
+      };
 
-      const nextStatus = ticketStatusEdit as TicketStatus;
-      const guard = getLocalManualTicketStatusError({
-        nextStatus,
-        currentStatus: ticket.status,
-        trips,
+      batch.set(activityRef, {
+        type: activityEntry.type,
+        title: activityEntry.title,
+        description: activityEntry.description,
+        details: activityEntry.details,
+        createdAt: now,
+        createdByUid: myUid || null,
+        createdByName: activityEntry.createdByName,
+        createdByRole: activityEntry.createdByRole,
       });
 
-      if (guard) {
-        setTicketEditErr(guard);
-        return;
-      }
+      await batch.commit();
 
-      const now = nowIso();
+      const nextTrips = trips.filter((trip) => !plannedTripIdsToDelete.has(trip.id));
 
-      await updateDoc(doc(db, "serviceTickets", ticket.id), {
-        status: nextStatus,
-        issueSummary: summary,
-        estimatedDurationMinutes,
-        issueDetails: ticketIssueDetailsEdit.trim() || null,
-        updatedAt: now,
-        updatedByUid: myUid || null,
+      setTrips(nextTrips);
+
+      setAvailabilityTripsByDate((prev) => {
+        const nextByDate = { ...prev };
+
+        for (const plannedTrip of plannedTripsToDelete) {
+          const date = String(plannedTrip.date || "").trim();
+          if (!date) continue;
+
+          nextByDate[date] = (nextByDate[date] || []).filter(
+            (item) => item.id !== plannedTrip.id
+          );
+        }
+
+        return nextByDate;
       });
 
       setTicket((prev) =>
         prev
           ? {
               ...prev,
-              status: nextStatus,
+              status: "cancelled",
               issueSummary: summary,
               estimatedDurationMinutes,
               issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+              assignedTechnicianId: undefined,
+              assignedTechnicianName: undefined,
+              primaryTechnicianId: undefined,
+              secondaryTechnicianId: undefined,
+              secondaryTechnicianName: undefined,
+              helperIds: undefined,
+              helperNames: undefined,
+              assignedTechnicianIds: undefined,
               updatedAt: now,
             }
           : prev
       );
 
+      setActivityEntries((prev) => [activityEntry, ...prev]);
       setTicketEstimatedHoursEdit(String(hours));
-      setTicketEditOk("Ticket updated.");
-    } catch (err: unknown) {
-      setTicketEditErr(
-        err instanceof Error ? err.message : "Failed to update ticket."
+      setTicketEditOk(
+        plannedTripsToDelete.length > 0
+          ? `Ticket cancelled. Removed ${plannedTripsToDelete.length} future planned trip${
+              plannedTripsToDelete.length === 1 ? "" : "s"
+            }.`
+          : "Ticket cancelled."
       );
-    } finally {
-      setTicketEditSaving(false);
+
+      return;
     }
+
+    await updateDoc(ticketRef, {
+      status: nextStatus,
+      issueSummary: summary,
+      estimatedDurationMinutes,
+      issueDetails: ticketIssueDetailsEdit.trim() || null,
+      updatedAt: now,
+      updatedByUid: myUid || null,
+    });
+
+    setTicket((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: nextStatus,
+            issueSummary: summary,
+            estimatedDurationMinutes,
+            issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+            updatedAt: now,
+          }
+        : prev
+    );
+
+    setTicketEstimatedHoursEdit(String(hours));
+    setTicketEditOk("Ticket updated.");
+  } catch (err: unknown) {
+    setTicketEditErr(
+      err instanceof Error ? err.message : "Failed to update ticket."
+    );
+  } finally {
+    setTicketEditSaving(false);
   }
+}
 
   async function handleSaveSelectedServiceLocation() {
     if (!ticket?.id || !ticket.customerId || !canDispatch) return;

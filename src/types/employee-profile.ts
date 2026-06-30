@@ -40,16 +40,18 @@ export type PlumbingLicenseType =
 
 export type EmployeeLicenseInfo = {
   licenseType: PlumbingLicenseType;
-
-  // License number as shown on the state license/registration
   licenseNumber?: string;
-
-  // Example: "TX"
   issuingState?: string;
+  expirationDate?: string; // YYYY-MM-DD
+  notes?: string;
+};
 
-  // YYYY-MM-DD
-  expirationDate?: string;
-
+export type EmployeeDriverInfo = {
+  canDriveCompanyVehicle: boolean;
+  driversLicenseNumber?: string;
+  driversLicenseState?: string;
+  driversLicenseExpirationDate?: string; // YYYY-MM-DD
+  insuranceApproved?: boolean;
   notes?: string;
 };
 
@@ -82,7 +84,10 @@ export type EmployeeProfile = {
   // Plumbing license / registration info
   licenseInfo?: EmployeeLicenseInfo;
 
-  // ✅ QuickBooks link (v1)
+  // Driver / vehicle eligibility info
+  driverInfo?: EmployeeDriverInfo;
+
+  // QuickBooks link (v1)
   qboEmployeeId?: string;
   qboEmployeeDisplayName?: string;
   qboEmployeeHiredDate?: string; // YYYY-MM-DD
