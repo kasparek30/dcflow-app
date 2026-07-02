@@ -724,7 +724,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
               sx={{
                 px: { xs: 2, md: 3 },
                 py: { xs: 2.5, md: 3 },
-                borderRadius: 5,
+                borderradius: 1,
                 background: `linear-gradient(135deg, ${alpha(
                   theme.palette.primary.main,
                   0.12
@@ -779,7 +779,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
               <Card
                 elevation={0}
                 sx={{
-                  borderRadius: 5,
+                  borderradius: 1,
                   border: `1px solid ${theme.palette.divider}`,
                 }}
               >
@@ -802,7 +802,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                 <Card
                   elevation={0}
                   sx={{
-                    borderRadius: 5,
+                    borderradius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                   }}
                 >
@@ -900,7 +900,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                           <Box
                             sx={{
                               p: 2,
-                              borderRadius: 4,
+                              borderradius: 1,
                               backgroundColor: alpha(
                                 theme.palette.primary.main,
                                 0.05
@@ -938,7 +938,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                 <Card
                   elevation={0}
                   sx={{
-                    borderRadius: 5,
+                    borderradius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                   }}
                 >
@@ -980,7 +980,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                           <Box
                             sx={{
                               p: 3,
-                              borderRadius: 4,
+                              borderradius: 1,
                               border: `1px dashed ${theme.palette.divider}`,
                               textAlign: "center",
                               color: "text.secondary",
@@ -1004,7 +1004,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                                 key={e.id}
                                 elevation={0}
                                 sx={{
-                                  borderRadius: 4,
+                                  borderradius: 1,
                                   border: `1px solid ${theme.palette.divider}`,
                                   backgroundColor: alpha(
                                     theme.palette.background.default,
@@ -1194,7 +1194,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                 <Card
                   elevation={0}
                   sx={{
-                    borderRadius: 5,
+                    borderradius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                   }}
                 >

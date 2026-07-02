@@ -4373,60 +4373,60 @@ function renderStaffCoverageCards(dateIso: string) {
   const list = staffCoverageByDate[dateIso] || [];
   if (!list.length) return null;
 
-  return (
-    <Paper
-      elevation={0}
-      sx={{
-        p: 1.25,
-        borderRadius: 2,
-        border: `1px solid ${alpha(theme.palette.info.main, 0.22)}`,
-        backgroundColor: alpha(theme.palette.info.main, 0.06),
-      }}
-    >
-      <Stack spacing={0.75}>
-        <Typography
-          variant="caption"
-          sx={{
-            fontWeight: 800,
-            color: "text.secondary",
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-          }}
-        >
-          Office / Dispatch Coverage
-        </Typography>
+  // return (
+  //   <Paper
+  //     elevation={0}
+  //     sx={{
+  //       p: 1.25,
+  //       borderRadius: 2,
+  //       border: `1px solid ${alpha(theme.palette.info.main, 0.22)}`,
+  //       backgroundColor: alpha(theme.palette.info.main, 0.06),
+  //     }}
+  //   >
+  //     <Stack spacing={0.75}>
+  //       <Typography
+  //         variant="caption"
+  //         sx={{
+  //           fontWeight: 800,
+  //           color: "text.secondary",
+  //           letterSpacing: "0.04em",
+  //           textTransform: "uppercase",
+  //         }}
+  //       >
+  //         Office / Dispatch Coverage
+  //       </Typography>
 
-        {list.map((item) => (
-          <Stack
-            key={item.id}
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            justifyContent="space-between"
-          >
-            <Box sx={{ minWidth: 0 }}>
-              <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                {item.employeeName}
-              </Typography>
+  //       {list.map((item) => (
+  //         <Stack
+  //           key={item.id}
+  //           direction="row"
+  //           spacing={1}
+  //           alignItems="center"
+  //           justifyContent="space-between"
+  //         >
+  //           <Box sx={{ minWidth: 0 }}>
+  //             <Typography variant="body2" sx={{ fontWeight: 800 }}>
+  //               {item.employeeName}
+  //             </Typography>
 
-              <Typography variant="caption" color="text.secondary">
-                {staffCoverageWorkTypeLabel(item.workType)} •{" "}
-                {compactTimeLabel(item.startTime, item.endTime)} •{" "}
-                {Number(item.scheduledHours || 0).toFixed(2)}h
-              </Typography>
-            </Box>
+  //             <Typography variant="caption" color="text.secondary">
+  //               {staffCoverageWorkTypeLabel(item.workType)} •{" "}
+  //               {compactTimeLabel(item.startTime, item.endTime)} •{" "}
+  //               {Number(item.scheduledHours || 0).toFixed(2)}h
+  //             </Typography>
+  //           </Box>
 
-            <Chip
-              size="small"
-              label={item.status || "scheduled"}
-              variant="outlined"
-              sx={{ borderRadius: 1.5 }}
-            />
-          </Stack>
-        ))}
-      </Stack>
-    </Paper>
-  );
+  //           <Chip
+  //             size="small"
+  //             label={item.status || "scheduled"}
+  //             variant="outlined"
+  //             sx={{ borderRadius: 1.5 }}
+  //           />
+  //         </Stack>
+  //       ))}
+  //     </Stack>
+  //   </Paper>
+  // );
 }
 
   function renderTripCard(

@@ -27,7 +27,15 @@ import EventRoundedIcon from "@mui/icons-material/EventRounded";
 import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import BadgeRoundedIcon from "@mui/icons-material/BadgeRounded";
-import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  getDocs,
+  limit,
+  query,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import AppShell from "../../../../components/AppShell";
 import ProtectedPage from "../../../../components/ProtectedPage";
@@ -115,6 +123,23 @@ function dateToStoredValue(value: string): string | undefined {
   return value ? value : undefined;
 }
 
+function normalizeUnitNumberKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function removeUndefinedFields<T extends Record<string, unknown>>(
+  input: T
+): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined)
+  ) as Partial<T>;
+}
+
 function SectionTitle({
   icon,
   title,
@@ -184,12 +209,17 @@ export default function NewFleetVehiclePage() {
   const [saveError, setSaveError] = useState("");
 
   const vehiclePreview = useMemo(() => {
-    const unit = form.unitNumber.trim() ? `Unit ${form.unitNumber.trim()}` : "New vehicle";
+    const unit = form.unitNumber.trim()
+      ? `Unit ${form.unitNumber.trim()}`
+      : "New vehicle";
     const name = form.name.trim();
 
     if (name) return `${unit} — ${name}`;
 
-    const details = [form.year, form.make, form.model].filter(Boolean).join(" ").trim();
+    const details = [form.year, form.make, form.model]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
 
     return details ? `${unit} — ${details}` : unit;
   }, [form.unitNumber, form.name, form.year, form.make, form.model]);
@@ -210,10 +240,16 @@ export default function NewFleetVehiclePage() {
     setSaveError("");
 
     const unitNumber = form.unitNumber.trim();
+    const unitNumberKey = normalizeUnitNumberKey(unitNumber);
     const name = form.name.trim();
 
     if (!unitNumber) {
-      setSaveError("Unit number is required.");
+      setSaveError("Truck / Unit # is required.");
+      return;
+    }
+
+    if (!unitNumberKey) {
+      setSaveError("Enter a valid Truck / Unit #.");
       return;
     }
 
@@ -225,10 +261,28 @@ export default function NewFleetVehiclePage() {
     setSaving(true);
 
     try {
-      const nowIso = new Date().toISOString();
+      const duplicateSnapshot = await getDocs(
+        query(
+          collection(db, "fleetVehicles"),
+          where("unitNumberKey", "==", unitNumberKey),
+          limit(1)
+        )
+      );
 
-      const docRef = await addDoc(collection(db, "fleetVehicles"), {
+      if (!duplicateSnapshot.empty) {
+        setSaveError(
+          `Truck / Unit # "${unitNumber}" is already assigned to another fleet vehicle.`
+        );
+        setSaving(false);
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const hasOdometer = Boolean(form.currentOdometer.trim());
+
+      const vehiclePayload = removeUndefinedFields({
         unitNumber,
+        unitNumberKey,
         name,
 
         year: parseOptionalNumber(form.year),
@@ -244,9 +298,9 @@ export default function NewFleetVehiclePage() {
         assignedEmployeeName: emptyToUndefined(form.assignedEmployeeName),
 
         currentOdometer: parseOptionalNumber(form.currentOdometer),
-        odometerUpdatedAt: form.currentOdometer.trim() ? nowIso : undefined,
-        odometerUpdatedByUid: form.currentOdometer.trim() ? appUser?.uid : undefined,
-        odometerUpdatedByName: form.currentOdometer.trim()
+        odometerUpdatedAt: hasOdometer ? nowIso : undefined,
+        odometerUpdatedByUid: hasOdometer ? appUser?.uid : undefined,
+        odometerUpdatedByName: hasOdometer
           ? appUser?.displayName || appUser?.email || undefined
           : undefined,
 
@@ -272,6 +326,11 @@ export default function NewFleetVehiclePage() {
         updatedByUid: appUser?.uid,
         updatedByName: appUser?.displayName || appUser?.email || undefined,
       });
+
+      const docRef = await addDoc(
+        collection(db, "fleetVehicles"),
+        vehiclePayload
+      );
 
       router.push(`/admin/fleet-vehicles/${docRef.id}`);
     } catch (error) {
@@ -429,9 +488,12 @@ export default function NewFleetVehiclePage() {
                       }}
                     >
                       <TextField
-                        label="Unit #"
+                        label="Truck / Unit #"
                         value={form.unitNumber}
-                        onChange={(event) => updateForm("unitNumber", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("unitNumber", event.target.value)
+                        }
+                        helperText="Examples: Truck 1, Service 2, Spare 1"
                         required
                         fullWidth
                       />
@@ -439,7 +501,9 @@ export default function NewFleetVehiclePage() {
                       <TextField
                         label="Vehicle Name"
                         value={form.name}
-                        onChange={(event) => updateForm("name", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("name", event.target.value)
+                        }
                         placeholder="Truck 1"
                         fullWidth
                       />
@@ -450,7 +514,10 @@ export default function NewFleetVehiclePage() {
                           label="Status"
                           value={form.status}
                           onChange={(event) =>
-                            updateForm("status", event.target.value as FleetVehicleStatus)
+                            updateForm(
+                              "status",
+                              event.target.value as FleetVehicleStatus
+                            )
                           }
                         >
                           {FLEET_VEHICLE_STATUSES.map((status) => (
@@ -473,7 +540,9 @@ export default function NewFleetVehiclePage() {
                       <TextField
                         label="Year"
                         value={form.year}
-                        onChange={(event) => updateForm("year", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("year", event.target.value)
+                        }
                         inputMode="numeric"
                         fullWidth
                       />
@@ -481,7 +550,9 @@ export default function NewFleetVehiclePage() {
                       <TextField
                         label="Make"
                         value={form.make}
-                        onChange={(event) => updateForm("make", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("make", event.target.value)
+                        }
                         placeholder="Ford"
                         fullWidth
                       />
@@ -489,7 +560,9 @@ export default function NewFleetVehiclePage() {
                       <TextField
                         label="Model"
                         value={form.model}
-                        onChange={(event) => updateForm("model", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("model", event.target.value)
+                        }
                         placeholder="F-250"
                         fullWidth
                       />
@@ -497,14 +570,18 @@ export default function NewFleetVehiclePage() {
                       <TextField
                         label="Trim"
                         value={form.trim}
-                        onChange={(event) => updateForm("trim", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("trim", event.target.value)
+                        }
                         fullWidth
                       />
 
                       <TextField
                         label="VIN"
                         value={form.vin}
-                        onChange={(event) => updateForm("vin", event.target.value)}
+                        onChange={(event) =>
+                          updateForm("vin", event.target.value)
+                        }
                         fullWidth
                         sx={{
                           gridColumn: { xs: "auto", md: "span 2" },
@@ -587,7 +664,7 @@ export default function NewFleetVehiclePage() {
                     <SectionTitle
                       icon={<EventRoundedIcon sx={{ fontSize: 20 }} />}
                       title="Compliance Dates"
-                      subtitle="Track registration, insurance, and inspection dates for admin warnings."
+                      subtitle="Track registration, insurance, and commercial inspection dates for admin warnings."
                     />
 
                     <Box
@@ -605,7 +682,10 @@ export default function NewFleetVehiclePage() {
                         type="date"
                         value={form.registrationExpiresAt}
                         onChange={(event) =>
-                          updateForm("registrationExpiresAt", event.target.value)
+                          updateForm(
+                            "registrationExpiresAt",
+                            event.target.value
+                          )
                         }
                         InputLabelProps={{ shrink: true }}
                         fullWidth
@@ -623,7 +703,7 @@ export default function NewFleetVehiclePage() {
                       />
 
                       <TextField
-                        label="Inspection Expires"
+                        label="Commercial Inspection Expires"
                         type="date"
                         value={form.inspectionExpiresAt}
                         onChange={(event) =>
@@ -729,7 +809,9 @@ export default function NewFleetVehiclePage() {
                     <TextField
                       label="Notes"
                       value={form.notes}
-                      onChange={(event) => updateForm("notes", event.target.value)}
+                      onChange={(event) =>
+                        updateForm("notes", event.target.value)
+                      }
                       minRows={4}
                       multiline
                       fullWidth

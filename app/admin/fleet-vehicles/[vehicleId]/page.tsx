@@ -42,6 +42,7 @@ import {
   serverTimestamp,
   updateDoc,
 } from "firebase/firestore";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import AppShell from "../../../../components/AppShell";
 import ProtectedPage from "../../../../components/ProtectedPage";
 import { useAuthContext } from "../../../../src/context/auth-context";
@@ -1068,6 +1069,16 @@ export default function FleetVehicleDetailPage() {
                 alignItems={{ xs: "stretch", sm: "center" }}
                 sx={{ width: { xs: "100%", lg: "auto" } }}
               >
+                <Button
+                  component={Link}
+                  href={`/admin/fleet-vehicles/${vehicleId}/edit`}
+                  variant="contained"
+                  startIcon={<EditRoundedIcon />}
+                  disabled={!vehicle}
+                  sx={{ minHeight: 40, borderRadius: 2 }}
+                >
+                  Edit
+                </Button>
                 <Button
                   variant="outlined"
                   startIcon={<RefreshRoundedIcon />}

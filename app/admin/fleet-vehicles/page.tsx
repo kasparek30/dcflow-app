@@ -321,7 +321,7 @@ function FleetVehicleCard({ vehicle }: { vehicle: FleetVehicle }) {
         href={`/admin/fleet-vehicles/${vehicle.id}`}
         sx={{
           height: "100%",
-          borderRadius: 3,
+          borderRadius: 1,
           alignItems: "stretch",
         }}
       >
@@ -470,12 +470,10 @@ function FleetVehicleCard({ vehicle }: { vehicle: FleetVehicle }) {
               />
             </Box>
 
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-              <ExpirationChip label="Registration" value={vehicle.registrationExpiresAt} />
-              <ExpirationChip label="Insurance" value={vehicle.insuranceExpiresAt} />
-              <ExpirationChip label="Inspection" value={vehicle.inspectionExpiresAt} />
-              <OilChangeChip vehicle={vehicle} />
-            </Stack>
+<Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+  <ExpirationChip label="Registration" value={vehicle.registrationExpiresAt} />
+  <OilChangeChip vehicle={vehicle} />
+</Stack>
 
             <Divider />
 

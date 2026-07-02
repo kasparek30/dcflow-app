@@ -68,11 +68,7 @@ import { normalizeCompanyHoliday } from "../../../src/lib/trip-availability";
 import type { ServiceAddress } from "../../../src/types/customer";
 
 type ServiceAddressSource =
-  | "manual"
-  | "google_places"
-  | "qbo_ship"
-  | "qbo_bill"
-  | "legacy";
+  "manual" | "google_places" | "qbo_ship" | "qbo_bill" | "legacy";
 
 type ServiceAddressOption = Omit<ServiceAddress, "source"> & {
   source?: ServiceAddressSource | null;
@@ -121,12 +117,7 @@ type HelperOption = {
 };
 
 type TicketStatus =
-  | "new"
-  | "scheduled"
-  | "in_progress"
-  | "follow_up"
-  | "completed"
-  | "cancelled";
+  "new" | "scheduled" | "in_progress" | "follow_up" | "completed" | "cancelled";
 
 type GoogleAddressSelectionLike = {
   placeId?: string;
@@ -224,7 +215,10 @@ function safeStr(x: unknown) {
 }
 
 function createId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
 
@@ -303,24 +297,36 @@ function normalizeRole(role?: string) {
 }
 
 function normalizeStatus(value?: string | null) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
-function normalizeTripType(value?: string | null): "service" | "project" | "trip" {
+function normalizeTripType(
+  value?: string | null,
+): "service" | "project" | "trip" {
   const normalized = normalizeStatus(value);
   if (normalized === "project") return "project";
   if (normalized === "service") return "service";
   return "trip";
 }
 
-function normalizeRequestDayType(value?: string | null): "full_day" | "partial_day" {
-  return String(value || "").trim().toLowerCase() === "partial_day"
+function normalizeRequestDayType(
+  value?: string | null,
+): "full_day" | "partial_day" {
+  return String(value || "")
+    .trim()
+    .toLowerCase() === "partial_day"
     ? "partial_day"
     : "full_day";
 }
 
-function normalizePartialDayType(value?: string | null): "am" | "pm" | "custom" {
-  const normalized = String(value || "").trim().toLowerCase();
+function normalizePartialDayType(
+  value?: string | null,
+): "am" | "pm" | "custom" {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
 
   if (normalized === "am" || normalized === "pm" || normalized === "custom") {
     return normalized;
@@ -368,14 +374,20 @@ function looksLikePoBox(value?: string | null) {
   );
 }
 
-function looksLikePoBoxAddress(addr?: {
-  addressLine1?: string | null;
-  addressLine2?: string | null;
-} | null) {
-  return looksLikePoBox(addr?.addressLine1) || looksLikePoBox(addr?.addressLine2);
+function looksLikePoBoxAddress(
+  addr?: {
+    addressLine1?: string | null;
+    addressLine2?: string | null;
+  } | null,
+) {
+  return (
+    looksLikePoBox(addr?.addressLine1) || looksLikePoBox(addr?.addressLine2)
+  );
 }
 
-function isBillingAddressCandidate(addr?: AvailableServiceAddressOption | null) {
+function isBillingAddressCandidate(
+  addr?: AvailableServiceAddressOption | null,
+) {
   if (!addr) return false;
 
   const label = normalizeAddressSearchValue(addr.label);
@@ -393,7 +405,9 @@ function isBillingAddressCandidate(addr?: AvailableServiceAddressOption | null) 
   );
 }
 
-function isValidServiceAddressCandidate(addr?: AvailableServiceAddressOption | null) {
+function isValidServiceAddressCandidate(
+  addr?: AvailableServiceAddressOption | null,
+) {
   if (!addr) return false;
   if (addr.active === false) return false;
   if (isBillingAddressCandidate(addr)) return false;
@@ -401,9 +415,9 @@ function isValidServiceAddressCandidate(addr?: AvailableServiceAddressOption | n
 
   return Boolean(
     safeStr(addr.addressLine1) &&
-      safeStr(addr.city) &&
-      safeStr(addr.state) &&
-      safeStr(addr.postalCode)
+    safeStr(addr.city) &&
+    safeStr(addr.state) &&
+    safeStr(addr.postalCode),
   );
 }
 
@@ -560,7 +574,12 @@ function getTripRange(trip: TripDocLite) {
   };
 }
 
-function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+function rangesOverlap(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string,
+) {
   if (!aStart || !aEnd || !bStart || !bEnd) return false;
   return aStart < bEnd && bStart < aEnd;
 }
@@ -572,7 +591,7 @@ function dateFallsWithinPto(date: string, request: PtoRequestLite) {
 function buildReason(
   kind: PlannerSlotStatusKind,
   label: string,
-  detail: string
+  detail: string,
 ): PlannerCrewSummaryReason {
   return { kind, label, detail };
 }
@@ -649,7 +668,7 @@ function ptoBlocksSelection(args: {
     selectedRange.start,
     selectedRange.end,
     requestRange.start,
-    requestRange.end
+    requestRange.end,
   );
 }
 
@@ -680,7 +699,8 @@ function mapTripDocLite(id: string, trip: any): TripDocLite {
     endTime: String(trip.endTime || ""),
     crew: (trip.crew || null) as TripCrew | null,
     timerState: trip.timerState ?? null,
-    dispatchOverride: (trip.dispatchOverride || null) as DispatchOverrideInfo | null,
+    dispatchOverride: (trip.dispatchOverride ||
+      null) as DispatchOverrideInfo | null,
     link: (trip.link || null) as TripLinkLite | null,
     previewTitle: trip.previewTitle ?? null,
     previewSubtitle: trip.previewSubtitle ?? null,
@@ -692,8 +712,14 @@ function mapTripDocLite(id: string, trip: any): TripDocLite {
 }
 
 async function hydrateTripPreviewData(items: TripDocLite[]) {
-  const serviceCache = new Map<string, { title?: string | null; subtitle?: string | null }>();
-  const projectCache = new Map<string, { title?: string | null; subtitle?: string | null }>();
+  const serviceCache = new Map<
+    string,
+    { title?: string | null; subtitle?: string | null }
+  >();
+  const projectCache = new Map<
+    string,
+    { title?: string | null; subtitle?: string | null }
+  >();
 
   return Promise.all(
     items.map(async (item) => {
@@ -706,12 +732,16 @@ async function hydrateTripPreviewData(items: TripDocLite[]) {
         if (serviceTicketId) {
           if (!serviceCache.has(serviceTicketId)) {
             try {
-              const snap = await getDoc(doc(db, "serviceTickets", serviceTicketId));
+              const snap = await getDoc(
+                doc(db, "serviceTickets", serviceTicketId),
+              );
 
               if (snap.exists()) {
                 const data: any = snap.data();
                 serviceCache.set(serviceTicketId, {
-                  title: String(data.customerDisplayName || "Service Trip").trim(),
+                  title: String(
+                    data.customerDisplayName || "Service Trip",
+                  ).trim(),
                   subtitle: String(data.issueSummary || "").trim() || null,
                 });
               } else {
@@ -744,14 +774,14 @@ async function hydrateTripPreviewData(items: TripDocLite[]) {
                       data.name ||
                       data.title ||
                       data.customerDisplayName ||
-                      "Project"
+                      "Project",
                   ).trim(),
                   subtitle:
                     String(
                       data.description ||
                         data.projectType ||
                         formatStageKey(item.link?.projectStageKey) ||
-                        ""
+                        "",
                     ).trim() || null,
                 });
               } else {
@@ -779,7 +809,11 @@ async function hydrateTripPreviewData(items: TripDocLite[]) {
               : "Trip";
       }
 
-      if (!previewSubtitle && tripType === "project" && item.link?.projectStageKey) {
+      if (
+        !previewSubtitle &&
+        tripType === "project" &&
+        item.link?.projectStageKey
+      ) {
         previewSubtitle = formatStageKey(item.link.projectStageKey);
       }
 
@@ -788,9 +822,10 @@ async function hydrateTripPreviewData(items: TripDocLite[]) {
         previewTitle,
         previewSubtitle: previewSubtitle || null,
         estimatedDurationMinutes:
-          item.estimatedDurationMinutes ?? getTripEstimatedDurationMinutes(item),
+          item.estimatedDurationMinutes ??
+          getTripEstimatedDurationMinutes(item),
       };
-    })
+    }),
   );
 }
 
@@ -818,12 +853,16 @@ function analyzeMemberAvailability(args: {
         timeWindow: args.timeWindow,
         startTime: args.startTime,
         endTime: args.endTime,
-      })
+      }),
   );
 
   if (approvedPto) {
     reasons.push(
-      buildReason("approved_pto", "Approved PTO", buildPtoDetailLabel(approvedPto))
+      buildReason(
+        "approved_pto",
+        "Approved PTO",
+        buildPtoDetailLabel(approvedPto),
+      ),
     );
   }
 
@@ -844,7 +883,7 @@ function analyzeMemberAvailability(args: {
       selectedRange.start,
       selectedRange.end,
       tripRange.start,
-      tripRange.end
+      tripRange.end,
     );
   });
 
@@ -864,8 +903,8 @@ function analyzeMemberAvailability(args: {
         "Overlapping Trip",
         `${tripType} • ${
           String(first.previewTitle || "").trim() || "Scheduled Trip"
-        } • Est. ${formatEstimatedDurationLabel(getTripEstimatedDurationMinutes(first))}`
-      )
+        } • Est. ${formatEstimatedDurationLabel(getTripEstimatedDurationMinutes(first))}`,
+      ),
     );
   }
 
@@ -874,8 +913,8 @@ function analyzeMemberAvailability(args: {
       buildReason(
         "holiday",
         "Company Holiday",
-        args.holidays.map((holiday) => holiday.name).join(", ")
-      )
+        args.holidays.map((holiday) => holiday.name).join(", "),
+      ),
     );
   }
 
@@ -889,12 +928,16 @@ function analyzeMemberAvailability(args: {
         timeWindow: args.timeWindow,
         startTime: args.startTime,
         endTime: args.endTime,
-      })
+      }),
   );
 
   if (pendingPto) {
     reasons.push(
-      buildReason("pending_pto", "Pending PTO", buildPtoDetailLabel(pendingPto))
+      buildReason(
+        "pending_pto",
+        "Pending PTO",
+        buildPtoDetailLabel(pendingPto),
+      ),
     );
   }
 
@@ -904,7 +947,9 @@ function analyzeMemberAvailability(args: {
     disabled: false,
   };
 
-  const approvedReason = reasons.find((reason) => reason.kind === "approved_pto");
+  const approvedReason = reasons.find(
+    (reason) => reason.kind === "approved_pto",
+  );
   const overlapReason = reasons.find((reason) => reason.kind === "overlap");
   const holidayReason = reasons.find((reason) => reason.kind === "holiday");
   const pendingReason = reasons.find((reason) => reason.kind === "pending_pto");
@@ -934,7 +979,7 @@ function analyzeMemberAvailability(args: {
               : "Trip"),
         subtitle: String(trip.previewSubtitle || "").trim() || undefined,
         estimatedDurationLabel: formatEstimatedDurationLabel(
-          getTripEstimatedDurationMinutes(trip)
+          getTripEstimatedDurationMinutes(trip),
         ),
       })),
     };
@@ -974,9 +1019,21 @@ export default function NewServiceTicketPage() {
     appUser?.role === "dispatcher" ||
     appUser?.role === "manager";
 
+  function getCurrentAuditName() {
+    return (
+      String(
+        (appUser as any)?.displayName || (appUser as any)?.email || "",
+      ).trim() || null
+    );
+  }
+
+  function getCurrentAuditRole() {
+    return appUser?.role || null;
+  }
+
   const initialBusinessDate = useMemo(
     () => firstBusinessDayOnOrAfter(isoTodayLocal()),
-    []
+    [],
   );
 
   const [customersLoading, setCustomersLoading] = useState(true);
@@ -995,14 +1052,18 @@ export default function NewServiceTicketPage() {
 
   const [staffLoading, setStaffLoading] = useState(true);
   const [users, setUsers] = useState<DcflowUserOption[]>([]);
-  const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
+  const [employeeProfiles, setEmployeeProfiles] = useState<
+    EmployeeProfileOption[]
+  >([]);
   const [assignmentError, setAssignmentError] = useState("");
 
-  const [quickAddServiceLocationOpen, setQuickAddServiceLocationOpen] = useState(false);
+  const [quickAddServiceLocationOpen, setQuickAddServiceLocationOpen] =
+    useState(false);
   const [quickAddSaving, setQuickAddSaving] = useState(false);
   const [quickAddError, setQuickAddError] = useState("");
   const [quickServiceLabel, setQuickServiceLabel] = useState("");
-  const [quickServiceAddressSearch, setQuickServiceAddressSearch] = useState("");
+  const [quickServiceAddressSearch, setQuickServiceAddressSearch] =
+    useState("");
   const [quickServiceAddressLine1, setQuickServiceAddressLine1] = useState("");
   const [quickServiceAddressLine2, setQuickServiceAddressLine2] = useState("");
   const [quickServiceCity, setQuickServiceCity] = useState("");
@@ -1023,7 +1084,8 @@ export default function NewServiceTicketPage() {
   const [selectedSecondaryUid, setSelectedSecondaryUid] = useState("");
   const [useDefaultHelper, setUseDefaultHelper] = useState(true);
   const [selectedHelperUid, setSelectedHelperUid] = useState("");
-  const [selectedSecondaryHelperUid, setSelectedSecondaryHelperUid] = useState("");
+  const [selectedSecondaryHelperUid, setSelectedSecondaryHelperUid] =
+    useState("");
   const [tripNotes, setTripNotes] = useState("");
   const [holidayOverrideEnabled, setHolidayOverrideEnabled] = useState(false);
   const [dispatchOverrideEnabled, setDispatchOverrideEnabled] = useState(false);
@@ -1096,7 +1158,9 @@ export default function NewServiceTicketPage() {
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setCustomers(items);
       } catch (err: unknown) {
-        setCustomersError(err instanceof Error ? err.message : "Failed to load customers.");
+        setCustomersError(
+          err instanceof Error ? err.message : "Failed to load customers.",
+        );
       } finally {
         setCustomersLoading(false);
       }
@@ -1111,12 +1175,13 @@ export default function NewServiceTicketPage() {
       setAssignmentError("");
 
       try {
-        const [usersSnap, profilesSnap, ptoSnap, holidaysSnap] = await Promise.all([
-          getDocs(collection(db, "users")),
-          getDocs(collection(db, "employeeProfiles")),
-          getDocs(collection(db, "ptoRequests")),
-          getDocs(collection(db, "companyHolidays")),
-        ]);
+        const [usersSnap, profilesSnap, ptoSnap, holidaysSnap] =
+          await Promise.all([
+            getDocs(collection(db, "users")),
+            getDocs(collection(db, "employeeProfiles")),
+            getDocs(collection(db, "ptoRequests")),
+            getDocs(collection(db, "companyHolidays")),
+          ]);
 
         const usersItems: DcflowUserOption[] = usersSnap.docs.map((docSnap) => {
           const d = docSnap.data();
@@ -1133,21 +1198,25 @@ export default function NewServiceTicketPage() {
         usersItems.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setUsers(usersItems);
 
-        const profileItems: EmployeeProfileOption[] = profilesSnap.docs.map((docSnap) => {
-          const d = docSnap.data();
+        const profileItems: EmployeeProfileOption[] = profilesSnap.docs.map(
+          (docSnap) => {
+            const d = docSnap.data();
 
-          return {
-            id: docSnap.id,
-            userUid: d.userUid ?? null,
-            displayName: d.displayName ?? undefined,
-            employmentStatus: d.employmentStatus ?? "current",
-            laborRole: d.laborRole ?? "other",
-            defaultPairedTechUid: d.defaultPairedTechUid ?? null,
-          };
-        });
+            return {
+              id: docSnap.id,
+              userUid: d.userUid ?? null,
+              displayName: d.displayName ?? undefined,
+              employmentStatus: d.employmentStatus ?? "current",
+              laborRole: d.laborRole ?? "other",
+              defaultPairedTechUid: d.defaultPairedTechUid ?? null,
+            };
+          },
+        );
 
         profileItems.sort((a, b) =>
-          String(a.displayName || "").localeCompare(String(b.displayName || ""))
+          String(a.displayName || "").localeCompare(
+            String(b.displayName || ""),
+          ),
         );
 
         setEmployeeProfiles(profileItems);
@@ -1163,12 +1232,16 @@ export default function NewServiceTicketPage() {
             endDate: String(item.endDate || ""),
             status: (item.status || "pending") as PtoRequestLite["status"],
             hoursPerDay:
-              typeof item.hoursPerDay === "number" ? item.hoursPerDay : undefined,
+              typeof item.hoursPerDay === "number"
+                ? item.hoursPerDay
+                : undefined,
             requestDayType: normalizeRequestDayType(
               item.requestDayType ??
-                (item.partialDayType || item.partialStartTime || item.partialEndTime
+                (item.partialDayType ||
+                item.partialStartTime ||
+                item.partialEndTime
                   ? "partial_day"
-                  : "full_day")
+                  : "full_day"),
             ),
             partialDayType:
               item.partialDayType != null
@@ -1187,7 +1260,7 @@ export default function NewServiceTicketPage() {
         setAllHolidays(nextHolidays);
       } catch (err: unknown) {
         setAssignmentError(
-          err instanceof Error ? err.message : "Failed to load staff roster."
+          err instanceof Error ? err.message : "Failed to load staff roster.",
         );
       } finally {
         setStaffLoading(false);
@@ -1198,7 +1271,9 @@ export default function NewServiceTicketPage() {
   }, []);
 
   useEffect(() => {
-    const times = windowToTimes(selectedWindow === "custom" ? "am" : selectedWindow);
+    const times = windowToTimes(
+      selectedWindow === "custom" ? "am" : selectedWindow,
+    );
 
     if (selectedWindow !== "custom") {
       setSelectedStartTime(times.start);
@@ -1221,15 +1296,21 @@ export default function NewServiceTicketPage() {
 
       try {
         const snap = await getDocs(
-          query(collection(db, "trips"), where("date", "==", selectedDate))
+          query(collection(db, "trips"), where("date", "==", selectedDate)),
         );
 
-        const rawItems = snap.docs.map((ds) => mapTripDocLite(ds.id, ds.data()));
+        const rawItems = snap.docs.map((ds) =>
+          mapTripDocLite(ds.id, ds.data()),
+        );
         const items = await hydrateTripPreviewData(rawItems);
 
         setDayTrips(items);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load daily availability.");
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load daily availability.",
+        );
       } finally {
         setAvailabilityLoading(false);
       }
@@ -1251,18 +1332,22 @@ export default function NewServiceTicketPage() {
   }, [customers, customerSearch, searchReady]);
 
   const selectedCustomer = useMemo(() => {
-    return customers.find((customer) => customer.id === selectedCustomerId) ?? null;
+    return (
+      customers.find((customer) => customer.id === selectedCustomerId) ?? null
+    );
   }, [customers, selectedCustomerId]);
 
   const activeServiceAddressCount = useMemo(() => {
     return (
       selectedCustomer?.serviceAddresses.filter((addr) =>
-        isValidServiceAddressCandidate(addr)
+        isValidServiceAddressCandidate(addr),
       ).length ?? 0
     );
   }, [selectedCustomer]);
 
-  const availableServiceAddresses = useMemo<AvailableServiceAddressOption[]>(() => {
+  const availableServiceAddresses = useMemo<
+    AvailableServiceAddressOption[]
+  >(() => {
     if (!selectedCustomer) return [];
 
     const activeAddresses = selectedCustomer.serviceAddresses
@@ -1279,7 +1364,7 @@ export default function NewServiceTicketPage() {
   useEffect(() => {
     if (availableServiceAddresses.length > 0) {
       const stillExists = availableServiceAddresses.some(
-        (addr) => addr.id === selectedServiceAddressId
+        (addr) => addr.id === selectedServiceAddressId,
       );
 
       if (!stillExists) {
@@ -1292,7 +1377,9 @@ export default function NewServiceTicketPage() {
 
   const selectedServiceAddress = useMemo(() => {
     return (
-      availableServiceAddresses.find((addr) => addr.id === selectedServiceAddressId) ??
+      availableServiceAddresses.find(
+        (addr) => addr.id === selectedServiceAddressId,
+      ) ??
       availableServiceAddresses[0] ??
       null
     );
@@ -1354,7 +1441,7 @@ export default function NewServiceTicketPage() {
       .filter(
         (helper) =>
           helper.uid &&
-          (helper.laborRole === "helper" || helper.laborRole === "apprentice")
+          (helper.laborRole === "helper" || helper.laborRole === "apprentice"),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [employeeProfiles]);
@@ -1365,18 +1452,18 @@ export default function NewServiceTicketPage() {
 
   const selectedDateHolidays = useMemo(() => {
     return allHolidays.filter(
-      (holiday) => holiday.active !== false && holiday.date === selectedDate
+      (holiday) => holiday.active !== false && holiday.date === selectedDate,
     );
   }, [allHolidays, selectedDate]);
 
   const holidayNames = useMemo(
     () => selectedDateHolidays.map((holiday) => holiday.name),
-    [selectedDateHolidays]
+    [selectedDateHolidays],
   );
 
   const selectedDatePto = useMemo(() => {
     return allPtoRequests.filter((request) =>
-      dateFallsWithinPto(selectedDate, request)
+      dateFallsWithinPto(selectedDate, request),
     );
   }, [allPtoRequests, selectedDate]);
 
@@ -1386,7 +1473,8 @@ export default function NewServiceTicketPage() {
     return (
       helpers.find(
         (helper) =>
-          String(helper.defaultPairedTechUid || "").trim() === selectedPrimaryUid
+          String(helper.defaultPairedTechUid || "").trim() ===
+          selectedPrimaryUid,
       )?.uid || ""
     );
   }, [helpers, selectedPrimaryUid]);
@@ -1403,8 +1491,12 @@ export default function NewServiceTicketPage() {
   }, [useDefaultHelper, selectedPrimaryUid, defaultHelperForPrimary]);
 
   const selectedMembers = useMemo(() => {
-    const techMap = new Map(currentTechnicians.map((tech) => [tech.uid, tech.displayName]));
-    const helperMap = new Map(helpers.map((helper) => [helper.uid, helper.name]));
+    const techMap = new Map(
+      currentTechnicians.map((tech) => [tech.uid, tech.displayName]),
+    );
+    const helperMap = new Map(
+      helpers.map((helper) => [helper.uid, helper.name]),
+    );
 
     const out: Array<{ uid: string; name: string }> = [];
 
@@ -1414,15 +1506,18 @@ export default function NewServiceTicketPage() {
       out.push({ uid, name });
     };
 
-    pushUnique(selectedPrimaryUid, techMap.get(selectedPrimaryUid) || "Primary Tech");
+    pushUnique(
+      selectedPrimaryUid,
+      techMap.get(selectedPrimaryUid) || "Primary Tech",
+    );
     pushUnique(
       selectedSecondaryUid,
-      techMap.get(selectedSecondaryUid) || "Secondary Tech"
+      techMap.get(selectedSecondaryUid) || "Secondary Tech",
     );
     pushUnique(selectedHelperUid, helperMap.get(selectedHelperUid) || "Helper");
     pushUnique(
       selectedSecondaryHelperUid,
-      helperMap.get(selectedSecondaryHelperUid) || "Secondary Helper"
+      helperMap.get(selectedSecondaryHelperUid) || "Secondary Helper",
     );
 
     return out;
@@ -1551,7 +1646,7 @@ export default function NewServiceTicketPage() {
           selectedRange.start,
           selectedRange.end,
           tripRange.start,
-          tripRange.end
+          tripRange.end,
         );
 
         if (!overlaps) continue;
@@ -1571,9 +1666,10 @@ export default function NewServiceTicketPage() {
               : tripType === "service"
                 ? "Service Trip"
                 : "Trip"),
-          previewSubtitle: String(trip.previewSubtitle || "").trim() || undefined,
+          previewSubtitle:
+            String(trip.previewSubtitle || "").trim() || undefined,
           estimatedDurationLabel: formatEstimatedDurationLabel(
-            getTripEstimatedDurationMinutes(trip)
+            getTripEstimatedDurationMinutes(trip),
           ),
         });
       }
@@ -1589,7 +1685,9 @@ export default function NewServiceTicketPage() {
   ]);
 
   const overlapConflictTripIds = useMemo(() => {
-    return Array.from(new Set(selectedOverlapConflicts.map((item) => item.tripId)));
+    return Array.from(
+      new Set(selectedOverlapConflicts.map((item) => item.tripId)),
+    );
   }, [selectedOverlapConflicts]);
 
   useEffect(() => {
@@ -1600,7 +1698,9 @@ export default function NewServiceTicketPage() {
   }, [selectedOverlapConflicts]);
 
   const assignedTeamNames = useMemo(() => {
-    const techMap = new Map(currentTechnicians.map((u) => [u.uid, u.displayName]));
+    const techMap = new Map(
+      currentTechnicians.map((u) => [u.uid, u.displayName]),
+    );
     const helperMap = new Map(helpers.map((h) => [h.uid, h.name]));
 
     const names: string[] = [];
@@ -1627,14 +1727,19 @@ export default function NewServiceTicketPage() {
   ]);
 
   function findTechName(uid: string) {
-    return currentTechnicians.find((tech) => tech.uid === uid)?.displayName || "";
+    return (
+      currentTechnicians.find((tech) => tech.uid === uid)?.displayName || ""
+    );
   }
 
   function findHelperName(uid: string) {
     return helpers.find((helper) => helper.uid === uid)?.name || "";
   }
 
-  function handlePickSlot(uid: string, window: Exclude<TripTimeWindow, "custom">) {
+  function handlePickSlot(
+    uid: string,
+    window: Exclude<TripTimeWindow, "custom">,
+  ) {
     setSelectedPrimaryUid(uid);
     setSelectedWindow(window);
 
@@ -1675,11 +1780,13 @@ export default function NewServiceTicketPage() {
 
   function markQuickServiceAddressManual() {
     setQuickServiceAddressSource((current) =>
-      current === "google_places" ? "manual" : current
+      current === "google_places" ? "manual" : current,
     );
   }
 
-  function handleQuickServiceGoogleAddressSelected(selection: GoogleAddressSelectionLike) {
+  function handleQuickServiceGoogleAddressSelected(
+    selection: GoogleAddressSelectionLike,
+  ) {
     setQuickServiceAddressSearch(selection.formattedAddress || "");
     setQuickServiceAddressLine1(selection.addressLine1 || "");
     setQuickServiceAddressLine2(selection.addressLine2 || "");
@@ -1705,9 +1812,12 @@ export default function NewServiceTicketPage() {
       return;
     }
 
-    if (looksLikePoBox(addressLine1) || looksLikePoBox(quickServiceAddressLine2)) {
+    if (
+      looksLikePoBox(addressLine1) ||
+      looksLikePoBox(quickServiceAddressLine2)
+    ) {
       setQuickAddError(
-        "PO Box addresses cannot be used as service locations. Enter the physical address where work will be performed."
+        "PO Box addresses cannot be used as service locations. Enter the physical address where work will be performed.",
       );
       return;
     }
@@ -1734,7 +1844,7 @@ export default function NewServiceTicketPage() {
       const timestamp = nowIso();
 
       const activeExisting = selectedCustomer.serviceAddresses.filter(
-        (addr) => addr.active !== false
+        (addr) => addr.active !== false,
       );
 
       const nextAddress: ServiceAddressOption = {
@@ -1753,15 +1863,20 @@ export default function NewServiceTicketPage() {
         updatedAt: timestamp,
       };
 
-      const nextServiceAddresses = [...selectedCustomer.serviceAddresses, nextAddress];
+      const nextServiceAddresses = [
+        ...selectedCustomer.serviceAddresses,
+        nextAddress,
+      ];
 
-      const nextServiceAddressesForFirestore = nextServiceAddresses.map((addr) => ({
-        ...addr,
-        label: addr.label ?? null,
-        addressLine2: addr.addressLine2 ?? null,
-        notes: addr.notes ?? null,
-        source: addr.source ?? null,
-      }));
+      const nextServiceAddressesForFirestore = nextServiceAddresses.map(
+        (addr) => ({
+          ...addr,
+          label: addr.label ?? null,
+          addressLine2: addr.addressLine2 ?? null,
+          notes: addr.notes ?? null,
+          source: addr.source ?? null,
+        }),
+      );
 
       await updateDoc(doc(db, "customers", selectedCustomer.id), {
         serviceAddresses: nextServiceAddressesForFirestore,
@@ -1775,8 +1890,8 @@ export default function NewServiceTicketPage() {
                 ...customer,
                 serviceAddresses: nextServiceAddresses,
               }
-            : customer
-        )
+            : customer,
+        ),
       );
 
       setSelectedServiceAddressId(nextAddress.id);
@@ -1784,7 +1899,7 @@ export default function NewServiceTicketPage() {
       resetQuickAddServiceLocationForm();
     } catch (err: unknown) {
       setQuickAddError(
-        err instanceof Error ? err.message : "Failed to add service location."
+        err instanceof Error ? err.message : "Failed to add service location.",
       );
     } finally {
       setQuickAddSaving(false);
@@ -1800,24 +1915,27 @@ export default function NewServiceTicketPage() {
     }
 
     const chosenAddress =
-      availableServiceAddresses.find((addr) => addr.id === selectedServiceAddressId) ??
-      availableServiceAddresses[0];
+      availableServiceAddresses.find(
+        (addr) => addr.id === selectedServiceAddressId,
+      ) ?? availableServiceAddresses[0];
 
     if (!chosenAddress || !selectedServiceAddressId) {
-      setError("A physical service address is required before creating a service ticket.");
+      setError(
+        "A physical service address is required before creating a service ticket.",
+      );
       return;
     }
 
     if (isBillingAddressCandidate(chosenAddress)) {
       setError(
-        "Billing and mailing addresses cannot be used to create service tickets. Add or select the physical service address."
+        "Billing and mailing addresses cannot be used to create service tickets. Add or select the physical service address.",
       );
       return;
     }
 
     if (looksLikePoBoxAddress(chosenAddress)) {
       setError(
-        "PO Box addresses cannot be used as service locations. Add the physical address where work will be performed."
+        "PO Box addresses cannot be used as service locations. Add the physical address where work will be performed.",
       );
       return;
     }
@@ -1851,7 +1969,9 @@ export default function NewServiceTicketPage() {
       }
 
       if (!selectedPrimaryUid.trim()) {
-        setError("Primary technician is required when Schedule Now is enabled.");
+        setError(
+          "Primary technician is required when Schedule Now is enabled.",
+        );
         return;
       }
 
@@ -1868,14 +1988,14 @@ export default function NewServiceTicketPage() {
         setError(
           `Selected day is a company holiday (${selectedDateHolidays
             .map((holiday) => holiday.name)
-            .join(", ")}). Enable Holiday Override to continue.`
+            .join(", ")}). Enable Holiday Override to continue.`,
         );
         return;
       }
 
       if (selectedOverlapConflicts.length > 0 && !dispatchOverrideEnabled) {
         setError(
-          "One or more selected crew members already have an overlapping trip. Enable Dispatch Override to continue."
+          "One or more selected crew members already have an overlapping trip. Enable Dispatch Override to continue.",
         );
         return;
       }
@@ -1890,13 +2010,13 @@ export default function NewServiceTicketPage() {
           (reason) =>
             reason.kind === "approved_pto" ||
             reason.kind === "holiday" ||
-            (reason.kind === "overlap" && !dispatchOverrideEnabled)
-        )
+            (reason.kind === "overlap" && !dispatchOverrideEnabled),
+        ),
       );
 
       if (blockingReasons.length > 0) {
         setError(
-          "One or more selected crew members have a hard conflict. Pick a different slot or use holiday / dispatch override when allowed."
+          "One or more selected crew members have a hard conflict. Pick a different slot or use holiday / dispatch override when allowed.",
         );
         return;
       }
@@ -1907,13 +2027,18 @@ export default function NewServiceTicketPage() {
 
     try {
       const timestamp = nowIso();
+      const auditName = getCurrentAuditName();
+      const auditRole = getCurrentAuditRole();
+      const auditUid = appUser?.uid || null;
       const estimatedDurationMinutes = Math.round(hours * 60);
       const ticketNumberInfo = await reserveNextServiceTicketNumber(db);
 
       const ticketRef = doc(collection(db, "serviceTickets"));
       const batch = writeBatch(db);
 
-      const helperUid = scheduleNowEnabled ? selectedHelperUid.trim() || "" : "";
+      const helperUid = scheduleNowEnabled
+        ? selectedHelperUid.trim() || ""
+        : "";
       const secondaryTechUid = scheduleNowEnabled
         ? selectedSecondaryUid.trim() || ""
         : "";
@@ -1922,8 +2047,12 @@ export default function NewServiceTicketPage() {
         : "";
       const primaryUid = scheduleNowEnabled ? selectedPrimaryUid.trim() : null;
 
-      const primaryName = primaryUid ? findTechName(primaryUid) || "Unnamed Technician" : null;
-      const helperName = helperUid ? findHelperName(helperUid) || "Unnamed Helper" : null;
+      const primaryName = primaryUid
+        ? findTechName(primaryUid) || "Unnamed Technician"
+        : null;
+      const helperName = helperUid
+        ? findHelperName(helperUid) || "Unnamed Helper"
+        : null;
       const secondaryTechName = secondaryTechUid
         ? findTechName(secondaryTechUid) || "Unnamed Technician"
         : null;
@@ -1934,17 +2063,25 @@ export default function NewServiceTicketPage() {
       const assignedTechnicianIds: string[] = [];
 
       if (primaryUid) assignedTechnicianIds.push(primaryUid);
-      if (secondaryTechUid && !assignedTechnicianIds.includes(secondaryTechUid)) {
+      if (
+        secondaryTechUid &&
+        !assignedTechnicianIds.includes(secondaryTechUid)
+      ) {
         assignedTechnicianIds.push(secondaryTechUid);
       }
       if (helperUid && !assignedTechnicianIds.includes(helperUid)) {
         assignedTechnicianIds.push(helperUid);
       }
-      if (secondaryHelperUid && !assignedTechnicianIds.includes(secondaryHelperUid)) {
+      if (
+        secondaryHelperUid &&
+        !assignedTechnicianIds.includes(secondaryHelperUid)
+      ) {
         assignedTechnicianIds.push(secondaryHelperUid);
       }
 
-      const nextTicketStatus: TicketStatus = scheduleNowEnabled ? "scheduled" : status;
+      const nextTicketStatus: TicketStatus = scheduleNowEnabled
+        ? "scheduled"
+        : status;
 
       batch.set(ticketRef, {
         customerId: selectedCustomer.id,
@@ -1979,13 +2116,46 @@ export default function NewServiceTicketPage() {
         secondaryTechnicianName: secondaryTechUid ? secondaryTechName : null,
         helperIds: helperUid ? [helperUid] : null,
         helperNames: helperName ? [helperName] : null,
-        assignedTechnicianIds: assignedTechnicianIds.length ? assignedTechnicianIds : null,
+        assignedTechnicianIds: assignedTechnicianIds.length
+          ? assignedTechnicianIds
+          : null,
 
         internalNotes: internalNotes.trim() || null,
 
         active: true,
+        requestedByUid: auditUid,
+        requestedByName: auditName,
+        requestedByRole: auditRole,
         createdAt: timestamp,
+        createdByUid: auditUid,
+        createdByName: auditName,
+        createdByRole: auditRole,
         updatedAt: timestamp,
+        updatedByUid: auditUid,
+        updatedByName: auditName,
+        updatedByRole: auditRole,
+      });
+
+      const ticketCreatedActivityRef = doc(
+        collection(db, "serviceTickets", ticketRef.id, "activity"),
+      );
+
+      batch.set(ticketCreatedActivityRef, {
+        type: "service_ticket_created",
+        title: "Ticket Created",
+        description: scheduleNowEnabled
+          ? "Service ticket was created and scheduled."
+          : "Service ticket was created.",
+        details: [
+          `Customer: ${selectedCustomer.displayName}`,
+          `Issue: ${issueSummary.trim()}`,
+          `Status: ${nextTicketStatus}`,
+          `Estimated duration: ${hours} hr`,
+        ],
+        createdAt: timestamp,
+        createdByUid: auditUid,
+        createdByName: auditName || "System",
+        createdByRole: auditRole,
       });
 
       if (scheduleNowEnabled && primaryUid && primaryName) {
@@ -1997,8 +2167,8 @@ export default function NewServiceTicketPage() {
                 enabled: true,
                 reason: dispatchOverrideReason.trim(),
                 createdAt: timestamp,
-                createdByUid: appUser?.uid || null,
-                createdByName: (appUser as any)?.displayName || null,
+                createdByUid: auditUid,
+                createdByName: auditName,
                 conflictTypes: Array.from(
                   new Set(
                     selectedOverlapConflicts.map((conflict) =>
@@ -2006,9 +2176,9 @@ export default function NewServiceTicketPage() {
                         ? "project_overlap"
                         : conflict.tripType === "service"
                           ? "service_overlap"
-                          : "trip_overlap"
-                    )
-                  )
+                          : "trip_overlap",
+                    ),
+                  ),
                 ),
                 conflictTripIds: overlapConflictTripIds,
               }
@@ -2016,7 +2186,7 @@ export default function NewServiceTicketPage() {
 
         const tripEstimatedDurationMinutes = getMinutesBetween(
           selectedStartTime,
-          selectedEndTime
+          selectedEndTime,
         );
 
         batch.set(tripRef, {
@@ -2065,9 +2235,44 @@ export default function NewServiceTicketPage() {
           outcome: null,
           readyToBillAt: null,
           createdAt: timestamp,
-          createdByUid: appUser?.uid || null,
+          createdByUid: auditUid,
+          createdByName: auditName,
+          createdByRole: auditRole,
           updatedAt: timestamp,
-          updatedByUid: appUser?.uid || null,
+          updatedByUid: auditUid,
+          updatedByName: auditName,
+          updatedByRole: auditRole,
+        });
+
+        const tripScheduledActivityRef = doc(
+          collection(db, "serviceTickets", ticketRef.id, "activity"),
+        );
+
+        batch.set(tripScheduledActivityRef, {
+          type: "service_trip_scheduled",
+          title: "Trip Scheduled",
+          description: `Scheduled for ${selectedDate} • ${
+            selectedWindow === "custom"
+              ? `${formatTime12h(selectedStartTime)}–${formatTime12h(selectedEndTime)}`
+              : selectedWindow === "all_day"
+                ? "All Day"
+                : selectedWindow === "pm"
+                  ? "PM"
+                  : "AM"
+          }${primaryName ? ` with ${primaryName}` : ""}.`,
+          details: [
+            primaryName ? `Primary Tech: ${primaryName}` : "",
+            helperName ? `Helper: ${helperName}` : "",
+            secondaryTechName ? `Secondary Tech: ${secondaryTechName}` : "",
+            secondaryHelperName
+              ? `Secondary Helper: ${secondaryHelperName}`
+              : "",
+            tripNotes.trim() ? `Notes: ${tripNotes.trim()}` : "",
+          ].filter(Boolean),
+          createdAt: timestamp,
+          createdByUid: auditUid,
+          createdByName: auditName || "System",
+          createdByRole: auditRole,
         });
       }
 
@@ -2075,7 +2280,9 @@ export default function NewServiceTicketPage() {
 
       router.push(`/service-tickets/${ticketRef.id}`);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create service ticket.");
+      setError(
+        err instanceof Error ? err.message : "Failed to create service ticket.",
+      );
     } finally {
       setSaving(false);
     }
@@ -2110,19 +2317,30 @@ export default function NewServiceTicketPage() {
         <Box sx={{ maxWidth: 980, mx: "auto", px: { xs: 2, sm: 3 }, py: 3 }}>
           <Stack spacing={3}>
             <Box>
-              <Typography variant="h4" sx={{ fontWeight: 800, letterSpacing: -0.4 }}>
+              <Typography
+                variant="h4"
+                sx={{ fontWeight: 800, letterSpacing: -0.4 }}
+              >
                 New Service Ticket
               </Typography>
-              <Typography variant="body1" sx={{ color: "text.secondary", mt: 1 }}>
-                Create the ticket first, or expand Schedule Now when dispatch needs to assign
-                the trip immediately.
+              <Typography
+                variant="body1"
+                sx={{ color: "text.secondary", mt: 1 }}
+              >
+                Create the ticket first, or expand Schedule Now when dispatch
+                needs to assign the trip immediately.
               </Typography>
             </Box>
 
             {customersLoading ? (
               <Card variant="outlined" sx={{ borderRadius: 1 }}>
                 <CardContent sx={{ py: 5 }}>
-                  <Stack direction="row" spacing={2} alignItems="center" justifyContent="center">
+                  <Stack
+                    direction="row"
+                    spacing={2}
+                    alignItems="center"
+                    justifyContent="center"
+                  >
                     <CircularProgress size={24} />
                     <Typography variant="body2" color="text.secondary">
                       Loading customers…
@@ -2132,25 +2350,40 @@ export default function NewServiceTicketPage() {
               </Card>
             ) : null}
 
-            {customersError ? <Alert severity="error">{customersError}</Alert> : null}
+            {customersError ? (
+              <Alert severity="error">{customersError}</Alert>
+            ) : null}
 
             {!customersLoading && !customersError ? (
               <Box component="form" onSubmit={handleSubmit}>
-                <Card variant="outlined" sx={{ borderRadius: 1, overflow: "hidden" }}>
+                <Card
+                  variant="outlined"
+                  sx={{ borderRadius: 1, overflow: "hidden" }}
+                >
                   <CardContent sx={{ p: 0 }}>
                     <Stack divider={<Divider />} spacing={0}>
                       <Box sx={{ p: { xs: 2, sm: 3 } }}>
                         <Stack spacing={2.5}>
-                          {error ? <Alert severity="error">{error}</Alert> : null}
+                          {error ? (
+                            <Alert severity="error">{error}</Alert>
+                          ) : null}
 
-                          <Stack direction="row" spacing={1.25} alignItems="center">
+                          <Stack
+                            direction="row"
+                            spacing={1.25}
+                            alignItems="center"
+                          >
                             <PersonSearchRoundedIcon color="primary" />
                             <Box>
                               <Typography variant="h6" sx={{ fontWeight: 800 }}>
                                 Customer
                               </Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                Search by customer name, phone, email, or address.
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                Search by customer name, phone, email, or
+                                address.
                               </Typography>
                             </Box>
                           </Stack>
@@ -2185,17 +2418,30 @@ export default function NewServiceTicketPage() {
                                     direction={{ xs: "column", sm: "row" }}
                                     spacing={1.5}
                                     justifyContent="space-between"
-                                    alignItems={{ xs: "flex-start", sm: "center" }}
+                                    alignItems={{
+                                      xs: "flex-start",
+                                      sm: "center",
+                                    }}
                                   >
                                     <Box>
-                                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                      <Typography
+                                        variant="subtitle1"
+                                        sx={{ fontWeight: 800 }}
+                                      >
                                         {selectedCustomer.displayName}
                                       </Typography>
-                                      <Typography variant="body2" color="text.secondary">
-                                        {selectedCustomer.phonePrimary || "No primary phone"}
+                                      <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                      >
+                                        {selectedCustomer.phonePrimary ||
+                                          "No primary phone"}
                                       </Typography>
                                       {selectedCustomer.email ? (
-                                        <Typography variant="body2" color="text.secondary">
+                                        <Typography
+                                          variant="body2"
+                                          color="text.secondary"
+                                        >
                                           {selectedCustomer.email}
                                         </Typography>
                                       ) : null}
@@ -2211,24 +2457,40 @@ export default function NewServiceTicketPage() {
                                     </Button>
                                   </Stack>
 
-                                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                                    <Chip label="Customer selected" color="primary" />
+                                  <Stack
+                                    direction="row"
+                                    spacing={1}
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                  >
+                                    <Chip
+                                      label="Customer selected"
+                                      color="primary"
+                                    />
                                     <Chip
                                       label={`${activeServiceAddressCount} saved service location${
-                                        activeServiceAddressCount === 1 ? "" : "s"
+                                        activeServiceAddressCount === 1
+                                          ? ""
+                                          : "s"
                                       }`}
                                       variant="outlined"
                                     />
                                   </Stack>
 
-                                  <Typography variant="body2" color="text.secondary">
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                  >
                                     Billing address:{" "}
                                     {formatAddress({
-                                      addressLine1: selectedCustomer.billingAddressLine1,
-                                      addressLine2: selectedCustomer.billingAddressLine2,
+                                      addressLine1:
+                                        selectedCustomer.billingAddressLine1,
+                                      addressLine2:
+                                        selectedCustomer.billingAddressLine2,
                                       city: selectedCustomer.billingCity,
                                       state: selectedCustomer.billingState,
-                                      postalCode: selectedCustomer.billingPostalCode,
+                                      postalCode:
+                                        selectedCustomer.billingPostalCode,
                                     }) || "—"}
                                   </Typography>
                                 </Stack>
@@ -2245,7 +2507,10 @@ export default function NewServiceTicketPage() {
                                 }}
                               >
                                 <CardContent>
-                                  <Typography variant="body2" color="text.secondary">
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                  >
                                     No matching customers found.
                                   </Typography>
                                 </CardContent>
@@ -2258,27 +2523,47 @@ export default function NewServiceTicketPage() {
                                     variant="outlined"
                                     sx={{ borderRadius: 1, overflow: "hidden" }}
                                   >
-                                    <CardActionArea onClick={() => handleSelectCustomer(customer.id)}>
+                                    <CardActionArea
+                                      onClick={() =>
+                                        handleSelectCustomer(customer.id)
+                                      }
+                                    >
                                       <CardContent>
                                         <Stack spacing={0.75}>
-                                          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                          <Typography
+                                            variant="subtitle1"
+                                            sx={{ fontWeight: 800 }}
+                                          >
                                             {customer.displayName}
                                           </Typography>
-                                          <Typography variant="body2" color="text.secondary">
-                                            {customer.phonePrimary || "No phone"}
+                                          <Typography
+                                            variant="body2"
+                                            color="text.secondary"
+                                          >
+                                            {customer.phonePrimary ||
+                                              "No phone"}
                                           </Typography>
                                           {customer.email ? (
-                                            <Typography variant="caption" color="text.secondary">
+                                            <Typography
+                                              variant="caption"
+                                              color="text.secondary"
+                                            >
                                               {customer.email}
                                             </Typography>
                                           ) : null}
-                                          <Typography variant="caption" color="text.secondary">
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                          >
                                             {formatAddress({
-                                              addressLine1: customer.billingAddressLine1,
-                                              addressLine2: customer.billingAddressLine2,
+                                              addressLine1:
+                                                customer.billingAddressLine1,
+                                              addressLine2:
+                                                customer.billingAddressLine2,
                                               city: customer.billingCity,
                                               state: customer.billingState,
-                                              postalCode: customer.billingPostalCode,
+                                              postalCode:
+                                                customer.billingPostalCode,
                                             }) || "No billing address"}
                                           </Typography>
                                         </Stack>
@@ -2295,15 +2580,25 @@ export default function NewServiceTicketPage() {
                           )}
 
                           <Stack spacing={1.5} sx={{ pt: 1 }}>
-                            <Stack direction="row" spacing={1.25} alignItems="center">
+                            <Stack
+                              direction="row"
+                              spacing={1.25}
+                              alignItems="center"
+                            >
                               <HomeWorkRoundedIcon color="primary" />
                               <Box>
-                                <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                <Typography
+                                  variant="h6"
+                                  sx={{ fontWeight: 800 }}
+                                >
                                   Service Location
                                 </Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                  Choose where the work will be performed, or quick add a new
-                                  location for this customer.
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                >
+                                  Choose where the work will be performed, or
+                                  quick add a new location for this customer.
                                 </Typography>
                               </Box>
                             </Stack>
@@ -2366,7 +2661,10 @@ export default function NewServiceTicketPage() {
                             </TextField>
 
                             {serviceAddressGuardMessage ? (
-                              <Alert severity="warning" sx={{ borderRadius: 1 }}>
+                              <Alert
+                                severity="warning"
+                                sx={{ borderRadius: 1 }}
+                              >
                                 {serviceAddressGuardMessage}
                               </Alert>
                             ) : null}
@@ -2374,23 +2672,36 @@ export default function NewServiceTicketPage() {
                             {selectedServiceAddress ? (
                               <Card
                                 variant="outlined"
-                                sx={{ borderRadius: 1, bgcolor: "background.default" }}
+                                sx={{
+                                  borderRadius: 1,
+                                  bgcolor: "background.default",
+                                }}
                               >
                                 <CardContent sx={{ py: 2 }}>
                                   <Stack spacing={0.75}>
-                                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                                    <Typography
+                                      variant="subtitle2"
+                                      sx={{ fontWeight: 800 }}
+                                    >
                                       Selected location
                                     </Typography>
                                     <Typography variant="body2">
-                                      {selectedServiceAddress.label || "Service Address"}
+                                      {selectedServiceAddress.label ||
+                                        "Service Address"}
                                     </Typography>
-                                    <Typography variant="body2" color="text.secondary">
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
                                       {formatAddress({
-                                        addressLine1: selectedServiceAddress.addressLine1,
-                                        addressLine2: selectedServiceAddress.addressLine2,
+                                        addressLine1:
+                                          selectedServiceAddress.addressLine1,
+                                        addressLine2:
+                                          selectedServiceAddress.addressLine2,
                                         city: selectedServiceAddress.city,
                                         state: selectedServiceAddress.state,
-                                        postalCode: selectedServiceAddress.postalCode,
+                                        postalCode:
+                                          selectedServiceAddress.postalCode,
                                       }) || "—"}
                                     </Typography>
                                   </Stack>
@@ -2409,19 +2720,27 @@ export default function NewServiceTicketPage() {
                               >
                                 <Stack spacing={2}>
                                   <Box>
-                                    <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                    <Typography
+                                      variant="subtitle1"
+                                      sx={{ fontWeight: 800 }}
+                                    >
                                       Quick Add Service Location
                                     </Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                      Add a new service location to this customer, then use it for
-                                      this ticket.
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
+                                      Add a new service location to this
+                                      customer, then use it for this ticket.
                                     </Typography>
                                   </Box>
 
                                   <TextField
                                     label="Label"
                                     value={quickServiceLabel}
-                                    onChange={(e) => setQuickServiceLabel(e.target.value)}
+                                    onChange={(e) =>
+                                      setQuickServiceLabel(e.target.value)
+                                    }
                                     fullWidth
                                     placeholder="Home, Rental House, Shop, Weekend House..."
                                     disabled={quickAddSaving}
@@ -2434,27 +2753,37 @@ export default function NewServiceTicketPage() {
                                       setQuickServiceAddressSearch(value);
                                       markQuickServiceAddressManual();
                                     }}
-                                    onSelectAddress={handleQuickServiceGoogleAddressSelected}
+                                    onSelectAddress={
+                                      handleQuickServiceGoogleAddressSelected
+                                    }
                                     helperText="Start typing to search for a real address, or keep entering it manually below."
                                     placeholder="Start typing a service address..."
                                     disabled={quickAddSaving}
                                   />
 
-                                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                  <Stack
+                                    direction="row"
+                                    spacing={1}
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                  >
                                     <Chip
                                       size="small"
                                       label={
-                                        quickServiceAddressSource === "google_places"
+                                        quickServiceAddressSource ===
+                                        "google_places"
                                           ? "Google suggested"
                                           : "Manual entry"
                                       }
                                       color={
-                                        quickServiceAddressSource === "google_places"
+                                        quickServiceAddressSource ===
+                                        "google_places"
                                           ? "primary"
                                           : "default"
                                       }
                                       variant={
-                                        quickServiceAddressSource === "google_places"
+                                        quickServiceAddressSource ===
+                                        "google_places"
                                           ? "filled"
                                           : "outlined"
                                       }
@@ -2466,7 +2795,9 @@ export default function NewServiceTicketPage() {
                                     label="Address line 1"
                                     value={quickServiceAddressLine1}
                                     onChange={(e) => {
-                                      setQuickServiceAddressLine1(e.target.value);
+                                      setQuickServiceAddressLine1(
+                                        e.target.value,
+                                      );
                                       markQuickServiceAddressManual();
                                     }}
                                     required
@@ -2478,7 +2809,9 @@ export default function NewServiceTicketPage() {
                                     label="Address line 2"
                                     value={quickServiceAddressLine2}
                                     onChange={(e) => {
-                                      setQuickServiceAddressLine2(e.target.value);
+                                      setQuickServiceAddressLine2(
+                                        e.target.value,
+                                      );
                                       markQuickServiceAddressManual();
                                     }}
                                     fullWidth
@@ -2523,7 +2856,9 @@ export default function NewServiceTicketPage() {
                                       label="Postal code"
                                       value={quickServicePostalCode}
                                       onChange={(e) => {
-                                        setQuickServicePostalCode(e.target.value);
+                                        setQuickServicePostalCode(
+                                          e.target.value,
+                                        );
                                         markQuickServiceAddressManual();
                                       }}
                                       required
@@ -2535,7 +2870,9 @@ export default function NewServiceTicketPage() {
                                   <TextField
                                     label="Notes"
                                     value={quickServiceNotes}
-                                    onChange={(e) => setQuickServiceNotes(e.target.value)}
+                                    onChange={(e) =>
+                                      setQuickServiceNotes(e.target.value)
+                                    }
                                     multiline
                                     minRows={3}
                                     fullWidth
@@ -2544,7 +2881,9 @@ export default function NewServiceTicketPage() {
                                   />
 
                                   {quickAddError ? (
-                                    <Alert severity="error">{quickAddError}</Alert>
+                                    <Alert severity="error">
+                                      {quickAddError}
+                                    </Alert>
                                   ) : null}
 
                                   <Stack
@@ -2570,7 +2909,10 @@ export default function NewServiceTicketPage() {
                                       variant="contained"
                                       startIcon={
                                         quickAddSaving ? (
-                                          <CircularProgress size={18} color="inherit" />
+                                          <CircularProgress
+                                            size={18}
+                                            color="inherit"
+                                          />
                                         ) : (
                                           <AddHomeRoundedIcon />
                                         )
@@ -2579,7 +2921,9 @@ export default function NewServiceTicketPage() {
                                       disabled={quickAddSaving}
                                       sx={{ borderRadius: 99, fontWeight: 700 }}
                                     >
-                                      {quickAddSaving ? "Saving..." : "Add & Use Location"}
+                                      {quickAddSaving
+                                        ? "Saving..."
+                                        : "Add & Use Location"}
                                     </Button>
                                   </Stack>
                                 </Stack>
@@ -2591,13 +2935,20 @@ export default function NewServiceTicketPage() {
 
                       <Box sx={{ p: { xs: 2, sm: 3 } }}>
                         <Stack spacing={2.5}>
-                          <Stack direction="row" spacing={1.25} alignItems="center">
+                          <Stack
+                            direction="row"
+                            spacing={1.25}
+                            alignItems="center"
+                          >
                             <BuildCircleRoundedIcon color="primary" />
                             <Box>
                               <Typography variant="h6" sx={{ fontWeight: 800 }}>
                                 Work Order Details
                               </Typography>
-                              <Typography variant="body2" color="text.secondary">
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
                                 Add the core issue and current ticket status.
                               </Typography>
                             </Box>
@@ -2633,7 +2984,9 @@ export default function NewServiceTicketPage() {
                               select
                               label="Initial ticket status"
                               value={status}
-                              onChange={(e) => setStatus(e.target.value as TicketStatus)}
+                              onChange={(e) =>
+                                setStatus(e.target.value as TicketStatus)
+                              }
                               fullWidth
                               disabled={scheduleNowEnabled}
                               helperText={
@@ -2644,7 +2997,9 @@ export default function NewServiceTicketPage() {
                             >
                               <MenuItem value="new">New</MenuItem>
                               <MenuItem value="scheduled">Scheduled</MenuItem>
-                              <MenuItem value="in_progress">In Progress</MenuItem>
+                              <MenuItem value="in_progress">
+                                In Progress
+                              </MenuItem>
                               <MenuItem value="follow_up">Follow Up</MenuItem>
                               <MenuItem value="completed">Completed</MenuItem>
                               <MenuItem value="cancelled">Cancelled</MenuItem>
@@ -2655,17 +3010,26 @@ export default function NewServiceTicketPage() {
                               type="number"
                               inputProps={{ min: 1, step: 0.5 }}
                               value={estimatedDurationHours}
-                              onChange={(e) => setEstimatedDurationHours(e.target.value)}
+                              onChange={(e) =>
+                                setEstimatedDurationHours(e.target.value)
+                              }
                               fullWidth
                               required
                               helperText="Minimum 1 hour. Use 0.5 hour increments."
                             />
                           </Box>
 
-                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            flexWrap="wrap"
+                            useFlexGap
+                          >
                             <Chip
                               label={`Ticket Status: ${
-                                scheduleNowEnabled ? "Scheduled" : getStatusLabel(status)
+                                scheduleNowEnabled
+                                  ? "Scheduled"
+                                  : getStatusLabel(status)
                               }`}
                               variant="outlined"
                             />
@@ -2699,25 +3063,41 @@ export default function NewServiceTicketPage() {
                                 alignItems={{ xs: "stretch", sm: "center" }}
                                 justifyContent="space-between"
                               >
-                                <Stack direction="row" spacing={1.25} alignItems="center">
+                                <Stack
+                                  direction="row"
+                                  spacing={1.25}
+                                  alignItems="center"
+                                >
                                   <ScheduleRoundedIcon color="primary" />
                                   <Box>
-                                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                    <Typography
+                                      variant="h6"
+                                      sx={{ fontWeight: 800 }}
+                                    >
                                       Schedule Now — Optional
                                     </Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                      Collapsed by default. Expand only when dispatch wants to
-                                      create the ticket and schedule the first trip now.
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
+                                      Collapsed by default. Expand only when
+                                      dispatch wants to create the ticket and
+                                      schedule the first trip now.
                                     </Typography>
                                   </Box>
                                 </Stack>
 
                                 <Button
                                   type="button"
-                                  variant={scheduleNowExpanded ? "contained" : "outlined"}
+                                  variant={
+                                    scheduleNowExpanded
+                                      ? "contained"
+                                      : "outlined"
+                                  }
                                   onClick={() => {
                                     setScheduleNowExpanded((prev) => !prev);
-                                    if (!scheduleNowExpanded) setScheduleNowEnabled(true);
+                                    if (!scheduleNowExpanded)
+                                      setScheduleNowEnabled(true);
                                   }}
                                   endIcon={
                                     scheduleNowExpanded ? (
@@ -2729,23 +3109,38 @@ export default function NewServiceTicketPage() {
                                   disabled={!canDispatch}
                                   sx={{ borderRadius: 99, fontWeight: 800 }}
                                 >
-                                  {scheduleNowExpanded ? "Hide Scheduler" : "Schedule Now"}
+                                  {scheduleNowExpanded
+                                    ? "Hide Scheduler"
+                                    : "Schedule Now"}
                                 </Button>
                               </Stack>
 
                               {!canDispatch ? (
-                                <Alert severity="info" sx={{ mt: 2, borderRadius: 1 }}>
-                                  Only Admin, Dispatcher, and Manager roles can schedule during
-                                  ticket creation.
+                                <Alert
+                                  severity="info"
+                                  sx={{ mt: 2, borderRadius: 1 }}
+                                >
+                                  Only Admin, Dispatcher, and Manager roles can
+                                  schedule during ticket creation.
                                 </Alert>
                               ) : null}
 
-                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
+                              <Stack
+                                direction="row"
+                                spacing={1}
+                                flexWrap="wrap"
+                                useFlexGap
+                                sx={{ mt: 2 }}
+                              >
                                 <Chip
                                   icon={<CalendarMonthRoundedIcon />}
                                   label={scheduleSummary}
-                                  color={scheduleNowEnabled ? "primary" : "default"}
-                                  variant={scheduleNowEnabled ? "filled" : "outlined"}
+                                  color={
+                                    scheduleNowEnabled ? "primary" : "default"
+                                  }
+                                  variant={
+                                    scheduleNowEnabled ? "filled" : "outlined"
+                                  }
                                   sx={{ borderRadius: 99 }}
                                 />
                                 {assignedTeamNames.length ? (
@@ -2769,7 +3164,9 @@ export default function NewServiceTicketPage() {
                                       <Checkbox
                                         checked={scheduleNowEnabled}
                                         onChange={(e) =>
-                                          setScheduleNowEnabled(e.target.checked)
+                                          setScheduleNowEnabled(
+                                            e.target.checked,
+                                          )
                                         }
                                       />
                                     }
@@ -2777,20 +3174,32 @@ export default function NewServiceTicketPage() {
                                   />
 
                                   {assignmentError ? (
-                                    <Alert severity="error">{assignmentError}</Alert>
+                                    <Alert severity="error">
+                                      {assignmentError}
+                                    </Alert>
                                   ) : null}
 
                                   {staffLoading ? (
-                                    <Stack direction="row" spacing={2} alignItems="center">
+                                    <Stack
+                                      direction="row"
+                                      spacing={2}
+                                      alignItems="center"
+                                    >
                                       <CircularProgress size={20} />
-                                      <Typography variant="body2" color="text.secondary">
+                                      <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                      >
                                         Loading employee roster…
                                       </Typography>
                                     </Stack>
                                   ) : (
                                     <>
                                       <Box>
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                                        <Typography
+                                          variant="subtitle1"
+                                          sx={{ fontWeight: 800 }}
+                                        >
                                           Next Business Days
                                         </Typography>
                                         <Typography
@@ -2798,8 +3207,8 @@ export default function NewServiceTicketPage() {
                                           color="text.secondary"
                                           sx={{ mt: 0.5 }}
                                         >
-                                          Pick a working day first, then choose an available tech
-                                          and time block.
+                                          Pick a working day first, then choose
+                                          an available tech and time block.
                                         </Typography>
                                       </Box>
 
@@ -2816,12 +3225,13 @@ export default function NewServiceTicketPage() {
                                         }}
                                       >
                                         {businessDayCards.map((dayIso) => {
-                                          const isSelected = selectedDate === dayIso;
+                                          const isSelected =
+                                            selectedDate === dayIso;
                                           const dayHolidayNames = allHolidays
                                             .filter(
                                               (holiday) =>
                                                 holiday.active !== false &&
-                                                holiday.date === dayIso
+                                                holiday.date === dayIso,
                                             )
                                             .map((holiday) => holiday.name);
 
@@ -2833,17 +3243,28 @@ export default function NewServiceTicketPage() {
                                                 borderRadius: 1,
                                                 border: `1px solid ${
                                                   isSelected
-                                                    ? alpha(theme.palette.primary.main, 0.5)
+                                                    ? alpha(
+                                                        theme.palette.primary
+                                                          .main,
+                                                        0.5,
+                                                      )
                                                     : theme.palette.divider
                                                 }`,
                                                 bgcolor: isSelected
-                                                  ? alpha(theme.palette.primary.main, 0.08)
-                                                  : theme.palette.background.paper,
+                                                  ? alpha(
+                                                      theme.palette.primary
+                                                        .main,
+                                                      0.08,
+                                                    )
+                                                  : theme.palette.background
+                                                      .paper,
                                                 overflow: "hidden",
                                               }}
                                             >
                                               <CardActionArea
-                                                onClick={() => setSelectedDate(dayIso)}
+                                                onClick={() =>
+                                                  setSelectedDate(dayIso)
+                                                }
                                               >
                                                 <CardContent sx={{ p: 1.5 }}>
                                                   <Stack spacing={1}>
@@ -2858,13 +3279,17 @@ export default function NewServiceTicketPage() {
                                                           variant="overline"
                                                           sx={{ lineHeight: 1 }}
                                                         >
-                                                          {formatDayShort(dayIso)}
+                                                          {formatDayShort(
+                                                            dayIso,
+                                                          )}
                                                         </Typography>
                                                         <Typography
                                                           variant="subtitle1"
                                                           fontWeight={800}
                                                         >
-                                                          {formatMonthDay(dayIso)}
+                                                          {formatMonthDay(
+                                                            dayIso,
+                                                          )}
                                                         </Typography>
                                                       </Box>
 
@@ -2873,16 +3298,23 @@ export default function NewServiceTicketPage() {
                                                           size="small"
                                                           label="Selected"
                                                           color="primary"
-                                                          sx={{ borderRadius: 999 }}
+                                                          sx={{
+                                                            borderRadius: 999,
+                                                          }}
                                                         />
                                                       ) : null}
                                                     </Stack>
 
-                                                    {dayHolidayNames.length > 0 ? (
+                                                    {dayHolidayNames.length >
+                                                    0 ? (
                                                       <Chip
                                                         size="small"
-                                                        icon={<WarningAmberRoundedIcon />}
-                                                        label={dayHolidayNames.join(", ")}
+                                                        icon={
+                                                          <WarningAmberRoundedIcon />
+                                                        }
+                                                        label={dayHolidayNames.join(
+                                                          ", ",
+                                                        )}
                                                         color="warning"
                                                         variant="outlined"
                                                         sx={{
@@ -2893,7 +3325,9 @@ export default function NewServiceTicketPage() {
                                                     ) : (
                                                       <Chip
                                                         size="small"
-                                                        icon={<CalendarMonthRoundedIcon />}
+                                                        icon={
+                                                          <CalendarMonthRoundedIcon />
+                                                        }
                                                         label="Working Day"
                                                         variant="outlined"
                                                         sx={{
@@ -2910,14 +3344,22 @@ export default function NewServiceTicketPage() {
                                         })}
                                       </Box>
 
-                                      <Stack direction="row" justifyContent="flex-start">
+                                      <Stack
+                                        direction="row"
+                                        justifyContent="flex-start"
+                                      >
                                         <Button
                                           type="button"
                                           variant="outlined"
                                           onClick={() =>
-                                            setVisibleBusinessDayCount((prev) => prev + 7)
+                                            setVisibleBusinessDayCount(
+                                              (prev) => prev + 7,
+                                            )
                                           }
-                                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                                          sx={{
+                                            borderRadius: 99,
+                                            fontWeight: 700,
+                                          }}
                                         >
                                           Show More Days
                                         </Button>
@@ -2925,18 +3367,26 @@ export default function NewServiceTicketPage() {
 
                                       <DispatchAvailabilityPlanner
                                         date={selectedDate}
-                                        technicians={currentTechnicians.map((tech) => ({
-                                          uid: tech.uid,
-                                          displayName: tech.displayName,
-                                        }))}
+                                        technicians={currentTechnicians.map(
+                                          (tech) => ({
+                                            uid: tech.uid,
+                                            displayName: tech.displayName,
+                                          }),
+                                        )}
                                         slotStatusByTech={slotStatusByTech}
                                         selectedPrimaryUid={selectedPrimaryUid}
                                         selectedWindow={selectedWindow}
-                                        selectedCrewSummary={selectedCrewSummary}
+                                        selectedCrewSummary={
+                                          selectedCrewSummary
+                                        }
                                         holidayNames={holidayNames}
-                                        holidayOverrideEnabled={holidayOverrideEnabled}
+                                        holidayOverrideEnabled={
+                                          holidayOverrideEnabled
+                                        }
                                         canOverrideHoliday={canDispatch}
-                                        onHolidayOverrideChange={setHolidayOverrideEnabled}
+                                        onHolidayOverrideChange={
+                                          setHolidayOverrideEnabled
+                                        }
                                         onPickSlot={handlePickSlot}
                                       />
 
@@ -2955,12 +3405,19 @@ export default function NewServiceTicketPage() {
                                           label="Primary Technician"
                                           value={selectedPrimaryUid}
                                           onChange={(e) =>
-                                            setSelectedPrimaryUid(e.target.value)
+                                            setSelectedPrimaryUid(
+                                              e.target.value,
+                                            )
                                           }
                                         >
-                                          <MenuItem value="">Select a technician…</MenuItem>
+                                          <MenuItem value="">
+                                            Select a technician…
+                                          </MenuItem>
                                           {currentTechnicians.map((tech) => (
-                                            <MenuItem key={tech.uid} value={tech.uid}>
+                                            <MenuItem
+                                              key={tech.uid}
+                                              value={tech.uid}
+                                            >
                                               {tech.displayName}
                                             </MenuItem>
                                           ))}
@@ -2971,7 +3428,9 @@ export default function NewServiceTicketPage() {
                                           label="Time Window"
                                           value={selectedWindow}
                                           onChange={(e) =>
-                                            setSelectedWindow(e.target.value as TripTimeWindow)
+                                            setSelectedWindow(
+                                              e.target.value as TripTimeWindow,
+                                            )
                                           }
                                         >
                                           <MenuItem value="am">
@@ -2983,7 +3442,9 @@ export default function NewServiceTicketPage() {
                                           <MenuItem value="all_day">
                                             All Day (8:00–5:00)
                                           </MenuItem>
-                                          <MenuItem value="custom">Custom</MenuItem>
+                                          <MenuItem value="custom">
+                                            Custom
+                                          </MenuItem>
                                         </TextField>
                                       </Box>
 
@@ -3003,7 +3464,9 @@ export default function NewServiceTicketPage() {
                                             label="Start Time"
                                             value={selectedStartTime}
                                             onChange={(e) =>
-                                              setSelectedStartTime(e.target.value)
+                                              setSelectedStartTime(
+                                                e.target.value,
+                                              )
                                             }
                                             InputLabelProps={{ shrink: true }}
                                           />
@@ -3035,26 +3498,41 @@ export default function NewServiceTicketPage() {
                                           label="Secondary Technician (optional)"
                                           value={selectedSecondaryUid}
                                           onChange={(e) =>
-                                            setSelectedSecondaryUid(e.target.value)
+                                            setSelectedSecondaryUid(
+                                              e.target.value,
+                                            )
                                           }
                                         >
                                           <MenuItem value="">— None —</MenuItem>
                                           {currentTechnicians
-                                            .filter((tech) => tech.uid !== selectedPrimaryUid)
+                                            .filter(
+                                              (tech) =>
+                                                tech.uid !== selectedPrimaryUid,
+                                            )
                                             .map((tech) => (
-                                              <MenuItem key={tech.uid} value={tech.uid}>
+                                              <MenuItem
+                                                key={tech.uid}
+                                                value={tech.uid}
+                                              >
                                                 {tech.displayName}
                                               </MenuItem>
                                             ))}
                                         </TextField>
 
-                                        <Box sx={{ display: "flex", alignItems: "center" }}>
+                                        <Box
+                                          sx={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                          }}
+                                        >
                                           <FormControlLabel
                                             control={
                                               <Checkbox
                                                 checked={useDefaultHelper}
                                                 onChange={(e) =>
-                                                  setUseDefaultHelper(e.target.checked)
+                                                  setUseDefaultHelper(
+                                                    e.target.checked,
+                                                  )
                                                 }
                                               />
                                             }
@@ -3079,12 +3557,17 @@ export default function NewServiceTicketPage() {
                                           value={selectedHelperUid}
                                           onChange={(e) => {
                                             setUseDefaultHelper(false);
-                                            setSelectedHelperUid(e.target.value);
+                                            setSelectedHelperUid(
+                                              e.target.value,
+                                            );
                                           }}
                                         >
                                           <MenuItem value="">— None —</MenuItem>
                                           {helpers.map((helper) => (
-                                            <MenuItem key={helper.uid} value={helper.uid}>
+                                            <MenuItem
+                                              key={helper.uid}
+                                              value={helper.uid}
+                                            >
                                               {helper.name} ({helper.laborRole})
                                             </MenuItem>
                                           ))}
@@ -3095,12 +3578,17 @@ export default function NewServiceTicketPage() {
                                           label="Secondary Helper (optional)"
                                           value={selectedSecondaryHelperUid}
                                           onChange={(e) =>
-                                            setSelectedSecondaryHelperUid(e.target.value)
+                                            setSelectedSecondaryHelperUid(
+                                              e.target.value,
+                                            )
                                           }
                                         >
                                           <MenuItem value="">— None —</MenuItem>
                                           {helpers.map((helper) => (
-                                            <MenuItem key={helper.uid} value={helper.uid}>
+                                            <MenuItem
+                                              key={helper.uid}
+                                              value={helper.uid}
+                                            >
                                               {helper.name} ({helper.laborRole})
                                             </MenuItem>
                                           ))}
@@ -3115,9 +3603,12 @@ export default function NewServiceTicketPage() {
                                             borderRadius: 1,
                                             borderColor: alpha(
                                               theme.palette.warning.main,
-                                              0.4
+                                              0.4,
                                             ),
-                                            bgcolor: alpha(theme.palette.warning.main, 0.06),
+                                            bgcolor: alpha(
+                                              theme.palette.warning.main,
+                                              0.06,
+                                            ),
                                           }}
                                         >
                                           <Stack spacing={1.25}>
@@ -3126,83 +3617,106 @@ export default function NewServiceTicketPage() {
                                               variant="outlined"
                                               sx={{ borderRadius: 2 }}
                                             >
-                                              One or more selected crew members already have an
-                                              overlapping trip in this time slot. You can still
-                                              dispatch this service trip by using Dispatch Override.
+                                              One or more selected crew members
+                                              already have an overlapping trip
+                                              in this time slot. You can still
+                                              dispatch this service trip by
+                                              using Dispatch Override.
                                             </Alert>
 
                                             <Stack spacing={0.75}>
-                                              {selectedOverlapConflicts.map((conflict) => (
-                                                <Stack
-                                                  key={`${conflict.memberUid}_${conflict.tripId}`}
-                                                  direction="row"
-                                                  spacing={1}
-                                                  alignItems="flex-start"
-                                                >
-                                                  {conflict.tripType === "service" ? (
-                                                    <BuildRoundedIcon
-                                                      fontSize="small"
-                                                      sx={{
-                                                        mt: "2px",
-                                                        color: "primary.main",
-                                                      }}
-                                                    />
-                                                  ) : conflict.tripType === "project" ? (
-                                                    <ConstructionRoundedIcon
-                                                      fontSize="small"
-                                                      sx={{
-                                                        mt: "2px",
-                                                        color: "secondary.main",
-                                                      }}
-                                                    />
-                                                  ) : (
-                                                    <ScheduleRoundedIcon
-                                                      fontSize="small"
-                                                      sx={{
-                                                        mt: "2px",
-                                                        color: "text.secondary",
-                                                      }}
-                                                    />
-                                                  )}
+                                              {selectedOverlapConflicts.map(
+                                                (conflict) => (
+                                                  <Stack
+                                                    key={`${conflict.memberUid}_${conflict.tripId}`}
+                                                    direction="row"
+                                                    spacing={1}
+                                                    alignItems="flex-start"
+                                                  >
+                                                    {conflict.tripType ===
+                                                    "service" ? (
+                                                      <BuildRoundedIcon
+                                                        fontSize="small"
+                                                        sx={{
+                                                          mt: "2px",
+                                                          color: "primary.main",
+                                                        }}
+                                                      />
+                                                    ) : conflict.tripType ===
+                                                      "project" ? (
+                                                      <ConstructionRoundedIcon
+                                                        fontSize="small"
+                                                        sx={{
+                                                          mt: "2px",
+                                                          color:
+                                                            "secondary.main",
+                                                        }}
+                                                      />
+                                                    ) : (
+                                                      <ScheduleRoundedIcon
+                                                        fontSize="small"
+                                                        sx={{
+                                                          mt: "2px",
+                                                          color:
+                                                            "text.secondary",
+                                                        }}
+                                                      />
+                                                    )}
 
-                                                  <Box>
-                                                    <Typography
-                                                      variant="body2"
-                                                      color="text.secondary"
-                                                    >
-                                                      <strong>{conflict.memberName}</strong>{" "}
-                                                      already assigned to{" "}
-                                                      <strong>{conflict.previewTitle}</strong>
-                                                    </Typography>
+                                                    <Box>
+                                                      <Typography
+                                                        variant="body2"
+                                                        color="text.secondary"
+                                                      >
+                                                        <strong>
+                                                          {conflict.memberName}
+                                                        </strong>{" "}
+                                                        already assigned to{" "}
+                                                        <strong>
+                                                          {
+                                                            conflict.previewTitle
+                                                          }
+                                                        </strong>
+                                                      </Typography>
 
-                                                    {conflict.previewSubtitle ? (
+                                                      {conflict.previewSubtitle ? (
+                                                        <Typography
+                                                          variant="caption"
+                                                          color="text.secondary"
+                                                        >
+                                                          {
+                                                            conflict.previewSubtitle
+                                                          }
+                                                        </Typography>
+                                                      ) : null}
+
                                                       <Typography
                                                         variant="caption"
                                                         color="text.secondary"
+                                                        sx={{
+                                                          display: "block",
+                                                        }}
                                                       >
-                                                        {conflict.previewSubtitle}
+                                                        Est.{" "}
+                                                        {
+                                                          conflict.estimatedDurationLabel
+                                                        }
                                                       </Typography>
-                                                    ) : null}
-
-                                                    <Typography
-                                                      variant="caption"
-                                                      color="text.secondary"
-                                                      sx={{ display: "block" }}
-                                                    >
-                                                      Est. {conflict.estimatedDurationLabel}
-                                                    </Typography>
-                                                  </Box>
-                                                </Stack>
-                                              ))}
+                                                    </Box>
+                                                  </Stack>
+                                                ),
+                                              )}
                                             </Stack>
 
                                             <FormControlLabel
                                               control={
                                                 <Checkbox
-                                                  checked={dispatchOverrideEnabled}
+                                                  checked={
+                                                    dispatchOverrideEnabled
+                                                  }
                                                   onChange={(e) =>
                                                     setDispatchOverrideEnabled(
-                                                      e.target.checked
+                                                      e.target.checked,
                                                     )
                                                   }
                                                 />
@@ -3215,7 +3729,9 @@ export default function NewServiceTicketPage() {
                                                 label="Dispatch Override Reason"
                                                 value={dispatchOverrideReason}
                                                 onChange={(e) =>
-                                                  setDispatchOverrideReason(e.target.value)
+                                                  setDispatchOverrideReason(
+                                                    e.target.value,
+                                                  )
                                                 }
                                                 multiline
                                                 minRows={3}
@@ -3231,7 +3747,9 @@ export default function NewServiceTicketPage() {
                                         multiline
                                         minRows={3}
                                         value={tripNotes}
-                                        onChange={(e) => setTripNotes(e.target.value)}
+                                        onChange={(e) =>
+                                          setTripNotes(e.target.value)
+                                        }
                                         placeholder="Optional scheduling or dispatch notes"
                                       />
 
@@ -3240,19 +3758,28 @@ export default function NewServiceTicketPage() {
                                         sx={{
                                           p: 1.5,
                                           borderRadius: 1,
-                                          bgcolor: alpha(theme.palette.primary.main, 0.03),
+                                          bgcolor: alpha(
+                                            theme.palette.primary.main,
+                                            0.03,
+                                          ),
                                         }}
                                       >
                                         <Stack spacing={1}>
-                                          <Typography variant="subtitle2" fontWeight={800}>
+                                          <Typography
+                                            variant="subtitle2"
+                                            fontWeight={800}
+                                          >
                                             Selected Schedule Summary
                                           </Typography>
 
-                                          <Typography variant="body2" color="text.secondary">
+                                          <Typography
+                                            variant="body2"
+                                            color="text.secondary"
+                                          >
                                             {selectedDate} •{" "}
                                             {selectedWindow === "custom"
                                               ? `Custom (${formatTime12h(
-                                                  selectedStartTime
+                                                  selectedStartTime,
                                                 )}–${formatTime12h(selectedEndTime)})`
                                               : selectedWindow === "all_day"
                                                 ? "All Day"
@@ -3261,18 +3788,32 @@ export default function NewServiceTicketPage() {
                                                   : "AM"}
                                           </Typography>
 
-                                          <Typography variant="body2" color="text.secondary">
+                                          <Typography
+                                            variant="body2"
+                                            color="text.secondary"
+                                          >
                                             Primary Tech:{" "}
-                                            {findTechName(selectedPrimaryUid) || "—"}
+                                            {findTechName(selectedPrimaryUid) ||
+                                              "—"}
                                           </Typography>
 
-                                          <Typography variant="body2" color="text.secondary">
-                                            Helper: {findHelperName(selectedHelperUid) || "—"}
+                                          <Typography
+                                            variant="body2"
+                                            color="text.secondary"
+                                          >
+                                            Helper:{" "}
+                                            {findHelperName(
+                                              selectedHelperUid,
+                                            ) || "—"}
                                           </Typography>
 
                                           {dispatchOverrideEnabled &&
-                                          selectedOverlapConflicts.length > 0 ? (
-                                            <Typography variant="body2" color="warning.main">
+                                          selectedOverlapConflicts.length >
+                                            0 ? (
+                                            <Typography
+                                              variant="body2"
+                                              color="warning.main"
+                                            >
                                               Dispatch Override: Enabled
                                             </Typography>
                                           ) : null}
@@ -3285,7 +3826,8 @@ export default function NewServiceTicketPage() {
                                           variant="outlined"
                                           sx={{ borderRadius: 1 }}
                                         >
-                                          Loading availability for {selectedDate}...
+                                          Loading availability for{" "}
+                                          {selectedDate}...
                                         </Alert>
                                       ) : null}
                                     </>
@@ -3299,14 +3841,22 @@ export default function NewServiceTicketPage() {
 
                       <Box sx={{ p: { xs: 2, sm: 3 } }}>
                         <Stack spacing={2.5}>
-                          <Stack direction="row" spacing={1.25} alignItems="center">
+                          <Stack
+                            direction="row"
+                            spacing={1.25}
+                            alignItems="center"
+                          >
                             <NotesRoundedIcon color="primary" />
                             <Box>
                               <Typography variant="h6" sx={{ fontWeight: 800 }}>
                                 Internal Notes
                               </Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                Office-only notes, reminders, or special handling details.
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                Office-only notes, reminders, or special
+                                handling details.
                               </Typography>
                             </Box>
                           </Stack>
@@ -3346,7 +3896,10 @@ export default function NewServiceTicketPage() {
                       justifyContent="space-between"
                     >
                       <Box>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                        <Typography
+                          variant="subtitle1"
+                          sx={{ fontWeight: 800 }}
+                        >
                           Ready to create this ticket?
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
@@ -3356,7 +3909,10 @@ export default function NewServiceTicketPage() {
                         </Typography>
                       </Box>
 
-                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1.5}
+                      >
                         <Button
                           type="button"
                           variant="outlined"

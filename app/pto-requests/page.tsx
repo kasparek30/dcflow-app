@@ -501,7 +501,7 @@ export default function PTORequestsPage() {
               elevation={0}
               sx={{
                 p: { xs: 2.25, md: 3 },
-                borderRadius: 4,
+                borderRadius: 1,
                 border: `1px solid ${theme.palette.divider}`,
                 backgroundColor: theme.palette.background.paper,
               }}
@@ -554,7 +554,7 @@ export default function PTORequestsPage() {
                 sx={{
                   flex: 1.05,
                   p: { xs: 2, md: 3 },
-                  borderRadius: 4,
+                  borderRadius: 1,
                   border: `1px solid ${theme.palette.divider}`,
                   backgroundColor: theme.palette.background.paper,
                 }}
@@ -730,7 +730,7 @@ export default function PTORequestsPage() {
                     elevation={0}
                     sx={{
                       p: 2,
-                      borderRadius: 3,
+                      borderRadius: 1,
                       border: `1px solid ${theme.palette.divider}`,
                       backgroundColor: alpha(theme.palette.secondary.main, 0.05),
                     }}
@@ -791,7 +791,7 @@ export default function PTORequestsPage() {
                 sx={{
                   flex: 1,
                   p: { xs: 2, md: 3 },
-                  borderRadius: 4,
+                  borderRadius: 1,
                   border: `1px solid ${theme.palette.divider}`,
                   backgroundColor: theme.palette.background.paper,
                   minWidth: 0,

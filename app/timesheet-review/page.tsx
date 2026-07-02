@@ -175,7 +175,7 @@ export default function TimesheetReviewQueuePage() {
               sx={{
                 px: { xs: 2, md: 3 },
                 py: { xs: 2.5, md: 3 },
-                borderRadius: 5,
+                borderradius: 1,
                 background: `linear-gradient(135deg, ${alpha(
                   theme.palette.primary.main,
                   0.12
@@ -219,7 +219,7 @@ export default function TimesheetReviewQueuePage() {
             <Card
               elevation={0}
               sx={{
-                borderRadius: 5,
+                borderradius: 1,
                 border: `1px solid ${theme.palette.divider}`,
               }}
             >
@@ -275,7 +275,7 @@ export default function TimesheetReviewQueuePage() {
               <Card
                 elevation={0}
                 sx={{
-                  borderRadius: 5,
+                  borderradius: 1,
                   border: `1px solid ${theme.palette.divider}`,
                 }}
               >
@@ -296,7 +296,7 @@ export default function TimesheetReviewQueuePage() {
               <Card
                 elevation={0}
                 sx={{
-                  borderRadius: 5,
+                  borderradius: 1,
                   border: `1px solid ${theme.palette.divider}`,
                 }}
               >
@@ -326,7 +326,7 @@ export default function TimesheetReviewQueuePage() {
                       key={ts.id}
                       elevation={0}
                       sx={{
-                        borderRadius: 5,
+                        borderRadius: 1,
                         border: `1px solid ${theme.palette.divider}`,
                         overflow: "hidden",
                         transition: "transform 160ms ease, box-shadow 160ms ease",

@@ -2,7 +2,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -20,8 +20,13 @@ import {
   CardContent,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Divider,
+  IconButton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -41,11 +46,63 @@ import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import PlumbingRoundedIcon from "@mui/icons-material/PlumbingRounded";
+import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
+
+declare global {
+  interface Window {
+    google?: any;
+    __dcflowGoogleMapsPromise?: Promise<any>;
+  }
+}
+
+function loadGoogleMapsScript(apiKey: string) {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("Google Maps can only load in the browser."));
+  }
+
+  if (window.google?.maps) {
+    return Promise.resolve(window.google);
+  }
+
+  if (window.__dcflowGoogleMapsPromise) {
+    return window.__dcflowGoogleMapsPromise;
+  }
+
+  window.__dcflowGoogleMapsPromise = new Promise<any>((resolve, reject) => {
+    const existingScript = document.querySelector<HTMLScriptElement>(
+      'script[data-dcflow-google-maps="true"]',
+    );
+
+    if (existingScript) {
+      existingScript.addEventListener("load", () => resolve(window.google));
+      existingScript.addEventListener("error", () =>
+        reject(new Error("Failed to load Google Maps.")),
+      );
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.setAttribute("data-dcflow-google-maps", "true");
+    script.async = true;
+    script.defer = true;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
+      apiKey,
+    )}&v=weekly`;
+
+    script.onload = () => resolve(window.google);
+    script.onerror = () => reject(new Error("Failed to load Google Maps."));
+
+    document.head.appendChild(script);
+  });
+
+  return window.__dcflowGoogleMapsPromise;
+}
 
 type DashboardTicketItem = {
   id: string;
@@ -127,6 +184,7 @@ type ProjectTripDocLite = TripDocLite & {
 type ActiveWorkItem = {
   id: string;
   tripId: string;
+  pinNumber?: number;
   itemType: "service" | "project";
   href: string;
   title: string;
@@ -144,11 +202,7 @@ type ActiveWorkItem = {
 };
 
 type ProjectOfficeStatus =
-  | "active_work"
-  | "field_complete"
-  | "ready_to_invoice"
-  | "invoiced"
-  | "closed";
+  "active_work" | "field_complete" | "ready_to_invoice" | "invoiced" | "closed";
 
 type ProjectBillingPeriodStatus = "open" | "ready_to_bill" | "invoiced";
 
@@ -346,10 +400,10 @@ function hasMaterialOrderInvoiceSignal(order: DashboardMaterialOrderDoc) {
 
   return Boolean(
     safeTrim(billing.qboInvoiceNumber) ||
-      safeTrim(billing.qboInvoiceId) ||
-      safeTrim(billing.invoiceNumber) ||
-      safeTrim(billing.invoiceId) ||
-      safeTrim(billing.invoicedAt),
+    safeTrim(billing.qboInvoiceId) ||
+    safeTrim(billing.invoiceNumber) ||
+    safeTrim(billing.invoiceId) ||
+    safeTrim(billing.invoicedAt),
   );
 }
 
@@ -361,10 +415,17 @@ function getPendingMaterialOrderStatus(order: DashboardMaterialOrderDoc) {
     (Array.isArray(order.poNumbers) && order.poNumbers.length > 0) ||
     (Array.isArray(order.purchaseOrders) && order.purchaseOrders.length > 0);
   const isInvoiced =
-    orderStatus === "invoiced" || billingStatus === "invoiced" || hasMaterialOrderInvoiceSignal(order);
-  const isPickedUp = orderStatus === "picked_up" || pickupStatus === "picked_up";
+    orderStatus === "invoiced" ||
+    billingStatus === "invoiced" ||
+    hasMaterialOrderInvoiceSignal(order);
+  const isPickedUp =
+    orderStatus === "picked_up" || pickupStatus === "picked_up";
 
-  if (orderStatus === "cancelled" || orderStatus === "closed" || billingStatus === "closed") {
+  if (
+    orderStatus === "cancelled" ||
+    orderStatus === "closed" ||
+    billingStatus === "closed"
+  ) {
     return null;
   }
 
@@ -396,7 +457,10 @@ function getPendingMaterialOrderStatus(order: DashboardMaterialOrderDoc) {
     };
   }
 
-  if (orderStatus === "ready_for_pickup" || pickupStatus === "ready_for_pickup") {
+  if (
+    orderStatus === "ready_for_pickup" ||
+    pickupStatus === "ready_for_pickup"
+  ) {
     return {
       label: "Ready for Pickup",
       tone: "success" as const,
@@ -447,8 +511,16 @@ function statusSort(a: ActiveWorkItem, b: ActiveWorkItem) {
   return bTs.localeCompare(aTs);
 }
 
-function buildAddress(item: { addressLine1?: string; city?: string; state?: string }) {
-  return [safeTrim(item.addressLine1), safeTrim(item.city), safeTrim(item.state)]
+function buildAddress(item: {
+  addressLine1?: string;
+  city?: string;
+  state?: string;
+}) {
+  return [
+    safeTrim(item.addressLine1),
+    safeTrim(item.city),
+    safeTrim(item.state),
+  ]
     .filter(Boolean)
     .join(", ");
 }
@@ -490,13 +562,17 @@ function hasAssignedCrew(item: ActiveWorkItem) {
   return Boolean(buildAssignedPeople(item));
 }
 
-function isFieldVisibleStatus(status?: string | null, timerState?: string | null) {
+function isFieldVisibleStatus(
+  status?: string | null,
+  timerState?: string | null,
+) {
   const normalized = normalizeStatus(status);
   const normalizedTimer = normalizeStatus(timerState);
 
   return (
-    ["in_progress", "paused", "dispatched", "assigned", "on_site"].includes(normalized) ||
-    ["running", "paused"].includes(normalizedTimer)
+    ["in_progress", "paused", "dispatched", "assigned", "on_site"].includes(
+      normalized,
+    ) || ["running", "paused"].includes(normalizedTimer)
   );
 }
 
@@ -508,36 +584,76 @@ function isFieldVisibleItem(item: ActiveWorkItem) {
   );
 }
 
-function buildStaticMapUrl(items: ActiveWorkItem[]) {
+function getStaticMapItems(items: ActiveWorkItem[]) {
+  return items.filter(isFieldVisibleItem).slice(0, 6);
+}
+
+function withPinNumbers(items: ActiveWorkItem[]) {
+  const pinItems = getStaticMapItems(items);
+  const pinById = new Map(pinItems.map((item, index) => [item.id, index + 1]));
+
+  return items.map((item) => ({
+    ...item,
+    pinNumber: pinById.get(item.id),
+  }));
+}
+
+function getMapItemLabel(item: ActiveWorkItem) {
+  const title =
+    safeTrim(item.title) ||
+    (item.itemType === "project" ? "Project" : "Service Ticket");
+  const subtitle = safeTrim(item.subtitle);
+  return subtitle ? `${title} — ${subtitle}` : title;
+}
+
+function buildStaticMapUrl(
+  items: ActiveWorkItem[],
+  options?: { variant?: "card" | "modal" },
+) {
   const apiKey = safeTrim(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY);
   if (!apiKey) return "";
 
-  const addresses = items
-    .filter(isFieldVisibleItem)
-    .map((item) => buildAddress(item))
-    .filter(Boolean)
-    .slice(0, 6);
+  const variant = options?.variant || "card";
+  const mapItems = getStaticMapItems(items);
 
-  if (addresses.length === 0) return "";
+  if (mapItems.length === 0) return "";
 
   const base = "https://maps.googleapis.com/maps/api/staticmap";
   const params = new URLSearchParams();
 
-  params.set("size", "1400x320");
+  // Google Static Maps standard image size tops out at 640px per side.
+  // Use supported dimensions and scale=2 so the browser receives a crisp image
+  // without triggering the odd cropped/letterboxed rendering we saw with 1400px.
+  params.set("size", variant === "modal" ? "640x420" : "640x300");
   params.set("scale", "2");
   params.set("maptype", "roadmap");
 
+  const addresses = mapItems.map((item) => buildAddress(item)).filter(Boolean);
+
   if (addresses.length === 1) {
     params.set("center", addresses[0]);
-    params.set("zoom", "11");
+    params.set("zoom", variant === "modal" ? "10" : "11");
   } else {
     addresses.forEach((address) => params.append("visible", address));
   }
 
-  addresses.forEach((address, index) => {
-    const label = String(index + 1);
-    params.append("markers", `size:mid|color:0x1a73e8|label:${label}|${address}`);
+  mapItems.forEach((item, index) => {
+    const address = buildAddress(item);
+    if (!address) return;
+
+    const label = String(item.pinNumber || index + 1);
+    params.append(
+      "markers",
+      `size:mid|color:0x1a73e8|label:${label}|${address}`,
+    );
   });
+
+  // Prevent stale browser/Google image caching while crews change or while we
+  // are tuning map behavior in development.
+  params.set(
+    "dcflowMapVersion",
+    `${variant}-${mapItems.map((item) => `${item.id}:${item.pinNumber || ""}:${buildAddress(item)}`).join("|")}`,
+  );
 
   params.set("key", apiKey);
   return `${base}?${params.toString()}`;
@@ -547,7 +663,8 @@ function formatProjectType(projectType?: string | null) {
   const normalized = safeTrim(projectType).toLowerCase();
   if (normalized === "new_construction") return "New Construction";
   if (normalized === "remodel") return "Remodel";
-  if (normalized === "time_materials" || normalized === "time+materials") return "Time + Materials";
+  if (normalized === "time_materials" || normalized === "time+materials")
+    return "Time + Materials";
   return "Project";
 }
 
@@ -631,14 +748,24 @@ function minutesBetweenMs(aMs: number, bMs: number) {
   return Math.max(0, Math.round((bMs - aMs) / 60000));
 }
 
-function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null, referenceEndMs?: number) {
+function sumPausedMinutes(
+  pauseBlocks?: PauseBlock[] | null,
+  referenceEndMs?: number,
+) {
   if (!Array.isArray(pauseBlocks) || pauseBlocks.length === 0) return 0;
-  const endMs = Number.isFinite(referenceEndMs) ? Number(referenceEndMs) : Date.now();
+  const endMs = Number.isFinite(referenceEndMs)
+    ? Number(referenceEndMs)
+    : Date.now();
 
   return pauseBlocks.reduce((sum, block) => {
     const startMs = parseIsoMs(block?.startAt || null);
     const stopMs = block?.endAt ? parseIsoMs(block.endAt) : endMs;
-    if (!Number.isFinite(startMs) || !Number.isFinite(stopMs) || stopMs <= startMs) return sum;
+    if (
+      !Number.isFinite(startMs) ||
+      !Number.isFinite(stopMs) ||
+      stopMs <= startMs
+    )
+      return sum;
     return sum + minutesBetweenMs(startMs, stopMs);
   }, 0);
 }
@@ -647,7 +774,8 @@ function getTimerDrivenHoursForTrip(trip?: ProjectTripDocLite | null) {
   if (!trip) return null;
   const startMs = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
   const endMs = parseIsoMs(trip.actualEndAt || trip.completedAt || null);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs)
+    return null;
 
   const grossMinutes = minutesBetweenMs(startMs, endMs);
   const pausedMinutes = sumPausedMinutes(trip.pauseBlocks || null, endMs);
@@ -713,8 +841,20 @@ function buildProjectFollowUpItems(
     if (!project) return;
 
     const officeStatus = normalizeOfficeStatus(project.projectOfficeStatus);
-    if (officeStatus === "closed" || officeStatus === "invoiced") return;
+    const readyBillingPeriod = getReadyBillingPeriod(project);
+
+    // Once a project/stage is field-complete, ready to invoice, invoiced, closed,
+    // or has a ready billing period, an older "needs another day" closeout is no longer actionable.
+    if (
+      officeStatus === "field_complete" ||
+      officeStatus === "ready_to_invoice" ||
+      officeStatus === "closed" ||
+      officeStatus === "invoiced"
+    ) {
+      return;
+    }
     if (project.fieldCompletedAt) return;
+    if (readyBillingPeriod) return;
 
     const laterTrips = projectTrips.filter((trip) => {
       if (safeTrim(trip.link?.projectId) !== projectId) return false;
@@ -723,11 +863,39 @@ function buildProjectFollowUpItems(
       return compareTripSequence(trip, flaggedTrip) > 0;
     });
 
-    const hasScheduledReturn = laterTrips.length > 0;
-    const hasLaterCompletedWork = laterTrips.some((trip) =>
-      ["complete", "in_progress", "paused"].includes(normalizeStatus(trip.status)) ||
-      ["running", "paused"].includes(normalizeStatus(trip.timerState)),
-    );
+    const hasLaterCompletedWork = laterTrips.some((trip) => {
+      const status = normalizeStatus(trip.status);
+      const timerState = normalizeStatus(trip.timerState);
+      const billingStatus = normalizeStatus(trip.billingPeriodStatus);
+
+      return (
+        status === "complete" ||
+        status === "completed" ||
+        timerState === "complete" ||
+        billingStatus === "ready_to_bill" ||
+        Boolean(safeTrim(trip.readyToBillAt))
+      );
+    });
+
+    // Example: a first trip says "needs another day", then Jacob comes back,
+    // completes the stage, and marks more work needed = no. That old flag should disappear.
+    if (hasLaterCompletedWork) return;
+
+    const hasScheduledReturn = laterTrips.some((trip) => {
+      const status = normalizeStatus(trip.status);
+      const timerState = normalizeStatus(trip.timerState);
+
+      return (
+        [
+          "planned",
+          "scheduled",
+          "assigned",
+          "dispatched",
+          "in_progress",
+          "paused",
+        ].includes(status) || ["running", "paused"].includes(timerState)
+      );
+    });
 
     items.push({
       projectId,
@@ -775,57 +943,121 @@ function buildReadyInvoiceItems(
   projectTrips: ProjectTripDocLite[],
 ) {
   const items = projects
-    .filter((project) => normalizeOfficeStatus(project.projectOfficeStatus) === "ready_to_invoice")
     .map((project) => {
+      const officeStatus = normalizeOfficeStatus(project.projectOfficeStatus);
+      if (officeStatus === "closed" || officeStatus === "invoiced") return null;
+
       const readyPeriod = getReadyBillingPeriod(project);
       const relatedTrips = projectTrips.filter(
         (trip) => safeTrim(trip.link?.projectId) === safeTrim(project.id),
       );
 
+      const readyTrip =
+        relatedTrips
+          .filter((trip) => {
+            const tripBillingStatus = normalizeStatus(trip.billingPeriodStatus);
+            const tripStatus = normalizeStatus(trip.status);
+            return (
+              tripBillingStatus === "ready_to_bill" ||
+              Boolean(safeTrim(trip.readyToBillAt)) ||
+              (tripStatus === "complete" &&
+                safeTrim(trip.closeout?.outcome).toLowerCase() ===
+                  "complete_stage" &&
+                safeTrim(trip.closeout?.needsMoreWork).toLowerCase() !== "yes")
+            );
+          })
+          .sort((a, b) => {
+            const aMs =
+              parseFlexibleDateMs(a.readyToBillAt) ||
+              parseFlexibleDateMs(a.completedAt) ||
+              parseFlexibleDateMs(a.updatedAt) ||
+              parseFlexibleDateMs(a.date) ||
+              0;
+            const bMs =
+              parseFlexibleDateMs(b.readyToBillAt) ||
+              parseFlexibleDateMs(b.completedAt) ||
+              parseFlexibleDateMs(b.updatedAt) ||
+              parseFlexibleDateMs(b.date) ||
+              0;
+            return bMs - aMs;
+          })[0] || null;
+
+      const isReadyToInvoice =
+        officeStatus === "ready_to_invoice" ||
+        Boolean(readyPeriod) ||
+        Boolean(readyTrip);
+      if (!isReadyToInvoice) return null;
+
       const periodTrips = readyPeriod
         ? relatedTrips.filter(
-            (trip) => safeTrim(trip.billingPeriodId) === safeTrim(readyPeriod.id),
+            (trip) =>
+              safeTrim(trip.billingPeriodId) === safeTrim(readyPeriod.id),
           )
-        : relatedTrips.filter((trip) => normalizeStatus(trip.status) === "complete");
+        : readyTrip?.billingPeriodId
+          ? relatedTrips.filter(
+              (trip) =>
+                safeTrim(trip.billingPeriodId) ===
+                safeTrim(readyTrip.billingPeriodId),
+            )
+          : relatedTrips.filter(
+              (trip) => normalizeStatus(trip.status) === "complete",
+            );
 
       const totalHours = readyPeriod
         ? Number(readyPeriod.totalHours || 0)
-        : periodTrips.reduce((sum, trip) => sum + getCloseoutHoursForTrip(trip), 0);
+        : periodTrips.reduce(
+            (sum, trip) => sum + getCloseoutHoursForTrip(trip),
+            0,
+          );
 
       const materialsCount = readyPeriod
         ? Number(readyPeriod.materialsCount || 0)
-        : periodTrips.reduce((sum, trip) => (getMaterialsText(trip) ? sum + 1 : sum), 0);
+        : periodTrips.reduce(
+            (sum, trip) => (getMaterialsText(trip) ? sum + 1 : sum),
+            0,
+          );
 
-      const tripCount = readyPeriod ? Number(readyPeriod.tripCount || 0) : periodTrips.length;
+      const tripCount = readyPeriod
+        ? Number(readyPeriod.tripCount || 0)
+        : periodTrips.length;
 
       const billingLabel = readyPeriod
         ? safeTrim(readyPeriod.label) || `Billing ${readyPeriod.sequence || 1}`
-        : safeTrim(project.projectType).toLowerCase() === "time_materials"
-          ? "Current Billing"
-          : "Project Billing";
+        : safeTrim(readyTrip?.billingPeriodLabel) ||
+          (safeTrim(readyTrip?.link?.projectStageKey)
+            ? stageLabel(readyTrip?.link?.projectStageKey)
+            : safeTrim(project.projectType).toLowerCase() === "time_materials"
+              ? "Current Billing"
+              : "Project Billing");
 
       return {
         projectId: project.id,
         href: `/projects/${project.id}`,
         billingHref: `/projects/${project.id}#project-billing`,
         projectName: safeTrim(project.projectName) || "Project",
-        customerDisplayName: safeTrim(project.customerDisplayName) || "Customer",
+        customerDisplayName:
+          safeTrim(project.customerDisplayName) || "Customer",
         projectTypeLabel: formatProjectType(project.projectType),
         billingLabel,
         readyAt:
           safeTrim(readyPeriod?.readyToBillAt) ||
           safeTrim(project.readyToInvoiceAt) ||
+          safeTrim(readyTrip?.readyToBillAt) ||
+          safeTrim(readyTrip?.completedAt) ||
+          safeTrim(readyTrip?.updatedAt) ||
           undefined,
         readyByName:
           safeTrim(readyPeriod?.readyToBillByName) ||
           safeTrim(project.readyToInvoiceByName) ||
+          safeTrim(readyTrip?.closeout?.savedByName) ||
           undefined,
         totalHours,
         materialsCount,
         tripCount,
         invoiceNumber: safeTrim(project.invoiceNumber) || undefined,
       } satisfies ReadyInvoiceProjectItem;
-    });
+    })
+    .filter(Boolean) as ReadyInvoiceProjectItem[];
 
   return items.sort((a, b) => {
     const aMs = parseFlexibleDateMs(a.readyAt) || 0;
@@ -834,7 +1066,9 @@ function buildReadyInvoiceItems(
   });
 }
 
-function buildPendingMaterialOrderItems(materialOrders: DashboardMaterialOrderDoc[]) {
+function buildPendingMaterialOrderItems(
+  materialOrders: DashboardMaterialOrderDoc[],
+) {
   return materialOrders
     .map((order) => {
       const statusMeta = getPendingMaterialOrderStatus(order);
@@ -848,7 +1082,8 @@ function buildPendingMaterialOrderItems(materialOrders: DashboardMaterialOrderDo
         statusLabel: statusMeta.label,
         statusTone: statusMeta.tone,
         urgencyRank: statusMeta.rank,
-        updatedAt: safeTrim(order.updatedAt) || safeTrim(order.createdAt) || undefined,
+        updatedAt:
+          safeTrim(order.updatedAt) || safeTrim(order.createdAt) || undefined,
       } satisfies PendingMaterialOrderItem;
     })
     .filter(Boolean)
@@ -866,7 +1101,10 @@ function buildPendingMaterialOrderItems(materialOrders: DashboardMaterialOrderDo
     }) as PendingMaterialOrderItem[];
 }
 
-function getFieldStatusMeta(status?: string | null, timerState?: string | null) {
+function getFieldStatusMeta(
+  status?: string | null,
+  timerState?: string | null,
+) {
   const normalized = normalizeStatus(status);
   const normalizedTimer = normalizeStatus(timerState);
 
@@ -878,7 +1116,11 @@ function getFieldStatusMeta(status?: string | null, timerState?: string | null) 
     };
   }
 
-  if (normalized === "dispatched" || normalized === "assigned" || normalized === "on_site") {
+  if (
+    normalized === "dispatched" ||
+    normalized === "assigned" ||
+    normalized === "on_site"
+  ) {
     return {
       label: "Assigned Today",
       color: "info" as const,
@@ -913,13 +1155,24 @@ function SectionCard({
       elevation={0}
       sx={{
         borderRadius: 1.2,
-        border: (theme) => `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+        border: (theme) =>
+          `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
         backgroundColor: "background.paper",
       }}
     >
-      <CardContent sx={{ p: { xs: 2, md: 2.5 }, "&:last-child": { pb: { xs: 2, md: 2.5 } } }}>
+      <CardContent
+        sx={{
+          p: { xs: 2, md: 2.5 },
+          "&:last-child": { pb: { xs: 2, md: 2.5 } },
+        }}
+      >
         <Stack spacing={2}>
-          <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
+          <Stack
+            direction="row"
+            alignItems="flex-start"
+            justifyContent="space-between"
+            spacing={2}
+          >
             <Stack direction="row" spacing={1.25} alignItems="center">
               <Box
                 sx={(theme) => ({
@@ -976,11 +1229,24 @@ function SectionCard({
   );
 }
 
-function TicketRow({ item, mode }: { item: DashboardTicketItem; mode: "follow_up" | "review" }) {
-  const address = [safeTrim(item.serviceAddressLine1), safeTrim(item.serviceCity), safeTrim(item.serviceState)]
+function TicketRow({
+  item,
+  mode,
+}: {
+  item: DashboardTicketItem;
+  mode: "follow_up" | "review";
+}) {
+  const address = [
+    safeTrim(item.serviceAddressLine1),
+    safeTrim(item.serviceCity),
+    safeTrim(item.serviceState),
+  ]
     .filter(Boolean)
     .join(", ");
-  const assignedPeople = [safeTrim(item.assignedTechnicianName), safeTrim(item.assignedHelperName)]
+  const assignedPeople = [
+    safeTrim(item.assignedTechnicianName),
+    safeTrim(item.assignedHelperName),
+  ]
     .filter(Boolean)
     .join(" + ");
 
@@ -993,7 +1259,13 @@ function TicketRow({ item, mode }: { item: DashboardTicketItem; mode: "follow_up
         justifyContent="space-between"
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+            useFlexGap
+          >
             <Typography variant="subtitle1" fontWeight={700} noWrap>
               {item.customerDisplayName || "Customer"}
             </Typography>
@@ -1011,10 +1283,18 @@ function TicketRow({ item, mode }: { item: DashboardTicketItem; mode: "follow_up
             {item.issueSummary || "Service Ticket"}
           </Typography>
 
-          <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.85 }}>
+          <Stack
+            direction="row"
+            spacing={1.5}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ mt: 0.85 }}
+          >
             {address ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
-                <PlaceRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                <PlaceRoundedIcon
+                  sx={{ fontSize: 16, color: "text.secondary" }}
+                />
                 <Typography variant="body2" color="text.secondary">
                   {address}
                 </Typography>
@@ -1023,7 +1303,9 @@ function TicketRow({ item, mode }: { item: DashboardTicketItem; mode: "follow_up
 
             {assignedPeople ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
-                <PersonRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                <PersonRoundedIcon
+                  sx={{ fontSize: 16, color: "text.secondary" }}
+                />
                 <Typography variant="body2" color="text.secondary">
                   {assignedPeople}
                 </Typography>
@@ -1031,7 +1313,9 @@ function TicketRow({ item, mode }: { item: DashboardTicketItem; mode: "follow_up
             ) : null}
 
             <Stack direction="row" spacing={0.5} alignItems="center">
-              <AccessTimeRoundedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+              <AccessTimeRoundedIcon
+                sx={{ fontSize: 16, color: "text.secondary" }}
+              />
               <Typography variant="body2" color="text.secondary">
                 {mode === "review"
                   ? `Ready ${formatWhen(item.readyToBillAt || item.updatedAt)}`
@@ -1076,7 +1360,13 @@ function ProjectFollowUpRow({ item }: { item: ProjectFollowUpItem }) {
           </Box>
 
           <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-            <Chip size="small" label="Needs Another Day" color="warning" variant="filled" sx={{ fontWeight: 800 }} />
+            <Chip
+              size="small"
+              label="Needs Another Day"
+              color="warning"
+              variant="filled"
+              sx={{ fontWeight: 800 }}
+            />
             <Chip
               size="small"
               label={item.hasScheduledReturn ? "Scheduled" : "Unscheduled"}
@@ -1151,7 +1441,13 @@ function ReadyInvoiceProjectRow({ item }: { item: ReadyInvoiceProjectItem }) {
             </Typography>
           </Box>
 
-          <Chip size="small" label="Ready to Invoice" color="success" variant="filled" sx={{ fontWeight: 800 }} />
+          <Chip
+            size="small"
+            label="Ready to Invoice"
+            color="success"
+            variant="filled"
+            sx={{ fontWeight: 800 }}
+          />
         </Stack>
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -1172,7 +1468,12 @@ function ReadyInvoiceProjectRow({ item }: { item: ReadyInvoiceProjectItem }) {
         </Stack>
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Chip size="small" label={`${item.totalHours.toFixed(2)} hrs`} variant="outlined" sx={{ fontWeight: 700 }} />
+          <Chip
+            size="small"
+            label={`${item.totalHours.toFixed(2)} hrs`}
+            variant="outlined"
+            sx={{ fontWeight: 700 }}
+          />
           <Chip
             size="small"
             label={`${item.tripCount} trip${item.tripCount === 1 ? "" : "s"}`}
@@ -1191,7 +1492,13 @@ function ReadyInvoiceProjectRow({ item }: { item: ReadyInvoiceProjectItem }) {
             sx={{ fontWeight: 700 }}
           />
           {item.invoiceNumber ? (
-            <Chip size="small" label={`Invoice #${item.invoiceNumber}`} color="success" variant="outlined" sx={{ fontWeight: 700 }} />
+            <Chip
+              size="small"
+              label={`Invoice #${item.invoiceNumber}`}
+              color="success"
+              variant="outlined"
+              sx={{ fontWeight: 700 }}
+            />
           ) : null}
         </Stack>
 
@@ -1206,7 +1513,14 @@ function ReadyInvoiceProjectRow({ item }: { item: ReadyInvoiceProjectItem }) {
           >
             Open Billing
           </Button>
-          <Button component={Link} href={item.href} variant="outlined" color="success" endIcon={<ArrowForwardRoundedIcon />} sx={{ borderRadius: 999 }}>
+          <Button
+            component={Link}
+            href={item.href}
+            variant="outlined"
+            color="success"
+            endIcon={<ArrowForwardRoundedIcon />}
+            sx={{ borderRadius: 999 }}
+          >
             Open Project
           </Button>
         </Stack>
@@ -1225,7 +1539,13 @@ function PendingMaterialOrderRow({ item }: { item: PendingMaterialOrderItem }) {
         alignItems={{ xs: "flex-start", md: "center" }}
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack
+            direction="row"
+            spacing={0.75}
+            alignItems="center"
+            flexWrap="wrap"
+            useFlexGap
+          >
             <Typography variant="subtitle1" fontWeight={800} noWrap>
               {item.customerDisplayName}
             </Typography>
@@ -1239,7 +1559,12 @@ function PendingMaterialOrderRow({ item }: { item: PendingMaterialOrderItem }) {
             />
           </Stack>
 
-          <Typography variant="body2" color="text.secondary" noWrap sx={{ mt: 0.35 }}>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            noWrap
+            sx={{ mt: 0.35 }}
+          >
             {item.requestSummary}
           </Typography>
         </Box>
@@ -1268,43 +1593,91 @@ function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
     <Box
       sx={{
         borderRadius: 1.2,
-        border: (theme) => `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+        border: (theme) =>
+          `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
         backgroundColor: (theme) => alpha(theme.palette.common.white, 0.02),
         px: 1.5,
         py: 1.5,
       }}
     >
       <Stack spacing={1.2}>
-        <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1.5}>
+        <Stack
+          direction="row"
+          alignItems="flex-start"
+          justifyContent="space-between"
+          spacing={1.5}
+        >
           <Box sx={{ minWidth: 0 }}>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              flexWrap="wrap"
+              useFlexGap
+            >
               <Typography variant="subtitle2" fontWeight={800}>
-                {item.title || (item.itemType === "project" ? "Active Project Trip" : "Active Service Ticket")}
+                {item.title ||
+                  (item.itemType === "project"
+                    ? "Active Project Trip"
+                    : "Active Service Ticket")}
               </Typography>
+
+              {item.pinNumber ? (
+                <Chip
+                  size="small"
+                  label={`Pin ${item.pinNumber}`}
+                  color="primary"
+                  variant="filled"
+                  sx={{ fontWeight: 900 }}
+                />
+              ) : null}
 
               <Chip
                 size="small"
-                icon={item.itemType === "project" ? <ConstructionRoundedIcon sx={{ fontSize: 14 }} /> : <PlumbingRoundedIcon sx={{ fontSize: 14 }} />}
+                icon={
+                  item.itemType === "project" ? (
+                    <ConstructionRoundedIcon sx={{ fontSize: 14 }} />
+                  ) : (
+                    <PlumbingRoundedIcon sx={{ fontSize: 14 }} />
+                  )
+                }
                 label={item.itemType === "project" ? "Project" : "Service"}
                 variant="outlined"
                 sx={{ fontWeight: 700 }}
               />
             </Stack>
 
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-              {item.subtitle || (item.itemType === "project" ? "Project" : "Customer")}
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ mt: 0.25 }}
+            >
+              {item.subtitle ||
+                (item.itemType === "project" ? "Project" : "Customer")}
             </Typography>
           </Box>
 
-          <Chip size="small" icon={statusMeta.icon} label={statusMeta.label} color={statusMeta.color} variant="outlined" sx={{ fontWeight: 700, flexShrink: 0 }} />
+          <Chip
+            size="small"
+            icon={statusMeta.icon}
+            label={statusMeta.label}
+            color={statusMeta.color}
+            variant="outlined"
+            sx={{ fontWeight: 700, flexShrink: 0 }}
+          />
         </Stack>
 
         <Stack spacing={0.8}>
           {assignedPeople ? (
             <Stack direction="row" spacing={0.75} alignItems="flex-start">
-              <EngineeringRoundedIcon sx={{ fontSize: 16, color: "text.secondary", mt: "2px" }} />
+              <EngineeringRoundedIcon
+                sx={{ fontSize: 16, color: "text.secondary", mt: "2px" }}
+              />
               <Typography variant="body2" color="text.secondary">
-                <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                <Box
+                  component="span"
+                  sx={{ fontWeight: 700, color: "text.primary" }}
+                >
                   Crew:
                 </Box>{" "}
                 {assignedPeople}
@@ -1314,9 +1687,14 @@ function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
 
           {address ? (
             <Stack direction="row" spacing={0.75} alignItems="flex-start">
-              <PlaceRoundedIcon sx={{ fontSize: 16, color: "text.secondary", mt: "2px" }} />
+              <PlaceRoundedIcon
+                sx={{ fontSize: 16, color: "text.secondary", mt: "2px" }}
+              />
               <Typography variant="body2" color="text.secondary">
-                <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+                <Box
+                  component="span"
+                  sx={{ fontWeight: 700, color: "text.primary" }}
+                >
                   Address:
                 </Box>{" "}
                 {address}
@@ -1325,9 +1703,14 @@ function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
           ) : null}
 
           <Stack direction="row" spacing={0.75} alignItems="flex-start">
-            <AccessTimeRoundedIcon sx={{ fontSize: 16, color: "text.secondary", mt: "2px" }} />
+            <AccessTimeRoundedIcon
+              sx={{ fontSize: 16, color: "text.secondary", mt: "2px" }}
+            />
             <Typography variant="body2" color="text.secondary">
-              <Box component="span" sx={{ fontWeight: 700, color: "text.primary" }}>
+              <Box
+                component="span"
+                sx={{ fontWeight: 700, color: "text.primary" }}
+              >
                 Updated:
               </Box>{" "}
               {formatWhen(item.updatedAt)}
@@ -1340,7 +1723,13 @@ function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
           href={item.href}
           variant="text"
           endIcon={<ArrowForwardRoundedIcon />}
-          sx={{ alignSelf: "flex-start", px: 0, minWidth: 0, borderRadius: 999, fontWeight: 700 }}
+          sx={{
+            alignSelf: "flex-start",
+            px: 0,
+            minWidth: 0,
+            borderRadius: 999,
+            fontWeight: 700,
+          }}
         >
           {item.itemType === "project" ? "Open Project" : "Open Ticket"}
         </Button>
@@ -1349,65 +1738,577 @@ function ActiveWorkRow({ item }: { item: ActiveWorkItem }) {
   );
 }
 
-function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
+function escapeMapHtml(value: unknown) {
+  return safeTrim(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function getInteractiveMapInfoHtml(item: ActiveWorkItem) {
+  const pin = item.pinNumber ? `Pin ${item.pinNumber}` : "Active Job";
+  const title = safeTrim(item.title) || "Active Field Work";
+  const subtitle = safeTrim(item.subtitle);
+  const address = buildAddress(item);
+  const crew = buildAssignedPeople(item);
+  const openLabel =
+    item.itemType === "project" ? "Open Project" : "Open Ticket";
+
+  return `
+    <div style="font-family: Roboto, Arial, sans-serif; min-width: 220px; max-width: 300px; color: #111827;">
+      <div style="font-size: 11px; font-weight: 800; color: #2563eb; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;">${escapeMapHtml(pin)}</div>
+      <div style="font-size: 15px; font-weight: 900; line-height: 1.2; margin-bottom: 4px;">${escapeMapHtml(title)}</div>
+      ${subtitle ? `<div style="font-size: 13px; margin-bottom: 8px; color: #374151;">${escapeMapHtml(subtitle)}</div>` : ""}
+      ${crew ? `<div style="font-size: 12px; margin-bottom: 5px;"><strong>Crew:</strong> ${escapeMapHtml(crew)}</div>` : ""}
+      ${address ? `<div style="font-size: 12px; margin-bottom: 10px;"><strong>Address:</strong> ${escapeMapHtml(address)}</div>` : ""}
+      <a href="${escapeMapHtml(item.href)}" style="display: inline-flex; align-items: center; border-radius: 999px; background: #2563eb; color: white; font-size: 12px; font-weight: 800; padding: 7px 10px; text-decoration: none;">${escapeMapHtml(openLabel)}</a>
+    </div>
+  `;
+}
+
+function InteractiveLiveFieldMap({ items }: { items: ActiveWorkItem[] }) {
   const theme = useTheme();
-  const visibleFieldItems = useMemo(() => activeItems.filter(isFieldVisibleItem), [activeItems]);
-  const mapUrl = useMemo(() => buildStaticMapUrl(visibleFieldItems), [visibleFieldItems]);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<any>(null);
+  const geocoderRef = useRef<any>(null);
+  const infoWindowRef = useRef<any>(null);
+  const markersRef = useRef<Map<string, any>>(new Map());
+  const positionsRef = useRef<Map<string, any>>(new Map());
+  const [mapStatus, setMapStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [mapError, setMapError] = useState("");
+  const [selectedItemId, setSelectedItemId] = useState<string>(
+    items[0]?.id || "",
+  );
+
+  const apiKey = safeTrim(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY);
+  const itemKey = useMemo(
+    () =>
+      items
+        .map(
+          (item) => `${item.id}:${item.pinNumber || ""}:${buildAddress(item)}`,
+        )
+        .join("|"),
+    [items],
+  );
+
+  const openInfoWindow = (item: ActiveWorkItem) => {
+    const googleMaps = window.google?.maps;
+    const marker = markersRef.current.get(item.id);
+    const map = mapRef.current;
+    const infoWindow = infoWindowRef.current;
+
+    if (!googleMaps || !marker || !map || !infoWindow) return;
+
+    const position =
+      positionsRef.current.get(item.id) || marker.getPosition?.();
+    if (position) {
+      map.panTo(position);
+      const currentZoom = Number(map.getZoom?.() || 0);
+      if (!Number.isFinite(currentZoom) || currentZoom < 12) {
+        map.setZoom(12);
+      }
+    }
+
+    infoWindow.setContent(getInteractiveMapInfoHtml(item));
+    infoWindow.open({ map, anchor: marker });
+    setSelectedItemId(item.id);
+  };
+
+  useEffect(() => {
+    setSelectedItemId((current) => current || items[0]?.id || "");
+  }, [items]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function setupMap() {
+      if (!apiKey) {
+        setMapStatus("error");
+        setMapError("Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY.");
+        return;
+      }
+
+      if (!mapContainerRef.current) return;
+
+      setMapStatus("loading");
+      setMapError("");
+
+      try {
+        await loadGoogleMapsScript(apiKey);
+        if (cancelled || !mapContainerRef.current) return;
+
+        const googleMaps = window.google?.maps;
+        if (!googleMaps) {
+          throw new Error("Google Maps JavaScript API did not initialize.");
+        }
+
+        if (!mapRef.current) {
+          mapRef.current = new googleMaps.Map(mapContainerRef.current, {
+            center: { lat: 29.9055, lng: -96.8766 },
+            zoom: 10,
+            mapTypeControl: false,
+            fullscreenControl: true,
+            streetViewControl: false,
+            clickableIcons: false,
+          });
+          geocoderRef.current = new googleMaps.Geocoder();
+          infoWindowRef.current = new googleMaps.InfoWindow();
+        }
+
+        markersRef.current.forEach((marker) => marker.setMap(null));
+        markersRef.current.clear();
+        positionsRef.current.clear();
+
+        const geocoder = geocoderRef.current;
+        const map = mapRef.current;
+        const bounds = new googleMaps.LatLngBounds();
+        const geocodedItems: ActiveWorkItem[] = [];
+
+        for (const item of items) {
+          const address = buildAddress(item);
+          if (!address) continue;
+
+          try {
+            const result = await new Promise<any>((resolve, reject) => {
+              geocoder.geocode(
+                { address },
+                (results: any[], status: string) => {
+                  if (status === "OK" && results?.[0]) {
+                    resolve(results[0]);
+                    return;
+                  }
+                  reject(new Error(status || "GEOCODE_FAILED"));
+                },
+              );
+            });
+
+            if (cancelled) return;
+
+            const position = result.geometry.location;
+            const marker = new googleMaps.Marker({
+              map,
+              position,
+              label: String(item.pinNumber || geocodedItems.length + 1),
+              title: getMapItemLabel(item),
+              animation: googleMaps.Animation.DROP,
+            });
+
+            marker.addListener("click", () => openInfoWindow(item));
+            markersRef.current.set(item.id, marker);
+            positionsRef.current.set(item.id, position);
+            bounds.extend(position);
+            geocodedItems.push(item);
+          } catch (err) {
+            console.warn(
+              "Failed to geocode active field address",
+              address,
+              err,
+            );
+          }
+        }
+
+        if (geocodedItems.length === 0) {
+          throw new Error(
+            "No active field addresses could be placed on the interactive map.",
+          );
+        }
+
+        if (geocodedItems.length === 1) {
+          const onlyPosition = positionsRef.current.get(geocodedItems[0].id);
+          map.setCenter(onlyPosition);
+          map.setZoom(12);
+        } else {
+          map.fitBounds(bounds, 72);
+        }
+
+        window.setTimeout(() => {
+          if (cancelled) return;
+          googleMaps.event.trigger(map, "resize");
+          if (geocodedItems.length > 1) {
+            map.fitBounds(bounds, 72);
+          }
+        }, 120);
+
+        setMapStatus("ready");
+
+        const selected =
+          geocodedItems.find((item) => item.id === selectedItemId) ||
+          geocodedItems[0];
+        if (selected) {
+          window.setTimeout(() => openInfoWindow(selected), 275);
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setMapStatus("error");
+        setMapError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load interactive map.",
+        );
+      }
+    }
+
+    void setupMap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey, itemKey]);
 
   return (
-    <Box
-      sx={{
-        borderRadius: 1.2,
-        border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-        overflow: "hidden",
-        backgroundColor: alpha(theme.palette.common.white, 0.03),
-      }}
-    >
-      {mapUrl ? (
-        <Box sx={{ position: "relative" }}>
-          <Box
-            component="img"
-            src={mapUrl}
-            alt="Active field work area snapshot"
-            sx={{ display: "block", width: "100%", height: { xs: 180, md: 220 }, objectFit: "cover" }}
-          />
+    <Stack spacing={1.25}>
+      <Box
+        sx={{
+          position: "relative",
+          borderRadius: 1.2,
+          overflow: "hidden",
+          border: `1px solid ${alpha(theme.palette.common.white, 0.1)}`,
+          backgroundColor: alpha(theme.palette.common.white, 0.03),
+          minHeight: { xs: 320, sm: 390, md: 460 },
+        }}
+      >
+        <Box
+          ref={mapContainerRef}
+          sx={{
+            width: "100%",
+            minHeight: { xs: 320, sm: 390, md: 460 },
+            "& .gm-style-iw button": {
+              display: "flex !important",
+            },
+          }}
+        />
 
+        {mapStatus === "loading" ? (
           <Box
             sx={{
               position: "absolute",
-              left: 12,
-              bottom: 12,
-              borderRadius: 999,
-              px: 1.25,
-              py: 0.75,
-              backgroundColor: alpha(theme.palette.background.paper, 0.86),
-              backdropFilter: "blur(6px)",
-              border: `1px solid ${alpha(theme.palette.common.white, 0.12)}`,
+              inset: 0,
+              display: "grid",
+              placeItems: "center",
+              backgroundColor: alpha(theme.palette.background.paper, 0.72),
+              backdropFilter: "blur(3px)",
             }}
           >
-            <Stack direction="row" spacing={1} alignItems="center">
-              <MyLocationRoundedIcon sx={{ fontSize: 16, color: "primary.main" }} />
-              <Typography variant="caption" sx={{ fontWeight: 800 }}>
-                {visibleFieldItems.length} live field location{visibleFieldItems.length === 1 ? "" : "s"}
+            <Stack spacing={1} alignItems="center">
+              <CircularProgress size={24} />
+              <Typography variant="body2" color="text.secondary">
+                Loading interactive crew map…
               </Typography>
             </Stack>
           </Box>
-        </Box>
-      ) : (
-        <Box sx={{ height: 180, display: "grid", placeItems: "center", px: 2, textAlign: "center" }}>
-          <Stack spacing={1} alignItems="center">
-            <MyLocationRoundedIcon sx={{ color: "text.secondary" }} />
-            <Typography variant="body2" color="text.secondary">
-              Add a Google Maps API key and active field addresses to show the live area snapshot.
-            </Typography>
-          </Stack>
-        </Box>
-      )}
-    </Box>
+        ) : null}
+      </Box>
+
+      {mapStatus === "error" ? (
+        <Alert severity="warning" variant="outlined" sx={{ borderRadius: 3 }}>
+          {mapError || "The interactive map could not load."} Make sure the same
+          API key has Maps JavaScript API enabled.
+        </Alert>
+      ) : null}
+
+      {items.length > 0 ? (
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {items.map((item) => (
+            <Chip
+              key={`interactive_pin_legend_${item.id}`}
+              clickable
+              size="small"
+              color={selectedItemId === item.id ? "primary" : "default"}
+              variant={selectedItemId === item.id ? "filled" : "outlined"}
+              onClick={() => openInfoWindow(item)}
+              label={`${item.pinNumber || "—"} · ${getMapItemLabel(item)}`}
+              sx={{
+                borderRadius: 999,
+                fontWeight: 800,
+                maxWidth: "100%",
+                "& .MuiChip-label": {
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                },
+              }}
+            />
+          ))}
+        </Stack>
+      ) : null}
+    </Stack>
   );
 }
 
-function LiveFieldWorkSection({ activeItems }: { activeItems: ActiveWorkItem[] }) {
+function AreaSnapshotCard({ activeItems }: { activeItems: ActiveWorkItem[] }) {
+  const theme = useTheme();
+  const [mapOpen, setMapOpen] = useState(false);
+
+  const visibleFieldItems = useMemo(
+    () => withPinNumbers(activeItems).filter((item) => Boolean(item.pinNumber)),
+    [activeItems],
+  );
+  const mapUrl = useMemo(
+    () => buildStaticMapUrl(visibleFieldItems),
+    [visibleFieldItems],
+  );
+
+  return (
+    <>
+      <Box
+        sx={{
+          borderRadius: 1.2,
+          border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+          overflow: "hidden",
+          backgroundColor: alpha(theme.palette.common.white, 0.03),
+        }}
+      >
+        {mapUrl ? (
+          <Box sx={{ position: "relative" }}>
+            <Box
+              component="img"
+              src={mapUrl}
+              alt="Active field work area snapshot"
+              sx={{
+                display: "block",
+                width: "100%",
+                aspectRatio: "640 / 300",
+                height: "auto",
+                objectFit: "contain",
+                backgroundColor: "#d8ead7",
+              }}
+            />
+
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                background: `linear-gradient(180deg, ${alpha(theme.palette.common.black, 0.12)} 0%, ${alpha(
+                  theme.palette.common.black,
+                  0,
+                )} 38%, ${alpha(theme.palette.common.black, 0.16)} 100%)`,
+                pointerEvents: "none",
+              }}
+            />
+
+            <Tooltip title="Expand live field map">
+              <IconButton
+                size="small"
+                onClick={() => setMapOpen(true)}
+                aria-label="Expand live field map"
+                sx={{
+                  position: "absolute",
+                  top: 10,
+                  right: 10,
+                  width: 34,
+                  height: 34,
+                  color: "text.primary",
+                  backgroundColor: alpha(theme.palette.background.paper, 0.82),
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.14)}`,
+                  backdropFilter: "blur(8px)",
+                  "&:hover": {
+                    backgroundColor: alpha(theme.palette.primary.main, 0.22),
+                    borderColor: alpha(theme.palette.primary.main, 0.45),
+                  },
+                }}
+              >
+                <OpenInFullRoundedIcon sx={{ fontSize: 17 }} />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        ) : (
+          <Box
+            sx={{
+              height: 180,
+              display: "grid",
+              placeItems: "center",
+              px: 2,
+              textAlign: "center",
+            }}
+          >
+            <Stack spacing={1} alignItems="center">
+              <MyLocationRoundedIcon sx={{ color: "text.secondary" }} />
+              <Typography variant="body2" color="text.secondary">
+                Add a Google Maps API key and active field addresses to show the
+                live area snapshot.
+              </Typography>
+            </Stack>
+          </Box>
+        )}
+      </Box>
+
+      <Dialog
+        open={mapOpen}
+        onClose={() => setMapOpen(false)}
+        fullWidth
+        maxWidth="md"
+        PaperProps={{
+          sx: {
+            borderRadius: 1.4,
+            border: `1px solid ${alpha(theme.palette.common.white, 0.1)}`,
+            backgroundImage: "none",
+            backgroundColor: "background.paper",
+            overflow: "hidden",
+          },
+        }}
+        BackdropProps={{
+          sx: {
+            backgroundColor: alpha(theme.palette.common.black, 0.72),
+            backdropFilter: "blur(4px)",
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            px: { xs: 2, md: 3 },
+            pt: { xs: 2, md: 2.5 },
+            pb: 1.5,
+          }}
+        >
+          <Stack
+            direction="row"
+            spacing={1.5}
+            alignItems="flex-start"
+            justifyContent="space-between"
+          >
+            <Stack direction="row" spacing={1.25} alignItems="center">
+              <Box
+                sx={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 2.2,
+                  display: "grid",
+                  placeItems: "center",
+                  backgroundColor: alpha(theme.palette.primary.main, 0.14),
+                  color: theme.palette.primary.main,
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                }}
+              >
+                <MyLocationRoundedIcon />
+              </Box>
+
+              <Box>
+                <Typography
+                  variant="h6"
+                  fontWeight={900}
+                  sx={{ letterSpacing: "-0.02em" }}
+                >
+                  Live Field Work Map
+                </Typography>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mt: 0.25 }}
+                >
+                  Real-time view of active crews and project trips in the field.
+                </Typography>
+              </Box>
+            </Stack>
+
+            <Tooltip title="Close">
+              <IconButton
+                onClick={() => setMapOpen(false)}
+                aria-label="Close live field map"
+                sx={{
+                  color: "text.secondary",
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                  "&:hover": {
+                    color: "text.primary",
+                    backgroundColor: alpha(theme.palette.common.white, 0.06),
+                  },
+                }}
+              >
+                <CloseRoundedIcon />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </DialogTitle>
+
+        <DialogContent
+          sx={{
+            px: { xs: 2, md: 3 },
+            pb: { xs: 2, md: 3 },
+          }}
+        >
+          <Stack spacing={2}>
+            {visibleFieldItems.length > 0 ? (
+              <InteractiveLiveFieldMap items={visibleFieldItems} />
+            ) : (
+              <Alert
+                severity="info"
+                variant="outlined"
+                sx={{ borderRadius: 3 }}
+              >
+                The expanded map will appear once a Google Maps API key and
+                active field addresses are available.
+              </Alert>
+            )}
+
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              spacing={1.5}
+            >
+              <Box>
+                <Typography variant="subtitle1" fontWeight={900}>
+                  Active Crews
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Crew details shown from the same live field work feed used by
+                  the dashboard card.
+                </Typography>
+              </Box>
+
+              <Chip
+                size="small"
+                label={`${activeItems.length} crew${activeItems.length === 1 ? "" : "s"}`}
+                color={activeItems.length > 0 ? "primary" : "default"}
+                variant={activeItems.length > 0 ? "filled" : "outlined"}
+                sx={{ fontWeight: 800, flexShrink: 0 }}
+              />
+            </Stack>
+
+            {activeItems.length === 0 ? (
+              <Alert
+                severity="info"
+                variant="outlined"
+                sx={{ borderRadius: 3 }}
+              >
+                No active field work is showing right now.
+              </Alert>
+            ) : (
+              <Stack spacing={1.25}>
+                {activeItems.map((item) => (
+                  <ActiveWorkRow key={`modal_${item.id}`} item={item} />
+                ))}
+              </Stack>
+            )}
+
+            <Stack direction="row" justifyContent="flex-end">
+              <Button
+                variant="outlined"
+                onClick={() => setMapOpen(false)}
+                sx={{ borderRadius: 999 }}
+              >
+                Close
+              </Button>
+            </Stack>
+          </Stack>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function LiveFieldWorkSection({
+  activeItems,
+}: {
+  activeItems: ActiveWorkItem[];
+}) {
+  const pinnedActiveItems = useMemo(
+    () => withPinNumbers(activeItems),
+    [activeItems],
+  );
+
   return (
     <SectionCard
       title="Live Field Work"
@@ -1423,10 +2324,10 @@ function LiveFieldWorkSection({ activeItems }: { activeItems: ActiveWorkItem[] }
           </Alert>
         ) : (
           <>
-            <AreaSnapshotCard activeItems={activeItems} />
+            <AreaSnapshotCard activeItems={pinnedActiveItems} />
 
             <Stack spacing={1.25}>
-              {activeItems.map((item) => (
+              {pinnedActiveItems.map((item) => (
                 <ActiveWorkRow key={item.id} item={item} />
               ))}
             </Stack>
@@ -1442,32 +2343,48 @@ export default function DashboardPage() {
   const { appUser } = useAuthContext();
 
   const [reviewTickets, setReviewTickets] = useState<DashboardTicketItem[]>([]);
-  const [followUpTickets, setFollowUpTickets] = useState<DashboardTicketItem[]>([]);
+  const [followUpTickets, setFollowUpTickets] = useState<DashboardTicketItem[]>(
+    [],
+  );
   const [activeItems, setActiveItems] = useState<ActiveWorkItem[]>([]);
-  const [dashboardProjects, setDashboardProjects] = useState<DashboardProjectDoc[]>([]);
-  const [dashboardProjectTrips, setDashboardProjectTrips] = useState<ProjectTripDocLite[]>([]);
-  const [dashboardMaterialOrders, setDashboardMaterialOrders] = useState<DashboardMaterialOrderDoc[]>([]);
+  const [dashboardProjects, setDashboardProjects] = useState<
+    DashboardProjectDoc[]
+  >([]);
+  const [dashboardProjectTrips, setDashboardProjectTrips] = useState<
+    ProjectTripDocLite[]
+  >([]);
+  const [dashboardMaterialOrders, setDashboardMaterialOrders] = useState<
+    DashboardMaterialOrderDoc[]
+  >([]);
   const [dashboardLoading, setDashboardLoading] = useState(true);
 
   useEffect(() => {
     setDashboardLoading(true);
 
     const unsubFollowUp = onSnapshot(
-      query(collection(db, "serviceTickets"), where("status", "==", "follow_up"), limit(50)),
+      query(
+        collection(db, "serviceTickets"),
+        where("status", "==", "follow_up"),
+        limit(50),
+      ),
       (snap) => {
         const items = snap.docs
           .map((docSnap) => {
             const data = docSnap.data() as any;
             return {
               id: docSnap.id,
-              customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+              customerDisplayName:
+                safeTrim(data.customerDisplayName) || "Customer",
               issueSummary: safeTrim(data.issueSummary) || "Service Ticket",
-              serviceAddressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+              serviceAddressLine1:
+                safeTrim(data.serviceAddressLine1) || undefined,
               serviceCity: safeTrim(data.serviceCity) || undefined,
               serviceState: safeTrim(data.serviceState) || undefined,
               updatedAt: safeTrim(data.updatedAt) || undefined,
-              assignedTechnicianName: safeTrim(data.assignedTechnicianName) || undefined,
-              assignedHelperName: safeTrim(data.assignedHelperName) || undefined,
+              assignedTechnicianName:
+                safeTrim(data.assignedTechnicianName) || undefined,
+              assignedHelperName:
+                safeTrim(data.assignedHelperName) || undefined,
               status: safeTrim(data.status) || undefined,
             } satisfies DashboardTicketItem;
           })
@@ -1478,22 +2395,30 @@ export default function DashboardPage() {
     );
 
     const unsubReview = onSnapshot(
-      query(collection(db, "serviceTickets"), where("billing.status", "==", "ready_to_bill"), limit(50)),
+      query(
+        collection(db, "serviceTickets"),
+        where("billing.status", "==", "ready_to_bill"),
+        limit(50),
+      ),
       (snap) => {
         const items = snap.docs
           .map((docSnap) => {
             const data = docSnap.data() as any;
             return {
               id: docSnap.id,
-              customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+              customerDisplayName:
+                safeTrim(data.customerDisplayName) || "Customer",
               issueSummary: safeTrim(data.issueSummary) || "Service Ticket",
-              serviceAddressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+              serviceAddressLine1:
+                safeTrim(data.serviceAddressLine1) || undefined,
               serviceCity: safeTrim(data.serviceCity) || undefined,
               serviceState: safeTrim(data.serviceState) || undefined,
               updatedAt: safeTrim(data.updatedAt) || undefined,
               readyToBillAt: safeTrim(data.billing?.readyToBillAt) || undefined,
-              assignedTechnicianName: safeTrim(data.assignedTechnicianName) || undefined,
-              assignedHelperName: safeTrim(data.assignedHelperName) || undefined,
+              assignedTechnicianName:
+                safeTrim(data.assignedTechnicianName) || undefined,
+              assignedHelperName:
+                safeTrim(data.assignedHelperName) || undefined,
               status: safeTrim(data.status) || undefined,
             } satisfies DashboardTicketItem;
           })
@@ -1512,7 +2437,8 @@ export default function DashboardPage() {
           return {
             id: docSnap.id,
             materialOrderCode: safeTrim(data.materialOrderCode) || undefined,
-            customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+            customerDisplayName:
+              safeTrim(data.customerDisplayName) || "Customer",
             contactName: safeTrim(data.contactName) || undefined,
             contactPhone: safeTrim(data.contactPhone) || undefined,
             requestSummary: safeTrim(data.requestSummary) || "Material Order",
@@ -1521,10 +2447,20 @@ export default function DashboardPage() {
             pickup: data.pickup ?? null,
             billing: data.billing ?? null,
             poNumbers: Array.isArray(data.poNumbers) ? data.poNumbers : [],
-            purchaseOrders: Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [],
-            supplierInvoices: Array.isArray(data.supplierInvoices) ? data.supplierInvoices : [],
-            supplierCostTotal: typeof data.supplierCostTotal === "number" ? data.supplierCostTotal : null,
-            customerPriceTotal: typeof data.customerPriceTotal === "number" ? data.customerPriceTotal : null,
+            purchaseOrders: Array.isArray(data.purchaseOrders)
+              ? data.purchaseOrders
+              : [],
+            supplierInvoices: Array.isArray(data.supplierInvoices)
+              ? data.supplierInvoices
+              : [],
+            supplierCostTotal:
+              typeof data.supplierCostTotal === "number"
+                ? data.supplierCostTotal
+                : null,
+            customerPriceTotal:
+              typeof data.customerPriceTotal === "number"
+                ? data.customerPriceTotal
+                : null,
             createdAt: safeTrim(data.createdAt) || undefined,
             updatedAt: safeTrim(data.updatedAt) || undefined,
           } satisfies DashboardMaterialOrderDoc;
@@ -1544,17 +2480,22 @@ export default function DashboardPage() {
             id: docSnap.id,
             active: typeof data.active === "boolean" ? data.active : true,
             projectName: safeTrim(data.projectName) || "Project",
-            customerDisplayName: safeTrim(data.customerDisplayName) || "Customer",
+            customerDisplayName:
+              safeTrim(data.customerDisplayName) || "Customer",
             projectType: safeTrim(data.projectType) || "other",
-            serviceAddressLine1: safeTrim(data.serviceAddressLine1) || undefined,
+            serviceAddressLine1:
+              safeTrim(data.serviceAddressLine1) || undefined,
             serviceCity: safeTrim(data.serviceCity) || undefined,
             serviceState: safeTrim(data.serviceState) || undefined,
             servicePostalCode: safeTrim(data.servicePostalCode) || undefined,
-            projectOfficeStatus: safeTrim(data.projectOfficeStatus) || undefined,
+            projectOfficeStatus:
+              safeTrim(data.projectOfficeStatus) || undefined,
             fieldCompletedAt: safeTrim(data.fieldCompletedAt) || undefined,
             readyToInvoiceAt: safeTrim(data.readyToInvoiceAt) || undefined,
-            readyToInvoiceByName: safeTrim(data.readyToInvoiceByName) || undefined,
-            currentBillingPeriodId: safeTrim(data.currentBillingPeriodId) || undefined,
+            readyToInvoiceByName:
+              safeTrim(data.readyToInvoiceByName) || undefined,
+            currentBillingPeriodId:
+              safeTrim(data.currentBillingPeriodId) || undefined,
             billingPeriods: coerceBillingPeriods(data.billingPeriods),
             invoiceNumber: safeTrim(data.invoiceNumber) || undefined,
           } satisfies DashboardProjectDoc;
@@ -1565,7 +2506,11 @@ export default function DashboardPage() {
     );
 
     const unsubProjectTrips = onSnapshot(
-      query(collection(db, "trips"), where("type", "==", "project"), limit(1000)),
+      query(
+        collection(db, "trips"),
+        where("type", "==", "project"),
+        limit(1000),
+      ),
       (snap) => {
         const items = snap.docs.map((docSnap) => {
           const data = docSnap.data() as any;
@@ -1583,19 +2528,31 @@ export default function DashboardPage() {
             crew: data.crew ?? null,
             crewConfirmed: data.crewConfirmed ?? null,
             link: data.link ?? null,
-            completedAt: safeTrim(data.completedAt) || safeTrim(data.actualEndAt) || undefined,
-            startedAt: safeTrim(data.startedAt) || safeTrim(data.actualStartAt) || undefined,
+            completedAt:
+              safeTrim(data.completedAt) ||
+              safeTrim(data.actualEndAt) ||
+              undefined,
+            startedAt:
+              safeTrim(data.startedAt) ||
+              safeTrim(data.actualStartAt) ||
+              undefined,
             actualStartAt: safeTrim(data.actualStartAt) || undefined,
             actualEndAt: safeTrim(data.actualEndAt) || undefined,
-            pauseBlocks: Array.isArray(data.pauseBlocks) ? data.pauseBlocks : null,
+            pauseBlocks: Array.isArray(data.pauseBlocks)
+              ? data.pauseBlocks
+              : null,
             notes: safeTrim(data.notes) || undefined,
             materialsSummary: safeTrim(data.materialsSummary) || undefined,
             materialsUsedToday: safeTrim(data.materialsUsedToday) || undefined,
             closeout: data.closeout ?? null,
             billingPeriodId: safeTrim(data.billingPeriodId) || undefined,
-            billingPeriodSequence: typeof data.billingPeriodSequence === "number" ? data.billingPeriodSequence : undefined,
+            billingPeriodSequence:
+              typeof data.billingPeriodSequence === "number"
+                ? data.billingPeriodSequence
+                : undefined,
             billingPeriodLabel: safeTrim(data.billingPeriodLabel) || undefined,
-            billingPeriodStatus: safeTrim(data.billingPeriodStatus) || undefined,
+            billingPeriodStatus:
+              safeTrim(data.billingPeriodStatus) || undefined,
             readyToBillAt: safeTrim(data.readyToBillAt) || undefined,
           } satisfies ProjectTripDocLite;
         });
@@ -1614,15 +2571,24 @@ export default function DashboardPage() {
 
         const items = await Promise.all(
           visibleTrips.map(async (trip) => {
-            const type = safeTrim(trip.type).toLowerCase() === "project" ? "project" : "service";
-            const crew = ((trip.crewConfirmed || trip.crew) || {}) as TripCrew;
-            const serviceTicketId = safeTrim(trip.link?.serviceTicketId || trip.serviceTicketId);
+            const type =
+              safeTrim(trip.type).toLowerCase() === "project"
+                ? "project"
+                : "service";
+            const crew = (trip.crewConfirmed || trip.crew || {}) as TripCrew;
+            const serviceTicketId = safeTrim(
+              trip.link?.serviceTicketId || trip.serviceTicketId,
+            );
             const projectId = safeTrim(trip.link?.projectId || trip.projectId);
 
             if (type === "service" && serviceTicketId) {
               try {
-                const serviceTicketSnap = await getDoc(doc(db, "serviceTickets", serviceTicketId));
-                const data = serviceTicketSnap.exists() ? (serviceTicketSnap.data() as any) : {};
+                const serviceTicketSnap = await getDoc(
+                  doc(db, "serviceTickets", serviceTicketId),
+                );
+                const data = serviceTicketSnap.exists()
+                  ? (serviceTicketSnap.data() as any)
+                  : {};
 
                 return {
                   id: `service_${trip.id}`,
@@ -1634,13 +2600,27 @@ export default function DashboardPage() {
                   addressLine1: safeTrim(data.serviceAddressLine1) || undefined,
                   city: safeTrim(data.serviceCity) || undefined,
                   state: safeTrim(data.serviceState) || undefined,
-                  updatedAt: safeTrim(trip.updatedAt || trip.actualStartAt || trip.startedAt || data.updatedAt) || undefined,
+                  updatedAt:
+                    safeTrim(
+                      trip.updatedAt ||
+                        trip.actualStartAt ||
+                        trip.startedAt ||
+                        data.updatedAt,
+                    ) || undefined,
                   status: safeTrim(trip.status) || undefined,
                   timerState: safeTrim(trip.timerState) || undefined,
-                  assignedTechnicianName: safeTrim(crew.primaryTechName) || safeTrim(data.assignedTechnicianName) || undefined,
-                  assignedHelperName: safeTrim(crew.helperName) || safeTrim(data.assignedHelperName) || undefined,
-                  secondaryTechnicianName: safeTrim(crew.secondaryTechName) || undefined,
-                  secondaryHelperName: safeTrim(crew.secondaryHelperName) || undefined,
+                  assignedTechnicianName:
+                    safeTrim(crew.primaryTechName) ||
+                    safeTrim(data.assignedTechnicianName) ||
+                    undefined,
+                  assignedHelperName:
+                    safeTrim(crew.helperName) ||
+                    safeTrim(data.assignedHelperName) ||
+                    undefined,
+                  secondaryTechnicianName:
+                    safeTrim(crew.secondaryTechName) || undefined,
+                  secondaryHelperName:
+                    safeTrim(crew.secondaryHelperName) || undefined,
                 } satisfies ActiveWorkItem;
               } catch {
                 return null;
@@ -1649,10 +2629,16 @@ export default function DashboardPage() {
 
             if (type === "project" && projectId) {
               try {
-                const projectSnap = await getDoc(doc(db, "projects", projectId));
-                const data = projectSnap.exists() ? (projectSnap.data() as any) : {};
-                const projectName = safeTrim(data.projectName) || "Project Trip";
-                const customerDisplayName = safeTrim(data.customerDisplayName) || "Project";
+                const projectSnap = await getDoc(
+                  doc(db, "projects", projectId),
+                );
+                const data = projectSnap.exists()
+                  ? (projectSnap.data() as any)
+                  : {};
+                const projectName =
+                  safeTrim(data.projectName) || "Project Trip";
+                const customerDisplayName =
+                  safeTrim(data.customerDisplayName) || "Project";
 
                 return {
                   id: `project_${trip.id}`,
@@ -1664,13 +2650,22 @@ export default function DashboardPage() {
                   addressLine1: safeTrim(data.serviceAddressLine1) || undefined,
                   city: safeTrim(data.serviceCity) || undefined,
                   state: safeTrim(data.serviceState) || undefined,
-                  updatedAt: safeTrim(trip.updatedAt || trip.actualStartAt || trip.startedAt || data.updatedAt) || undefined,
+                  updatedAt:
+                    safeTrim(
+                      trip.updatedAt ||
+                        trip.actualStartAt ||
+                        trip.startedAt ||
+                        data.updatedAt,
+                    ) || undefined,
                   status: safeTrim(trip.status) || undefined,
                   timerState: safeTrim(trip.timerState) || undefined,
-                  assignedTechnicianName: safeTrim(crew.primaryTechName) || undefined,
+                  assignedTechnicianName:
+                    safeTrim(crew.primaryTechName) || undefined,
                   assignedHelperName: safeTrim(crew.helperName) || undefined,
-                  secondaryTechnicianName: safeTrim(crew.secondaryTechName) || undefined,
-                  secondaryHelperName: safeTrim(crew.secondaryHelperName) || undefined,
+                  secondaryTechnicianName:
+                    safeTrim(crew.secondaryTechName) || undefined,
+                  secondaryHelperName:
+                    safeTrim(crew.secondaryHelperName) || undefined,
                 } satisfies ActiveWorkItem;
               } catch {
                 return null;
@@ -1681,7 +2676,9 @@ export default function DashboardPage() {
           }),
         );
 
-        setActiveItems((items.filter(Boolean) as ActiveWorkItem[]).sort(statusSort));
+        setActiveItems(
+          (items.filter(Boolean) as ActiveWorkItem[]).sort(statusSort),
+        );
         setDashboardLoading(false);
       },
       () => {
@@ -1715,7 +2712,8 @@ export default function DashboardPage() {
     [dashboardMaterialOrders],
   );
 
-  const projectAttentionCount = projectFollowUps.length + readyInvoiceProjects.length;
+  const projectAttentionCount =
+    projectFollowUps.length + readyInvoiceProjects.length;
 
   const attentionCount = useMemo(() => {
     return new Set([
@@ -1725,7 +2723,13 @@ export default function DashboardPage() {
       ...readyInvoiceProjects.map((x) => `project_bill_${x.projectId}`),
       ...pendingMaterialOrders.map((x) => `material_pending_${x.id}`),
     ]).size;
-  }, [followUpTickets, reviewTickets, projectFollowUps, readyInvoiceProjects, pendingMaterialOrders]);
+  }, [
+    followUpTickets,
+    reviewTickets,
+    projectFollowUps,
+    readyInvoiceProjects,
+    pendingMaterialOrders,
+  ]);
 
   const visibleCardCount = useMemo(() => {
     return (
@@ -1748,7 +2752,13 @@ export default function DashboardPage() {
   return (
     <ProtectedPage
       fallbackTitle="Dashboard"
-      allowedRoles={["admin", "dispatcher", "manager", "billing", "office_display"]}
+      allowedRoles={[
+        "admin",
+        "dispatcher",
+        "manager",
+        "billing",
+        "office_display",
+      ]}
     >
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
@@ -1761,7 +2771,12 @@ export default function DashboardPage() {
                 backgroundColor: "background.paper",
               }}
             >
-              <CardContent sx={{ p: { xs: 2.25, md: 3 }, "&:last-child": { pb: { xs: 2.25, md: 3 } } }}>
+              <CardContent
+                sx={{
+                  p: { xs: 2.25, md: 3 },
+                  "&:last-child": { pb: { xs: 2.25, md: 3 } },
+                }}
+              >
                 <Stack
                   direction={{ xs: "column", md: "row" }}
                   spacing={2}
@@ -1769,7 +2784,13 @@ export default function DashboardPage() {
                   justifyContent="space-between"
                 >
                   <Stack spacing={1.25}>
-                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      flexWrap="wrap"
+                      useFlexGap
+                    >
                       <Chip
                         icon={<DashboardRoundedIcon sx={{ fontSize: 16 }} />}
                         label="Dashboard"
@@ -1777,7 +2798,10 @@ export default function DashboardPage() {
                         sx={{
                           borderRadius: 999,
                           fontWeight: 700,
-                          backgroundColor: alpha(theme.palette.primary.main, 0.14),
+                          backgroundColor: alpha(
+                            theme.palette.primary.main,
+                            0.14,
+                          ),
                           border: `1px solid ${alpha(theme.palette.primary.main, 0.24)}`,
                           color: theme.palette.primary.main,
                         }}
@@ -1803,15 +2827,25 @@ export default function DashboardPage() {
                         label={`${projectAttentionCount} project queue${projectAttentionCount === 1 ? "" : "s"}`}
                         size="small"
                         color={projectAttentionCount > 0 ? "info" : "default"}
-                        variant={projectAttentionCount > 0 ? "filled" : "outlined"}
+                        variant={
+                          projectAttentionCount > 0 ? "filled" : "outlined"
+                        }
                         sx={{ borderRadius: 999, fontWeight: 800 }}
                       />
 
                       <Chip
                         label={`${pendingMaterialOrders.length} material order${pendingMaterialOrders.length === 1 ? "" : "s"}`}
                         size="small"
-                        color={pendingMaterialOrders.length > 0 ? "success" : "default"}
-                        variant={pendingMaterialOrders.length > 0 ? "filled" : "outlined"}
+                        color={
+                          pendingMaterialOrders.length > 0
+                            ? "success"
+                            : "default"
+                        }
+                        variant={
+                          pendingMaterialOrders.length > 0
+                            ? "filled"
+                            : "outlined"
+                        }
                         sx={{ borderRadius: 999, fontWeight: 800 }}
                       />
                     </Stack>
@@ -1829,19 +2863,37 @@ export default function DashboardPage() {
                         Office attention center
                       </Typography>
 
-                      <Typography variant="body1" color="text.secondary" sx={{ mt: 1, maxWidth: 940 }}>
-                        This dashboard keeps office action items front and center while also giving dispatch a compact
-                        view of live field work, project follow-ups, billing-ready projects, pending material orders,
-                        current assignments, and active trip status across service and project work.
+                      <Typography
+                        variant="body1"
+                        color="text.secondary"
+                        sx={{ mt: 1, maxWidth: 940 }}
+                      >
+                        This dashboard keeps office action items front and
+                        center while also giving dispatch a compact view of live
+                        field work, project follow-ups, billing-ready projects,
+                        pending material orders, current assignments, and active
+                        trip status across service and project work.
                       </Typography>
                     </Box>
                   </Stack>
 
                   <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                    <Button component={Link} href="/service-tickets" variant="outlined" endIcon={<ArrowForwardRoundedIcon />} sx={{ borderRadius: 999 }}>
+                    <Button
+                      component={Link}
+                      href="/service-tickets"
+                      variant="outlined"
+                      endIcon={<ArrowForwardRoundedIcon />}
+                      sx={{ borderRadius: 999 }}
+                    >
                       Open Service Tickets
                     </Button>
-                    <Button component={Link} href="/material-orders" variant="outlined" endIcon={<ArrowForwardRoundedIcon />} sx={{ borderRadius: 999 }}>
+                    <Button
+                      component={Link}
+                      href="/material-orders"
+                      variant="outlined"
+                      endIcon={<ArrowForwardRoundedIcon />}
+                      sx={{ borderRadius: 999 }}
+                    >
                       Open Material Orders
                     </Button>
                   </Stack>
@@ -1850,14 +2902,26 @@ export default function DashboardPage() {
             </Card>
 
             {dashboardLoading ? (
-              <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }} icon={<CircularProgress size={18} />}>
+              <Alert
+                severity="info"
+                variant="outlined"
+                sx={{ borderRadius: 3 }}
+                icon={<CircularProgress size={18} />}
+              >
                 Loading dashboard queues...
               </Alert>
             ) : null}
 
-            {attentionCount === 0 && activeItems.length === 0 && !dashboardLoading ? (
-              <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
-                Nice — there are no current office attention items or active field jobs showing right now.
+            {attentionCount === 0 &&
+            activeItems.length === 0 &&
+            !dashboardLoading ? (
+              <Alert
+                severity="success"
+                variant="outlined"
+                sx={{ borderRadius: 3 }}
+              >
+                Nice — there are no current office attention items or active
+                field jobs showing right now.
               </Alert>
             ) : null}
 
@@ -1869,7 +2933,10 @@ export default function DashboardPage() {
               sx={{
                 display: "grid",
                 gap: 2,
-                gridTemplateColumns: { xs: "1fr", xl: "minmax(0, 1.35fr) minmax(360px, 0.95fr)" },
+                gridTemplateColumns: {
+                  xs: "1fr",
+                  xl: "minmax(0, 1.35fr) minmax(360px, 0.95fr)",
+                },
                 alignItems: "start",
               }}
             >
@@ -1882,7 +2949,14 @@ export default function DashboardPage() {
                     count={reviewTickets.length}
                     accent="primary"
                   >
-                    <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                    <Stack
+                      divider={
+                        <Divider
+                          flexItem
+                          sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                        />
+                      }
+                    >
                       {reviewTickets.map((item) => (
                         <TicketRow key={item.id} item={item} mode="review" />
                       ))}
@@ -1898,7 +2972,14 @@ export default function DashboardPage() {
                     count={pendingMaterialOrders.length}
                     accent="success"
                   >
-                    <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                    <Stack
+                      divider={
+                        <Divider
+                          flexItem
+                          sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                        />
+                      }
+                    >
                       {pendingMaterialOrders.map((item) => (
                         <PendingMaterialOrderRow key={item.id} item={item} />
                       ))}
@@ -1914,7 +2995,14 @@ export default function DashboardPage() {
                     count={followUpTickets.length}
                     accent="warning"
                   >
-                    <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                    <Stack
+                      divider={
+                        <Divider
+                          flexItem
+                          sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                        />
+                      }
+                    >
                       {followUpTickets.map((item) => (
                         <TicketRow key={item.id} item={item} mode="follow_up" />
                       ))}
@@ -1922,7 +3010,9 @@ export default function DashboardPage() {
                   </SectionCard>
                 ) : null}
 
-                {reviewTickets.length === 0 && followUpTickets.length === 0 && pendingMaterialOrders.length === 0 ? (
+                {reviewTickets.length === 0 &&
+                followUpTickets.length === 0 &&
+                pendingMaterialOrders.length === 0 ? (
                   <Card
                     elevation={0}
                     sx={{
@@ -1937,10 +3027,14 @@ export default function DashboardPage() {
                           Billing and service workflow is clear
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
-                          There are no current service tickets or pending material orders in the office review queues.
+                          There are no current service tickets or pending
+                          material orders in the office review queues.
                         </Typography>
 
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                        >
                           <Button
                             component={Link}
                             href="/service-tickets"
@@ -1978,14 +3072,29 @@ export default function DashboardPage() {
                   count={visibleCardCount}
                   accent="neutral"
                 >
-                  <Box sx={{ display: "grid", gap: 1.25, gridTemplateColumns: "1fr 1fr" }}>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 1.25,
+                      gridTemplateColumns: "1fr 1fr",
+                    }}
+                  >
                     {[
                       { label: "Active Now", value: activeItems.length },
                       { label: "Needs Review", value: reviewTickets.length },
                       { label: "Follow-Up", value: followUpTickets.length },
-                      { label: "Project Follow-Ups", value: projectFollowUps.length },
-                      { label: "Ready To Invoice", value: readyInvoiceProjects.length },
-                      { label: "Pending Materials", value: pendingMaterialOrders.length },
+                      {
+                        label: "Project Follow-Ups",
+                        value: projectFollowUps.length,
+                      },
+                      {
+                        label: "Ready To Invoice",
+                        value: readyInvoiceProjects.length,
+                      },
+                      {
+                        label: "Pending Materials",
+                        value: pendingMaterialOrders.length,
+                      },
                       { label: "Attention Total", value: attentionCount },
                     ].map((item) => (
                       <Box
@@ -1993,15 +3102,29 @@ export default function DashboardPage() {
                         sx={{
                           borderRadius: 1.2,
                           border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-                          backgroundColor: alpha(theme.palette.common.white, 0.02),
+                          backgroundColor: alpha(
+                            theme.palette.common.white,
+                            0.02,
+                          ),
                           px: 1.5,
                           py: 1.5,
                         }}
                       >
-                        <Typography variant="h5" sx={{ fontWeight: 800, lineHeight: 1, letterSpacing: "-0.03em" }}>
+                        <Typography
+                          variant="h5"
+                          sx={{
+                            fontWeight: 800,
+                            lineHeight: 1,
+                            letterSpacing: "-0.03em",
+                          }}
+                        >
                           {item.value}
                         </Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ mt: 0.5 }}
+                        >
                           {item.label}
                         </Typography>
                       </Box>
@@ -2019,7 +3142,13 @@ export default function DashboardPage() {
                 count={projectAttentionCount}
                 accent="warning"
               >
-                <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" } }}>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                    gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" },
+                  }}
+                >
                   <Card
                     elevation={0}
                     sx={{
@@ -2030,35 +3159,70 @@ export default function DashboardPage() {
                   >
                     <CardContent sx={{ p: 2 }}>
                       <Stack spacing={1.5}>
-                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                          <Stack direction="row" spacing={1} alignItems="center">
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            alignItems="center"
+                          >
                             <AutorenewRoundedIcon color="warning" />
                             <Box>
                               <Typography variant="subtitle1" fontWeight={800}>
                                 Project Follow-Ups
                               </Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                “Needs another day” signals from completed project trip closeouts.
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                “Needs another day” signals from completed
+                                project trip closeouts.
                               </Typography>
                             </Box>
                           </Stack>
                           <Chip
                             size="small"
                             label={projectFollowUps.length}
-                            color={projectFollowUps.length > 0 ? "warning" : "default"}
-                            variant={projectFollowUps.length > 0 ? "filled" : "outlined"}
+                            color={
+                              projectFollowUps.length > 0
+                                ? "warning"
+                                : "default"
+                            }
+                            variant={
+                              projectFollowUps.length > 0
+                                ? "filled"
+                                : "outlined"
+                            }
                             sx={{ fontWeight: 800 }}
                           />
                         </Stack>
 
                         {projectFollowUps.length === 0 ? (
-                          <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
+                          <Alert
+                            severity="success"
+                            variant="outlined"
+                            sx={{ borderRadius: 3 }}
+                          >
                             No project follow-ups need attention right now.
                           </Alert>
                         ) : (
-                          <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                          <Stack
+                            divider={
+                              <Divider
+                                flexItem
+                                sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                              />
+                            }
+                          >
                             {projectFollowUps.map((item) => (
-                              <ProjectFollowUpRow key={item.projectId} item={item} />
+                              <ProjectFollowUpRow
+                                key={item.projectId}
+                                item={item}
+                              />
                             ))}
                           </Stack>
                         )}
@@ -2076,35 +3240,70 @@ export default function DashboardPage() {
                   >
                     <CardContent sx={{ p: 2 }}>
                       <Stack spacing={1.5}>
-                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                          <Stack direction="row" spacing={1} alignItems="center">
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            alignItems="center"
+                          >
                             <ReceiptLongRoundedIcon color="success" />
                             <Box>
                               <Typography variant="subtitle1" fontWeight={800}>
                                 Ready to Invoice Projects
                               </Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                Current project billing work that is ready for office invoicing.
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                Current project billing work that is ready for
+                                office invoicing.
                               </Typography>
                             </Box>
                           </Stack>
                           <Chip
                             size="small"
                             label={readyInvoiceProjects.length}
-                            color={readyInvoiceProjects.length > 0 ? "success" : "default"}
-                            variant={readyInvoiceProjects.length > 0 ? "filled" : "outlined"}
+                            color={
+                              readyInvoiceProjects.length > 0
+                                ? "success"
+                                : "default"
+                            }
+                            variant={
+                              readyInvoiceProjects.length > 0
+                                ? "filled"
+                                : "outlined"
+                            }
                             sx={{ fontWeight: 800 }}
                           />
                         </Stack>
 
                         {readyInvoiceProjects.length === 0 ? (
-                          <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
+                          <Alert
+                            severity="success"
+                            variant="outlined"
+                            sx={{ borderRadius: 3 }}
+                          >
                             No projects are waiting to be invoiced right now.
                           </Alert>
                         ) : (
-                          <Stack divider={<Divider flexItem sx={{ borderColor: alpha("#FFFFFF", 0.08) }} />}>
+                          <Stack
+                            divider={
+                              <Divider
+                                flexItem
+                                sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                              />
+                            }
+                          >
                             {readyInvoiceProjects.map((item) => (
-                              <ReadyInvoiceProjectRow key={item.projectId} item={item} />
+                              <ReadyInvoiceProjectRow
+                                key={item.projectId}
+                                item={item}
+                              />
                             ))}
                           </Stack>
                         )}

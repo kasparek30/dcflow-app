@@ -191,6 +191,10 @@ type TripDoc = {
   noMaterialsUsed?: boolean | null;
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
+  createdAt?: string;
+  createdByUid?: string | null;
+  createdByName?: string | null;
+  createdByRole?: string | null;
   updatedAt?: string;
   updatedByUid?: string | null;
 };
@@ -243,6 +247,15 @@ type FollowUpClosure = {
 
 type TicketWithBilling = ServiceTicket & {
   serviceAddressId?: string | null;
+  requestedByUid?: string | null;
+  requestedByName?: string | null;
+  requestedByRole?: string | null;
+  createdByUid?: string | null;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+  updatedByUid?: string | null;
+  updatedByName?: string | null;
+  updatedByRole?: string | null;
   billing?: BillingPacket | null;
   followUpClosure?: FollowUpClosure | null;
 };
@@ -347,15 +360,13 @@ type ServiceTicketActivityEntry = {
   description?: string | null;
   details?: string[];
   createdAt?: string;
+  createdByUid?: string | null;
   createdByName?: string | null;
   createdByRole?: string | null;
 };
 
 type ServiceTicketAttachmentPhase =
-  | "customer_sent"
-  | "before_visit"
-  | "during_visit"
-  | "after_visit";
+  "customer_sent" | "before_visit" | "during_visit" | "after_visit";
 
 type ServiceTicketAttachmentFileType = "image" | "video" | "pdf" | "other";
 
@@ -466,7 +477,8 @@ const FOLLOW_UP_CLOSURE_REASONS = [
 
 function normalizeFollowUpClosure(value: any): FollowUpClosure | null {
   if (!value || typeof value !== "object") return null;
-  if (String(value.status || "").trim() !== "closed_without_return_visit") return null;
+  if (String(value.status || "").trim() !== "closed_without_return_visit")
+    return null;
 
   return {
     status: "closed_without_return_visit",
@@ -505,7 +517,7 @@ function formatActivityDate(value?: string) {
 
 function hhmmLocal(d: Date) {
   return `${String(d.getHours()).padStart(2, "0")}:${String(
-    d.getMinutes()
+    d.getMinutes(),
   ).padStart(2, "0")}`;
 }
 
@@ -520,7 +532,9 @@ function roundToHalf(hours: number) {
 }
 
 function normalizeRole(role?: string) {
-  return String(role || "").trim().toLowerCase();
+  return String(role || "")
+    .trim()
+    .toLowerCase();
 }
 
 function safeStr(x: unknown) {
@@ -536,7 +550,7 @@ function middleTruncate(value: unknown, front = 8, back = 5) {
 
 function getAttachmentFileType(
   contentType?: string | null,
-  fileName?: string | null
+  fileName?: string | null,
 ): ServiceTicketAttachmentFileType {
   const type = String(contentType || "").toLowerCase();
   const name = String(fileName || "").toLowerCase();
@@ -548,7 +562,11 @@ function getAttachmentFileType(
 }
 
 function formatAttachmentPhase(value?: string | null) {
-  switch (String(value || "").trim().toLowerCase()) {
+  switch (
+    String(value || "")
+      .trim()
+      .toLowerCase()
+  ) {
     case "customer_sent":
       return "Customer Sent";
     case "before_visit":
@@ -580,7 +598,10 @@ function sanitizeStorageFileName(fileName: string) {
 }
 
 function createId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
 
@@ -592,7 +613,7 @@ function buildInlineAddress(
   line2?: string | null,
   city?: string | null,
   state?: string | null,
-  postal?: string | null
+  postal?: string | null,
 ) {
   return [line1, line2, city, state, postal]
     .map((x) => safeStr(x))
@@ -602,7 +623,8 @@ function buildInlineAddress(
 
 function stripUndefined<T>(obj: T): T {
   if (obj === null || obj === undefined) return obj;
-  if (Array.isArray(obj)) return obj.map((x) => stripUndefined(x)) as unknown as T;
+  if (Array.isArray(obj))
+    return obj.map((x) => stripUndefined(x)) as unknown as T;
   if (typeof obj === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
@@ -667,7 +689,7 @@ function formatPurchaseOrderStatus(value?: string) {
 }
 
 function getPurchaseOrderTone(
-  value?: string
+  value?: string,
 ): "default" | "success" | "warning" | "error" | "info" {
   const v = String(value || "open").toLowerCase();
   if (v === "matched" || v === "closed") return "success";
@@ -693,12 +715,16 @@ function canGeneratePoForTripDetail(trip?: TripDoc | null) {
   if (!trip) return false;
   if (String(trip.type || "").toLowerCase() !== "service") return false;
 
-  const status = String(trip.status || "").toLowerCase().trim();
-  return status !== "complete" && status !== "completed" && status !== "cancelled";
+  const status = String(trip.status || "")
+    .toLowerCase()
+    .trim();
+  return (
+    status !== "complete" && status !== "completed" && status !== "cancelled"
+  );
 }
 
 function getBillingTone(
-  value?: string
+  value?: string,
 ): "default" | "success" | "warning" | "error" | "info" {
   const v = String(value || "").toLowerCase();
   if (v === "invoiced") return "success";
@@ -734,23 +760,34 @@ function getImportedMaterialChips(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
 
   return items.filter(
-    (material) => material?.imported || material?.source === "supplier_invoice"
+    (material) => material?.imported || material?.source === "supplier_invoice",
   );
 }
 
 function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
-  return items.map((m) => formatSingleMaterialLine(m)).filter(Boolean).join(", ");
+  return items
+    .map((m) => formatSingleMaterialLine(m))
+    .filter(Boolean)
+    .join(", ");
 }
 
 function materialLinesToText(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
-  return items.map((m) => formatSingleMaterialLine(m)).filter(Boolean).join("\n");
+  return items
+    .map((m) => formatSingleMaterialLine(m))
+    .filter(Boolean)
+    .join("\n");
 }
 
-function parseMaterialsText(value?: string, existingMaterials?: TripMaterial[] | null) {
-  const existingImported = (Array.isArray(existingMaterials) ? existingMaterials : []).filter(
-    (material) => material?.imported || material?.source === "supplier_invoice"
+function parseMaterialsText(
+  value?: string,
+  existingMaterials?: TripMaterial[] | null,
+) {
+  const existingImported = (
+    Array.isArray(existingMaterials) ? existingMaterials : []
+  ).filter(
+    (material) => material?.imported || material?.source === "supplier_invoice",
   );
 
   const manualLines = String(value || "")
@@ -759,16 +796,21 @@ function parseMaterialsText(value?: string, existingMaterials?: TripMaterial[] |
     .filter(Boolean);
 
   const importedLineText = new Set(
-    existingImported.map((material) => formatSingleMaterialLine(material).trim())
+    existingImported.map((material) =>
+      formatSingleMaterialLine(material).trim(),
+    ),
   );
 
   const manualMaterials = manualLines
     .filter((line) => !importedLineText.has(line))
-    .map((line) => ({
-      name: line,
-      qty: 1,
-      source: "manual" as const,
-    } satisfies TripMaterial));
+    .map(
+      (line) =>
+        ({
+          name: line,
+          qty: 1,
+          source: "manual" as const,
+        }) satisfies TripMaterial,
+    );
 
   return [...existingImported, ...manualMaterials];
 }
@@ -780,7 +822,9 @@ function getPreviewText(value?: string | null, maxLength = 220) {
   return `${trimmed.slice(0, maxLength).trimEnd()}…`;
 }
 
-function getHelperPayrollSummary(trip: Pick<TripDoc, "crew" | "crewConfirmed">) {
+function getHelperPayrollSummary(
+  trip: Pick<TripDoc, "crew" | "crewConfirmed">,
+) {
   const assignedHelpers = [
     String(trip.crew?.helperName || "").trim(),
     String(trip.crew?.secondaryHelperName || "").trim(),
@@ -814,7 +858,7 @@ function getDefaultBillableHours(actualMinutes: number) {
 }
 
 function getStoredOrComputedBillableHours(
-  trip: Pick<TripDoc, "billableHours" | "actualMinutes">
+  trip: Pick<TripDoc, "billableHours" | "actualMinutes">,
 ) {
   const stored = Number(trip.billableHours);
   if (Number.isFinite(stored) && stored > 0) {
@@ -828,11 +872,14 @@ function buildBillingPacketFromResolvedTrips(args: {
   fallbackUpdatedAt: string;
 }) {
   const completedTrips = args.trips.filter(
-    (trip) => normalizeTripStatus(trip.status) === "complete"
+    (trip) => normalizeTripStatus(trip.status) === "complete",
   );
 
   const resolvedTrips = completedTrips.filter(
-    (trip) => String(trip.outcome || "").trim().toLowerCase() === "resolved"
+    (trip) =>
+      String(trip.outcome || "")
+        .trim()
+        .toLowerCase() === "resolved",
   );
 
   if (completedTrips.length === 0 || resolvedTrips.length === 0) {
@@ -841,7 +888,7 @@ function buildBillingPacketFromResolvedTrips(args: {
 
   const totalHours = completedTrips.reduce(
     (sum, trip) => sum + getStoredOrComputedBillableHours(trip),
-    0
+    0,
   );
 
   const materials = mergeTripMaterials(completedTrips);
@@ -851,16 +898,16 @@ function buildBillingPacketFromResolvedTrips(args: {
     new Set(
       resolvedTrips
         .map((trip) => String(trip.resolutionNotes || "").trim())
-        .filter(Boolean)
-    )
+        .filter(Boolean),
+    ),
   );
 
   const uniqueWorkNotes = Array.from(
     new Set(
       completedTrips
         .map((trip) => String(trip.workNotes || "").trim())
-        .filter(Boolean)
-    )
+        .filter(Boolean),
+    ),
   );
 
   const latestResolvedTrip = [...resolvedTrips].sort((a, b) => {
@@ -908,7 +955,7 @@ function buildBillingPacketFromClosedFollowUp(args: {
   closureNote: string;
 }) {
   const completedTrips = args.trips.filter(
-    (trip) => normalizeTripStatus(trip.status) === "complete"
+    (trip) => normalizeTripStatus(trip.status) === "complete",
   );
 
   const latestCompletedTrip = getLatestCompletedTripForLifecycle(args.trips);
@@ -926,7 +973,7 @@ function buildBillingPacketFromClosedFollowUp(args: {
 
   const totalHours = completedTrips.reduce(
     (sum, trip) => sum + getStoredOrComputedBillableHours(trip),
-    0
+    0,
   );
 
   const materials = mergeTripMaterials(completedTrips);
@@ -936,8 +983,8 @@ function buildBillingPacketFromClosedFollowUp(args: {
     new Set(
       completedTrips
         .map((trip) => String(trip.workNotes || "").trim())
-        .filter(Boolean)
-    )
+        .filter(Boolean),
+    ),
   );
 
   return {
@@ -982,7 +1029,7 @@ function validateTripMaterialsCapture(args: {
         qty: Number(m.qty),
         unit: String(m.unit || "").trim() || undefined,
         notes: String(m.notes || "").trim() || undefined,
-      })
+      }),
     )
     .filter((m) => m.name);
 
@@ -1059,8 +1106,11 @@ function crewMembersFromTrip(trip: {
   crew?: TripCrew | null;
 }) {
   const crew = trip.crewConfirmed || trip.crew || {};
-  const out: Array<{ uid: string; name: string; role: "technician" | "helper" }> =
-    [];
+  const out: Array<{
+    uid: string;
+    name: string;
+    role: "technician" | "helper";
+  }> = [];
 
   if (crew.primaryTechUid) {
     out.push({
@@ -1118,7 +1168,9 @@ function isRunningTripRecord(tripLike: {
 }) {
   if (tripLike.active === false) return false;
   const status = normalizeTripStatus(tripLike.status);
-  const timerState = String(tripLike.timerState || "").trim().toLowerCase();
+  const timerState = String(tripLike.timerState || "")
+    .trim()
+    .toLowerCase();
   return status === "in_progress" && timerState === "running";
 }
 
@@ -1132,10 +1184,10 @@ function getTripSortTime(
     | "endTime"
     | "startTime"
     | "id"
-  >
+  >,
 ) {
   const directTime = Date.parse(
-    String(trip.actualEndAt || trip.readyToBillAt || trip.updatedAt || "")
+    String(trip.actualEndAt || trip.readyToBillAt || trip.updatedAt || ""),
   );
 
   if (Number.isFinite(directTime)) {
@@ -1155,7 +1207,7 @@ function getTripSortTime(
 
 function getLatestCompletedTripForLifecycle(trips: TripDoc[]) {
   const completedTrips = trips.filter(
-    (trip) => normalizeTripStatus(trip.status) === "complete"
+    (trip) => normalizeTripStatus(trip.status) === "complete",
   );
 
   return (
@@ -1167,7 +1219,7 @@ function getLatestCompletedTripForLifecycle(trips: TripDoc[]) {
       if (dateDiff !== 0) return dateDiff;
 
       const startDiff = String(b.startTime || "").localeCompare(
-        String(a.startTime || "")
+        String(a.startTime || ""),
       );
       if (startDiff !== 0) return startDiff;
 
@@ -1181,7 +1233,9 @@ function getLocalManualTicketStatusError(args: {
   currentStatus: TicketStatus;
   trips: TripDoc[];
 }) {
-  const nextStatus = String(args.nextStatus || "").trim().toLowerCase();
+  const nextStatus = String(args.nextStatus || "")
+    .trim()
+    .toLowerCase();
 
   if (nextStatus === "invoiced") {
     return "Use the billing packet to mark this ticket invoiced.";
@@ -1207,7 +1261,7 @@ function getLocalManualTicketStatusError(args: {
 
     const latestOutcome = String(
       latestCompletedTrip.outcome ||
-        (latestCompletedTrip.readyToBillAt ? "resolved" : "")
+        (latestCompletedTrip.readyToBillAt ? "resolved" : ""),
     )
       .trim()
       .toLowerCase();
@@ -1221,10 +1275,15 @@ function getLocalManualTicketStatusError(args: {
 }
 
 function normalizeTripTimerState(trip?: TripDoc | null) {
-  const timer = String(trip?.timerState || "").toLowerCase().trim();
-  const status = String(trip?.status || "").toLowerCase().trim();
+  const timer = String(trip?.timerState || "")
+    .toLowerCase()
+    .trim();
+  const status = String(trip?.status || "")
+    .toLowerCase()
+    .trim();
 
-  if (timer === "running" || timer === "paused" || timer === "complete") return timer;
+  if (timer === "running" || timer === "paused" || timer === "complete")
+    return timer;
   if (status === "in_progress") return "running";
   if (
     status === "complete" ||
@@ -1256,8 +1315,14 @@ function canCurrentUserQuickStartTrip(args: {
   if (!canStartTripRole || !uid) return false;
   if (isTripRunning(trip) || isTripPaused(trip)) return false;
 
-  const status = String(trip.status || "").toLowerCase().trim();
-  if (status === "cancelled" || status === "complete" || status === "completed") {
+  const status = String(trip.status || "")
+    .toLowerCase()
+    .trim();
+  if (
+    status === "cancelled" ||
+    status === "complete" ||
+    status === "completed"
+  ) {
     return false;
   }
 
@@ -1273,19 +1338,22 @@ function crewUidsFromCrew(crew?: TripCrew | null) {
         String(crew?.helperUid || "").trim(),
         String(crew?.secondaryTechUid || "").trim(),
         String(crew?.secondaryHelperUid || "").trim(),
-      ].filter(Boolean)
-    )
+      ].filter(Boolean),
+    ),
   );
 }
 
 function dateFallsWithinPto(date: string, request: PtoRequestLite) {
-  return date >= String(request.startDate || "") && date <= String(request.endDate || "");
+  return (
+    date >= String(request.startDate || "") &&
+    date <= String(request.endDate || "")
+  );
 }
 
 function getApprovedPtoForEmployeeOnDate(
   employeeId: string,
   date: string,
-  requests: PtoRequestLite[]
+  requests: PtoRequestLite[],
 ) {
   const uid = String(employeeId || "").trim();
   const targetDate = String(date || "").trim();
@@ -1296,8 +1364,10 @@ function getApprovedPtoForEmployeeOnDate(
     requests.find(
       (request) =>
         String(request.employeeId || "").trim() === uid &&
-        String(request.status || "").trim().toLowerCase() === "approved" &&
-        dateFallsWithinPto(targetDate, request)
+        String(request.status || "")
+          .trim()
+          .toLowerCase() === "approved" &&
+        dateFallsWithinPto(targetDate, request),
     ) || null
   );
 }
@@ -1327,8 +1397,14 @@ function getCrewPtoStartBlockMessage(args: {
   const members = [
     { uid: crew.primaryTechUid, name: crew.primaryTechName || "Lead Tech" },
     { uid: crew.helperUid, name: crew.helperName || "Helper" },
-    { uid: crew.secondaryTechUid, name: crew.secondaryTechName || "Secondary Tech" },
-    { uid: crew.secondaryHelperUid, name: crew.secondaryHelperName || "Secondary Helper" },
+    {
+      uid: crew.secondaryTechUid,
+      name: crew.secondaryTechName || "Secondary Tech",
+    },
+    {
+      uid: crew.secondaryHelperUid,
+      name: crew.secondaryHelperName || "Secondary Helper",
+    },
   ]
     .map((member) => ({
       uid: String(member.uid || "").trim(),
@@ -1340,13 +1416,13 @@ function getCrewPtoStartBlockMessage(args: {
     const approvedPto = getApprovedPtoForEmployeeOnDate(
       member.uid,
       args.date,
-      args.ptoRequests
+      args.ptoRequests,
     );
 
     if (approvedPto) {
       return `${getPtoUnavailableMessage(
         member.name,
-        approvedPto
+        approvedPto,
       )} Update the crew before starting this trip.`;
     }
   }
@@ -1365,15 +1441,25 @@ function tripHasCrewUidGeneric(trip: any, uid: string) {
 }
 
 function isPlannedTripLikeStatus(status?: string | null) {
-  return String(status || "").trim().toLowerCase() === "planned";
+  return (
+    String(status || "")
+      .trim()
+      .toLowerCase() === "planned"
+  );
 }
 
 function isInProgressTripLikeStatus(status?: string | null) {
-  return String(status || "").trim().toLowerCase() === "in_progress";
+  return (
+    String(status || "")
+      .trim()
+      .toLowerCase() === "in_progress"
+  );
 }
 
 function getTripRangeLite(trip: any) {
-  const timeWindow = String(trip?.timeWindow || "").toLowerCase().trim();
+  const timeWindow = String(trip?.timeWindow || "")
+    .toLowerCase()
+    .trim();
   if (timeWindow === "am") return { start: "08:00", end: "12:00" };
   if (timeWindow === "pm") return { start: "13:00", end: "17:00" };
   if (timeWindow === "all_day") return { start: "08:00", end: "17:00" };
@@ -1383,7 +1469,12 @@ function getTripRangeLite(trip: any) {
   };
 }
 
-function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+function rangesOverlap(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string,
+) {
   if (!aStart || !aEnd || !bStart || !bEnd) return false;
   return aStart < bEnd && bStart < aEnd;
 }
@@ -1411,7 +1502,7 @@ function formatTripDateLabel(value?: string) {
   const tomorrowDate = new Date();
   tomorrowDate.setDate(tomorrowDate.getDate() + 1);
   const tomorrow = `${tomorrowDate.getFullYear()}-${String(
-    tomorrowDate.getMonth() + 1
+    tomorrowDate.getMonth() + 1,
   ).padStart(2, "0")}-${String(tomorrowDate.getDate()).padStart(2, "0")}`;
 
   const displayDate = parsed.toLocaleDateString("en-US", {
@@ -1451,7 +1542,11 @@ function formatTripTimeRange(start?: string, end?: string) {
 }
 
 function formatTimerStateLabel(value?: string | null) {
-  switch (String(value || "").trim().toLowerCase()) {
+  switch (
+    String(value || "")
+      .trim()
+      .toLowerCase()
+  ) {
     case "running":
       return "Running";
     case "paused":
@@ -1503,29 +1598,39 @@ function collectDispatchOverrideConflicts(args: {
       : availabilityWindowToTimes(args.timeWindow);
 
   if (args.holidayNames.length > 0 && !args.holidayOverrideEnabled) {
-    hard.add(`Selected day is a company holiday (${args.holidayNames.join(", ")}).`);
+    hard.add(
+      `Selected day is a company holiday (${args.holidayNames.join(", ")}).`,
+    );
   }
 
   for (const member of args.members) {
     const approvedPto = args.ptoRequests.find(
       (request) =>
         String(request.employeeId || "").trim() === member.uid &&
-        String(request.status || "").trim().toLowerCase() === "approved" &&
-        dateFallsWithinPto(args.date, request)
+        String(request.status || "")
+          .trim()
+          .toLowerCase() === "approved" &&
+        dateFallsWithinPto(args.date, request),
     );
 
     if (approvedPto) {
       hard.add(
-        `${member.name} has approved PTO (${approvedPto.startDate} to ${approvedPto.endDate}).`
+        `${member.name} has approved PTO (${approvedPto.startDate} to ${approvedPto.endDate}).`,
       );
     }
 
     for (const trip of args.dayTrips || []) {
       if (!trip || trip.active === false) continue;
-      if (args.excludeTripId && String((trip as any).id || "") === args.excludeTripId) continue;
+      if (
+        args.excludeTripId &&
+        String((trip as any).id || "") === args.excludeTripId
+      )
+        continue;
       if (!tripHasCrewUidGeneric(trip, member.uid)) continue;
 
-      const status = String((trip as any).status || "").trim().toLowerCase();
+      const status = String((trip as any).status || "")
+        .trim()
+        .toLowerCase();
       if (status !== "planned" && status !== "in_progress") continue;
 
       const tripRange = getTripRangeLite(trip);
@@ -1534,7 +1639,7 @@ function collectDispatchOverrideConflicts(args: {
           selectedRange.start,
           selectedRange.end,
           tripRange.start,
-          tripRange.end
+          tripRange.end,
         )
       ) {
         continue;
@@ -1544,13 +1649,13 @@ function collectDispatchOverrideConflicts(args: {
 
       if (isInProgressTripLikeStatus((trip as any).status)) {
         soft.add(
-          `${member.name} is currently on an in-progress trip (${detail}). Dispatch Override can schedule this as the next planned trip; it will not start until the current trip is completed or paused.`
+          `${member.name} is currently on an in-progress trip (${detail}). Dispatch Override can schedule this as the next planned trip; it will not start until the current trip is completed or paused.`,
         );
         softTripIds.add(String((trip as any).id || ""));
         softConflictTypes.add("in_progress_overlap");
       } else if (isPlannedTripLikeStatus((trip as any).status)) {
         soft.add(
-          `${member.name} already has a scheduled trip (${detail}). Dispatch Override can be used if needed.`
+          `${member.name} already has a scheduled trip (${detail}). Dispatch Override can be used if needed.`,
         );
         softTripIds.add(String((trip as any).id || ""));
         softConflictTypes.add("scheduled_overlap");
@@ -1599,8 +1704,10 @@ function getOptionAvailabilityLabel(args: {
   const approvedPto = args.ptoRequests.find(
     (request) =>
       String(request.employeeId || "").trim() === args.uid &&
-      String(request.status || "").trim().toLowerCase() === "approved" &&
-      dateFallsWithinPto(args.date, request)
+      String(request.status || "")
+        .trim()
+        .toLowerCase() === "approved" &&
+      dateFallsWithinPto(args.date, request),
   );
 
   if (approvedPto) {
@@ -1612,10 +1719,16 @@ function getOptionAvailabilityLabel(args: {
 
   for (const trip of args.dayTrips || []) {
     if (!trip || trip.active === false) continue;
-    if (args.excludeTripId && String((trip as any).id || "") === args.excludeTripId) continue;
+    if (
+      args.excludeTripId &&
+      String((trip as any).id || "") === args.excludeTripId
+    )
+      continue;
     if (!tripHasCrewUidGeneric(trip, args.uid)) continue;
 
-    const status = String((trip as any).status || "").trim().toLowerCase();
+    const status = String((trip as any).status || "")
+      .trim()
+      .toLowerCase();
     if (status !== "planned" && status !== "in_progress") continue;
 
     const tripRange = getTripRangeLite(trip);
@@ -1624,7 +1737,7 @@ function getOptionAvailabilityLabel(args: {
         selectedRange.start,
         selectedRange.end,
         tripRange.start,
-        tripRange.end
+        tripRange.end,
       )
     ) {
       continue;
@@ -1651,13 +1764,19 @@ function getOptionAvailabilityLabel(args: {
 
 async function findOpenTripsForTicketId(
   serviceTicketId: string,
-  excludeTripId?: string
+  excludeTripId?: string,
 ) {
   if (!serviceTicketId) return [];
 
   const queriesToRun = [
-    query(collection(db, "trips"), where("link.serviceTicketId", "==", serviceTicketId)),
-    query(collection(db, "trips"), where("serviceTicketId", "==", serviceTicketId)),
+    query(
+      collection(db, "trips"),
+      where("link.serviceTicketId", "==", serviceTicketId),
+    ),
+    query(
+      collection(db, "trips"),
+      where("serviceTicketId", "==", serviceTicketId),
+    ),
   ];
 
   const snaps = await Promise.all(
@@ -1667,7 +1786,7 @@ async function findOpenTripsForTicketId(
       } catch {
         return null;
       }
-    })
+    }),
   );
 
   const byId = new Map<
@@ -1729,8 +1848,8 @@ async function findRunningTripsForCrewUids(args: {
     for (const fieldPath of fieldPaths) {
       queryPromises.push(
         getDocs(
-          query(collection(db, "trips"), where(fieldPath as any, "==", uid))
-        ).catch(() => null)
+          query(collection(db, "trips"), where(fieldPath as any, "==", uid)),
+        ).catch(() => null),
       );
     }
   }
@@ -1776,7 +1895,7 @@ async function findRunningTripsForCrewUids(args: {
         timerState: String(data.timerState || ""),
         primaryName,
         summary: `${String(data.date || "No date")} • ${String(
-          data.startTime || "—"
+          data.startTime || "—",
         )}-${String(data.endTime || "—")} • ${primaryName} • Trip ${docSnap.id}`,
       });
     }
@@ -1798,7 +1917,10 @@ async function upsertWeeklyTimesheetHeader(args: {
   createdByUid: string | null;
 }) {
   const now = nowIso();
-  const timesheetId = buildWeeklyTimesheetId(args.employeeId, args.weekStartDate);
+  const timesheetId = buildWeeklyTimesheetId(
+    args.employeeId,
+    args.weekStartDate,
+  );
 
   await setDoc(
     doc(db, "weeklyTimesheets", timesheetId),
@@ -1814,7 +1936,7 @@ async function upsertWeeklyTimesheetHeader(args: {
       updatedAt: now,
       updatedByUid: args.createdByUid || null,
     }),
-    { merge: true }
+    { merge: true },
   );
 
   return timesheetId;
@@ -1863,7 +1985,8 @@ async function upsertTimeEntryFromTrip(args: {
       weekStartDate: args.weekStartDate,
       weekEndDate: args.weekEndDate,
       timesheetId: args.timesheetId,
-      category: args.trip.type === "project" ? "project_stage" : "service_ticket",
+      category:
+        args.trip.type === "project" ? "project_stage" : "service_ticket",
       payType: "regular",
       billable: true,
       source: "trip_completion",
@@ -1879,19 +2002,19 @@ async function upsertTimeEntryFromTrip(args: {
       outcome: args.outcomeLabel.toLowerCase().replaceAll(" ", "_"),
       entryStatus: "draft",
       notes: noteLines.join("\n"),
-      createdAt: existingSnap.exists() ? existing?.createdAt ?? now : now,
+      createdAt: existingSnap.exists() ? (existing?.createdAt ?? now) : now,
       createdByUid: existingSnap.exists()
-        ? existing?.createdByUid ?? null
+        ? (existing?.createdByUid ?? null)
         : args.createdByUid || null,
       updatedAt: now,
       updatedByUid: args.createdByUid || null,
     }),
-    { merge: true }
+    { merge: true },
   );
 }
 
 function getTicketTone(
-  status?: string
+  status?: string,
 ): "default" | "success" | "warning" | "error" | "info" {
   const s = String(status || "").toLowerCase();
   if (s === "invoiced") return "success";
@@ -1903,7 +2026,7 @@ function getTicketTone(
 }
 
 function getTripTone(
-  status?: string
+  status?: string,
 ): "default" | "success" | "warning" | "error" | "info" {
   const s = normalizeTripStatus(status);
   if (s === "complete") return "success";
@@ -1911,6 +2034,90 @@ function getTripTone(
   if (s === "planned") return "warning";
   if (s === "cancelled") return "error";
   return "default";
+}
+
+function getActivityCategory(type?: string) {
+  const value = String(type || "").toLowerCase();
+
+  if (value.includes("trip")) return "trip";
+  if (value.includes("billing") || value.includes("invoice")) return "billing";
+  if (value.includes("purchase_order") || value.includes("po_")) return "po";
+  if (value.includes("attachment")) return "attachment";
+  if (value.includes("location") || value.includes("address"))
+    return "location";
+  return "ticket";
+}
+
+function getActivityTone(type?: string) {
+  const value = String(type || "").toLowerCase();
+
+  if (value.includes("completed") || value.includes("resolved"))
+    return "success";
+  if (value.includes("cancelled") || value.includes("deleted")) return "error";
+  if (value.includes("paused") || value.includes("follow_up")) return "warning";
+  if (value.includes("billing") || value.includes("invoice")) return "info";
+  return "primary";
+}
+
+function getActivityIcon(type?: string) {
+  const value = String(type || "").toLowerCase();
+
+  if (value.includes("purchase_order") || value.includes("po_")) {
+    return <ReceiptLongRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("billing") || value.includes("invoice")) {
+    return <ReceiptLongRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("attachment")) {
+    return <AttachFileRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("scheduled") || value.includes("rescheduled")) {
+    return <ScheduleRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("started") || value.includes("resumed")) {
+    return <PlayArrowRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("paused")) {
+    return <PauseRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("completed") || value.includes("resolved")) {
+    return <CheckRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("cancelled") || value.includes("deleted")) {
+    return <CloseRoundedIcon fontSize="inherit" />;
+  }
+
+  if (value.includes("location") || value.includes("address")) {
+    return <AddHomeRoundedIcon fontSize="inherit" />;
+  }
+
+  return <NoteAltOutlinedIcon fontSize="inherit" />;
+}
+
+function getActivityFilterLabel(value: string) {
+  switch (value) {
+    case "ticket":
+      return "Ticket";
+    case "trip":
+      return "Trips";
+    case "attachment":
+      return "Attachments";
+    case "po":
+      return "POs";
+    case "billing":
+      return "Billing";
+    case "location":
+      return "Location";
+    default:
+      return "All Activity";
+  }
 }
 
 function Section(props: {
@@ -2007,7 +2214,78 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const myUid = appUser?.uid || "";
 
-  const [mobileFinishTripId, setMobileFinishTripId] = useState<string | null>(null);
+  function getCurrentAuditName() {
+    return String(appUser?.displayName || "").trim() || null;
+  }
+
+  function getTicketAuditFields(at: string) {
+    return {
+      updatedAt: at,
+      updatedByUid: myUid || null,
+      updatedByName: getCurrentAuditName(),
+      updatedByRole: appUser?.role || null,
+    };
+  }
+
+  function buildActivityEntry(args: {
+    type: string;
+    title: string;
+    description?: string | null;
+    details?: string[];
+    createdAt?: string;
+  }) {
+    const createdAt = args.createdAt || nowIso();
+
+    return {
+      id: createId(),
+      type: args.type,
+      title: args.title,
+      description: args.description || null,
+      details: (args.details || [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+      createdAt,
+      createdByUid: myUid || null,
+      createdByName: getCurrentAuditName() || "System",
+      createdByRole: appUser?.role || null,
+    } satisfies ServiceTicketActivityEntry;
+  }
+
+  async function logServiceTicketActivity(args: {
+    type: string;
+    title: string;
+    description?: string | null;
+    details?: string[];
+    createdAt?: string;
+  }) {
+    if (!ticket?.id) return;
+
+    const entry = buildActivityEntry(args);
+    const activityRef = doc(
+      collection(db, "serviceTickets", ticket.id, "activity"),
+    );
+    entry.id = activityRef.id;
+
+    await setDoc(
+      activityRef,
+      stripUndefined({
+        type: entry.type,
+        title: entry.title,
+        description: entry.description,
+        details: entry.details,
+        createdAt: entry.createdAt,
+        createdByUid: entry.createdByUid,
+        createdByName: entry.createdByName,
+        createdByRole: entry.createdByRole,
+      }),
+    );
+
+    setActivityEntries((prev) => [entry, ...prev]);
+  }
+
+  const [mobileFinishTripId, setMobileFinishTripId] = useState<string | null>(
+    null,
+  );
   const [mobileFinishMode, setMobileFinishMode] = useState<FinishMode>("none");
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
 
@@ -2015,7 +2293,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
-  const [activityEntries, setActivityEntries] = useState<ServiceTicketActivityEntry[]>([]);
+  const [activityEntries, setActivityEntries] = useState<
+    ServiceTicketActivityEntry[]
+  >([]);
+  const [activityFilter, setActivityFilter] = useState("all");
+  const [userNameByUid, setUserNameByUid] = useState<Record<string, string>>(
+    {},
+  );
   const [attachments, setAttachments] = useState<ServiceTicketAttachment[]>([]);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [attachmentErr, setAttachmentErr] = useState("");
@@ -2028,11 +2312,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const attachmentCameraInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentMediaInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentFileInputRef = useRef<HTMLInputElement | null>(null);
-  const [separateRequestChoiceByTrip, setSeparateRequestChoiceByTrip] = useState<
-    Record<string, SeparateServiceRequestChoice>
-  >({});
-  const [separateRequestDescriptionByTrip, setSeparateRequestDescriptionByTrip] =
-    useState<Record<string, string>>({});
+  const [separateRequestChoiceByTrip, setSeparateRequestChoiceByTrip] =
+    useState<Record<string, SeparateServiceRequestChoice>>({});
+  const [
+    separateRequestDescriptionByTrip,
+    setSeparateRequestDescriptionByTrip,
+  ] = useState<Record<string, string>>({});
   const [mobileCompletionResult, setMobileCompletionResult] =
     useState<MobileCompletionResult | null>(null);
 
@@ -2042,9 +2327,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [customerEmail, setCustomerEmail] = useState("");
 
   const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
-  const [employeeProfiles, setEmployeeProfiles] = useState<EmployeeProfileOption[]>([]);
+  const [employeeProfiles, setEmployeeProfiles] = useState<
+    EmployeeProfileOption[]
+  >([]);
   const [ptoRequests, setPtoRequests] = useState<PtoRequestLite[]>([]);
-  const [companyHolidays, setCompanyHolidays] = useState<CompanyHolidayLite[]>([]);
+  const [companyHolidays, setCompanyHolidays] = useState<CompanyHolidayLite[]>(
+    [],
+  );
   const [availabilityTripsByDate, setAvailabilityTripsByDate] = useState<
     Record<string, TripDocLite[]>
   >({});
@@ -2064,32 +2353,36 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [poGenerating, setPoGenerating] = useState(false);
   const [poError, setPoError] = useState("");
   const [poOk, setPoOk] = useState("");
-  const [tripActionSaving, setTripActionSaving] = useState<Record<string, boolean>>(
-    {}
+  const [tripActionSaving, setTripActionSaving] = useState<
+    Record<string, boolean>
+  >({});
+  const [tripActionError, setTripActionError] = useState<
+    Record<string, string>
+  >({});
+  const [tripActionSuccess, setTripActionSuccess] = useState<
+    Record<string, string>
+  >({});
+  const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>(
+    {},
   );
-  const [tripActionError, setTripActionError] = useState<Record<string, string>>({});
-  const [tripActionSuccess, setTripActionSuccess] = useState<Record<string, string>>(
-    {}
-  );
-  const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>({});
-  const [tripResolutionNotes, setTripResolutionNotes] = useState<Record<string, string>>(
-    {}
-  );
-  const [tripFollowUpNotes, setTripFollowUpNotes] = useState<Record<string, string>>(
-    {}
-  );
-  const [tripMaterials, setTripMaterials] = useState<Record<string, TripMaterial[]>>(
-    {}
-  );
-  const [tripMaterialsText, setTripMaterialsText] = useState<Record<string, string>>(
-    {}
-  );
+  const [tripResolutionNotes, setTripResolutionNotes] = useState<
+    Record<string, string>
+  >({});
+  const [tripFollowUpNotes, setTripFollowUpNotes] = useState<
+    Record<string, string>
+  >({});
+  const [tripMaterials, setTripMaterials] = useState<
+    Record<string, TripMaterial[]>
+  >({});
+  const [tripMaterialsText, setTripMaterialsText] = useState<
+    Record<string, string>
+  >({});
   const [tripNoMaterialsUsed, setTripNoMaterialsUsed] = useState<
     Record<string, boolean>
   >({});
-  const [finishModeByTrip, setFinishModeByTrip] = useState<Record<string, FinishMode>>(
-    {}
-  );
+  const [finishModeByTrip, setFinishModeByTrip] = useState<
+    Record<string, FinishMode>
+  >({});
   const [hoursOverrideByTrip, setHoursOverrideByTrip] = useState<
     Record<string, number>
   >({});
@@ -2115,7 +2408,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [selectedServiceAddressId, setSelectedServiceAddressId] = useState("");
   const [quickAddMode, setQuickAddMode] = useState(false);
   const [quickServiceLabel, setQuickServiceLabel] = useState("");
-  const [quickServiceAddressSearch, setQuickServiceAddressSearch] = useState("");
+  const [quickServiceAddressSearch, setQuickServiceAddressSearch] =
+    useState("");
   const [quickServiceAddressLine1, setQuickServiceAddressLine1] = useState("");
   const [quickServiceAddressLine2, setQuickServiceAddressLine2] = useState("");
   const [quickServiceCity, setQuickServiceCity] = useState("");
@@ -2141,7 +2435,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const [editTripId, setEditTripId] = useState<string | null>(null);
   const [editTripDate, setEditTripDate] = useState(isoTodayLocal());
-  const [editTripTimeWindow, setEditTripTimeWindow] = useState<TripTimeWindow>("am");
+  const [editTripTimeWindow, setEditTripTimeWindow] =
+    useState<TripTimeWindow>("am");
   const [editTripStartTime, setEditTripStartTime] = useState("08:00");
   const [editTripEndTime, setEditTripEndTime] = useState("12:00");
   const [editTripNotes, setEditTripNotes] = useState("");
@@ -2149,17 +2444,22 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [editTripErr, setEditTripErr] = useState("");
   const [editTripPrimaryTechUid, setEditTripPrimaryTechUid] = useState("");
   const [editTripSecondaryTechUid, setEditTripSecondaryTechUid] = useState("");
-  const [editTripUseDefaultHelper, setEditTripUseDefaultHelper] = useState(true);
+  const [editTripUseDefaultHelper, setEditTripUseDefaultHelper] =
+    useState(true);
   const [editTripHelperUid, setEditTripHelperUid] = useState("");
-  const [editTripSecondaryHelperUid, setEditTripSecondaryHelperUid] = useState("");
+  const [editTripSecondaryHelperUid, setEditTripSecondaryHelperUid] =
+    useState("");
 
   const [billingSaving, setBillingSaving] = useState(false);
   const [billingErr, setBillingErr] = useState("");
   const [billingOk, setBillingOk] = useState("");
-  const [billingMaterialsSummaryEdit, setBillingMaterialsSummaryEdit] = useState("");
-  const [billingMaterialsAmountEdit, setBillingMaterialsAmountEdit] = useState("");
+  const [billingMaterialsSummaryEdit, setBillingMaterialsSummaryEdit] =
+    useState("");
+  const [billingMaterialsAmountEdit, setBillingMaterialsAmountEdit] =
+    useState("");
   const [showCloseFollowUpDialog, setShowCloseFollowUpDialog] = useState(false);
-  const [closeFollowUpReason, setCloseFollowUpReason] = useState("customer_declined");
+  const [closeFollowUpReason, setCloseFollowUpReason] =
+    useState("customer_declined");
   const [closeFollowUpNote, setCloseFollowUpNote] = useState("");
   const [closeFollowUpSaving, setCloseFollowUpSaving] = useState(false);
   const [closeFollowUpErr, setCloseFollowUpErr] = useState("");
@@ -2167,7 +2467,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const helperCandidates = useMemo(() => {
     const items = employeeProfiles
       .filter(
-        (p) => String(p.employmentStatus || "current").toLowerCase() === "current"
+        (p) =>
+          String(p.employmentStatus || "current").toLowerCase() === "current",
       )
       .filter((p) => {
         const labor = normalizeRole(p.laborRole);
@@ -2190,7 +2491,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (!techUid) return "";
     return (
       helperCandidates.find(
-        (h) => String(h.defaultPairedTechUid || "").trim() === techUid
+        (h) => String(h.defaultPairedTechUid || "").trim() === techUid,
       )?.uid || ""
     );
   }, [tripPrimaryTechUid, helperCandidates]);
@@ -2200,19 +2501,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (!techUid) return "";
     return (
       helperCandidates.find(
-        (h) => String(h.defaultPairedTechUid || "").trim() === techUid
+        (h) => String(h.defaultPairedTechUid || "").trim() === techUid,
       )?.uid || ""
     );
   }, [editTripPrimaryTechUid, helperCandidates]);
 
   const scheduleHolidayNames = useMemo(
     () => getHolidayNamesForDate(companyHolidays, tripDate),
-    [companyHolidays, tripDate]
+    [companyHolidays, tripDate],
   );
 
   const editHolidayNames = useMemo(
     () => getHolidayNamesForDate(companyHolidays, editTripDate),
-    [companyHolidays, editTripDate]
+    [companyHolidays, editTripDate],
   );
 
   useEffect(() => {
@@ -2222,7 +2523,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       return;
     }
     setEditTripHelperUid(defaultHelperForEditPrimary);
-  }, [editTripUseDefaultHelper, editTripPrimaryTechUid, defaultHelperForEditPrimary]);
+  }, [
+    editTripUseDefaultHelper,
+    editTripPrimaryTechUid,
+    defaultHelperForEditPrimary,
+  ]);
 
   useEffect(() => {
     if (!ticket?.billing) {
@@ -2266,6 +2571,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           customerId: d.customerId ?? "",
           customerDisplayName: d.customerDisplayName ?? "",
           serviceAddressId: d.serviceAddressId ?? null,
+          requestedByUid: d.requestedByUid ?? null,
+          requestedByName: d.requestedByName ?? null,
+          requestedByRole: d.requestedByRole ?? null,
           serviceAddressLabel: d.serviceAddressLabel ?? undefined,
           serviceAddressLine1: d.serviceAddressLine1 ?? "",
           serviceAddressLine2: d.serviceAddressLine2 ?? undefined,
@@ -2287,8 +2595,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           helperIds: Array.isArray(d.helperIds) ? d.helperIds : undefined,
           helperNames: Array.isArray(d.helperNames) ? d.helperNames : undefined,
           active: d.active ?? true,
-          createdAt: d.createdAt ?? undefined,
-          updatedAt: d.updatedAt ?? undefined,
+          createdAt: normalizeDateLike(d.createdAt) ?? d.createdAt ?? undefined,
+          createdByUid: d.createdByUid ?? null,
+          createdByName: d.createdByName ?? null,
+          createdByRole: d.createdByRole ?? null,
+          updatedAt: normalizeDateLike(d.updatedAt) ?? d.updatedAt ?? undefined,
+          updatedByUid: d.updatedByUid ?? null,
+          updatedByName: d.updatedByName ?? null,
+          updatedByRole: d.updatedByRole ?? null,
           billing: normalizeBillingPacket(d.billing),
           followUpClosure: normalizeFollowUpClosure(d.followUpClosure),
         };
@@ -2296,21 +2610,23 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTicket(nextTicket);
         setTicketStatusEdit((nextTicket.status || "new") as TicketStatus);
         setTicketEstimatedHoursEdit(
-          String(Math.max(1, Number(nextTicket.estimatedDurationMinutes || 60) / 60))
+          String(
+            Math.max(1, Number(nextTicket.estimatedDurationMinutes || 60) / 60),
+          ),
         );
         setTicketIssueSummaryEdit(String(nextTicket.issueSummary || ""));
         setTicketIssueDetailsEdit(String(nextTicket.issueDetails || ""));
 
-          const [
-            usersSnap,
-            profilesSnap,
-            tripSnap,
-            ptoSnap,
-            holidaySnap,
-            purchaseOrderSnap,
-            attachmentSnap,
-            activitySnap,
-          ] = await Promise.all([
+        const [
+          usersSnap,
+          profilesSnap,
+          tripSnap,
+          ptoSnap,
+          holidaySnap,
+          purchaseOrderSnap,
+          attachmentSnap,
+          activitySnap,
+        ] = await Promise.all([
           getDocs(collection(db, "users")),
           getDocs(collection(db, "employeeProfiles")),
           getDocs(
@@ -2318,8 +2634,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               collection(db, "trips"),
               where("link.serviceTicketId", "==", id),
               orderBy("date", "asc"),
-              orderBy("startTime", "asc")
-            )
+              orderBy("startTime", "asc"),
+            ),
           ),
           getDocs(collection(db, "ptoRequests")),
           getDocs(collection(db, "companyHolidays")),
@@ -2327,22 +2643,33 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             query(
               collection(db, "purchaseOrders"),
               where("serviceTicketId", "==", id),
-              orderBy("createdAt", "asc")
-            )
+              orderBy("createdAt", "asc"),
+            ),
           ),
           getDocs(
             query(
               collection(db, "serviceTickets", id, "attachments"),
-              orderBy("uploadedAt", "desc")
-            )
+              orderBy("uploadedAt", "desc"),
+            ),
           ),
           getDocs(
             query(
               collection(db, "serviceTickets", id, "activity"),
-              orderBy("createdAt", "desc")
-            )
+              orderBy("createdAt", "desc"),
+            ),
           ),
         ]);
+
+        const loadedUserNameByUid = new Map(
+          usersSnap.docs.map((ds) => {
+            const user = ds.data() as any;
+            return [
+              String(user.uid ?? ds.id),
+              String(user.displayName || user.email || "").trim(),
+            ] as const;
+          }),
+        );
+        setUserNameByUid(Object.fromEntries(loadedUserNameByUid));
 
         setTechnicians(
           usersSnap.docs
@@ -2356,7 +2683,34 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               };
             })
             .filter((u) => u.active && u.role === "technician")
-            .sort((a, b) => a.displayName.localeCompare(b.displayName))
+            .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+        );
+
+        const createdByUid = String(
+          nextTicket.createdByUid || nextTicket.requestedByUid || "",
+        ).trim();
+        const updatedByUid = String(nextTicket.updatedByUid || "").trim();
+
+        setTicket((prev) =>
+          prev?.id === nextTicket.id
+            ? {
+                ...prev,
+                createdByName:
+                  prev.createdByName ||
+                  prev.requestedByName ||
+                  (createdByUid
+                    ? loadedUserNameByUid.get(createdByUid) || null
+                    : null),
+                createdByUid: prev.createdByUid || prev.requestedByUid || null,
+                createdByRole:
+                  prev.createdByRole || prev.requestedByRole || null,
+                updatedByName:
+                  prev.updatedByName ||
+                  (updatedByUid
+                    ? loadedUserNameByUid.get(updatedByUid) || null
+                    : null),
+              }
+            : prev,
         );
 
         setEmployeeProfiles(
@@ -2370,7 +2724,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               laborRole: p.laborRole ?? "other",
               defaultPairedTechUid: p.defaultPairedTechUid ?? null,
             };
-          })
+          }),
         );
 
         setPtoRequests(
@@ -2382,16 +2736,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               employeeName: String(p.employeeName || "").trim(),
               startDate: String(p.startDate || "").trim(),
               endDate: String(p.endDate || p.startDate || "").trim(),
-              status: String(p.status || "pending").trim().toLowerCase(),
+              status: String(p.status || "pending")
+                .trim()
+                .toLowerCase(),
               notes: p.notes ?? null,
             } as PtoRequestLite;
-          })
+          }),
         );
 
         setCompanyHolidays(
           holidaySnap.docs
             .map((ds) => normalizeCompanyHoliday(ds.data(), ds.id))
-            .filter((holiday): holiday is CompanyHolidayLite => Boolean(holiday))
+            .filter((holiday): holiday is CompanyHolidayLite =>
+              Boolean(holiday),
+            ),
         );
 
         setPurchaseOrders(
@@ -2401,7 +2759,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               return {
                 id: ds.id,
                 poCode: String(po.poCode || ds.id).toUpperCase(),
-                poIndex: typeof po.poIndex === "number" ? po.poIndex : undefined,
+                poIndex:
+                  typeof po.poIndex === "number" ? po.poIndex : undefined,
                 poSuffix: po.poSuffix ?? undefined,
                 status: po.status || "open",
                 serviceTicketId: String(po.serviceTicketId || id),
@@ -2416,9 +2775,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                   ? po.matchedAttachmentIds
                   : [],
                 invoiceEmailMessageId: po.invoiceEmailMessageId ?? null,
-                                invoiceEmailSubject: po.invoiceEmailSubject ?? null,
+                invoiceEmailSubject: po.invoiceEmailSubject ?? null,
                 invoiceEmailFrom: po.invoiceEmailFrom ?? null,
-                invoiceEmailMatchedAt: normalizeDateLike(po.invoiceEmailMatchedAt),
+                invoiceEmailMatchedAt: normalizeDateLike(
+                  po.invoiceEmailMatchedAt,
+                ),
                 invoiceAttachmentCount:
                   typeof po.invoiceAttachmentCount === "number"
                     ? po.invoiceAttachmentCount
@@ -2438,17 +2799,24 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                           : undefined,
                       storagePath: attachment.storagePath ?? undefined,
                       downloadUrl: attachment.downloadUrl ?? undefined,
-                      uploadedAt: normalizeDateLike(attachment.uploadedAt) ?? undefined,
+                      uploadedAt:
+                        normalizeDateLike(attachment.uploadedAt) ?? undefined,
                     }))
                   : [],
               } satisfies PurchaseOrderLite;
             })
             .sort((a, b) => {
-              const ai = Number.isFinite(Number(a.poIndex)) ? Number(a.poIndex) : 9999;
-              const bi = Number.isFinite(Number(b.poIndex)) ? Number(b.poIndex) : 9999;
+              const ai = Number.isFinite(Number(a.poIndex))
+                ? Number(a.poIndex)
+                : 9999;
+              const bi = Number.isFinite(Number(b.poIndex))
+                ? Number(b.poIndex)
+                : 9999;
               if (ai !== bi) return ai - bi;
-              return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
-            })
+              return String(a.createdAt || "").localeCompare(
+                String(b.createdAt || ""),
+              );
+            }),
         );
 
         setAttachments(
@@ -2458,18 +2826,28 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
               return {
                 id: ds.id,
-                fileName: String(attachment.fileName || attachment.originalFileName || "Attachment"),
+                fileName: String(
+                  attachment.fileName ||
+                    attachment.originalFileName ||
+                    "Attachment",
+                ),
                 originalFileName: attachment.originalFileName ?? null,
-                fileType: getAttachmentFileType(attachment.contentType, attachment.fileName),
+                fileType: getAttachmentFileType(
+                  attachment.contentType,
+                  attachment.fileName,
+                ),
                 contentType: attachment.contentType ?? null,
-                size: typeof attachment.size === "number" ? attachment.size : null,
+                size:
+                  typeof attachment.size === "number" ? attachment.size : null,
                 storagePath: attachment.storagePath ?? null,
                 downloadUrl: attachment.downloadUrl ?? null,
                 note: attachment.note ?? null,
-                phase: (attachment.phase || "customer_sent") as ServiceTicketAttachmentPhase,
+                phase: (attachment.phase ||
+                  "customer_sent") as ServiceTicketAttachmentPhase,
                 tripId: attachment.tripId ?? null,
                 active: attachment.active !== false,
-                uploadedAt: normalizeDateLike(attachment.uploadedAt) ?? undefined,
+                uploadedAt:
+                  normalizeDateLike(attachment.uploadedAt) ?? undefined,
                 uploadedByUid: attachment.uploadedByUid ?? null,
                 uploadedByName: attachment.uploadedByName ?? null,
                 uploadedByRole: attachment.uploadedByRole ?? null,
@@ -2477,7 +2855,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 deletedByUid: attachment.deletedByUid ?? null,
               } satisfies ServiceTicketAttachment;
             })
-            .filter((attachment) => attachment.active !== false)
+            .filter((attachment) => attachment.active !== false),
         );
 
         setActivityEntries(
@@ -2490,13 +2868,16 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               title: String(activity.title || "Activity"),
               description: activity.description ?? null,
               details: Array.isArray(activity.details)
-                ? activity.details.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+                ? activity.details
+                    .map((item: unknown) => String(item || "").trim())
+                    .filter(Boolean)
                 : [],
               createdAt: normalizeDateLike(activity.createdAt) ?? undefined,
+              createdByUid: activity.createdByUid ?? null,
               createdByName: activity.createdByName ?? null,
               createdByRole: activity.createdByRole ?? null,
             };
-          })
+          }),
         );
 
         const nextTrips = tripSnap.docs.map((ds) => mapTripLikeFromDoc(ds));
@@ -2510,11 +2891,16 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         const nextNoMaterials: Record<string, boolean> = {};
         const nextFinish: Record<string, FinishMode> = {};
         const nextHelperConfirmed: Record<string, boolean> = {};
-        const nextSeparateRequestChoice: Record<string, SeparateServiceRequestChoice> = {};
+        const nextSeparateRequestChoice: Record<
+          string,
+          SeparateServiceRequestChoice
+        > = {};
         const nextSeparateRequestDescription: Record<string, string> = {};
 
         for (const trip of nextTrips) {
-          const loadedMaterials = Array.isArray(trip.materials) ? trip.materials : [];
+          const loadedMaterials = Array.isArray(trip.materials)
+            ? trip.materials
+            : [];
           nextWork[trip.id] = String(trip.workNotes || "");
           nextResolution[trip.id] = String(trip.resolutionNotes || "");
           nextFollow[trip.id] = String(trip.followUpNotes || "");
@@ -2545,7 +2931,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             const customer = customerSnap.data() as any;
 
             setCustomerPhone(
-              String(customer.phonePrimary || customer.phone || "").trim()
+              String(customer.phonePrimary || customer.phone || "").trim(),
             );
             setCustomerEmail(String(customer.email || "").trim());
 
@@ -2566,13 +2952,19 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     createdAt: addr.createdAt ?? undefined,
                     updatedAt: addr.updatedAt ?? undefined,
                   }))
-                  .filter((addr: CustomerServiceAddressOption) => addr.active !== false)
+                  .filter(
+                    (addr: CustomerServiceAddressOption) =>
+                      addr.active !== false,
+                  )
               : [];
 
             serviceAddresses.sort(
-              (a: CustomerServiceAddressOption, b: CustomerServiceAddressOption) =>
+              (
+                a: CustomerServiceAddressOption,
+                b: CustomerServiceAddressOption,
+              ) =>
                 Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)) ||
-                safeStr(a.label).localeCompare(safeStr(b.label))
+                safeStr(a.label).localeCompare(safeStr(b.label)),
             );
 
             setCustomerServiceAddresses(serviceAddresses);
@@ -2581,7 +2973,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
         if (nextTrips.length > 0) {
           const uniqueDates = Array.from(
-            new Set(nextTrips.map((trip) => String(trip.date || "").trim()).filter(Boolean))
+            new Set(
+              nextTrips
+                .map((trip) => String(trip.date || "").trim())
+                .filter(Boolean),
+            ),
           );
           const byDate: Record<string, TripDocLite[]> = {};
           for (const date of uniqueDates) {
@@ -2591,7 +2987,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         }
       } catch (err: unknown) {
         setError(
-          err instanceof Error ? err.message : "Failed to load service ticket."
+          err instanceof Error ? err.message : "Failed to load service ticket.",
         );
       } finally {
         setLoading(false);
@@ -2630,7 +3026,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     let cancelled = false;
 
     async function run() {
-      const dates = Array.from(new Set([tripDate, editTripDate].filter(Boolean)));
+      const dates = Array.from(
+        new Set([tripDate, editTripDate].filter(Boolean)),
+      );
       for (const date of dates) {
         if (!date || availabilityTripsByDate[date]) continue;
         try {
@@ -2691,6 +3089,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       noMaterialsUsed: Boolean(trip.noMaterialsUsed),
       outcome: trip.outcome ?? null,
       readyToBillAt: normalizeDateLike(trip.readyToBillAt),
+      createdAt: normalizeDateLike(trip.createdAt) ?? undefined,
+      createdByUid: trip.createdByUid ?? null,
+      createdByName: trip.createdByName ?? null,
+      createdByRole: trip.createdByRole ?? null,
       updatedAt: normalizeDateLike(trip.updatedAt) ?? undefined,
       updatedByUid: trip.updatedByUid ?? null,
     } as TripDoc;
@@ -2721,7 +3123,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (args.secondaryTechUid?.trim()) {
       addUnique({
         uid: args.secondaryTechUid.trim(),
-        name: findTechName(args.secondaryTechUid.trim()) || "Secondary Technician",
+        name:
+          findTechName(args.secondaryTechUid.trim()) || "Secondary Technician",
         role: "technician",
       });
     }
@@ -2737,7 +3140,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (args.secondaryHelperUid?.trim()) {
       addUnique({
         uid: args.secondaryHelperUid.trim(),
-        name: findHelperName(args.secondaryHelperUid.trim()) || "Secondary Helper",
+        name:
+          findHelperName(args.secondaryHelperUid.trim()) || "Secondary Helper",
         role: "helper",
       });
     }
@@ -2749,7 +3153,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (!date?.trim()) return [] as TripDocLite[];
 
     const snap = await getDocs(
-      query(collection(db, "trips"), where("date", "==", date.trim()))
+      query(collection(db, "trips"), where("date", "==", date.trim())),
     );
 
     const items = snap.docs.map((ds) => mapTripLikeFromDoc(ds));
@@ -2772,9 +3176,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return getOptionAvailabilityLabel({
       baseLabel:
         args.role === "helper"
-          ? `${args.name} (${normalizeRole(
-              helperCandidates.find((helper) => helper.uid === args.uid)?.laborRole
-            ) || "helper"})`
+          ? `${args.name} (${
+              normalizeRole(
+                helperCandidates.find((helper) => helper.uid === args.uid)
+                  ?.laborRole,
+              ) || "helper"
+            })`
           : args.name,
       uid: args.uid,
       name: args.name,
@@ -2807,7 +3214,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         helperUid: tripHelperUid,
         secondaryHelperUid: tripSecondaryHelperUid,
       }),
-    [tripPrimaryTechUid, tripSecondaryTechUid, tripHelperUid, tripSecondaryHelperUid]
+    [
+      tripPrimaryTechUid,
+      tripSecondaryTechUid,
+      tripHelperUid,
+      tripSecondaryHelperUid,
+    ],
   );
 
   const editCrewSelections = useMemo(
@@ -2823,7 +3235,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       editTripSecondaryTechUid,
       editTripHelperUid,
       editTripSecondaryHelperUid,
-    ]
+    ],
   );
 
   const scheduleDispatchConflicts = useMemo(
@@ -2849,7 +3261,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       ptoRequests,
       scheduleHolidayNames,
       tripHolidayOverride,
-    ]
+    ],
   );
 
   const editDispatchConflicts = useMemo(
@@ -2877,7 +3289,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       editHolidayNames,
       editTripHolidayOverride,
       editTripId,
-    ]
+    ],
   );
 
   useEffect(() => {
@@ -2942,7 +3354,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   function deriveNextTicketStatus(
     nextTrips: TripDoc[],
-    lastCompletedOutcome?: string | null
+    lastCompletedOutcome?: string | null,
   ): TicketStatus {
     const activeTrips = nextTrips.filter((trip) => trip.active !== false);
 
@@ -2951,20 +3363,26 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }
 
     const sortedTrips = [...activeTrips].sort((a, b) => {
-      const dateCompare = String(a.date || "").localeCompare(String(b.date || ""));
+      const dateCompare = String(a.date || "").localeCompare(
+        String(b.date || ""),
+      );
       if (dateCompare !== 0) return dateCompare;
 
-      const startCompare = String(a.startTime || "").localeCompare(String(b.startTime || ""));
+      const startCompare = String(a.startTime || "").localeCompare(
+        String(b.startTime || ""),
+      );
       if (startCompare !== 0) return startCompare;
 
-      const updatedCompare = String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
+      const updatedCompare = String(a.updatedAt || "").localeCompare(
+        String(b.updatedAt || ""),
+      );
       if (updatedCompare !== 0) return updatedCompare;
 
       return String(a.id || "").localeCompare(String(b.id || ""));
     });
 
     const hasInProgress = sortedTrips.some(
-      (trip) => normalizeTripStatus(trip.status) === "in_progress"
+      (trip) => normalizeTripStatus(trip.status) === "in_progress",
     );
     if (hasInProgress) {
       return "in_progress";
@@ -2975,7 +3393,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const hasCompletedFollowUpHistory = sortedTrips.some(
         (trip) =>
           normalizeTripStatus(trip.status) === "complete" &&
-          String(trip.outcome || "").trim().toLowerCase() === "follow_up"
+          String(trip.outcome || "")
+            .trim()
+            .toLowerCase() === "follow_up",
       );
 
       return hasCompletedFollowUpHistory || ticket?.status === "follow_up"
@@ -2984,7 +3404,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }
 
     const completedTrips = sortedTrips.filter(
-      (trip) => normalizeTripStatus(trip.status) === "complete"
+      (trip) => normalizeTripStatus(trip.status) === "complete",
     );
 
     if (completedTrips.length > 0) {
@@ -2992,7 +3412,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const finalOutcome = String(
         lastCompletedOutcome ??
           latestCompletedTrip.outcome ??
-          (latestCompletedTrip.readyToBillAt ? "resolved" : "")
+          (latestCompletedTrip.readyToBillAt ? "resolved" : ""),
       )
         .trim()
         .toLowerCase();
@@ -3009,7 +3429,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }
 
     const hasCancelledTrips = sortedTrips.some(
-      (trip) => normalizeTripStatus(trip.status) === "cancelled"
+      (trip) => normalizeTripStatus(trip.status) === "cancelled",
     );
     if (hasCancelledTrips) {
       return "cancelled";
@@ -3021,13 +3441,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   async function persistTicketStatus(
     nextStatus: TicketStatus,
     now: string,
-    billingOverride?: BillingPacket | null
+    billingOverride?: BillingPacket | null,
   ) {
     if (!ticket?.id) return;
 
     const payload: Record<string, unknown> = {
       status: nextStatus,
-      updatedAt: now,
+      ...getTicketAuditFields(now),
     };
 
     if (billingOverride !== undefined) {
@@ -3041,10 +3461,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         ? {
             ...prev,
             status: nextStatus,
-            updatedAt: now,
-            ...(billingOverride !== undefined ? { billing: billingOverride } : {}),
+            ...getTicketAuditFields(now),
+            ...(billingOverride !== undefined
+              ? { billing: billingOverride }
+              : {}),
           }
-        : prev
+        : prev,
     );
 
     setTicketStatusEdit(nextStatus);
@@ -3068,7 +3490,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return isUidOnTripCrew(myUid, trip.crew || null);
   }
 
-  function applyHelperConfirmation(crew: TripCrew | null, tripId: string): TripCrew | null {
+  function applyHelperConfirmation(
+    crew: TripCrew | null,
+    tripId: string,
+  ): TripCrew | null {
     if (!crew) return crew;
     if (helperConfirmedByTrip[tripId] === false) {
       return {
@@ -3084,7 +3509,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   function getHoursToUse(tripId: string, computedMinutes: number) {
     const override = hoursOverrideByTrip[tripId];
-    if (typeof override === "number" && Number.isFinite(override) && override >= 0) {
+    if (
+      typeof override === "number" &&
+      Number.isFinite(override) &&
+      override >= 0
+    ) {
       return roundToHalf(override);
     }
     return getDefaultBillableHours(computedMinutes);
@@ -3092,26 +3521,29 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const mobileFinishTrip = useMemo(
     () => trips.find((trip) => trip.id === mobileFinishTripId) || null,
-    [trips, mobileFinishTripId]
+    [trips, mobileFinishTripId],
   );
 
   const inProgressTrip = useMemo(
-    () => trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress") || null,
-    [trips]
+    () =>
+      trips.find(
+        (trip) => normalizeTripStatus(trip.status) === "in_progress",
+      ) || null,
+    [trips],
   );
 
   const mobileResolutionNoteMissing =
     Boolean(mobileFinishTrip) &&
     mobileFinishMode === "resolved" &&
     !String(
-      mobileFinishTrip ? tripResolutionNotes[mobileFinishTrip.id] || "" : ""
+      mobileFinishTrip ? tripResolutionNotes[mobileFinishTrip.id] || "" : "",
     ).trim();
 
   const mobileFollowUpNoteMissing =
     Boolean(mobileFinishTrip) &&
     mobileFinishMode === "follow_up" &&
     !String(
-      mobileFinishTrip ? tripFollowUpNotes[mobileFinishTrip.id] || "" : ""
+      mobileFinishTrip ? tripFollowUpNotes[mobileFinishTrip.id] || "" : "",
     ).trim();
 
   const mobileSeparateRequestDescriptionMissing =
@@ -3121,7 +3553,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     !String(
       mobileFinishTrip
         ? separateRequestDescriptionByTrip[mobileFinishTrip.id] || ""
-        : ""
+        : "",
     ).trim();
 
   const mobileCompleteDisabled =
@@ -3152,23 +3584,24 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     );
   }, [trips]);
 
-  const canGeneratePoFromTicket = Boolean(eligibleTripForPo) && !isInvoicedTicket;
+  const canGeneratePoFromTicket =
+    Boolean(eligibleTripForPo) && !isInvoicedTicket;
 
   const latestCompletedTripForLifecycle = useMemo(
     () => getLatestCompletedTripForLifecycle(trips),
-    [trips]
+    [trips],
   );
 
   const latestCompletedOutcome = String(
     latestCompletedTripForLifecycle?.outcome ||
-      (latestCompletedTripForLifecycle?.readyToBillAt ? "resolved" : "")
+      (latestCompletedTripForLifecycle?.readyToBillAt ? "resolved" : ""),
   )
     .trim()
     .toLowerCase();
 
   const hasOpenTicketTrips = useMemo(
     () => trips.some((trip) => isOpenTripRecord(trip)),
-    [trips]
+    [trips],
   );
 
   const canCloseFollowUpWithoutReturnVisit =
@@ -3186,17 +3619,282 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return () => window.clearInterval(id);
   }, [inProgressTrip?.id]);
 
-  const liveNowIso = useMemo(() => new Date(liveNowMs).toISOString(), [liveNowMs]);
+  const liveNowIso = useMemo(
+    () => new Date(liveNowMs).toISOString(),
+    [liveNowMs],
+  );
+
+  function resolveActivityActorName(args: {
+    name?: string | null;
+    uid?: string | null;
+    fallback?: string;
+  }) {
+    const direct = String(args.name || "").trim();
+    if (direct) return direct;
+
+    const uid = String(args.uid || "").trim();
+    if (uid && userNameByUid[uid]) return userNameByUid[uid];
+
+    return args.fallback || "System";
+  }
+
+  function combineTripDateTime(date?: string | null, time?: string | null) {
+    const d = String(date || "").trim();
+    const t = String(time || "00:00").trim() || "00:00";
+    if (!d) return undefined;
+    const parsed = new Date(`${d}T${t}:00`);
+    if (Number.isNaN(parsed.getTime())) return undefined;
+    return parsed.toISOString();
+  }
+
+  function getTripCrewLabel(trip: TripDoc) {
+    const crew = trip.crewConfirmed || trip.crew || {};
+    return [
+      crew.primaryTechName,
+      crew.helperName,
+      crew.secondaryTechName,
+      crew.secondaryHelperName,
+    ]
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  function isSimilarRealActivity(args: {
+    type: string;
+    createdAt?: string | null;
+  }) {
+    const targetTime = Date.parse(String(args.createdAt || ""));
+
+    return activityEntries.some((entry) => {
+      if (String(entry.type || "").toLowerCase() !== args.type.toLowerCase()) {
+        return false;
+      }
+
+      if (!Number.isFinite(targetTime)) return true;
+
+      const entryTime = Date.parse(String(entry.createdAt || ""));
+      if (!Number.isFinite(entryTime)) return false;
+
+      return Math.abs(entryTime - targetTime) <= 2 * 60 * 1000;
+    });
+  }
+
+  function buildSyntheticTripActivityEntries() {
+    const entries: ServiceTicketActivityEntry[] = [];
+
+    for (const trip of trips) {
+      const crewLabel = getTripCrewLabel(trip);
+      const windowLabel = formatTripWindow(String(trip.timeWindow || ""));
+      const scheduleWhen = [trip.date, windowLabel].filter(Boolean).join(" • ");
+      const scheduledAt =
+        trip.createdAt || combineTripDateTime(trip.date, trip.startTime);
+
+      if (
+        scheduledAt &&
+        !isSimilarRealActivity({
+          type: "service_trip_scheduled",
+          createdAt: scheduledAt,
+        })
+      ) {
+        entries.push({
+          id: `synthetic_${trip.id}_scheduled`,
+          type: "service_trip_scheduled",
+          title: "Trip Scheduled",
+          description: `Scheduled${scheduleWhen ? ` for ${scheduleWhen}` : ""}${crewLabel ? ` with ${crewLabel}` : ""}.`,
+          details: [
+            scheduleWhen ? `When: ${scheduleWhen}` : "",
+            crewLabel ? `Crew: ${crewLabel}` : "",
+            trip.notes ? `Notes: ${trip.notes}` : "",
+          ].filter(Boolean),
+          createdAt: scheduledAt,
+          createdByUid: trip.createdByUid || null,
+          createdByName: resolveActivityActorName({
+            name: trip.createdByName,
+            uid: trip.createdByUid,
+            fallback: "System",
+          }),
+          createdByRole: trip.createdByRole || null,
+        });
+      }
+
+      if (
+        trip.actualStartAt &&
+        !isSimilarRealActivity({
+          type: "service_trip_started",
+          createdAt: trip.actualStartAt,
+        })
+      ) {
+        entries.push({
+          id: `synthetic_${trip.id}_started`,
+          type: "service_trip_started",
+          title: "Trip Started",
+          description: "Trip was started in the field.",
+          details: crewLabel ? [`Crew: ${crewLabel}`] : [],
+          createdAt: trip.actualStartAt,
+          createdByUid: trip.startedByUid || null,
+          createdByName: resolveActivityActorName({
+            uid: trip.startedByUid,
+            fallback: trip.crew?.primaryTechName || "System",
+          }),
+          createdByRole: null,
+        });
+      }
+
+      for (const [index, block] of (trip.pauseBlocks || []).entries()) {
+        if (
+          block.startAt &&
+          !isSimilarRealActivity({
+            type: "service_trip_paused",
+            createdAt: block.startAt,
+          })
+        ) {
+          entries.push({
+            id: `synthetic_${trip.id}_paused_${index}`,
+            type: "service_trip_paused",
+            title: "Trip Paused",
+            description: "Trip was paused.",
+            details: [],
+            createdAt: block.startAt,
+            createdByUid: trip.updatedByUid || trip.startedByUid || null,
+            createdByName: resolveActivityActorName({
+              uid: trip.updatedByUid || trip.startedByUid,
+              fallback: trip.crew?.primaryTechName || "System",
+            }),
+            createdByRole: null,
+          });
+        }
+
+        if (
+          block.endAt &&
+          !isSimilarRealActivity({
+            type: "service_trip_resumed",
+            createdAt: block.endAt,
+          })
+        ) {
+          entries.push({
+            id: `synthetic_${trip.id}_resumed_${index}`,
+            type: "service_trip_resumed",
+            title: "Trip Resumed",
+            description: "Trip was resumed.",
+            details: [],
+            createdAt: block.endAt,
+            createdByUid: trip.updatedByUid || trip.startedByUid || null,
+            createdByName: resolveActivityActorName({
+              uid: trip.updatedByUid || trip.startedByUid,
+              fallback: trip.crew?.primaryTechName || "System",
+            }),
+            createdByRole: null,
+          });
+        }
+      }
+
+      const normalizedStatus = normalizeTripStatus(trip.status);
+      const outcome = String(trip.outcome || "")
+        .trim()
+        .toLowerCase();
+      const completeAt =
+        trip.actualEndAt ||
+        trip.readyToBillAt ||
+        (normalizedStatus === "complete" ? trip.updatedAt : null);
+
+      if (completeAt) {
+        const type =
+          outcome === "follow_up"
+            ? "service_trip_completed_follow_up"
+            : "service_trip_completed_resolved";
+        if (!isSimilarRealActivity({ type, createdAt: completeAt })) {
+          entries.push({
+            id: `synthetic_${trip.id}_completed`,
+            type,
+            title:
+              outcome === "follow_up"
+                ? "Trip Completed — Follow Up Required"
+                : "Trip Completed",
+            description:
+              outcome === "follow_up"
+                ? "Completed with follow-up required."
+                : "Completed as Resolved — Ready to Bill.",
+            details: [
+              trip.resolutionNotes ? `Resolution: ${trip.resolutionNotes}` : "",
+              trip.followUpNotes ? `Follow-up: ${trip.followUpNotes}` : "",
+              trip.workNotes ? `Field notes: ${trip.workNotes}` : "",
+            ].filter(Boolean),
+            createdAt: completeAt,
+            createdByUid: trip.endedByUid || trip.updatedByUid || null,
+            createdByName: resolveActivityActorName({
+              uid: trip.endedByUid || trip.updatedByUid,
+              fallback: trip.crew?.primaryTechName || "System",
+            }),
+            createdByRole: null,
+          });
+        }
+      }
+    }
+
+    return entries;
+  }
+
+  const activityEntriesForDisplay = useMemo(() => {
+    const hasCreatedEntry = activityEntries.some(
+      (entry) =>
+        String(entry.type || "").toLowerCase() === "service_ticket_created",
+    );
+
+    const syntheticCreatedEntry: ServiceTicketActivityEntry | null =
+      ticket?.createdAt && !hasCreatedEntry
+        ? {
+            id: "ticket_created_summary",
+            type: "service_ticket_created",
+            title: "Ticket Created",
+            description: "Service ticket was created.",
+            details: [],
+            createdAt: ticket.createdAt,
+            createdByUid: ticket.createdByUid || ticket.requestedByUid || null,
+            createdByName: resolveActivityActorName({
+              name: ticket.createdByName || ticket.requestedByName,
+              uid: ticket.createdByUid || ticket.requestedByUid,
+              fallback: "System",
+            }),
+            createdByRole:
+              ticket.createdByRole || ticket.requestedByRole || null,
+          }
+        : null;
+
+    const syntheticTripEntries = buildSyntheticTripActivityEntries();
+
+    const entries = syntheticCreatedEntry
+      ? [...activityEntries, ...syntheticTripEntries, syntheticCreatedEntry]
+      : [...activityEntries, ...syntheticTripEntries];
+
+    return entries
+      .filter((entry) => {
+        if (activityFilter === "all") return true;
+        return getActivityCategory(entry.type) === activityFilter;
+      })
+      .sort((a, b) => {
+        const bTime = Date.parse(String(b.createdAt || ""));
+        const aTime = Date.parse(String(a.createdAt || ""));
+        return (
+          (Number.isFinite(bTime) ? bTime : 0) -
+          (Number.isFinite(aTime) ? aTime : 0)
+        );
+      });
+  }, [activityEntries, activityFilter, ticket, trips, userNameByUid]);
 
   useEffect(() => {
     if (!ticket?.id || trips.length === 0) return;
 
-    const action = String(searchParams.get("tripAction") || "").trim().toLowerCase();
+    const action = String(searchParams.get("tripAction") || "")
+      .trim()
+      .toLowerCase();
     const targetTripId = String(searchParams.get("tripId") || "").trim();
     const attachmentAction = String(searchParams.get("attachmentAction") || "")
       .trim()
       .toLowerCase();
-    const attachmentPhaseParam = String(searchParams.get("attachmentPhase") || "")
+    const attachmentPhaseParam = String(
+      searchParams.get("attachmentPhase") || "",
+    )
       .trim()
       .toLowerCase();
     const hash =
@@ -3209,10 +3907,15 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if ((action === "resolved" || action === "follow_up") && isMobile) {
       const targetTrip =
         trips.find((trip) => trip.id === targetTripId) ||
-        trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress") ||
+        trips.find(
+          (trip) => normalizeTripStatus(trip.status) === "in_progress",
+        ) ||
         null;
 
-      if (targetTrip && normalizeTripStatus(targetTrip.status) === "in_progress") {
+      if (
+        targetTrip &&
+        normalizeTripStatus(targetTrip.status) === "in_progress"
+      ) {
         setMobileFinishTripId(targetTrip.id);
         setMobileFinishMode(action === "resolved" ? "resolved" : "follow_up");
         consumed = true;
@@ -3278,7 +3981,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }
   }
 
-  function handleAttachmentMenuOpen(event: React.MouseEvent<HTMLButtonElement>) {
+  function handleAttachmentMenuOpen(
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) {
     setAttachmentMenuAnchorEl(event.currentTarget);
   }
 
@@ -3304,12 +4009,16 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }, 0);
   }
 
-  function handleAttachmentInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+  function handleAttachmentInputChange(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
     void handleUploadServiceTicketAttachments(event.currentTarget.files);
     event.currentTarget.value = "";
   }
 
-  async function handleUploadServiceTicketAttachments(fileList: FileList | null) {
+  async function handleUploadServiceTicketAttachments(
+    fileList: FileList | null,
+  ) {
     if (!ticket?.id || !canAddTicketAttachments) return;
 
     const files = Array.from(fileList || []).filter((file) => file.size > 0);
@@ -3326,7 +4035,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const note = attachmentNote.trim() || null;
       const activeTripId =
         inProgressTrip?.id ||
-        trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress")?.id ||
+        trips.find((trip) => normalizeTripStatus(trip.status) === "in_progress")
+          ?.id ||
         null;
 
       for (const file of files) {
@@ -3372,7 +4082,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
         await setDoc(
           doc(db, "serviceTickets", ticket.id, "attachments", attachmentId),
-          stripUndefined(attachment)
+          stripUndefined(attachment),
         );
 
         uploaded.push(attachment);
@@ -3381,18 +4091,20 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       const now = nowIso();
       const batch = writeBatch(db);
       const nextAttachmentCount =
-        attachments.filter((item) => item.active !== false).length + uploaded.length;
+        attachments.filter((item) => item.active !== false).length +
+        uploaded.length;
 
       batch.update(doc(db, "serviceTickets", ticket.id), {
-        updatedAt: now,
-        updatedByUid: myUid || null,
+        ...getTicketAuditFields(now),
         hasAttachments: nextAttachmentCount > 0,
         attachmentCount: nextAttachmentCount,
         lastAttachmentAt: now,
         lastAttachmentPhase: uploaded[0]?.phase || attachmentPhase,
       });
 
-      const activityRef = doc(collection(db, "serviceTickets", ticket.id, "activity"));
+      const activityRef = doc(
+        collection(db, "serviceTickets", ticket.id, "activity"),
+      );
       const activityEntry: ServiceTicketActivityEntry = {
         id: activityRef.id,
         type: "service_ticket_attachment_added",
@@ -3405,7 +4117,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           (item) =>
             `${formatAttachmentPhase(item.phase)} • ${item.fileName}${
               item.note ? ` • ${item.note}` : ""
-            }`
+            }`,
         ),
         createdAt: now,
         createdByName: appUser?.displayName || "System",
@@ -3432,23 +4144,27 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               ...prev,
               updatedAt: now,
             }
-          : prev
+          : prev,
       );
       setActivityEntries((prev) => [activityEntry, ...prev]);
       setAttachmentNote("");
       setAttachmentOk(
-        uploaded.length === 1 ? "Attachment added." : `${uploaded.length} attachments added.`
+        uploaded.length === 1
+          ? "Attachment added."
+          : `${uploaded.length} attachments added.`,
       );
     } catch (err: unknown) {
       setAttachmentErr(
-        err instanceof Error ? err.message : "Failed to upload attachment."
+        err instanceof Error ? err.message : "Failed to upload attachment.",
       );
     } finally {
       setAttachmentUploading(false);
     }
   }
 
-  async function openServiceTicketAttachment(attachment: ServiceTicketAttachment) {
+  async function openServiceTicketAttachment(
+    attachment: ServiceTicketAttachment,
+  ) {
     const directUrl = safeStr(attachment.downloadUrl);
     const storagePath = safeStr(attachment.storagePath);
 
@@ -3472,11 +4188,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }
   }
 
-  async function handleSoftDeleteServiceTicketAttachment(attachment: ServiceTicketAttachment) {
+  async function handleSoftDeleteServiceTicketAttachment(
+    attachment: ServiceTicketAttachment,
+  ) {
     if (!ticket?.id || !canDeleteTicketAttachments) return;
 
     if (
-      window.prompt(`Type DELETE to remove ${attachment.fileName}`, "") !== "DELETE"
+      window.prompt(`Type DELETE to remove ${attachment.fileName}`, "") !==
+      "DELETE"
     ) {
       return;
     }
@@ -3487,20 +4206,23 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     const nextAttachmentCount = Math.max(
       0,
       attachments.filter(
-        (item) => item.id !== attachment.id && item.active !== false
-      ).length
+        (item) => item.id !== attachment.id && item.active !== false,
+      ).length,
     );
 
     try {
       const now = nowIso();
       const batch = writeBatch(db);
 
-      batch.update(doc(db, "serviceTickets", ticket.id, "attachments", attachment.id), {
-        active: false,
-        deletedAt: now,
-        deletedByUid: myUid || null,
-        updatedAt: now,
-      });
+      batch.update(
+        doc(db, "serviceTickets", ticket.id, "attachments", attachment.id),
+        {
+          active: false,
+          deletedAt: now,
+          deletedByUid: myUid || null,
+          updatedAt: now,
+        },
+      );
 
       const ticketAttachmentSummaryUpdate: Record<string, unknown> = {
         hasAttachments: nextAttachmentCount > 0,
@@ -3514,23 +4236,39 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         ticketAttachmentSummaryUpdate.lastAttachmentPhase = null;
       }
 
-      batch.update(doc(db, "serviceTickets", ticket.id), ticketAttachmentSummaryUpdate);
+      batch.update(
+        doc(db, "serviceTickets", ticket.id),
+        ticketAttachmentSummaryUpdate,
+      );
 
       await batch.commit();
 
-      setAttachments((prev) => prev.filter((item) => item.id !== attachment.id));
+      await logServiceTicketActivity({
+        type: "service_ticket_attachment_deleted",
+        title: "Attachment Removed",
+        description: `${attachment.fileName} was removed from the active ticket view.`,
+        details: [
+          `${formatAttachmentPhase(attachment.phase)} • ${attachment.fileName}`,
+          attachment.note ? `Note: ${attachment.note}` : "",
+        ],
+        createdAt: now,
+      });
+
+      setAttachments((prev) =>
+        prev.filter((item) => item.id !== attachment.id),
+      );
       setTicket((prev) =>
         prev
           ? {
               ...prev,
               updatedAt: now,
             }
-          : prev
+          : prev,
       );
       setAttachmentOk("Attachment removed from the active ticket view.");
     } catch (err: unknown) {
       setAttachmentErr(
-        err instanceof Error ? err.message : "Failed to remove attachment."
+        err instanceof Error ? err.message : "Failed to remove attachment.",
       );
     }
   }
@@ -3548,29 +4286,35 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           </Typography>
 
           {getImportedMaterialChips(tripMaterials[tripId]).length > 0 ? (
-  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-    {getImportedMaterialChips(tripMaterials[tripId]).map((material, index) => (
-      <Chip
-        key={material.supplierLineKey || material.id || index}
-        size="small"
-        color={material.reviewStatus === "pending" ? "warning" : "success"}
-        variant="outlined"
-        label={[
-          "Imported",
-          material.supplierName || "Supplier",
-          material.supplierInvoiceNumber
-            ? `Invoice #${material.supplierInvoiceNumber}`
-            : "",
-          material.poCode ? `PO ${material.poCode}` : "",
-          material.reviewStatus === "pending" ? "Needs Review" : "",
-        ]
-          .filter(Boolean)
-          .join(" • ")}
-        sx={{ borderRadius: 99, fontWeight: 700 }}
-      />
-    ))}
-  </Stack>
-) : null}
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              {getImportedMaterialChips(tripMaterials[tripId]).map(
+                (material, index) => (
+                  <Chip
+                    key={material.supplierLineKey || material.id || index}
+                    size="small"
+                    color={
+                      material.reviewStatus === "pending"
+                        ? "warning"
+                        : "success"
+                    }
+                    variant="outlined"
+                    label={[
+                      "Imported",
+                      material.supplierName || "Supplier",
+                      material.supplierInvoiceNumber
+                        ? `Invoice #${material.supplierInvoiceNumber}`
+                        : "",
+                      material.poCode ? `PO ${material.poCode}` : "",
+                      material.reviewStatus === "pending" ? "Needs Review" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" • ")}
+                    sx={{ borderRadius: 99, fontWeight: 700 }}
+                  />
+                ),
+              )}
+            </Stack>
+          ) : null}
 
           <FormControlLabel
             control={
@@ -3642,12 +4386,12 @@ Supply line`}
 
   function markQuickServiceAddressManual() {
     setQuickServiceAddressSource((current) =>
-      current === "google_places" ? "manual" : current
+      current === "google_places" ? "manual" : current,
     );
   }
 
   function handleQuickServiceGoogleAddressSelected(
-    selection: GoogleAddressSelectionLike
+    selection: GoogleAddressSelectionLike,
   ) {
     setQuickServiceAddressSearch(selection.formattedAddress || "");
     setQuickServiceAddressLine1(selection.addressLine1 || "");
@@ -3673,11 +4417,11 @@ Supply line`}
           safeStr(addr.addressLine1) === safeStr(ticket.serviceAddressLine1) &&
           safeStr(addr.city) === safeStr(ticket.serviceCity) &&
           safeStr(addr.state) === safeStr(ticket.serviceState) &&
-          safeStr(addr.postalCode) === safeStr(ticket.servicePostalCode)
+          safeStr(addr.postalCode) === safeStr(ticket.servicePostalCode),
       ) || null;
 
     setSelectedServiceAddressId(
-      currentServiceAddressId || fallbackMatch?.id || ""
+      currentServiceAddressId || fallbackMatch?.id || "",
     );
 
     setShowEditLocationDialog(true);
@@ -3685,7 +4429,7 @@ Supply line`}
 
   function applyServiceAddressToTicketState(
     address: CustomerServiceAddressOption,
-    updatedAt: string
+    updatedAt: string,
   ) {
     setTicket((prev) =>
       prev
@@ -3700,103 +4444,122 @@ Supply line`}
             servicePostalCode: address.postalCode || "",
             updatedAt,
           }
-        : prev
+        : prev,
     );
   }
 
   async function handleSaveTicketOverview() {
-  if (!canDispatch || !ticket?.id) return;
+    if (!canDispatch || !ticket?.id) return;
 
-  if (ticket.status === "invoiced") {
-    setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
-    return;
-  }
-
-  setTicketEditErr("");
-  setTicketEditOk("");
-  setTicketEditSaving(true);
-
-  try {
-    const hours = Number(ticketEstimatedHoursEdit);
-
-    if (!Number.isFinite(hours) || hours < 1) {
-      setTicketEditErr("Estimated duration must be at least 1 hour.");
+    if (ticket.status === "invoiced") {
+      setTicketEditErr("Invoiced tickets are locked and cannot be edited.");
       return;
     }
 
-    if (!Number.isInteger(hours * 2)) {
-      setTicketEditErr("Estimated duration must use 0.5 hour increments.");
-      return;
-    }
+    setTicketEditErr("");
+    setTicketEditOk("");
+    setTicketEditSaving(true);
 
-    const estimatedDurationMinutes = Math.round(hours * 60);
+    try {
+      const hours = Number(ticketEstimatedHoursEdit);
 
-    const summary = ticketIssueSummaryEdit.trim();
-    if (!summary) {
-      setTicketEditErr("Issue summary is required.");
-      return;
-    }
-
-    const nextStatus = ticketStatusEdit as TicketStatus;
-    const guard = getLocalManualTicketStatusError({
-      nextStatus,
-      currentStatus: ticket.status,
-      trips,
-    });
-
-    if (guard) {
-      setTicketEditErr(guard);
-      return;
-    }
-
-    const now = nowIso();
-
-    const ticketRef = doc(db, "serviceTickets", ticket.id);
-
-    if (nextStatus === "cancelled") {
-      const today = isoTodayLocal();
-
-      const linkedTripsById = new Map<string, TripDoc>();
-
-      const linkedTripQueries = [
-        query(
-          collection(db, "trips"),
-          where("link.serviceTicketId", "==", ticket.id)
-        ),
-        query(
-          collection(db, "trips"),
-          where("serviceTicketId", "==", ticket.id)
-        ),
-      ];
-
-      const linkedTripSnaps = await Promise.all(
-        linkedTripQueries.map(async (qTrips) => {
-          try {
-            return await getDocs(qTrips);
-          } catch {
-            return null;
-          }
-        })
-      );
-
-      for (const snap of linkedTripSnaps) {
-        if (!snap) continue;
-
-        for (const tripDoc of snap.docs) {
-          const data = tripDoc.data() as any;
-          const mappedTrip = mapTripLikeFromDoc({
-            id: tripDoc.id,
-            data: () => data,
-          });
-
-          linkedTripsById.set(tripDoc.id, mappedTrip);
-        }
+      if (!Number.isFinite(hours) || hours < 1) {
+        setTicketEditErr("Estimated duration must be at least 1 hour.");
+        return;
       }
 
-      const plannedTripsToDelete = Array.from(linkedTripsById.values()).filter(
-        (trip) => {
+      if (!Number.isInteger(hours * 2)) {
+        setTicketEditErr("Estimated duration must use 0.5 hour increments.");
+        return;
+      }
+
+      const estimatedDurationMinutes = Math.round(hours * 60);
+
+      const summary = ticketIssueSummaryEdit.trim();
+      if (!summary) {
+        setTicketEditErr("Issue summary is required.");
+        return;
+      }
+
+      const nextStatus = ticketStatusEdit as TicketStatus;
+      const guard = getLocalManualTicketStatusError({
+        nextStatus,
+        currentStatus: ticket.status,
+        trips,
+      });
+
+      if (guard) {
+        setTicketEditErr(guard);
+        return;
+      }
+
+      const now = nowIso();
+      const overviewActivityDetails = [
+        ticket.status !== nextStatus
+          ? `Status: ${formatTicketStatus(ticket.status)} → ${formatTicketStatus(nextStatus)}`
+          : "",
+        Number(ticket.estimatedDurationMinutes || 0) !==
+        estimatedDurationMinutes
+          ? `Estimated duration: ${Math.max(1, Number(ticket.estimatedDurationMinutes || 60) / 60)} hr → ${hours} hr`
+          : "",
+        String(ticket.issueSummary || "").trim() !== summary
+          ? "Issue summary updated"
+          : "",
+        String(ticket.issueDetails || "").trim() !==
+        ticketIssueDetailsEdit.trim()
+          ? "Issue details updated"
+          : "",
+      ].filter(Boolean);
+
+      const ticketRef = doc(db, "serviceTickets", ticket.id);
+
+      if (nextStatus === "cancelled") {
+        const today = isoTodayLocal();
+
+        const linkedTripsById = new Map<string, TripDoc>();
+
+        const linkedTripQueries = [
+          query(
+            collection(db, "trips"),
+            where("link.serviceTicketId", "==", ticket.id),
+          ),
+          query(
+            collection(db, "trips"),
+            where("serviceTicketId", "==", ticket.id),
+          ),
+        ];
+
+        const linkedTripSnaps = await Promise.all(
+          linkedTripQueries.map(async (qTrips) => {
+            try {
+              return await getDocs(qTrips);
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        for (const snap of linkedTripSnaps) {
+          if (!snap) continue;
+
+          for (const tripDoc of snap.docs) {
+            const data = tripDoc.data() as any;
+            const mappedTrip = mapTripLikeFromDoc({
+              id: tripDoc.id,
+              data: () => data,
+            });
+
+            linkedTripsById.set(tripDoc.id, mappedTrip);
+          }
+        }
+
+        const plannedTripsToDelete = Array.from(
+          linkedTripsById.values(),
+        ).filter((trip) => {
           const status = normalizeTripStatus(trip.status);
-          const type = String(trip.type || "").trim().toLowerCase();
+          const type = String(trip.type || "")
+            .trim()
+            .toLowerCase();
           const tripDate = String(trip.date || "").trim();
 
           return (
@@ -3804,183 +4567,196 @@ Supply line`}
             status === "planned" &&
             (!tripDate || tripDate >= today)
           );
-        }
-      );
+        });
 
-      const plannedTripIdsToDelete = new Set(
-        plannedTripsToDelete.map((trip) => trip.id)
-      );
+        const plannedTripIdsToDelete = new Set(
+          plannedTripsToDelete.map((trip) => trip.id),
+        );
 
-      const batch = writeBatch(db);
+        const batch = writeBatch(db);
 
-      batch.update(
-        ticketRef,
-        stripUndefined({
-          status: "cancelled",
-          issueSummary: summary,
-          estimatedDurationMinutes,
-          issueDetails: ticketIssueDetailsEdit.trim() || null,
-          assignedTechnicianId: null,
-          assignedTechnicianName: null,
-          primaryTechnicianId: null,
-          secondaryTechnicianId: null,
-          secondaryTechnicianName: null,
-          helperIds: null,
-          helperNames: null,
-          assignedTechnicianIds: null,
-          scheduledDate: null,
-          scheduledStartTime: null,
-          scheduledEndTime: null,
-          scheduledTimeWindow: null,
-          scheduledTripId: null,
-          activeTripId: null,
-          cancelledAt: now,
-          cancelledByUid: myUid || null,
-          updatedAt: now,
-          updatedByUid: myUid || null,
-        })
-      );
-
-      for (const plannedTrip of plannedTripsToDelete) {
-        batch.delete(doc(db, "trips", plannedTrip.id));
-      }
-
-      const activityRef = doc(
-        collection(db, "serviceTickets", ticket.id, "activity")
-      );
-
-      const activityEntry: ServiceTicketActivityEntry = {
-        id: activityRef.id,
-        type: "service_ticket_cancelled",
-        title: "Service Ticket Cancelled",
-        description:
-          plannedTripsToDelete.length > 0
-            ? "Service ticket was cancelled and future planned service trips were removed from the schedule."
-            : "Service ticket was cancelled.",
-        details: [
-          `Cancelled ticket: ${ticket.id}`,
-          `Deleted planned trips: ${plannedTripsToDelete.length}`,
-          ...plannedTripsToDelete.map(
-            (trip) =>
-              `${trip.date || "No date"} ${trip.startTime || "—"}-${
-                trip.endTime || "—"
-              } • Trip ${trip.id}`
-          ),
-        ],
-        createdAt: now,
-        createdByName: appUser?.displayName || "System",
-        createdByRole: appUser?.role || null,
-      };
-
-      batch.set(activityRef, {
-        type: activityEntry.type,
-        title: activityEntry.title,
-        description: activityEntry.description,
-        details: activityEntry.details,
-        createdAt: now,
-        createdByUid: myUid || null,
-        createdByName: activityEntry.createdByName,
-        createdByRole: activityEntry.createdByRole,
-      });
-
-      await batch.commit();
-
-      const nextTrips = trips.filter((trip) => !plannedTripIdsToDelete.has(trip.id));
-
-      setTrips(nextTrips);
-
-      setAvailabilityTripsByDate((prev) => {
-        const nextByDate = { ...prev };
+        batch.update(
+          ticketRef,
+          stripUndefined({
+            status: "cancelled",
+            issueSummary: summary,
+            estimatedDurationMinutes,
+            issueDetails: ticketIssueDetailsEdit.trim() || null,
+            assignedTechnicianId: null,
+            assignedTechnicianName: null,
+            primaryTechnicianId: null,
+            secondaryTechnicianId: null,
+            secondaryTechnicianName: null,
+            helperIds: null,
+            helperNames: null,
+            assignedTechnicianIds: null,
+            scheduledDate: null,
+            scheduledStartTime: null,
+            scheduledEndTime: null,
+            scheduledTimeWindow: null,
+            scheduledTripId: null,
+            activeTripId: null,
+            cancelledAt: now,
+            cancelledByUid: myUid || null,
+            ...getTicketAuditFields(now),
+          }),
+        );
 
         for (const plannedTrip of plannedTripsToDelete) {
-          const date = String(plannedTrip.date || "").trim();
-          if (!date) continue;
-
-          nextByDate[date] = (nextByDate[date] || []).filter(
-            (item) => item.id !== plannedTrip.id
-          );
+          batch.delete(doc(db, "trips", plannedTrip.id));
         }
 
-        return nextByDate;
+        const activityRef = doc(
+          collection(db, "serviceTickets", ticket.id, "activity"),
+        );
+
+        const activityEntry: ServiceTicketActivityEntry = {
+          id: activityRef.id,
+          type: "service_ticket_cancelled",
+          title: "Service Ticket Cancelled",
+          description:
+            plannedTripsToDelete.length > 0
+              ? "Service ticket was cancelled and future planned service trips were removed from the schedule."
+              : "Service ticket was cancelled.",
+          details: [
+            `Cancelled ticket: ${ticket.id}`,
+            `Deleted planned trips: ${plannedTripsToDelete.length}`,
+            ...plannedTripsToDelete.map(
+              (trip) =>
+                `${trip.date || "No date"} ${trip.startTime || "—"}-${
+                  trip.endTime || "—"
+                } • Trip ${trip.id}`,
+            ),
+          ],
+          createdAt: now,
+          createdByName: appUser?.displayName || "System",
+          createdByRole: appUser?.role || null,
+        };
+
+        batch.set(activityRef, {
+          type: activityEntry.type,
+          title: activityEntry.title,
+          description: activityEntry.description,
+          details: activityEntry.details,
+          createdAt: now,
+          createdByUid: myUid || null,
+          createdByName: activityEntry.createdByName,
+          createdByRole: activityEntry.createdByRole,
+        });
+
+        await batch.commit();
+
+        const nextTrips = trips.filter(
+          (trip) => !plannedTripIdsToDelete.has(trip.id),
+        );
+
+        setTrips(nextTrips);
+
+        setAvailabilityTripsByDate((prev) => {
+          const nextByDate = { ...prev };
+
+          for (const plannedTrip of plannedTripsToDelete) {
+            const date = String(plannedTrip.date || "").trim();
+            if (!date) continue;
+
+            nextByDate[date] = (nextByDate[date] || []).filter(
+              (item) => item.id !== plannedTrip.id,
+            );
+          }
+
+          return nextByDate;
+        });
+
+        setTicket((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "cancelled",
+                issueSummary: summary,
+                estimatedDurationMinutes,
+                issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+                assignedTechnicianId: undefined,
+                assignedTechnicianName: undefined,
+                primaryTechnicianId: undefined,
+                secondaryTechnicianId: undefined,
+                secondaryTechnicianName: undefined,
+                helperIds: undefined,
+                helperNames: undefined,
+                assignedTechnicianIds: undefined,
+                ...getTicketAuditFields(now),
+              }
+            : prev,
+        );
+
+        setActivityEntries((prev) => [activityEntry, ...prev]);
+        setTicketEstimatedHoursEdit(String(hours));
+        setTicketEditOk(
+          plannedTripsToDelete.length > 0
+            ? `Ticket cancelled. Removed ${plannedTripsToDelete.length} future planned trip${
+                plannedTripsToDelete.length === 1 ? "" : "s"
+              }.`
+            : "Ticket cancelled.",
+        );
+
+        return;
+      }
+
+      await updateDoc(ticketRef, {
+        status: nextStatus,
+        issueSummary: summary,
+        estimatedDurationMinutes,
+        issueDetails: ticketIssueDetailsEdit.trim() || null,
+        ...getTicketAuditFields(now),
       });
 
       setTicket((prev) =>
         prev
           ? {
               ...prev,
-              status: "cancelled",
+              status: nextStatus,
               issueSummary: summary,
               estimatedDurationMinutes,
               issueDetails: ticketIssueDetailsEdit.trim() || undefined,
-              assignedTechnicianId: undefined,
-              assignedTechnicianName: undefined,
-              primaryTechnicianId: undefined,
-              secondaryTechnicianId: undefined,
-              secondaryTechnicianName: undefined,
-              helperIds: undefined,
-              helperNames: undefined,
-              assignedTechnicianIds: undefined,
-              updatedAt: now,
+              ...getTicketAuditFields(now),
             }
-          : prev
+          : prev,
       );
 
-      setActivityEntries((prev) => [activityEntry, ...prev]);
       setTicketEstimatedHoursEdit(String(hours));
-      setTicketEditOk(
-        plannedTripsToDelete.length > 0
-          ? `Ticket cancelled. Removed ${plannedTripsToDelete.length} future planned trip${
-              plannedTripsToDelete.length === 1 ? "" : "s"
-            }.`
-          : "Ticket cancelled."
+
+      if (overviewActivityDetails.length > 0) {
+        await logServiceTicketActivity({
+          type: "service_ticket_overview_updated",
+          title: "Ticket Overview Updated",
+          description:
+            "Issue summary, details, status, or estimated duration was updated.",
+          details: overviewActivityDetails,
+          createdAt: now,
+        });
+      }
+
+      setTicketEditOk("Ticket updated.");
+    } catch (err: unknown) {
+      setTicketEditErr(
+        err instanceof Error ? err.message : "Failed to update ticket.",
       );
-
-      return;
+    } finally {
+      setTicketEditSaving(false);
     }
-
-    await updateDoc(ticketRef, {
-      status: nextStatus,
-      issueSummary: summary,
-      estimatedDurationMinutes,
-      issueDetails: ticketIssueDetailsEdit.trim() || null,
-      updatedAt: now,
-      updatedByUid: myUid || null,
-    });
-
-    setTicket((prev) =>
-      prev
-        ? {
-            ...prev,
-            status: nextStatus,
-            issueSummary: summary,
-            estimatedDurationMinutes,
-            issueDetails: ticketIssueDetailsEdit.trim() || undefined,
-            updatedAt: now,
-          }
-        : prev
-    );
-
-    setTicketEstimatedHoursEdit(String(hours));
-    setTicketEditOk("Ticket updated.");
-  } catch (err: unknown) {
-    setTicketEditErr(
-      err instanceof Error ? err.message : "Failed to update ticket."
-    );
-  } finally {
-    setTicketEditSaving(false);
   }
-}
 
   async function handleSaveSelectedServiceLocation() {
     if (!ticket?.id || !ticket.customerId || !canDispatch) return;
 
     if (ticket.status === "invoiced") {
-      setLocationErr("Invoiced tickets are locked and location cannot be changed.");
+      setLocationErr(
+        "Invoiced tickets are locked and location cannot be changed.",
+      );
       return;
     }
 
     const selected = customerServiceAddresses.find(
-      (addr) => addr.id === selectedServiceAddressId
+      (addr) => addr.id === selectedServiceAddressId,
     );
 
     if (!selected) {
@@ -4003,16 +4779,33 @@ Supply line`}
         serviceCity: selected.city || "",
         serviceState: selected.state || "",
         servicePostalCode: selected.postalCode || "",
-        updatedAt: now,
-        updatedByUid: myUid || null,
+        ...getTicketAuditFields(now),
       });
 
       applyServiceAddressToTicketState(selected, now);
+      await logServiceTicketActivity({
+        type: "service_location_updated",
+        title: "Service Location Updated",
+        description: "Service address was updated on this ticket.",
+        details: [
+          selected.label ? `Label: ${selected.label}` : "",
+          buildInlineAddress(
+            selected.addressLine1,
+            selected.addressLine2,
+            selected.city,
+            selected.state,
+            selected.postalCode,
+          ),
+        ],
+        createdAt: now,
+      });
       setLocationOk("Service location updated.");
       setShowEditLocationDialog(false);
     } catch (err: unknown) {
       setLocationErr(
-        err instanceof Error ? err.message : "Failed to update service location."
+        err instanceof Error
+          ? err.message
+          : "Failed to update service location.",
       );
     } finally {
       setLocationSaving(false);
@@ -4023,7 +4816,9 @@ Supply line`}
     if (!ticket?.id || !ticket.customerId || !canDispatch) return;
 
     if (ticket.status === "invoiced") {
-      setLocationErr("Invoiced tickets are locked and location cannot be changed.");
+      setLocationErr(
+        "Invoiced tickets are locked and location cannot be changed.",
+      );
       return;
     }
 
@@ -4068,7 +4863,7 @@ Supply line`}
 
       const customerData = customerSnap.data() as any;
       const existingAddresses: CustomerServiceAddressOption[] = Array.isArray(
-        customerData.serviceAddresses
+        customerData.serviceAddresses,
       )
         ? customerData.serviceAddresses
         : [];
@@ -4083,7 +4878,9 @@ Supply line`}
         postalCode,
         notes: quickServiceNotes.trim() || null,
         active: true,
-        isPrimary: existingAddresses.filter((addr) => addr.active !== false).length === 0,
+        isPrimary:
+          existingAddresses.filter((addr) => addr.active !== false).length ===
+          0,
         source: quickServiceAddressSource || "manual",
         createdAt: now,
         updatedAt: now,
@@ -4112,20 +4909,37 @@ Supply line`}
         serviceCity: nextAddress.city || "",
         serviceState: nextAddress.state || "",
         servicePostalCode: nextAddress.postalCode || "",
-        updatedAt: now,
-        updatedByUid: myUid || null,
+        ...getTicketAuditFields(now),
       });
 
       setCustomerServiceAddresses((prev) =>
         [...prev, nextAddress].sort(
           (a, b) =>
             Number(Boolean(b.isPrimary)) - Number(Boolean(a.isPrimary)) ||
-            safeStr(a.label).localeCompare(safeStr(b.label))
-        )
+            safeStr(a.label).localeCompare(safeStr(b.label)),
+        ),
       );
 
       setSelectedServiceAddressId(nextAddress.id);
       applyServiceAddressToTicketState(nextAddress, now);
+
+      await logServiceTicketActivity({
+        type: "service_location_added",
+        title: "Service Location Added",
+        description:
+          "A new customer service address was added and applied to this ticket.",
+        details: [
+          nextAddress.label ? `Label: ${nextAddress.label}` : "",
+          buildInlineAddress(
+            nextAddress.addressLine1,
+            nextAddress.addressLine2,
+            nextAddress.city,
+            nextAddress.state,
+            nextAddress.postalCode,
+          ),
+        ],
+        createdAt: now,
+      });
 
       resetQuickAddServiceLocationForm();
       setQuickAddMode(false);
@@ -4133,7 +4947,7 @@ Supply line`}
       setLocationOk("Service location added and applied to ticket.");
     } catch (err: unknown) {
       setLocationErr(
-        err instanceof Error ? err.message : "Failed to add service location."
+        err instanceof Error ? err.message : "Failed to add service location.",
       );
     } finally {
       setLocationSaving(false);
@@ -4144,7 +4958,9 @@ Supply line`}
     e.preventDefault();
     if (!ticket || !canDispatch) return;
     if (ticket.status === "invoiced") {
-      setTripSaveError("Invoiced tickets are locked and cannot receive new trips.");
+      setTripSaveError(
+        "Invoiced tickets are locked and cannot receive new trips.",
+      );
       return;
     }
 
@@ -4153,14 +4969,14 @@ Supply line`}
 
     if (isTicketTerminal(ticket.status)) {
       setTripSaveError(
-        "Completed or cancelled tickets cannot receive new trips."
+        "Completed or cancelled tickets cannot receive new trips.",
       );
       return;
     }
 
     if (hasOpenTrips(trips)) {
       setTripSaveError(
-        "This ticket already has an open trip. Complete or cancel it before scheduling another."
+        "This ticket already has an open trip. Complete or cancel it before scheduling another.",
       );
       return;
     }
@@ -4168,7 +4984,7 @@ Supply line`}
     const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
     if (remoteOpenTrips.length > 0) {
       setTripSaveError(
-        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
+        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`,
       );
       return;
     }
@@ -4183,7 +4999,11 @@ Supply line`}
       return;
     }
 
-    if (!tripStartTime.trim() || !tripEndTime.trim() || tripEndTime <= tripStartTime) {
+    if (
+      !tripStartTime.trim() ||
+      !tripEndTime.trim() ||
+      tripEndTime <= tripStartTime
+    ) {
       setTripSaveError("Enter a valid start and end time.");
       return;
     }
@@ -4215,7 +5035,7 @@ Supply line`}
     if (latestDispatchConflicts.softMessages.length > 0) {
       if (!tripDispatchOverrideEnabled) {
         setTripSaveError(
-          "This selection overlaps another scheduled or in-progress trip. Enable Dispatch Override to save it as a planned trip."
+          "This selection overlaps another scheduled or in-progress trip. Enable Dispatch Override to save it as a planned trip.",
         );
         return;
       }
@@ -4234,7 +5054,8 @@ Supply line`}
       const secondaryTechUid = tripSecondaryTechUid.trim() || "";
       const secondaryHelperUid = tripSecondaryHelperUid.trim() || "";
 
-      const primaryName = findTechName(tripPrimaryTechUid) || "Unnamed Technician";
+      const primaryName =
+        findTechName(tripPrimaryTechUid) || "Unnamed Technician";
       const helperName = helperUid
         ? findHelperName(helperUid) || "Unnamed Helper"
         : null;
@@ -4312,7 +5133,9 @@ Supply line`}
       const nextTrips = [...trips, createdTrip].sort((a, b) => {
         const byDate = String(a.date || "").localeCompare(String(b.date || ""));
         if (byDate !== 0) return byDate;
-        return String(a.startTime || "").localeCompare(String(b.startTime || ""));
+        return String(a.startTime || "").localeCompare(
+          String(b.startTime || ""),
+        );
       });
 
       const helperIds = helperUid ? [helperUid] : [];
@@ -4325,7 +5148,10 @@ Supply line`}
       if (helperUid && !assignedTechnicianIds.includes(helperUid)) {
         assignedTechnicianIds.push(helperUid);
       }
-      if (secondaryHelperUid && !assignedTechnicianIds.includes(secondaryHelperUid)) {
+      if (
+        secondaryHelperUid &&
+        !assignedTechnicianIds.includes(secondaryHelperUid)
+      ) {
         assignedTechnicianIds.push(secondaryHelperUid);
       }
 
@@ -4341,7 +5167,25 @@ Supply line`}
         helperIds: helperIds.length ? helperIds : null,
         helperNames: helperNames.length ? helperNames : null,
         assignedTechnicianIds,
-        updatedAt: now,
+        ...getTicketAuditFields(now),
+      });
+
+      await logServiceTicketActivity({
+        type: "service_trip_scheduled",
+        title: "Trip Scheduled",
+        description: `Scheduled for ${formatTripDateLabel(tripDate)} (${formatTripWindow(tripTimeWindow)}) with ${primaryName}.`,
+        details: [
+          `Time: ${formatTripTimeRange(tripStartTime, tripEndTime)}`,
+          helperName ? `Helper: ${helperName}` : "",
+          secondaryTechName ? `Secondary tech: ${secondaryTechName}` : "",
+          secondaryHelperName ? `Secondary helper: ${secondaryHelperName}` : "",
+          dispatchOverride?.enabled
+            ? `Dispatch override: ${dispatchOverride.reason || "Enabled"}`
+            : "",
+          tripNotes.trim() ? `Notes: ${tripNotes.trim()}` : "",
+          `Trip: ${createdRef.id}`,
+        ],
+        createdAt: now,
       });
 
       setTicket((prev) =>
@@ -4357,19 +5201,16 @@ Supply line`}
               helperIds: helperIds.length ? helperIds : undefined,
               helperNames: helperNames.length ? helperNames : undefined,
               assignedTechnicianIds,
-              updatedAt: now,
+              ...getTicketAuditFields(now),
             }
-          : prev
+          : prev,
       );
 
       setTicketStatusEdit(nextStatus);
       setTrips(nextTrips);
       setAvailabilityTripsByDate((prev) => ({
         ...prev,
-        [tripDate]: [
-          ...(prev[tripDate] || []),
-          createdTrip,
-        ],
+        [tripDate]: [...(prev[tripDate] || []), createdTrip],
       }));
       setTripWorkNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
       setTripResolutionNotes((prev) => ({ ...prev, [createdTrip.id]: "" }));
@@ -4379,12 +5220,18 @@ Supply line`}
       setTripNoMaterialsUsed((prev) => ({ ...prev, [createdTrip.id]: false }));
       setFinishModeByTrip((prev) => ({ ...prev, [createdTrip.id]: "none" }));
       setHelperConfirmedByTrip((prev) => ({ ...prev, [createdTrip.id]: true }));
-      setSeparateRequestChoiceByTrip((prev) => ({ ...prev, [createdTrip.id]: "no" }));
-      setSeparateRequestDescriptionByTrip((prev) => ({ ...prev, [createdTrip.id]: "" }));
+      setSeparateRequestChoiceByTrip((prev) => ({
+        ...prev,
+        [createdTrip.id]: "no",
+      }));
+      setSeparateRequestDescriptionByTrip((prev) => ({
+        ...prev,
+        [createdTrip.id]: "",
+      }));
       setTripSaveSuccess(
         dispatchOverride
           ? `Trip scheduled with Dispatch Override. Ticket status is now ${formatTicketStatus(nextStatus)}.`
-          : `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`
+          : `Trip scheduled. Ticket status is now ${formatTicketStatus(nextStatus)}.`,
       );
       setTripNotes("");
       setTripHolidayOverride(false);
@@ -4392,7 +5239,7 @@ Supply line`}
       setTripDispatchOverrideReason("");
     } catch (err: unknown) {
       setTripSaveError(
-        err instanceof Error ? err.message : "Failed to create trip."
+        err instanceof Error ? err.message : "Failed to create trip.",
       );
     } finally {
       setTripSaving(false);
@@ -4413,7 +5260,10 @@ Supply line`}
     }
 
     if (hasInProgressTrips(trips.filter((t) => t.id !== trip.id))) {
-      setTripErr(trip.id, "Another trip on this ticket is already in progress.");
+      setTripErr(
+        trip.id,
+        "Another trip on this ticket is already in progress.",
+      );
       return;
     }
 
@@ -4437,7 +5287,7 @@ Supply line`}
     if (runningConflicts.length > 0) {
       setTripErr(
         trip.id,
-        `Cannot start this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+        `Cannot start this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`,
       );
       return;
     }
@@ -4475,7 +5325,7 @@ Supply line`}
               updatedAt: now,
               updatedByUid: myUid,
             }
-          : t
+          : t,
       );
 
       setTrips(nextTrips);
@@ -4490,9 +5340,24 @@ Supply line`}
         await persistTicketStatus(nextStatus, now);
       }
 
+      await logServiceTicketActivity({
+        type: "service_trip_started",
+        title: "Trip Started",
+        description: "Trip was started in the field.",
+        details: [
+          `Crew: ${(trip.crewConfirmed || trip.crew)?.primaryTechName || "Assigned crew"}`,
+          `Time: ${formatTripTimeRange(trip.startTime, trip.endTime)}`,
+          `Trip: ${trip.id}`,
+        ],
+        createdAt: now,
+      });
+
       setTripOk(trip.id, "Trip started.");
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to start trip.");
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to start trip.",
+      );
     } finally {
       setTripSavingFlag(trip.id, false);
     }
@@ -4517,9 +5382,13 @@ Supply line`}
 
     try {
       const now = nowIso();
-      const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
+      const pauseBlocks = [
+        ...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : []),
+      ];
 
-      const hasOpenPause = pauseBlocks.some((block) => block?.startAt && !block?.endAt);
+      const hasOpenPause = pauseBlocks.some(
+        (block) => block?.startAt && !block?.endAt,
+      );
       if (hasOpenPause) {
         setTripErr(trip.id, "This trip is already paused.");
         return;
@@ -4536,13 +5405,24 @@ Supply line`}
 
       setTrips((prev) =>
         prev.map((t) =>
-          t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks } : t
-        )
+          t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks } : t,
+        ),
       );
+
+      await logServiceTicketActivity({
+        type: "service_trip_paused",
+        title: "Trip Paused",
+        description: "Trip timer was paused.",
+        details: [`Trip: ${trip.id}`],
+        createdAt: now,
+      });
 
       setTripOk(trip.id, "Paused.");
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to pause trip.");
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to pause trip.",
+      );
     } finally {
       setTripSavingFlag(trip.id, false);
     }
@@ -4562,7 +5442,10 @@ Supply line`}
     }
 
     if (hasInProgressTrips(trips.filter((t) => t.id !== trip.id))) {
-      setTripErr(trip.id, "Another trip on this ticket is already in progress.");
+      setTripErr(
+        trip.id,
+        "Another trip on this ticket is already in progress.",
+      );
       return;
     }
 
@@ -4586,7 +5469,7 @@ Supply line`}
     if (runningConflicts.length > 0) {
       setTripErr(
         trip.id,
-        `Cannot resume this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+        `Cannot resume this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`,
       );
       return;
     }
@@ -4597,7 +5480,9 @@ Supply line`}
 
     try {
       const now = nowIso();
-      const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
+      const pauseBlocks = [
+        ...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : []),
+      ];
 
       let foundOpenPause = false;
 
@@ -4623,13 +5508,24 @@ Supply line`}
 
       setTrips((prev) =>
         prev.map((t) =>
-          t.id === trip.id ? { ...t, timerState: "running", pauseBlocks } : t
-        )
+          t.id === trip.id ? { ...t, timerState: "running", pauseBlocks } : t,
+        ),
       );
+
+      await logServiceTicketActivity({
+        type: "service_trip_resumed",
+        title: "Trip Resumed",
+        description: "Trip timer was resumed.",
+        details: [`Trip: ${trip.id}`],
+        createdAt: now,
+      });
 
       setTripOk(trip.id, "Resumed.");
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to resume trip.");
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to resume trip.",
+      );
     } finally {
       setTripSavingFlag(trip.id, false);
     }
@@ -4658,12 +5554,17 @@ Supply line`}
       });
 
       setTrips((prev) =>
-        prev.map((t) => (t.id === trip.id ? { ...t, workNotes: value || null } : t))
+        prev.map((t) =>
+          t.id === trip.id ? { ...t, workNotes: value || null } : t,
+        ),
       );
 
       setTripOk(trip.id, "Notes saved.");
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to save notes.");
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to save notes.",
+      );
     } finally {
       setTripSavingFlag(trip.id, false);
     }
@@ -4698,15 +5599,18 @@ Supply line`}
         throw new Error("Resolved requires resolution notes.");
       }
 
-      const separateRequestChoice = separateRequestChoiceByTrip[trip.id] || "no";
+      const separateRequestChoice =
+        separateRequestChoiceByTrip[trip.id] || "no";
       const separateRequestDescription = String(
-        separateRequestDescriptionByTrip[trip.id] || ""
+        separateRequestDescriptionByTrip[trip.id] || "",
       ).trim();
       const shouldCreateSeparateServiceRequest =
         mode === "resolved" && separateRequestChoice === "yes";
 
       if (shouldCreateSeparateServiceRequest && !separateRequestDescription) {
-        throw new Error("Brief issue description is required for the new service ticket.");
+        throw new Error(
+          "Brief issue description is required for the new service ticket.",
+        );
       }
 
       const materialsText = String(tripMaterialsText[trip.id] || "").trim();
@@ -4721,7 +5625,9 @@ Supply line`}
         throw new Error(materialCheck.message);
       }
 
-      const pauseBlocks = [...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [])];
+      const pauseBlocks = [
+        ...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : []),
+      ];
       for (let i = pauseBlocks.length - 1; i >= 0; i--) {
         if (pauseBlocks[i] && pauseBlocks[i].startAt && !pauseBlocks[i].endAt) {
           pauseBlocks[i] = { ...pauseBlocks[i], endAt: now };
@@ -4742,19 +5648,26 @@ Supply line`}
       }
 
       const latestSnap = await getDoc(doc(db, "trips", trip.id));
-      const latestTrip = latestSnap.exists() ? (latestSnap.data() as any) : null;
+      const latestTrip = latestSnap.exists()
+        ? (latestSnap.data() as any)
+        : null;
 
       const crewConfirmed = applyHelperConfirmation(
-        (latestTrip?.crewConfirmed ?? trip.crewConfirmed ?? null) as TripCrew | null,
-        trip.id
+        (latestTrip?.crewConfirmed ??
+          trip.crewConfirmed ??
+          null) as TripCrew | null,
+        trip.id,
       );
       const crewFallback = applyHelperConfirmation(
         (latestTrip?.crew ?? trip.crew ?? null) as TripCrew | null,
-        trip.id
+        trip.id,
       );
       const finalCrew = crewConfirmed || crewFallback || null;
 
-      const crewMembers = crewMembersFromTrip({ crewConfirmed: finalCrew, crew: finalCrew });
+      const crewMembers = crewMembersFromTrip({
+        crewConfirmed: finalCrew,
+        crew: finalCrew,
+      });
       if (!crewMembers.length) {
         throw new Error("No crew members found on trip.");
       }
@@ -4783,7 +5696,7 @@ Supply line`}
           crewConfirmed: finalCrew,
           updatedAt: now,
           updatedByUid: myUid,
-        })
+        }),
       );
 
       for (const member of crewMembers) {
@@ -4841,7 +5754,7 @@ Supply line`}
               noMaterialsUsed,
               crewConfirmed: finalCrew,
             }
-          : t
+          : t,
       );
 
       setTrips(nextTrips);
@@ -4878,6 +5791,34 @@ Supply line`}
       if (ticket?.id) {
         await persistTicketStatus(nextStatus, now, billingOverride);
       }
+
+      await logServiceTicketActivity({
+        type:
+          mode === "resolved"
+            ? "service_trip_completed_resolved"
+            : "service_trip_completed_follow_up",
+        title: mode === "resolved" ? "Trip Completed" : "Follow Up Required",
+        description:
+          mode === "resolved"
+            ? "Trip was completed as Resolved — Ready to Bill."
+            : "Trip was completed with Follow Up required.",
+        details: [
+          `Billable hours: ${hoursToUse}`,
+          materialCheck.cleaned.length > 0
+            ? `Materials captured: ${materialCheck.cleaned.length}`
+            : noMaterialsUsed
+              ? "No materials used"
+              : "",
+          mode === "resolved" && resolutionNotes
+            ? `Resolution: ${getPreviewText(resolutionNotes, 160)}`
+            : "",
+          mode === "follow_up" && followNotes
+            ? `Follow-up notes: ${getPreviewText(followNotes, 160)}`
+            : "",
+          `Trip: ${trip.id}`,
+        ],
+        createdAt: now,
+      });
 
       let createdSeparateTicket: { id: string; summary: string } | null = null;
 
@@ -4921,18 +5862,22 @@ Supply line`}
             requestedByRole: appUser?.role || null,
             createdAt: now,
             createdByUid: myUid || null,
-            updatedAt: now,
-            updatedByUid: myUid || null,
-          })
+            createdByName: getCurrentAuditName(),
+            createdByRole: appUser?.role || null,
+            ...getTicketAuditFields(now),
+          }),
         );
 
-        createdSeparateTicket = { id: newTicketRef.id, summary: newTicketSummary };
+        createdSeparateTicket = {
+          id: newTicketRef.id,
+          summary: newTicketSummary,
+        };
 
         const originalActivityRef = doc(
-          collection(db, "serviceTickets", ticket.id, "activity")
+          collection(db, "serviceTickets", ticket.id, "activity"),
         );
         const newTicketActivityRef = doc(
-          collection(db, "serviceTickets", newTicketRef.id, "activity")
+          collection(db, "serviceTickets", newTicketRef.id, "activity"),
         );
 
         const originalActivityEntry: ServiceTicketActivityEntry = {
@@ -4987,7 +5932,7 @@ Supply line`}
         trip.id,
         `${mode === "resolved" ? "Resolved" : "Follow Up logged"}. Billable hours: ${hoursToUse}.${
           createdSeparateTicket ? " New service ticket created." : ""
-        }`
+        }`,
       );
 
       if (isMobile) {
@@ -4999,7 +5944,10 @@ Supply line`}
         });
       }
     } catch (err: unknown) {
-      setTripErr(trip.id, err instanceof Error ? err.message : "Failed to finish trip.");
+      setTripErr(
+        trip.id,
+        err instanceof Error ? err.message : "Failed to finish trip.",
+      );
     } finally {
       setTripSavingFlag(trip.id, false);
     }
@@ -5015,17 +5963,21 @@ Supply line`}
     setEditTripSecondaryHelperUid(String(trip.crew?.secondaryHelperUid || ""));
     setEditTripHolidayOverride(false);
     setEditTripDispatchOverrideEnabled(Boolean(trip.dispatchOverride?.enabled));
-    setEditTripDispatchOverrideReason(String(trip.dispatchOverride?.reason || ""));
+    setEditTripDispatchOverrideReason(
+      String(trip.dispatchOverride?.reason || ""),
+    );
 
     const tripPrimaryUid = String(trip.crew?.primaryTechUid || "").trim();
     const tripHelperUid = String(trip.crew?.helperUid || "").trim();
     const defaultHelperUid =
       helperCandidates.find(
-        (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid
+        (h) => String(h.defaultPairedTechUid || "").trim() === tripPrimaryUid,
       )?.uid || "";
 
     setEditTripUseDefaultHelper(
-      Boolean(tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid)
+      Boolean(
+        tripPrimaryUid && tripHelperUid && defaultHelperUid === tripHelperUid,
+      ),
     );
 
     setEditTripId(trip.id);
@@ -5040,7 +5992,9 @@ Supply line`}
   async function handleSaveTripEdit() {
     if (!canDispatch || !editTripId || !ticket?.id) return;
     if (ticket.status === "invoiced") {
-      setEditTripErr("Invoiced tickets are locked and trip schedule cannot be edited.");
+      setEditTripErr(
+        "Invoiced tickets are locked and trip schedule cannot be edited.",
+      );
       return;
     }
 
@@ -5098,7 +6052,7 @@ Supply line`}
       if (latestDispatchConflicts.softMessages.length > 0) {
         if (!editTripDispatchOverrideEnabled) {
           throw new Error(
-            "This selection overlaps another scheduled or in-progress trip. Enable Dispatch Override to save it as a planned trip."
+            "This selection overlaps another scheduled or in-progress trip. Enable Dispatch Override to save it as a planned trip.",
           );
         }
 
@@ -5113,7 +6067,8 @@ Supply line`}
       const secondaryTechUid = editTripSecondaryTechUid.trim() || "";
       const secondaryHelperUid = editTripSecondaryHelperUid.trim() || "";
 
-      const primaryName = findTechName(editTripPrimaryTechUid) || "Unnamed Technician";
+      const primaryName =
+        findTechName(editTripPrimaryTechUid) || "Unnamed Technician";
       const helperName = helperUid
         ? findHelperName(helperUid) || "Unnamed Helper"
         : null;
@@ -5171,7 +6126,10 @@ Supply line`}
       if (helperUid && !assignedTechnicianIds.includes(helperUid)) {
         assignedTechnicianIds.push(helperUid);
       }
-      if (secondaryHelperUid && !assignedTechnicianIds.includes(secondaryHelperUid)) {
+      if (
+        secondaryHelperUid &&
+        !assignedTechnicianIds.includes(secondaryHelperUid)
+      ) {
         assignedTechnicianIds.push(secondaryHelperUid);
       }
 
@@ -5184,7 +6142,7 @@ Supply line`}
         helperIds: helperIds.length ? helperIds : null,
         helperNames: helperNames.length ? helperNames : null,
         assignedTechnicianIds,
-        updatedAt: now,
+        ...getTicketAuditFields(now),
       });
 
       setTrips((prev) =>
@@ -5203,17 +6161,19 @@ Supply line`}
                 updatedAt: now,
                 updatedByUid: myUid || null,
               }
-            : t
-        )
+            : t,
+        ),
       );
 
       setAvailabilityTripsByDate((prev) => {
         const nextByDate = { ...prev };
         nextByDate[trip.date] = (nextByDate[trip.date] || []).filter(
-          (item) => item.id !== trip.id
+          (item) => item.id !== trip.id,
         );
         nextByDate[editTripDate] = [
-          ...(nextByDate[editTripDate] || []).filter((item) => item.id !== trip.id),
+          ...(nextByDate[editTripDate] || []).filter(
+            (item) => item.id !== trip.id,
+          ),
           {
             ...trip,
             date: editTripDate,
@@ -5241,15 +6201,32 @@ Supply line`}
               assignedTechnicianIds,
               updatedAt: now,
             }
-          : prev
+          : prev,
       );
+
+      await logServiceTicketActivity({
+        type: "service_trip_rescheduled",
+        title: "Trip Rescheduled",
+        description: `Trip changed from ${formatTripDateLabel(trip.date)} (${formatTripWindow(String(trip.timeWindow) as TripTimeWindow)}) to ${formatTripDateLabel(editTripDate)} (${formatTripWindow(editTripTimeWindow)}).`,
+        details: [
+          `Old time: ${formatTripTimeRange(trip.startTime, trip.endTime)}`,
+          `New time: ${formatTripTimeRange(editTripStartTime, editTripEndTime)}`,
+          `Lead: ${primaryName}`,
+          helperName ? `Helper: ${helperName}` : "",
+          dispatchOverride?.enabled
+            ? `Dispatch override: ${dispatchOverride.reason || "Enabled"}`
+            : "",
+          `Trip: ${trip.id}`,
+        ],
+        createdAt: now,
+      });
 
       setEditTripId(null);
       setEditTripDispatchOverrideEnabled(false);
       setEditTripDispatchOverrideReason("");
     } catch (err: unknown) {
       setEditTripErr(
-        err instanceof Error ? err.message : "Failed to update trip."
+        err instanceof Error ? err.message : "Failed to update trip.",
       );
     } finally {
       setEditTripSaving(false);
@@ -5272,7 +6249,7 @@ Supply line`}
     if (
       window.prompt(
         `Type DELETE to remove ${trip.date} ${trip.startTime}-${trip.endTime}`,
-        ""
+        "",
       ) !== "DELETE"
     ) {
       return;
@@ -5285,11 +6262,15 @@ Supply line`}
     try {
       const now = nowIso();
       const tripRef = doc(db, "trips", trip.id);
-      const ticketRef = ticket?.id ? doc(db, "serviceTickets", ticket.id) : null;
+      const ticketRef = ticket?.id
+        ? doc(db, "serviceTickets", ticket.id)
+        : null;
 
       const nextTrips = trips.filter((t) => t.id !== trip.id);
       const nextStatus = deriveNextTicketStatus(nextTrips);
-      const hasRemainingOpenTrips = nextTrips.some((item) => isOpenTripRecord(item));
+      const hasRemainingOpenTrips = nextTrips.some((item) =>
+        isOpenTripRecord(item),
+      );
 
       const batch = writeBatch(db);
 
@@ -5323,7 +6304,7 @@ Supply line`}
                   scheduledTripId: null,
                   activeTripId: null,
                 }),
-          })
+          }),
         );
       }
 
@@ -5354,7 +6335,9 @@ Supply line`}
       setTrips(nextTrips);
       setAvailabilityTripsByDate((prev) => ({
         ...prev,
-        [trip.date]: (prev[trip.date] || []).filter((item) => item.id !== trip.id),
+        [trip.date]: (prev[trip.date] || []).filter(
+          (item) => item.id !== trip.id,
+        ),
       }));
 
       if (ticket?.id) {
@@ -5377,7 +6360,7 @@ Supply line`}
                       assignedTechnicianIds: undefined,
                     }),
               }
-            : prev
+            : prev,
         );
         setTicketStatusEdit(nextStatus);
       }
@@ -5401,11 +6384,14 @@ Supply line`}
         ...prev,
       ]);
 
-      setTripOk(trip.id, "Scheduled trip deleted. Ticket returned to the available queue.");
+      setTripOk(
+        trip.id,
+        "Scheduled trip deleted. Ticket returned to the available queue.",
+      );
     } catch (err: unknown) {
       setTripErr(
         trip.id,
-        err instanceof Error ? err.message : "Failed to delete trip."
+        err instanceof Error ? err.message : "Failed to delete trip.",
       );
     } finally {
       setTripSavingFlag(trip.id, false);
@@ -5420,12 +6406,16 @@ Supply line`}
       return;
     }
 
-    const role = String(appUser?.role || "").trim().toLowerCase();
+    const role = String(appUser?.role || "")
+      .trim()
+      .toLowerCase();
     const isTechnicianClaimer = role === "technician";
     const isHelperClaimer = role === "helper" || role === "apprentice";
 
     if (!isTechnicianClaimer && !isHelperClaimer) {
-      alert("Quick Claim & Start is only available to technicians, helpers, and apprentices.");
+      alert(
+        "Quick Claim & Start is only available to technicians, helpers, and apprentices.",
+      );
       return;
     }
 
@@ -5447,7 +6437,7 @@ Supply line`}
     const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
     if (remoteOpenTrips.length > 0) {
       alert(
-        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`
+        `This ticket already has an open trip in Firestore (${remoteOpenTrips[0].date} ${remoteOpenTrips[0].startTime}-${remoteOpenTrips[0].endTime}). Refresh and use that trip instead.`,
       );
       return;
     }
@@ -5467,37 +6457,37 @@ Supply line`}
       const techPto = getApprovedPtoForEmployeeOnDate(
         myUid,
         isoTodayLocal(),
-        ptoRequests
+        ptoRequests,
       );
 
       if (techPto) {
         alert(
           `${getPtoUnavailableMessage(
             primaryTechName,
-            techPto
-          )} You cannot claim and start a service ticket while marked unavailable.`
+            techPto,
+          )} You cannot claim and start a service ticket while marked unavailable.`,
         );
         return;
       }
 
       const defaultHelper =
         helperCandidates.find(
-          (h) => String(h.defaultPairedTechUid || "").trim() === myUid
+          (h) => String(h.defaultPairedTechUid || "").trim() === myUid,
         ) || null;
 
       if (defaultHelper?.uid) {
         const helperPto = getApprovedPtoForEmployeeOnDate(
           defaultHelper.uid,
           isoTodayLocal(),
-          ptoRequests
+          ptoRequests,
         );
 
         if (helperPto) {
           alert(
             `${getPtoUnavailableMessage(
               defaultHelper.name,
-              helperPto
-            )} ${defaultHelper.name} was removed from this trip. The ticket will start with ${primaryTechName} only.`
+              helperPto,
+            )} ${defaultHelper.name} was removed from this trip. The ticket will start with ${primaryTechName} only.`,
           );
           helperUid = "";
           helperName = null;
@@ -5508,45 +6498,47 @@ Supply line`}
       }
     } else {
       const claimantProfile = helperCandidates.find((h) => h.uid === myUid);
-      const pairedTechUid = String(claimantProfile?.defaultPairedTechUid || "").trim();
+      const pairedTechUid = String(
+        claimantProfile?.defaultPairedTechUid || "",
+      ).trim();
 
       const claimantPto = getApprovedPtoForEmployeeOnDate(
         myUid,
         isoTodayLocal(),
-        ptoRequests
+        ptoRequests,
       );
 
       if (claimantPto) {
         alert(
           `${getPtoUnavailableMessage(
             appUser?.displayName || claimantProfile?.name || "You",
-            claimantPto
-          )} You cannot claim and start a service ticket while marked unavailable.`
+            claimantPto,
+          )} You cannot claim and start a service ticket while marked unavailable.`,
         );
         return;
       }
 
       if (!pairedTechUid) {
         alert(
-          "No default paired technician is set for your profile. Ask the office to set one before using Claim & Start."
+          "No default paired technician is set for your profile. Ask the office to set one before using Claim & Start.",
         );
         return;
       }
 
       if (pairedTechUid === myUid) {
         alert(
-          "Your default paired technician setup is invalid. Ask the office to update your pairing."
+          "Your default paired technician setup is invalid. Ask the office to update your pairing.",
         );
         return;
       }
 
       const pairedTech = technicians.find(
-        (tech) => tech.uid === pairedTechUid && tech.active
+        (tech) => tech.uid === pairedTechUid && tech.active,
       );
 
       if (!pairedTech) {
         alert(
-          "Your default paired technician could not be found as an active technician. Ask the office to update your pairing."
+          "Your default paired technician could not be found as an active technician. Ask the office to update your pairing.",
         );
         return;
       }
@@ -5554,15 +6546,15 @@ Supply line`}
       const pairedTechPto = getApprovedPtoForEmployeeOnDate(
         pairedTech.uid,
         isoTodayLocal(),
-        ptoRequests
+        ptoRequests,
       );
 
       if (pairedTechPto) {
         alert(
           `${getPtoUnavailableMessage(
             pairedTech.displayName || "Technician",
-            pairedTechPto
-          )} Ask the office to assign you to another available lead tech before using Claim & Start.`
+            pairedTechPto,
+          )} Ask the office to assign you to another available lead tech before using Claim & Start.`,
         );
         return;
       }
@@ -5579,12 +6571,14 @@ Supply line`}
     }
 
     const runningConflicts = await findRunningTripsForCrewUids({
-      crewUids: Array.from(new Set([primaryTechUid, helperUid].filter(Boolean))),
+      crewUids: Array.from(
+        new Set([primaryTechUid, helperUid].filter(Boolean)),
+      ),
     });
 
     if (runningConflicts.length > 0) {
       alert(
-        `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`
+        `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`,
       );
       return;
     }
@@ -5599,8 +6593,10 @@ Supply line`}
         if (!liveTicket.exists()) throw new Error("Ticket not found.");
 
         const live = liveTicket.data() as any;
-        if (live.assignedTechnicianId) throw new Error("Already claimed by another user.");
-        if (isTicketTerminal(live.status)) throw new Error("Ticket is not claimable.");
+        if (live.assignedTechnicianId)
+          throw new Error("Already claimed by another user.");
+        if (isTicketTerminal(live.status))
+          throw new Error("Ticket is not claimable.");
 
         tx.set(newTripRef, {
           active: true,
@@ -5668,8 +6664,10 @@ Supply line`}
           secondaryTechnicianName: null,
           helperIds: helperUid ? [helperUid] : null,
           helperNames: helperName ? [helperName] : null,
-          assignedTechnicianIds: helperUid ? [primaryTechUid, helperUid] : [primaryTechUid],
-          updatedAt: nowString,
+          assignedTechnicianIds: helperUid
+            ? [primaryTechUid, helperUid]
+            : [primaryTechUid],
+          ...getTicketAuditFields(nowString),
         });
       });
 
@@ -5680,7 +6678,9 @@ Supply line`}
   }
 
   async function copyPurchaseOrderCode(poCode: string) {
-    const clean = String(poCode || "").trim().toUpperCase();
+    const clean = String(poCode || "")
+      .trim()
+      .toUpperCase();
     if (!clean) return;
 
     try {
@@ -5690,26 +6690,27 @@ Supply line`}
     }
   }
 
-  async function openPurchaseOrderAttachment(attachment: PurchaseOrderAttachment) {
-  const storagePath = String(attachment.storagePath || "").trim();
+  async function openPurchaseOrderAttachment(
+    attachment: PurchaseOrderAttachment,
+  ) {
+    const storagePath = String(attachment.storagePath || "").trim();
 
-  if (!storagePath) {
-    alert("This invoice PDF is missing its storage path.");
-    return;
+    if (!storagePath) {
+      alert("This invoice PDF is missing its storage path.");
+      return;
+    }
+
+    try {
+      const storage = getStorage();
+      const fileRef = ref(storage, storagePath);
+      const url = await getDownloadURL(fileRef);
+
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      console.error("Failed to open invoice PDF:", err);
+      alert("Could not open invoice PDF. Check Firebase Storage permissions.");
+    }
   }
-
-  try {
-    const storage = getStorage();
-    const fileRef = ref(storage, storagePath);
-    const url = await getDownloadURL(fileRef);
-
-    window.open(url, "_blank", "noopener,noreferrer");
-  } catch (err) {
-    console.error("Failed to open invoice PDF:", err);
-    alert("Could not open invoice PDF. Check Firebase Storage permissions.");
-  }
-}
-
 
   async function handleGeneratePoFromTicket() {
     if (!eligibleTripForPo || !ticket?.id || !canGeneratePoFromTicket) return;
@@ -5752,17 +6753,36 @@ Supply line`}
 
       setPurchaseOrders((prev) =>
         [nextPo, ...prev.filter((po) => po.id !== nextPo.id)].sort((a, b) => {
-          const ai = Number.isFinite(Number(a.poIndex)) ? Number(a.poIndex) : 9999;
-          const bi = Number.isFinite(Number(b.poIndex)) ? Number(b.poIndex) : 9999;
+          const ai = Number.isFinite(Number(a.poIndex))
+            ? Number(a.poIndex)
+            : 9999;
+          const bi = Number.isFinite(Number(b.poIndex))
+            ? Number(b.poIndex)
+            : 9999;
           if (ai !== bi) return ai - bi;
-          return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
-        })
+          return String(a.createdAt || "").localeCompare(
+            String(b.createdAt || ""),
+          );
+        }),
       );
+
+      await logServiceTicketActivity({
+        type: "purchase_order_generated",
+        title: "PO Generated",
+        description: `PO #${record.poCode} was generated.`,
+        details: [
+          `PO: ${record.poCode}`,
+          eligibleTripForPo?.id ? `Trip: ${eligibleTripForPo.id}` : "",
+        ],
+        createdAt: record.createdAt || nowIso(),
+      });
 
       await copyPurchaseOrderCode(record.poCode);
       setPoOk(`Generated PO #${record.poCode}.`);
     } catch (err: unknown) {
-      setPoError(err instanceof Error ? err.message : "Failed to generate PO number.");
+      setPoError(
+        err instanceof Error ? err.message : "Failed to generate PO number.",
+      );
     } finally {
       setPoGenerating(false);
     }
@@ -5771,7 +6791,9 @@ Supply line`}
   async function handleSaveBillingPacketDetails() {
     if (!ticket?.id || !canBill || !ticket.billing) return;
     if (ticket.status === "invoiced") {
-      setBillingErr("Invoiced tickets are locked and billing details cannot be changed.");
+      setBillingErr(
+        "Invoiced tickets are locked and billing details cannot be changed.",
+      );
       return;
     }
 
@@ -5791,7 +6813,9 @@ Supply line`}
         parsedAmount !== null &&
         (!Number.isFinite(parsedAmount) || parsedAmount < 0)
       ) {
-        throw new Error("Materials Amount must be blank or a number 0 or greater.");
+        throw new Error(
+          "Materials Amount must be blank or a number 0 or greater.",
+        );
       }
 
       const nextBilling: BillingPacket = {
@@ -5803,17 +6827,21 @@ Supply line`}
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         billing: nextBilling,
-        updatedAt: now,
+        ...getTicketAuditFields(now),
       });
 
       setTicket((prev) =>
-        prev ? { ...prev, billing: nextBilling, updatedAt: now } : prev
+        prev
+          ? { ...prev, billing: nextBilling, ...getTicketAuditFields(now) }
+          : prev,
       );
 
       setBillingOk("Billing packet details saved.");
     } catch (err: unknown) {
       setBillingErr(
-        err instanceof Error ? err.message : "Failed to save billing packet details."
+        err instanceof Error
+          ? err.message
+          : "Failed to save billing packet details.",
       );
     } finally {
       setBillingSaving(false);
@@ -5847,13 +6875,16 @@ Supply line`}
 
     const closureNote = closeFollowUpNote.trim();
     if (!closureNote) {
-      setCloseFollowUpErr("Office note is required before sending this ticket to billing.");
+      setCloseFollowUpErr(
+        "Office note is required before sending this ticket to billing.",
+      );
       return;
     }
 
     const reason =
-      FOLLOW_UP_CLOSURE_REASONS.find((item) => item.code === closeFollowUpReason) ||
-      FOLLOW_UP_CLOSURE_REASONS[FOLLOW_UP_CLOSURE_REASONS.length - 1];
+      FOLLOW_UP_CLOSURE_REASONS.find(
+        (item) => item.code === closeFollowUpReason,
+      ) || FOLLOW_UP_CLOSURE_REASONS[FOLLOW_UP_CLOSURE_REASONS.length - 1];
 
     const latestCompletedTrip = getLatestCompletedTripForLifecycle(trips);
     const latestOutcome = String(latestCompletedTrip?.outcome || "")
@@ -5862,14 +6893,14 @@ Supply line`}
 
     if (!latestCompletedTrip || latestOutcome !== "follow_up") {
       setCloseFollowUpErr(
-        "This action is only available when the latest completed trip outcome is Follow Up."
+        "This action is only available when the latest completed trip outcome is Follow Up.",
       );
       return;
     }
 
     if (hasOpenTrips(trips)) {
       setCloseFollowUpErr(
-        "An open follow-up trip exists. Complete or cancel that trip before sending this ticket to billing."
+        "An open follow-up trip exists. Complete or cancel that trip before sending this ticket to billing.",
       );
       return;
     }
@@ -5880,7 +6911,7 @@ Supply line`}
       const remoteOpenTrips = await findOpenTripsForTicketId(ticket.id);
       if (remoteOpenTrips.length > 0) {
         throw new Error(
-          "An open follow-up trip exists in Firestore. Complete or cancel it before sending this ticket to billing."
+          "An open follow-up trip exists in Firestore. Complete or cancel it before sending this ticket to billing.",
         );
       }
 
@@ -5894,7 +6925,7 @@ Supply line`}
 
       if (!nextBilling) {
         throw new Error(
-          "Unable to create the billing packet because a completed Follow-Up trip could not be confirmed."
+          "Unable to create the billing packet because a completed Follow-Up trip could not be confirmed.",
         );
       }
 
@@ -5910,7 +6941,9 @@ Supply line`}
         closedByRole: appUser?.role || null,
       };
 
-      const activityRef = doc(collection(db, "serviceTickets", ticket.id, "activity"));
+      const activityRef = doc(
+        collection(db, "serviceTickets", ticket.id, "activity"),
+      );
       const activityEntry: ServiceTicketActivityEntry = {
         id: activityRef.id,
         type: "follow_up_closed_without_return_visit",
@@ -5932,8 +6965,7 @@ Supply line`}
         status: "completed",
         billing: nextBilling,
         followUpClosure,
-        updatedAt: now,
-        updatedByUid: myUid || null,
+        ...getTicketAuditFields(now),
       });
       batch.set(activityRef, {
         type: activityEntry.type,
@@ -5956,24 +6988,26 @@ Supply line`}
               followUpClosure,
               updatedAt: now,
             }
-          : prev
+          : prev,
       );
       setTicketStatusEdit("completed");
       setBillingMaterialsSummaryEdit(
         String(nextBilling.materialsSummary || "").trim() ||
-          buildMaterialsSummaryFromLines(nextBilling.materials)
+          buildMaterialsSummaryFromLines(nextBilling.materials),
       );
       setBillingMaterialsAmountEdit("");
       setActivityEntries((prev) => [activityEntry, ...prev]);
       setShowCloseFollowUpDialog(false);
-      setBillingOk("Follow-up closed without a return visit. Ticket is Ready to Bill.");
+      setBillingOk(
+        "Follow-up closed without a return visit. Ticket is Ready to Bill.",
+      );
       setCloseFollowUpNote("");
       setCloseFollowUpReason("customer_declined");
     } catch (err: unknown) {
       setCloseFollowUpErr(
         err instanceof Error
           ? err.message
-          : "Failed to close follow-up and send this ticket to billing."
+          : "Failed to close follow-up and send this ticket to billing.",
       );
     } finally {
       setCloseFollowUpSaving(false);
@@ -5984,7 +7018,9 @@ Supply line`}
     if (!ticket?.id || !canBill) return;
 
     if (ticket.status === "invoiced") {
-      setBillingErr("Invoiced tickets are locked and billing packet cannot be resynced.");
+      setBillingErr(
+        "Invoiced tickets are locked and billing packet cannot be resynced.",
+      );
       return;
     }
 
@@ -6010,15 +7046,14 @@ Supply line`}
 
       if (!nextBilling) {
         throw new Error(
-          "No billing-ready lifecycle was found. Complete the latest trip as Resolved, or close a Follow-Up without a return visit first."
+          "No billing-ready lifecycle was found. Complete the latest trip as Resolved, or close a Follow-Up without a return visit first.",
         );
       }
 
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         billing: nextBilling,
         status: "completed",
-        updatedAt: now,
-        updatedByUid: myUid || null,
+        ...getTicketAuditFields(now),
       });
 
       setTicket((prev) =>
@@ -6027,27 +7062,40 @@ Supply line`}
               ...prev,
               billing: nextBilling,
               status: "completed",
-              updatedAt: now,
+              ...getTicketAuditFields(now),
             }
-          : prev
+          : prev,
       );
 
       setTicketStatusEdit("completed");
       setBillingMaterialsSummaryEdit(
         String(nextBilling.materialsSummary || "").trim() ||
-          buildMaterialsSummaryFromLines(nextBilling.materials)
+          buildMaterialsSummaryFromLines(nextBilling.materials),
       );
       setBillingMaterialsAmountEdit(
         typeof nextBilling.materialsAmount === "number" &&
           Number.isFinite(nextBilling.materialsAmount)
           ? String(nextBilling.materialsAmount)
-          : ""
+          : "",
       );
+
+      await logServiceTicketActivity({
+        type: "billing_packet_resynced",
+        title: "Billing Packet Resynced",
+        description: "Billing packet was rebuilt from completed trip history.",
+        details: [
+          `Status: ${formatBillingPacketStatus(nextBilling.status)}`,
+          `Ready trip: ${nextBilling.readyToBillTripId || "—"}`,
+          `Labor hours: ${nextBilling.labor.totalHours}`,
+          `Materials: ${nextBilling.materials.length}`,
+        ],
+        createdAt: now,
+      });
 
       setBillingOk("Billing packet resynced and set to Ready to Bill.");
     } catch (err: unknown) {
       setBillingErr(
-        err instanceof Error ? err.message : "Failed to resync billing packet."
+        err instanceof Error ? err.message : "Failed to resync billing packet.",
       );
     } finally {
       setBillingSaving(false);
@@ -6057,7 +7105,9 @@ Supply line`}
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
     if (!ticket?.id || !canBill) return;
     if (ticket.status === "invoiced") {
-      setBillingErr("Invoiced tickets are locked and billing status cannot be changed.");
+      setBillingErr(
+        "Invoiced tickets are locked and billing status cannot be changed.",
+      );
       return;
     }
 
@@ -6077,30 +7127,31 @@ Supply line`}
         parsedAmount !== null &&
         (!Number.isFinite(parsedAmount) || parsedAmount < 0)
       ) {
-        throw new Error("Materials Amount must be blank or a number 0 or greater.");
+        throw new Error(
+          "Materials Amount must be blank or a number 0 or greater.",
+        );
       }
 
-      const base: BillingPacket =
-        ticket.billing || {
-          status: "not_ready",
-          readyToBillAt: null,
-          readyToBillTripId: null,
-          resolutionNotes: null,
-          workNotes: null,
-          labor: { totalHours: 0, byCrew: [] },
-          materials: [],
-          materialsSummary: null,
-          materialsAmount: null,
-          photos: [],
-          invoiceSource: null,
-          qboInvoiceId: null,
-          qboDocNumber: null,
-          qboInvoiceUrl: null,
-          qboSyncedAt: null,
-          qboInvoiceStatus: null,
-          invoiceError: null,
-          updatedAt: now,
-        };
+      const base: BillingPacket = ticket.billing || {
+        status: "not_ready",
+        readyToBillAt: null,
+        readyToBillTripId: null,
+        resolutionNotes: null,
+        workNotes: null,
+        labor: { totalHours: 0, byCrew: [] },
+        materials: [],
+        materialsSummary: null,
+        materialsAmount: null,
+        photos: [],
+        invoiceSource: null,
+        qboInvoiceId: null,
+        qboDocNumber: null,
+        qboInvoiceUrl: null,
+        qboSyncedAt: null,
+        qboInvoiceStatus: null,
+        invoiceError: null,
+        updatedAt: now,
+      };
 
       const next: BillingPacket = {
         ...base,
@@ -6134,7 +7185,7 @@ Supply line`}
       await updateDoc(doc(db, "serviceTickets", ticket.id), {
         billing: next,
         status: nextTicketStatus,
-        updatedAt: now,
+        ...getTicketAuditFields(now),
       });
 
       setTicket((prev) =>
@@ -6143,17 +7194,37 @@ Supply line`}
               ...prev,
               billing: next,
               status: nextTicketStatus,
-              updatedAt: now,
+              ...getTicketAuditFields(now),
             }
-          : prev
+          : prev,
       );
 
       setTicketStatusEdit(nextTicketStatus);
 
-      setBillingOk(`Billing status updated: ${formatBillingPacketStatus(nextStatus)}`);
+      await logServiceTicketActivity({
+        type:
+          nextStatus === "invoiced"
+            ? "billing_marked_invoiced"
+            : "billing_status_updated",
+        title:
+          nextStatus === "invoiced"
+            ? "Ticket Marked Invoiced"
+            : "Billing Status Updated",
+        description: `Billing status updated to ${formatBillingPacketStatus(nextStatus)}.`,
+        details: [
+          `Billing status: ${formatBillingPacketStatus(nextStatus)}`,
+          `Ticket status: ${formatTicketStatus(nextTicketStatus)}`,
+          parsedAmount !== null ? `Materials amount: ${parsedAmount}` : "",
+        ],
+        createdAt: now,
+      });
+
+      setBillingOk(
+        `Billing status updated: ${formatBillingPacketStatus(nextStatus)}`,
+      );
     } catch (err: unknown) {
       setBillingErr(
-        err instanceof Error ? err.message : "Failed to update billing status."
+        err instanceof Error ? err.message : "Failed to update billing status.",
       );
     } finally {
       setBillingSaving(false);
@@ -6171,7 +7242,9 @@ Supply line`}
       ticket.billing.status !== "ready_to_bill" &&
       ticket.billing.status !== "invoice_failed"
     ) {
-      setBillingErr("Billing packet must be Ready to Bill before creating a QBO invoice.");
+      setBillingErr(
+        "Billing packet must be Ready to Bill before creating a QBO invoice.",
+      );
       return;
     }
 
@@ -6198,7 +7271,7 @@ Supply line`}
             },
             updatedAt: optimisticAt,
           }
-        : prev
+        : prev,
     );
 
     try {
@@ -6219,14 +7292,16 @@ Supply line`}
           String(
             data?.error ||
               data?.qboBody?.Fault?.Error?.[0]?.Message ||
-              "Failed to create QBO invoice."
-          )
+              "Failed to create QBO invoice.",
+          ),
         );
       }
 
       const updatedAt = String(data?.updatedAt || nowIso());
-      const updatedBilling = (data?.updatedBilling || null) as BillingPacket | null;
-      const updatedTicketStatus = (data?.updatedTicketStatus || "invoiced") as TicketStatus;
+      const updatedBilling = (data?.updatedBilling ||
+        null) as BillingPacket | null;
+      const updatedTicketStatus = (data?.updatedTicketStatus ||
+        "invoiced") as TicketStatus;
       const qboInvoiceUrl = String(data?.qboInvoiceUrl || "").trim();
 
       setTicket((prev) =>
@@ -6237,7 +7312,7 @@ Supply line`}
               billing: updatedBilling || prev.billing || null,
               updatedAt,
             }
-          : prev
+          : prev,
       );
 
       setTicketStatusEdit(updatedTicketStatus);
@@ -6274,7 +7349,7 @@ Supply line`}
               },
               updatedAt: failedAt,
             }
-          : prev
+          : prev,
       );
 
       setBillingErr(message);
@@ -6286,7 +7361,9 @@ Supply line`}
   return (
     <ProtectedPage fallbackTitle="Service Ticket Detail">
       <AppShell appUser={appUser}>
-        {loading ? <Alert severity="info">Loading service ticket…</Alert> : null}
+        {loading ? (
+          <Alert severity="info">Loading service ticket…</Alert>
+        ) : null}
         {error ? <Alert severity="error">{error}</Alert> : null}
 
         {!loading && !error && ticket ? (
@@ -6315,7 +7392,8 @@ Supply line`}
           >
             {isInvoicedTicket ? (
               <Alert severity="success" variant="outlined">
-                This ticket has been invoiced and is now locked from dispatch, trip, and billing edits.
+                This ticket has been invoiced and is now locked from dispatch,
+                trip, and billing edits.
               </Alert>
             ) : null}
 
@@ -6341,20 +7419,39 @@ Supply line`}
                       Finish Trip
                     </Typography>
 
-                    <Typography variant="h6" fontWeight={800} sx={{ mt: 0.25 }} noWrap>
+                    <Typography
+                      variant="h6"
+                      fontWeight={800}
+                      sx={{ mt: 0.25 }}
+                      noWrap
+                    >
                       {ticket.customerDisplayName || "Customer"}
                     </Typography>
 
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ mt: 0.5 }}
+                    >
                       {ticket.issueSummary || "Service Ticket"}
                     </Typography>
 
                     <Chip
                       sx={{ mt: 1.25 }}
                       size="small"
-                      color={mobileFinishMode === "resolved" ? "success" : "warning"}
-                      icon={mobileFinishMode === "resolved" ? <CheckRoundedIcon /> : undefined}
-                      label={mobileFinishMode === "resolved" ? "Resolved" : "Follow-Up"}
+                      color={
+                        mobileFinishMode === "resolved" ? "success" : "warning"
+                      }
+                      icon={
+                        mobileFinishMode === "resolved" ? (
+                          <CheckRoundedIcon />
+                        ) : undefined
+                      }
+                      label={
+                        mobileFinishMode === "resolved"
+                          ? "Resolved"
+                          : "Follow-Up"
+                      }
                     />
                   </Box>
 
@@ -6373,7 +7470,8 @@ Supply line`}
                       size="small"
                       inputProps={{ min: 0, step: 0.5 }}
                       value={
-                        typeof hoursOverrideByTrip[mobileFinishTrip.id] === "number"
+                        typeof hoursOverrideByTrip[mobileFinishTrip.id] ===
+                        "number"
                           ? hoursOverrideByTrip[mobileFinishTrip.id]
                           : getDefaultBillableHours(
                               Math.max(
@@ -6381,25 +7479,25 @@ Supply line`}
                                 (() => {
                                   const paused = sumPausedMinutes(
                                     mobileFinishTrip.pauseBlocks,
-                                    liveNowIso
+                                    liveNowIso,
                                   );
                                   const gross =
                                     mobileFinishTrip.actualStartAt &&
                                     !mobileFinishTrip.actualEndAt
                                       ? minutesBetweenIso(
                                           mobileFinishTrip.actualStartAt,
-                                          liveNowIso
+                                          liveNowIso,
                                         )
                                       : mobileFinishTrip.actualStartAt &&
                                           mobileFinishTrip.actualEndAt
                                         ? minutesBetweenIso(
                                             mobileFinishTrip.actualStartAt,
-                                            mobileFinishTrip.actualEndAt
+                                            mobileFinishTrip.actualEndAt,
                                           )
                                         : 0;
                                   return gross - paused;
-                                })()
-                              )
+                                })(),
+                              ),
                             )
                       }
                       onChange={(e) =>
@@ -6414,7 +7512,9 @@ Supply line`}
                     <FormControlLabel
                       control={
                         <Checkbox
-                          checked={helperConfirmedByTrip[mobileFinishTrip.id] ?? true}
+                          checked={
+                            helperConfirmedByTrip[mobileFinishTrip.id] ?? true
+                          }
                           onChange={(e) =>
                             setHelperConfirmedByTrip((prev) => ({
                               ...prev,
@@ -6486,14 +7586,17 @@ Supply line`}
                         >
                           <Stack spacing={1.25}>
                             <Typography variant="subtitle1" fontWeight={800}>
-                              Did the customer ask for a future visit for a different issue?
+                              Did the customer ask for a future visit for a
+                              different issue?
                             </Typography>
 
                             <Stack direction="row" spacing={1}>
                               <Button
                                 fullWidth
                                 variant={
-                                  (separateRequestChoiceByTrip[mobileFinishTrip.id] || "no") === "no"
+                                  (separateRequestChoiceByTrip[
+                                    mobileFinishTrip.id
+                                  ] || "no") === "no"
                                     ? "contained"
                                     : "outlined"
                                 }
@@ -6503,10 +7606,12 @@ Supply line`}
                                     ...prev,
                                     [mobileFinishTrip.id]: "no",
                                   }));
-                                  setSeparateRequestDescriptionByTrip((prev) => ({
-                                    ...prev,
-                                    [mobileFinishTrip.id]: "",
-                                  }));
+                                  setSeparateRequestDescriptionByTrip(
+                                    (prev) => ({
+                                      ...prev,
+                                      [mobileFinishTrip.id]: "",
+                                    }),
+                                  );
                                 }}
                                 sx={{ borderRadius: 999, fontWeight: 800 }}
                               >
@@ -6516,7 +7621,9 @@ Supply line`}
                               <Button
                                 fullWidth
                                 variant={
-                                  separateRequestChoiceByTrip[mobileFinishTrip.id] === "yes"
+                                  separateRequestChoiceByTrip[
+                                    mobileFinishTrip.id
+                                  ] === "yes"
                                     ? "contained"
                                     : "outlined"
                                 }
@@ -6533,24 +7640,39 @@ Supply line`}
                               </Button>
                             </Stack>
 
-                            {separateRequestChoiceByTrip[mobileFinishTrip.id] === "yes" ? (
+                            {separateRequestChoiceByTrip[
+                              mobileFinishTrip.id
+                            ] === "yes" ? (
                               <Stack spacing={1}>
-                                <Alert severity="success" variant="outlined" sx={{ borderRadius: 2 }}>
-                                  Customer and service location will be copied to a new unscheduled ticket.
+                                <Alert
+                                  severity="success"
+                                  variant="outlined"
+                                  sx={{ borderRadius: 2 }}
+                                >
+                                  Customer and service location will be copied
+                                  to a new unscheduled ticket.
                                 </Alert>
 
                                 <TextField
                                   label="Brief Issue Description"
                                   multiline
                                   minRows={3}
-                                  value={separateRequestDescriptionByTrip[mobileFinishTrip.id] || ""}
-                                  onChange={(e) =>
-                                    setSeparateRequestDescriptionByTrip((prev) => ({
-                                      ...prev,
-                                      [mobileFinishTrip.id]: e.target.value,
-                                    }))
+                                  value={
+                                    separateRequestDescriptionByTrip[
+                                      mobileFinishTrip.id
+                                    ] || ""
                                   }
-                                  error={mobileSeparateRequestDescriptionMissing}
+                                  onChange={(e) =>
+                                    setSeparateRequestDescriptionByTrip(
+                                      (prev) => ({
+                                        ...prev,
+                                        [mobileFinishTrip.id]: e.target.value,
+                                      }),
+                                    )
+                                  }
+                                  error={
+                                    mobileSeparateRequestDescriptionMissing
+                                  }
                                   helperText={
                                     mobileSeparateRequestDescriptionMissing
                                       ? "Required to create the new service ticket."
@@ -6577,11 +7699,13 @@ Supply line`}
                 {mobileFinishTrip ? (
                   <Button
                     variant="contained"
-                    color={mobileFinishMode === "resolved" ? "success" : "primary"}
+                    color={
+                      mobileFinishMode === "resolved" ? "success" : "primary"
+                    }
                     onClick={() =>
                       finishTrip(
                         mobileFinishTrip,
-                        mobileFinishMode as "resolved" | "follow_up"
+                        mobileFinishMode as "resolved" | "follow_up",
                       )
                     }
                     disabled={mobileCompleteDisabled}
@@ -6628,7 +7752,11 @@ Supply line`}
                         ? "Service Ticket Completed"
                         : "Follow-Up Saved"}
                     </Typography>
-                    <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
+                    <Typography
+                      variant="body1"
+                      color="text.secondary"
+                      sx={{ mt: 1 }}
+                    >
                       Hours and materials were saved.
                       {mobileCompletionResult?.mode === "resolved"
                         ? " Original ticket is ready for billing."
@@ -6648,7 +7776,11 @@ Supply line`}
                         textAlign: "left",
                       }}
                     >
-                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                      <Stack
+                        direction="row"
+                        spacing={1.25}
+                        alignItems="flex-start"
+                      >
                         <Box
                           sx={{
                             width: 44,
@@ -6665,14 +7797,23 @@ Supply line`}
                         </Box>
 
                         <Box sx={{ minWidth: 0 }}>
-                          <Typography variant="subtitle2" fontWeight={900} color="success.main">
+                          <Typography
+                            variant="subtitle2"
+                            fontWeight={900}
+                            color="success.main"
+                          >
                             New service ticket created
                           </Typography>
                           <Typography variant="body2" sx={{ mt: 0.25 }}>
                             {ticket.customerDisplayName || "Customer"}
                           </Typography>
-                          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-                            {mobileCompletionResult.newTicketSummary || "Future service request"}
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ mt: 0.25 }}
+                          >
+                            {mobileCompletionResult.newTicketSummary ||
+                              "Future service request"}
                           </Typography>
                         </Box>
                       </Stack>
@@ -6705,7 +7846,11 @@ Supply line`}
                 ) : null}
 
                 <Button
-                  variant={mobileCompletionResult?.newTicketId ? "outlined" : "contained"}
+                  variant={
+                    mobileCompletionResult?.newTicketId
+                      ? "outlined"
+                      : "contained"
+                  }
                   onClick={() => {
                     setMobileCompletionResult(null);
                     router.push("/technician/my-day");
@@ -6724,7 +7869,10 @@ Supply line`}
               spacing={2}
               sx={{ minWidth: 0, maxWidth: "100%" }}
             >
-              <Stack spacing={1} sx={{ minWidth: 0, maxWidth: "100%", flex: 1 }}>
+              <Stack
+                spacing={1}
+                sx={{ minWidth: 0, maxWidth: "100%", flex: 1 }}
+              >
                 <Stack
                   direction="row"
                   spacing={1}
@@ -6787,7 +7935,9 @@ Supply line`}
                       size="small"
                       aria-label="Copy service ticket ID"
                       onClick={() =>
-                        navigator.clipboard.writeText(ticketId).catch(() => undefined)
+                        navigator.clipboard
+                          .writeText(ticketId)
+                          .catch(() => undefined)
                       }
                       sx={{ flexShrink: 0 }}
                     >
@@ -6802,7 +7952,9 @@ Supply line`}
                 spacing={1}
                 sx={{ width: { xs: "100%", md: "auto" }, minWidth: 0 }}
               >
-                {isFieldUser && !ticket.assignedTechnicianId && !hasOpenTrips(trips) ? (
+                {isFieldUser &&
+                !ticket.assignedTechnicianId &&
+                !hasOpenTrips(trips) ? (
                   <Button
                     variant="contained"
                     color="primary"
@@ -6862,7 +8014,9 @@ Supply line`}
                     <ServiceTicketLocationCard
                       customerDisplayName={ticket.customerDisplayName}
                       customerHref={
-                        ticket.customerId ? `/customers/${ticket.customerId}` : undefined
+                        ticket.customerId
+                          ? `/customers/${ticket.customerId}`
+                          : undefined
                       }
                       serviceAddressLine1={ticket.serviceAddressLine1}
                       serviceAddressLine2={ticket.serviceAddressLine2}
@@ -6878,7 +8032,9 @@ Supply line`}
                     />
                   </Box>
 
-                  {locationOk ? <Alert severity="success">{locationOk}</Alert> : null}
+                  {locationOk ? (
+                    <Alert severity="success">{locationOk}</Alert>
+                  ) : null}
                 </Stack>
 
                 <Section
@@ -6888,7 +8044,8 @@ Supply line`}
                   {canDispatch ? (
                     <Stack spacing={2}>
                       <Alert severity="info" variant="outlined">
-                        Status changes are guarded by the trip lifecycle. Customer cannot be changed from this page.
+                        Status changes are guarded by the trip lifecycle.
+                        Customer cannot be changed from this page.
                       </Alert>
 
                       <Box
@@ -6923,7 +8080,9 @@ Supply line`}
                           label="Estimated Duration (hours)"
                           inputProps={{ min: 1, step: 0.5 }}
                           value={ticketEstimatedHoursEdit}
-                          onChange={(e) => setTicketEstimatedHoursEdit(e.target.value)}
+                          onChange={(e) =>
+                            setTicketEstimatedHoursEdit(e.target.value)
+                          }
                           disabled={isInvoicedTicket}
                           helperText="Minimum 1 hour. Use 0.5 hour increments."
                         />
@@ -6933,7 +8092,9 @@ Supply line`}
                         size="small"
                         label="Issue Summary"
                         value={ticketIssueSummaryEdit}
-                        onChange={(e) => setTicketIssueSummaryEdit(e.target.value)}
+                        onChange={(e) =>
+                          setTicketIssueSummaryEdit(e.target.value)
+                        }
                         disabled={isInvoicedTicket}
                       />
 
@@ -6942,46 +8103,62 @@ Supply line`}
                         minRows={4}
                         label="Issue Details"
                         value={ticketIssueDetailsEdit}
-                        onChange={(e) => setTicketIssueDetailsEdit(e.target.value)}
+                        onChange={(e) =>
+                          setTicketIssueDetailsEdit(e.target.value)
+                        }
                         disabled={isInvoicedTicket}
                       />
 
-                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                      >
                         <Button
                           variant="contained"
                           onClick={handleSaveTicketOverview}
                           disabled={ticketEditSaving || isInvoicedTicket}
                         >
-                          {ticketEditSaving ? "Saving..." : "Save Ticket Overview"}
+                          {ticketEditSaving
+                            ? "Saving..."
+                            : "Save Ticket Overview"}
                         </Button>
 
-                        {ticketEditErr ? <Alert severity="error">{ticketEditErr}</Alert> : null}
-                        {ticketEditOk ? <Alert severity="success">{ticketEditOk}</Alert> : null}
+                        {ticketEditErr ? (
+                          <Alert severity="error">{ticketEditErr}</Alert>
+                        ) : null}
+                        {ticketEditOk ? (
+                          <Alert severity="success">{ticketEditOk}</Alert>
+                        ) : null}
                       </Stack>
                     </Stack>
                   ) : (
                     <Stack spacing={1}>
                       <Typography variant="body1">
-                        <strong>Status:</strong> {formatTicketStatus(ticket.status)}
+                        <strong>Status:</strong>{" "}
+                        {formatTicketStatus(ticket.status)}
                       </Typography>
                       <Typography variant="body1">
-                        <strong>Issue Summary:</strong> {ticket.issueSummary || "—"}
+                        <strong>Issue Summary:</strong>{" "}
+                        {ticket.issueSummary || "—"}
                       </Typography>
                       <Typography variant="body1">
                         <strong>Estimated Duration:</strong>{" "}
                         {Math.max(
                           1,
-                          Number(ticket.estimatedDurationMinutes || 60) / 60
+                          Number(ticket.estimatedDurationMinutes || 60) / 60,
                         )}{" "}
                         hour
                         {Math.max(
                           1,
-                          Number(ticket.estimatedDurationMinutes || 60) / 60
+                          Number(ticket.estimatedDurationMinutes || 60) / 60,
                         ) === 1
                           ? ""
                           : "s"}
                       </Typography>
-                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                      <Typography
+                        variant="body1"
+                        sx={{ whiteSpace: "pre-wrap" }}
+                      >
                         {ticket.issueDetails || "No additional issue details."}
                       </Typography>
                     </Stack>
@@ -6997,8 +8174,9 @@ Supply line`}
                       {canAddTicketAttachments ? (
                         <Stack spacing={1.25}>
                           <Typography variant="body2" color="text.secondary">
-                            Add customer-sent files before scheduling, capture a new field photo,
-                            or attach photos/videos during the visit.
+                            Add customer-sent files before scheduling, capture a
+                            new field photo, or attach photos/videos during the
+                            visit.
                           </Typography>
 
                           <Box>
@@ -7010,7 +8188,9 @@ Supply line`}
                               fullWidth={isMobile}
                               sx={{ borderRadius: 999, fontWeight: 800 }}
                             >
-                              {attachmentUploading ? "Uploading..." : "Add Attachment"}
+                              {attachmentUploading
+                                ? "Uploading..."
+                                : "Add Attachment"}
                             </Button>
 
                             <input
@@ -7042,8 +8222,14 @@ Supply line`}
                               anchorEl={attachmentMenuAnchorEl}
                               open={Boolean(attachmentMenuAnchorEl)}
                               onClose={handleAttachmentMenuClose}
-                              anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-                              transformOrigin={{ vertical: "top", horizontal: "left" }}
+                              anchorOrigin={{
+                                vertical: "bottom",
+                                horizontal: "left",
+                              }}
+                              transformOrigin={{
+                                vertical: "top",
+                                horizontal: "left",
+                              }}
                               PaperProps={{
                                 sx: {
                                   mt: 1,
@@ -7054,7 +8240,9 @@ Supply line`}
                                 },
                               }}
                             >
-                              <MenuItem onClick={() => triggerAttachmentInput("camera")}>
+                              <MenuItem
+                                onClick={() => triggerAttachmentInput("camera")}
+                              >
                                 <ListItemIcon>
                                   <AddPhotoAlternateRoundedIcon fontSize="small" />
                                 </ListItemIcon>
@@ -7065,7 +8253,9 @@ Supply line`}
                                 />
                               </MenuItem>
 
-                              <MenuItem onClick={() => triggerAttachmentInput("media")}>
+                              <MenuItem
+                                onClick={() => triggerAttachmentInput("media")}
+                              >
                                 <ListItemIcon>
                                   <ImageRoundedIcon fontSize="small" />
                                 </ListItemIcon>
@@ -7076,7 +8266,9 @@ Supply line`}
                                 />
                               </MenuItem>
 
-                              <MenuItem onClick={() => triggerAttachmentInput("file")}>
+                              <MenuItem
+                                onClick={() => triggerAttachmentInput("file")}
+                              >
                                 <ListItemIcon>
                                   <AttachFileRoundedIcon fontSize="small" />
                                 </ListItemIcon>
@@ -7095,14 +8287,22 @@ Supply line`}
                             label="Attachment Type"
                             value={attachmentPhase}
                             onChange={(e) =>
-                              setAttachmentPhase(e.target.value as ServiceTicketAttachmentPhase)
+                              setAttachmentPhase(
+                                e.target.value as ServiceTicketAttachmentPhase,
+                              )
                             }
                             disabled={attachmentUploading || isInvoicedTicket}
                             fullWidth
                           >
-                            <MenuItem value="customer_sent">Customer Sent</MenuItem>
-                            <MenuItem value="before_visit">Before Visit</MenuItem>
-                            <MenuItem value="during_visit">During Visit</MenuItem>
+                            <MenuItem value="customer_sent">
+                              Customer Sent
+                            </MenuItem>
+                            <MenuItem value="before_visit">
+                              Before Visit
+                            </MenuItem>
+                            <MenuItem value="during_visit">
+                              During Visit
+                            </MenuItem>
                             <MenuItem value="after_visit">After Visit</MenuItem>
                           </TextField>
 
@@ -7118,16 +8318,22 @@ Supply line`}
                         </Stack>
                       ) : (
                         <Alert severity="info" variant="outlined">
-                          Attachments can be added by dispatch, admins, managers, techs, and helpers.
+                          Attachments can be added by dispatch, admins,
+                          managers, techs, and helpers.
                         </Alert>
                       )}
 
-                      {attachmentErr ? <Alert severity="error">{attachmentErr}</Alert> : null}
-                      {attachmentOk ? <Alert severity="success">{attachmentOk}</Alert> : null}
+                      {attachmentErr ? (
+                        <Alert severity="error">{attachmentErr}</Alert>
+                      ) : null}
+                      {attachmentOk ? (
+                        <Alert severity="success">{attachmentOk}</Alert>
+                      ) : null}
 
                       {attachments.length === 0 ? (
                         <Alert severity="info" variant="outlined">
-                          No images, videos, or files have been added to this service ticket yet.
+                          No images, videos, or files have been added to this
+                          service ticket yet.
                         </Alert>
                       ) : (
                         <Stack spacing={1}>
@@ -7144,7 +8350,10 @@ Supply line`}
                                 sx={{
                                   p: 1,
                                   borderRadius: 2.25,
-                                  bgcolor: alpha(theme.palette.primary.main, 0.018),
+                                  bgcolor: alpha(
+                                    theme.palette.primary.main,
+                                    0.018,
+                                  ),
                                 }}
                               >
                                 <Stack
@@ -7162,7 +8371,10 @@ Supply line`}
                                       flexShrink: 0,
                                       display: "grid",
                                       placeItems: "center",
-                                      bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                      bgcolor: alpha(
+                                        theme.palette.primary.main,
+                                        0.08,
+                                      ),
                                       color: "primary.main",
                                       border: `1px solid ${alpha(theme.palette.primary.main, 0.18)}`,
                                     }}
@@ -7196,9 +8408,13 @@ Supply line`}
                                     ) : isImage ? (
                                       <ImageRoundedIcon sx={{ fontSize: 42 }} />
                                     ) : isPdf ? (
-                                      <PictureAsPdfRoundedIcon sx={{ fontSize: 42 }} />
+                                      <PictureAsPdfRoundedIcon
+                                        sx={{ fontSize: 42 }}
+                                      />
                                     ) : (
-                                      <AttachFileRoundedIcon sx={{ fontSize: 42 }} />
+                                      <AttachFileRoundedIcon
+                                        sx={{ fontSize: 42 }}
+                                      />
                                     )}
                                   </Box>
 
@@ -7233,9 +8449,14 @@ Supply line`}
                                     >
                                       <Chip
                                         size="small"
-                                        label={formatAttachmentPhase(attachment.phase)}
+                                        label={formatAttachmentPhase(
+                                          attachment.phase,
+                                        )}
                                         variant="outlined"
-                                        sx={{ borderRadius: 1.5, fontWeight: 800 }}
+                                        sx={{
+                                          borderRadius: 1.5,
+                                          fontWeight: 800,
+                                        }}
                                       />
                                       {sizeLabel ? (
                                         <Chip
@@ -7273,7 +8494,10 @@ Supply line`}
                                         lineHeight: 1.25,
                                       }}
                                     >
-                                      Added {formatActivityDate(attachment.uploadedAt)}
+                                      Added{" "}
+                                      {formatActivityDate(
+                                        attachment.uploadedAt,
+                                      )}
                                       {attachment.uploadedByName
                                         ? ` by ${attachment.uploadedByName}`
                                         : ""}
@@ -7293,8 +8517,15 @@ Supply line`}
                                         size="small"
                                         variant="outlined"
                                         startIcon={<OpenInNewRoundedIcon />}
-                                        onClick={() => openServiceTicketAttachment(attachment)}
-                                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                                        onClick={() =>
+                                          openServiceTicketAttachment(
+                                            attachment,
+                                          )
+                                        }
+                                        sx={{
+                                          borderRadius: 999,
+                                          fontWeight: 800,
+                                        }}
                                       >
                                         Open
                                       </Button>
@@ -7304,7 +8535,9 @@ Supply line`}
                                           size="small"
                                           color="error"
                                           onClick={() =>
-                                            handleSoftDeleteServiceTicketAttachment(attachment)
+                                            handleSoftDeleteServiceTicketAttachment(
+                                              attachment,
+                                            )
                                           }
                                         >
                                           <DeleteOutlineRoundedIcon />
@@ -7353,23 +8586,29 @@ Supply line`}
                       const timerState = normalizeTripTimerState(trip);
                       const pausedTrip = isTripPaused(trip);
                       const runningTrip = isTripRunning(trip);
-                      const pausedMinutes = sumPausedMinutes(trip.pauseBlocks, liveNowIso);
+                      const pausedMinutes = sumPausedMinutes(
+                        trip.pauseBlocks,
+                        liveNowIso,
+                      );
                       const grossMinutes =
                         trip.actualStartAt && !trip.actualEndAt
                           ? minutesBetweenIso(trip.actualStartAt, liveNowIso)
                           : trip.actualStartAt && trip.actualEndAt
                             ? minutesBetweenIso(
                                 trip.actualStartAt,
-                                trip.actualEndAt
+                                trip.actualEndAt,
                               )
                             : 0;
-                      const billableMinutes = Math.max(0, grossMinutes - pausedMinutes);
+                      const billableMinutes = Math.max(
+                        0,
+                        grossMinutes - pausedMinutes,
+                      );
                       const finishMode = finishModeByTrip[trip.id] || "none";
                       const showFinishPanel =
                         normalizeTripStatus(trip.status) === "in_progress" &&
                         finishMode !== "none";
                       const anotherTripInProgress = hasInProgressTrips(
-                        trips.filter((t) => t.id !== trip.id)
+                        trips.filter((t) => t.id !== trip.id),
                       );
                       const canQuickStart = canCurrentUserQuickStartTrip({
                         trip,
@@ -7385,32 +8624,39 @@ Supply line`}
                         !String(tripResolutionNotes[trip.id] || "").trim();
                       const completedResolutionPreview = getPreviewText(
                         trip.resolutionNotes,
-                        280
+                        280,
                       );
                       const completedFollowUpPreview = getPreviewText(
                         trip.followUpNotes,
-                        280
+                        280,
                       );
                       const completedMaterialsPreview = trip.noMaterialsUsed
                         ? "No materials used"
-                        : getPreviewText(materialLinesToText(trip.materials), 280);
-                      const helperPayrollSummary = getHelperPayrollSummary(trip);
+                        : getPreviewText(
+                            materialLinesToText(trip.materials),
+                            280,
+                          );
+                      const helperPayrollSummary =
+                        getHelperPayrollSummary(trip);
 
                       return (
                         <Paper
                           key={trip.id}
                           variant="outlined"
                           sx={{
-  p: { xs: 1.25, sm: 1.5 },
-  borderRadius: 2.25,
-  borderColor: runningTrip
-    ? alpha(theme.palette.primary.main, 0.28)
-    : pausedTrip
-      ? alpha(theme.palette.warning.main, 0.3)
-      : alpha(theme.palette.divider, 0.72),
-  bgcolor: alpha(theme.palette.background.paper, 0.96),
-  boxShadow: "none",
-}}
+                            p: { xs: 1.25, sm: 1.5 },
+                            borderRadius: 2.25,
+                            borderColor: runningTrip
+                              ? alpha(theme.palette.primary.main, 0.28)
+                              : pausedTrip
+                                ? alpha(theme.palette.warning.main, 0.3)
+                                : alpha(theme.palette.divider, 0.72),
+                            bgcolor: alpha(
+                              theme.palette.background.paper,
+                              0.96,
+                            ),
+                            boxShadow: "none",
+                          }}
                         >
                           <Stack spacing={1.5}>
                             <Stack
@@ -7420,96 +8666,110 @@ Supply line`}
                               flexWrap="wrap"
                             >
                               <Box sx={{ minWidth: 0, flex: 1 }}>
-<Typography
-  variant="caption"
-  color="text.secondary"
-  fontWeight={750}
-  sx={{
-    display: "block",
-    lineHeight: 1.1,
-    mb: 0.4,
-    letterSpacing: "0.01em",
-  }}
->
-  Scheduled Visit
-</Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  fontWeight={750}
+                                  sx={{
+                                    display: "block",
+                                    lineHeight: 1.1,
+                                    mb: 0.4,
+                                    letterSpacing: "0.01em",
+                                  }}
+                                >
+                                  Scheduled Visit
+                                </Typography>
 
-<Typography
-  variant="h6"
-  fontWeight={800}
-  sx={{
-    lineHeight: 1.15,
-    overflowWrap: "anywhere",
-    color: "text.primary",
-  }}
->
-  {formatTripDateLabel(trip.date)}
-</Typography>
+                                <Typography
+                                  variant="h6"
+                                  fontWeight={800}
+                                  sx={{
+                                    lineHeight: 1.15,
+                                    overflowWrap: "anywhere",
+                                    color: "text.primary",
+                                  }}
+                                >
+                                  {formatTripDateLabel(trip.date)}
+                                </Typography>
 
-<Typography
-  variant="h5"
-  fontWeight={800}
-  color="primary.main"
-  sx={{
-    mt: 0.35,
-    lineHeight: 1.1,
-    fontSize: { xs: "1.35rem", sm: "1.45rem" },
-  }}
->
-  {formatTripTimeRange(trip.startTime, trip.endTime)}
-</Typography>
+                                <Typography
+                                  variant="h5"
+                                  fontWeight={800}
+                                  color="primary.main"
+                                  sx={{
+                                    mt: 0.35,
+                                    lineHeight: 1.1,
+                                    fontSize: { xs: "1.35rem", sm: "1.45rem" },
+                                  }}
+                                >
+                                  {formatTripTimeRange(
+                                    trip.startTime,
+                                    trip.endTime,
+                                  )}
+                                </Typography>
 
-  <Stack
-    direction="row"
-    spacing={0.85}
-    alignItems="center"
-    flexWrap="wrap"
-    useFlexGap
-    sx={{ mt: 1 }}
-  >
-    <Chip
-      size="small"
-      label={
-        pausedTrip
-          ? "Paused"
-          : runningTrip
-            ? "In Progress"
-            : formatLifecycleTripStatus(trip.status)
-      }
-      color={
-        pausedTrip
-          ? "warning"
-          : runningTrip
-            ? "info"
-            : getTripTone(trip.status)
-      }
-      sx={{ borderRadius: 1.5, fontWeight: 800 }}
-    />
+                                <Stack
+                                  direction="row"
+                                  spacing={0.85}
+                                  alignItems="center"
+                                  flexWrap="wrap"
+                                  useFlexGap
+                                  sx={{ mt: 1 }}
+                                >
+                                  <Chip
+                                    size="small"
+                                    label={
+                                      pausedTrip
+                                        ? "Paused"
+                                        : runningTrip
+                                          ? "In Progress"
+                                          : formatLifecycleTripStatus(
+                                              trip.status,
+                                            )
+                                    }
+                                    color={
+                                      pausedTrip
+                                        ? "warning"
+                                        : runningTrip
+                                          ? "info"
+                                          : getTripTone(trip.status)
+                                    }
+                                    sx={{ borderRadius: 1.5, fontWeight: 800 }}
+                                  />
 
-    <Chip
-      size="small"
-      label={`Timer ${formatTimerStateLabel(timerState)}`}
-      variant="outlined"
-      sx={{ borderRadius: 1.5, fontWeight: 750 }}
-    />
+                                  <Chip
+                                    size="small"
+                                    label={`Timer ${formatTimerStateLabel(timerState)}`}
+                                    variant="outlined"
+                                    sx={{ borderRadius: 1.5, fontWeight: 750 }}
+                                  />
 
-    {trip.dispatchOverride?.enabled ? (
-      <Chip
-        size="small"
-        color="warning"
-        variant="outlined"
-        label="Dispatch Override"
-        sx={{ borderRadius: 1.5, fontWeight: 800 }}
-      />
-    ) : null}
-  </Stack>
-</Box>
+                                  {trip.dispatchOverride?.enabled ? (
+                                    <Chip
+                                      size="small"
+                                      color="warning"
+                                      variant="outlined"
+                                      label="Dispatch Override"
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 800,
+                                      }}
+                                    />
+                                  ) : null}
+                                </Stack>
+                              </Box>
 
                               {canDispatch ? (
                                 <Stack direction="row" spacing={1}>
                                   <IconButton
                                     onClick={() => openEditTrip(trip)}
-                                    disabled={isInvoicedTicket || !canEditTripSchedule(trip.status, trip.timerState)}
+                                    disabled={
+                                      isInvoicedTicket ||
+                                      !canEditTripSchedule(
+                                        trip.status,
+                                        trip.timerState,
+                                      )
+                                    }
                                   >
                                     <EditRoundedIcon />
                                   </IconButton>
@@ -7517,7 +8777,13 @@ Supply line`}
                                   <IconButton
                                     color="error"
                                     onClick={() => handleSoftDeleteTrip(trip)}
-                                    disabled={isInvoicedTicket || !canCancelTrip(trip.status, trip.timerState)}
+                                    disabled={
+                                      isInvoicedTicket ||
+                                      !canCancelTrip(
+                                        trip.status,
+                                        trip.timerState,
+                                      )
+                                    }
                                   >
                                     <DeleteOutlineRoundedIcon />
                                   </IconButton>
@@ -7533,7 +8799,12 @@ Supply line`}
                                   size="large"
                                   startIcon={<PlayArrowRoundedIcon />}
                                   onClick={() => handleStartTrip(trip)}
-                                  disabled={!canQuickStart || savingThis || anotherTripInProgress || isInvoicedTicket}
+                                  disabled={
+                                    !canQuickStart ||
+                                    savingThis ||
+                                    anotherTripInProgress ||
+                                    isInvoicedTicket
+                                  }
                                   fullWidth
                                   sx={{
                                     minHeight: 48,
@@ -7557,7 +8828,9 @@ Supply line`}
                                     color="warning"
                                     startIcon={<PauseRoundedIcon />}
                                     onClick={() => handlePauseTrip(trip)}
-                                    disabled={!canAct || savingThis || isInvoicedTicket}
+                                    disabled={
+                                      !canAct || savingThis || isInvoicedTicket
+                                    }
                                     sx={{ minHeight: 44 }}
                                   >
                                     Pause
@@ -7570,7 +8843,9 @@ Supply line`}
                                     color="primary"
                                     startIcon={<PlayArrowRoundedIcon />}
                                     onClick={() => handleResumeTrip(trip)}
-                                    disabled={!canAct || savingThis || isInvoicedTicket}
+                                    disabled={
+                                      !canAct || savingThis || isInvoicedTicket
+                                    }
                                     sx={{ minHeight: 44 }}
                                   >
                                     Resume
@@ -7578,7 +8853,8 @@ Supply line`}
                                 ) : null}
 
                                 {!isMobile &&
-                                normalizeTripStatus(trip.status) === "in_progress" ? (
+                                normalizeTripStatus(trip.status) ===
+                                  "in_progress" ? (
                                   <>
                                     <Button
                                       variant="outlined"
@@ -7591,7 +8867,10 @@ Supply line`}
                                       disabled={
                                         !canAct ||
                                         savingThis ||
-                                        !canFinishTrip(trip.status, trip.timerState) ||
+                                        !canFinishTrip(
+                                          trip.status,
+                                          trip.timerState,
+                                        ) ||
                                         isInvoicedTicket
                                       }
                                     >
@@ -7609,7 +8888,10 @@ Supply line`}
                                       disabled={
                                         !canAct ||
                                         savingThis ||
-                                        !canFinishTrip(trip.status, trip.timerState) ||
+                                        !canFinishTrip(
+                                          trip.status,
+                                          trip.timerState,
+                                        ) ||
                                         isInvoicedTicket
                                       }
                                     >
@@ -7634,159 +8916,199 @@ Supply line`}
                               </Stack>
 
                               {isMobile &&
-                              normalizeTripStatus(trip.status) === "in_progress" ? (
+                              normalizeTripStatus(trip.status) ===
+                                "in_progress" ? (
                                 <Alert severity="info" variant="outlined">
-                                  Finish actions still live in the trip finish sheet. Start,
-                                  pause, and resume are available directly on this card.
+                                  Finish actions still live in the trip finish
+                                  sheet. Start, pause, and resume are available
+                                  directly on this card.
                                 </Alert>
                               ) : null}
                             </Stack>
 
                             <Paper
-  variant="outlined"
-  sx={{
-    p: 1,
-    borderRadius: 1,
-    bgcolor: alpha(theme.palette.background.default, 0.16),
-    borderColor: alpha(theme.palette.divider, 0.65),
-  }}
->
-  <Stack spacing={0.75}>
-    <Typography
-      variant="caption"
-      color="text.secondary"
-      fontWeight={750}
-    >
-      Crew
-    </Typography>
+                              variant="outlined"
+                              sx={{
+                                p: 1,
+                                borderRadius: 1,
+                                bgcolor: alpha(
+                                  theme.palette.background.default,
+                                  0.16,
+                                ),
+                                borderColor: alpha(theme.palette.divider, 0.65),
+                              }}
+                            >
+                              <Stack spacing={0.75}>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  fontWeight={750}
+                                >
+                                  Crew
+                                </Typography>
 
-    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-      <Chip
-        size="small"
-        variant="outlined"
-        label={`${trip.crew?.primaryTechName || "Unassigned"} · Tech`}
-        sx={{ borderRadius: 1.5, fontWeight: 700 }}
-      />
+                                <Stack
+                                  direction="row"
+                                  spacing={0.75}
+                                  flexWrap="wrap"
+                                  useFlexGap
+                                >
+                                  <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    label={`${trip.crew?.primaryTechName || "Unassigned"} · Tech`}
+                                    sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                  />
 
-      {trip.crew?.helperName ? (
-        <Chip
-          size="small"
-          variant="outlined"
-          label={`${trip.crew.helperName} · Helper`}
-          sx={{ borderRadius: 1.5, fontWeight: 700 }}
-        />
-      ) : null}
+                                  {trip.crew?.helperName ? (
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      label={`${trip.crew.helperName} · Helper`}
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                      }}
+                                    />
+                                  ) : null}
 
-      {trip.crew?.secondaryTechName ? (
-        <Chip
-          size="small"
-          variant="outlined"
-          label={`${trip.crew.secondaryTechName} · 2nd Tech`}
-          sx={{ borderRadius: 1.5, fontWeight: 700 }}
-        />
-      ) : null}
+                                  {trip.crew?.secondaryTechName ? (
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      label={`${trip.crew.secondaryTechName} · 2nd Tech`}
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                      }}
+                                    />
+                                  ) : null}
 
-      {trip.crew?.secondaryHelperName ? (
-        <Chip
-          size="small"
-          variant="outlined"
-          label={`${trip.crew.secondaryHelperName} · 2nd Helper`}
-          sx={{ borderRadius: 1.5, fontWeight: 700 }}
-        />
-      ) : null}
-    </Stack>
-  </Stack>
-</Paper>
+                                  {trip.crew?.secondaryHelperName ? (
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      label={`${trip.crew.secondaryHelperName} · 2nd Helper`}
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                      }}
+                                    />
+                                  ) : null}
+                                </Stack>
+                              </Stack>
+                            </Paper>
 
-<Paper
-  variant="outlined"
-  sx={{
-    p: 1,
-    borderRadius: 1,
-    bgcolor: alpha(theme.palette.background.default, 0.14),
-    borderColor: alpha(theme.palette.divider, 0.6),
-  }}
->
-  <Stack
-    direction={{ xs: "column", sm: "row" }}
-    spacing={1}
-    divider={
-      isMobile ? undefined : (
-        <Divider
-          orientation="vertical"
-          flexItem
-          sx={{ borderColor: alpha(theme.palette.divider, 0.55) }}
-        />
-      )
-    }
-  >
-    <Box sx={{ minWidth: 0, flex: 1 }}>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        fontWeight={750}
-      >
-        Net Time
-      </Typography>
-      <Typography variant="body2" fontWeight={800}>
-        {formatMinutesDuration(billableMinutes)}
-      </Typography>
-    </Box>
+                            <Paper
+                              variant="outlined"
+                              sx={{
+                                p: 1,
+                                borderRadius: 1,
+                                bgcolor: alpha(
+                                  theme.palette.background.default,
+                                  0.14,
+                                ),
+                                borderColor: alpha(theme.palette.divider, 0.6),
+                              }}
+                            >
+                              <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                                divider={
+                                  isMobile ? undefined : (
+                                    <Divider
+                                      orientation="vertical"
+                                      flexItem
+                                      sx={{
+                                        borderColor: alpha(
+                                          theme.palette.divider,
+                                          0.55,
+                                        ),
+                                      }}
+                                    />
+                                  )
+                                }
+                              >
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    fontWeight={750}
+                                  >
+                                    Net Time
+                                  </Typography>
+                                  <Typography variant="body2" fontWeight={800}>
+                                    {formatMinutesDuration(billableMinutes)}
+                                  </Typography>
+                                </Box>
 
-    <Box sx={{ minWidth: 0, flex: 1 }}>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        fontWeight={750}
-      >
-        Gross
-      </Typography>
-      <Typography variant="body2" fontWeight={750}>
-        {formatMinutesDuration(grossMinutes)}
-      </Typography>
-    </Box>
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    fontWeight={750}
+                                  >
+                                    Gross
+                                  </Typography>
+                                  <Typography variant="body2" fontWeight={750}>
+                                    {formatMinutesDuration(grossMinutes)}
+                                  </Typography>
+                                </Box>
 
-    <Box sx={{ minWidth: 0, flex: 1 }}>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        fontWeight={750}
-      >
-        Paused
-      </Typography>
-      <Typography variant="body2" fontWeight={750}>
-        {formatMinutesDuration(pausedMinutes)}
-      </Typography>
-    </Box>
-  </Stack>
-</Paper>
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    fontWeight={750}
+                                  >
+                                    Paused
+                                  </Typography>
+                                  <Typography variant="body2" fontWeight={750}>
+                                    {formatMinutesDuration(pausedMinutes)}
+                                  </Typography>
+                                </Box>
+                              </Stack>
+                            </Paper>
 
                             {trip.dispatchOverride?.enabled ? (
-  <Alert
-    severity="warning"
-    variant="outlined"
-    sx={{
-      borderRadius: 1.5,
-      bgcolor: alpha(theme.palette.warning.main, 0.055),
-      borderColor: alpha(theme.palette.warning.main, 0.38),
-      py: 0.75,
-      "& .MuiAlert-icon": {
-        color: "warning.main",
-      },
-    }}
-  >
-    <Typography variant="body2" fontWeight={750}>
-      Dispatch Override: {trip.dispatchOverride.reason || "No reason entered."}
-    </Typography>
-  </Alert>
-) : null}
+                              <Alert
+                                severity="warning"
+                                variant="outlined"
+                                sx={{
+                                  borderRadius: 1.5,
+                                  bgcolor: alpha(
+                                    theme.palette.warning.main,
+                                    0.055,
+                                  ),
+                                  borderColor: alpha(
+                                    theme.palette.warning.main,
+                                    0.38,
+                                  ),
+                                  py: 0.75,
+                                  "& .MuiAlert-icon": {
+                                    color: "warning.main",
+                                  },
+                                }}
+                              >
+                                <Typography variant="body2" fontWeight={750}>
+                                  Dispatch Override:{" "}
+                                  {trip.dispatchOverride.reason ||
+                                    "No reason entered."}
+                                </Typography>
+                              </Alert>
+                            ) : null}
 
                             {normalizeTripStatus(trip.status) === "complete" ? (
                               <>
-                                <Typography variant="body2" color="text.secondary">
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                >
                                   Billable Hours:{" "}
                                   <strong>
-                                    {getStoredOrComputedBillableHours(trip).toFixed(2)}
+                                    {getStoredOrComputedBillableHours(
+                                      trip,
+                                    ).toFixed(2)}
                                   </strong>
                                 </Typography>
 
@@ -7795,30 +9117,50 @@ Supply line`}
                                   sx={{
                                     p: 1.25,
                                     borderRadius: 1,
-                                    backgroundColor: alpha(theme.palette.success.main, 0.04),
+                                    backgroundColor: alpha(
+                                      theme.palette.success.main,
+                                      0.04,
+                                    ),
                                   }}
                                 >
                                   <Stack spacing={0.9}>
-                                    <Typography variant="subtitle2" fontWeight={800}>
+                                    <Typography
+                                      variant="subtitle2"
+                                      fontWeight={800}
+                                    >
                                       Completed Summary
                                     </Typography>
 
-                                    <Typography variant="body2" color="text.secondary">
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
                                       <strong>Outcome:</strong>{" "}
-                                      {String(trip.outcome || "").trim().toLowerCase() === "resolved"
+                                      {String(trip.outcome || "")
+                                        .trim()
+                                        .toLowerCase() === "resolved"
                                         ? "Resolved"
-                                        : String(trip.outcome || "").trim().toLowerCase() === "follow_up"
+                                        : String(trip.outcome || "")
+                                              .trim()
+                                              .toLowerCase() === "follow_up"
                                           ? "Follow-Up"
                                           : "Completed"}
                                     </Typography>
 
-                                    <Typography variant="body2" color="text.secondary">
-                                      <strong>Helper in payroll:</strong> {helperPayrollSummary}
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
+                                      <strong>Helper in payroll:</strong>{" "}
+                                      {helperPayrollSummary}
                                     </Typography>
 
                                     {completedResolutionPreview ? (
                                       <Box>
-                                        <Typography variant="caption" color="text.secondary">
+                                        <Typography
+                                          variant="caption"
+                                          color="text.secondary"
+                                        >
                                           Resolution Notes Preview
                                         </Typography>
                                         <Typography
@@ -7830,9 +9172,13 @@ Supply line`}
                                       </Box>
                                     ) : null}
 
-                                    {!completedResolutionPreview && completedFollowUpPreview ? (
+                                    {!completedResolutionPreview &&
+                                    completedFollowUpPreview ? (
                                       <Box>
-                                        <Typography variant="caption" color="text.secondary">
+                                        <Typography
+                                          variant="caption"
+                                          color="text.secondary"
+                                        >
                                           Follow-Up Notes Preview
                                         </Typography>
                                         <Typography
@@ -7846,7 +9192,10 @@ Supply line`}
 
                                     {completedMaterialsPreview ? (
                                       <Box>
-                                        <Typography variant="caption" color="text.secondary">
+                                        <Typography
+                                          variant="caption"
+                                          color="text.secondary"
+                                        >
                                           Materials Preview
                                         </Typography>
                                         <Typography
@@ -7876,31 +9225,33 @@ Supply line`}
                               }
                               disabled={
                                 !canAct ||
-                                normalizeTripStatus(trip.status) === "cancelled" ||
+                                normalizeTripStatus(trip.status) ===
+                                  "cancelled" ||
                                 isInvoicedTicket
                               }
                             />
 
                             <Button
-  variant="outlined"
-  size="small"
-  startIcon={<NoteAltOutlinedIcon />}
-  onClick={() => handleSaveWorkNotes(trip)}
-  disabled={
-    !canAct ||
-    normalizeTripStatus(trip.status) === "cancelled" ||
-    savingThis ||
-    isInvoicedTicket
-  }
-  sx={{
-    alignSelf: "flex-start",
-    borderRadius: 999,
-    fontWeight: 750,
-    px: 1.5,
-  }}
->
-  Save Field Notes
-</Button>
+                              variant="outlined"
+                              size="small"
+                              startIcon={<NoteAltOutlinedIcon />}
+                              onClick={() => handleSaveWorkNotes(trip)}
+                              disabled={
+                                !canAct ||
+                                normalizeTripStatus(trip.status) ===
+                                  "cancelled" ||
+                                savingThis ||
+                                isInvoicedTicket
+                              }
+                              sx={{
+                                alignSelf: "flex-start",
+                                borderRadius: 999,
+                                fontWeight: 750,
+                                px: 1.5,
+                              }}
+                            >
+                              Save Field Notes
+                            </Button>
 
                             {showFinishPanel && !isMobile ? (
                               <Paper
@@ -7921,9 +9272,12 @@ Supply line`}
                                     size="small"
                                     inputProps={{ min: 0, step: 0.5 }}
                                     value={
-                                      typeof hoursOverrideByTrip[trip.id] === "number"
+                                      typeof hoursOverrideByTrip[trip.id] ===
+                                      "number"
                                         ? hoursOverrideByTrip[trip.id]
-                                        : getDefaultBillableHours(billableMinutes)
+                                        : getDefaultBillableHours(
+                                            billableMinutes,
+                                          )
                                     }
                                     onChange={(e) =>
                                       setHoursOverrideByTrip((prev) => ({
@@ -7936,7 +9290,9 @@ Supply line`}
                                   <FormControlLabel
                                     control={
                                       <Checkbox
-                                        checked={helperConfirmedByTrip[trip.id] ?? true}
+                                        checked={
+                                          helperConfirmedByTrip[trip.id] ?? true
+                                        }
                                         onChange={(e) =>
                                           setHelperConfirmedByTrip((prev) => ({
                                             ...prev,
@@ -7974,7 +9330,9 @@ Supply line`}
 
                                       <Button
                                         variant="contained"
-                                        onClick={() => finishTrip(trip, "follow_up")}
+                                        onClick={() =>
+                                          finishTrip(trip, "follow_up")
+                                        }
                                         disabled={
                                           !canAct ||
                                           savingThis ||
@@ -7994,7 +9352,9 @@ Supply line`}
                                         multiline
                                         minRows={4}
                                         autoFocus
-                                        value={tripResolutionNotes[trip.id] ?? ""}
+                                        value={
+                                          tripResolutionNotes[trip.id] ?? ""
+                                        }
                                         onChange={(e) =>
                                           setTripResolutionNotes((prev) => ({
                                             ...prev,
@@ -8014,7 +9374,9 @@ Supply line`}
                                       <Button
                                         variant="contained"
                                         color="success"
-                                        onClick={() => finishTrip(trip, "resolved")}
+                                        onClick={() =>
+                                          finishTrip(trip, "resolved")
+                                        }
                                         disabled={
                                           !canAct ||
                                           savingThis ||
@@ -8031,10 +9393,14 @@ Supply line`}
                             ) : null}
 
                             {tripActionError[trip.id] ? (
-                              <Alert severity="error">{tripActionError[trip.id]}</Alert>
+                              <Alert severity="error">
+                                {tripActionError[trip.id]}
+                              </Alert>
                             ) : null}
                             {tripActionSuccess[trip.id] ? (
-                              <Alert severity="success">{tripActionSuccess[trip.id]}</Alert>
+                              <Alert severity="success">
+                                {tripActionSuccess[trip.id]}
+                              </Alert>
                             ) : null}
                           </Stack>
                         </Paper>
@@ -8043,7 +9409,10 @@ Supply line`}
                   </Stack>
                 </Section>
 
-                <Section title="Purchase Orders" icon={<ReceiptLongRoundedIcon color="primary" />}>
+                <Section
+                  title="Purchase Orders"
+                  icon={<ReceiptLongRoundedIcon color="primary" />}
+                >
                   <Stack spacing={2}>
                     <Stack
                       direction={{ xs: "column", sm: "row" }}
@@ -8051,8 +9420,14 @@ Supply line`}
                       alignItems={{ xs: "stretch", sm: "center" }}
                       justifyContent="space-between"
                     >
-                      <Alert severity="info" variant="outlined" sx={{ flex: 1 }}>
-                        PO codes are stored here as the permanent ticket record. Future email invoice matching will attach supplier PDFs and parsed material line items to these PO records.
+                      <Alert
+                        severity="info"
+                        variant="outlined"
+                        sx={{ flex: 1 }}
+                      >
+                        PO codes are stored here as the permanent ticket record.
+                        Future email invoice matching will attach supplier PDFs
+                        and parsed material line items to these PO records.
                       </Alert>
 
                       <Button
@@ -8061,7 +9436,12 @@ Supply line`}
                         startIcon={<ReceiptLongRoundedIcon />}
                         onClick={handleGeneratePoFromTicket}
                         disabled={!canGeneratePoFromTicket || poGenerating}
-                        sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800, whiteSpace: "nowrap" }}
+                        sx={{
+                          borderRadius: 2,
+                          minHeight: 44,
+                          fontWeight: 800,
+                          whiteSpace: "nowrap",
+                        }}
                       >
                         {poGenerating ? "Generating..." : "Generate PO#"}
                       </Button>
@@ -8069,7 +9449,8 @@ Supply line`}
 
                     {!eligibleTripForPo && !isInvoicedTicket ? (
                       <Alert severity="warning" variant="outlined">
-                        Add or open a scheduled/in-progress trip before generating a PO for this ticket.
+                        Add or open a scheduled/in-progress trip before
+                        generating a PO for this ticket.
                       </Alert>
                     ) : null}
 
@@ -8078,43 +9459,58 @@ Supply line`}
 
                     {purchaseOrders.length === 0 ? (
                       <Typography variant="body2" color="text.secondary">
-                        No PO codes have been generated for this service ticket yet.
+                        No PO codes have been generated for this service ticket
+                        yet.
                       </Typography>
                     ) : (
                       <Stack spacing={1.25}>
-{purchaseOrders.map((po) => {
-  const invoiceAttachments = Array.isArray(po.matchedAttachments)
-    ? po.matchedAttachments.filter((attachment) =>
-        String(attachment.downloadUrl || "").trim()
-      )
-    : [];
+                        {purchaseOrders.map((po) => {
+                          const invoiceAttachments = Array.isArray(
+                            po.matchedAttachments,
+                          )
+                            ? po.matchedAttachments.filter((attachment) =>
+                                String(attachment.downloadUrl || "").trim(),
+                              )
+                            : [];
 
-  const attachmentCount = invoiceAttachments.length;
+                          const attachmentCount = invoiceAttachments.length;
 
-  const hasInvoice = Boolean(
-    po.matchedInvoiceId ||
-      po.invoiceEmailMessageId ||
-      attachmentCount > 0
-  );
+                          const hasInvoice = Boolean(
+                            po.matchedInvoiceId ||
+                            po.invoiceEmailMessageId ||
+                            attachmentCount > 0,
+                          );
 
-  return (
+                          return (
                             <Paper
                               key={po.id}
                               variant="outlined"
                               sx={{
                                 p: 1.5,
                                 borderRadius: 2,
-                                bgcolor: alpha(theme.palette.primary.main, 0.025),
+                                bgcolor: alpha(
+                                  theme.palette.primary.main,
+                                  0.025,
+                                ),
                               }}
                             >
                               <Stack spacing={1.25}>
                                 <Stack
                                   direction={{ xs: "column", sm: "row" }}
                                   spacing={1}
-                                  alignItems={{ xs: "flex-start", sm: "center" }}
+                                  alignItems={{
+                                    xs: "flex-start",
+                                    sm: "center",
+                                  }}
                                   justifyContent="space-between"
                                 >
-                                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                  <Stack
+                                    direction="row"
+                                    spacing={1}
+                                    alignItems="center"
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                  >
                                     <Typography
                                       sx={{
                                         fontFamily:
@@ -8129,19 +9525,31 @@ Supply line`}
 
                                     <Chip
                                       size="small"
-                                      label={formatPurchaseOrderStatus(po.status)}
+                                      label={formatPurchaseOrderStatus(
+                                        po.status,
+                                      )}
                                       color={getPurchaseOrderTone(po.status)}
                                       variant="outlined"
-                                      sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                      }}
                                     />
 
                                     {hasInvoice ? (
                                       <Chip
                                         size="small"
-                                        label={attachmentCount > 0 ? `Invoice matched • ${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}` : "Invoice matched"}
+                                        label={
+                                          attachmentCount > 0
+                                            ? `Invoice matched • ${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`
+                                            : "Invoice matched"
+                                        }
                                         color="success"
                                         variant="filled"
-                                        sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                        sx={{
+                                          borderRadius: 1.5,
+                                          fontWeight: 700,
+                                        }}
                                       />
                                     ) : null}
                                   </Stack>
@@ -8151,7 +9559,9 @@ Supply line`}
                                     size="small"
                                     variant="text"
                                     startIcon={<ContentCopyRoundedIcon />}
-                                    onClick={() => copyPurchaseOrderCode(po.poCode)}
+                                    onClick={() =>
+                                      copyPurchaseOrderCode(po.poCode)
+                                    }
                                     sx={{ borderRadius: 999, fontWeight: 700 }}
                                   >
                                     Copy
@@ -8159,31 +9569,52 @@ Supply line`}
                                 </Stack>
 
                                 <Stack spacing={0.35}>
-                                  <Typography variant="body2" color="text.secondary">
-                                    Generated {formatPurchaseOrderDate(po.createdAt)}
-                                    {po.requestedByName ? ` by ${po.requestedByName}` : ""}
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                  >
+                                    Generated{" "}
+                                    {formatPurchaseOrderDate(po.createdAt)}
+                                    {po.requestedByName
+                                      ? ` by ${po.requestedByName}`
+                                      : ""}
                                   </Typography>
 
                                   {po.vendorName ? (
-                                    <Typography variant="body2" color="text.secondary">
+                                    <Typography
+                                      variant="body2"
+                                      color="text.secondary"
+                                    >
                                       Vendor: <strong>{po.vendorName}</strong>
                                     </Typography>
                                   ) : null}
 
                                   {po.tripId ? (
-                                    <Typography variant="caption" color="text.secondary">
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
                                       Trip: {po.tripId}
                                     </Typography>
                                   ) : null}
-                                                                    {po.invoiceEmailSubject ? (
-                                    <Typography variant="caption" color="text.secondary">
+                                  {po.invoiceEmailSubject ? (
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
                                       Email: {po.invoiceEmailSubject}
                                     </Typography>
                                   ) : null}
 
                                   {po.invoiceEmailMatchedAt ? (
-                                    <Typography variant="caption" color="text.secondary">
-                                      Matched: {formatPurchaseOrderDate(po.invoiceEmailMatchedAt)}
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                    >
+                                      Matched:{" "}
+                                      {formatPurchaseOrderDate(
+                                        po.invoiceEmailMatchedAt,
+                                      )}
                                     </Typography>
                                   ) : null}
                                 </Stack>
@@ -8208,95 +9639,145 @@ Supply line`}
                                       }}
                                     />
 
-                                    <Typography variant="subtitle2" fontWeight={800}>
+                                    <Typography
+                                      variant="subtitle2"
+                                      fontWeight={800}
+                                    >
                                       Invoice PDF
                                     </Typography>
 
                                     <Chip
                                       size="small"
-                                      color={attachmentCount > 0 ? "success" : "default"}
-                                      variant={attachmentCount > 0 ? "filled" : "outlined"}
+                                      color={
+                                        attachmentCount > 0
+                                          ? "success"
+                                          : "default"
+                                      }
+                                      variant={
+                                        attachmentCount > 0
+                                          ? "filled"
+                                          : "outlined"
+                                      }
                                       label={
                                         attachmentCount > 0
                                           ? `${attachmentCount} PDF${attachmentCount === 1 ? "" : "s"} saved`
                                           : "No PDF saved yet"
                                       }
-                                      sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                                      sx={{
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                      }}
                                     />
                                   </Stack>
 
                                   {attachmentCount > 0 ? (
                                     <Stack spacing={1}>
-                                      {invoiceAttachments.map((attachment, index) => (
-                                        <Paper
-                                          key={attachment.id || `${po.poCode}-attachment-${index}`}
-                                          variant="outlined"
-                                          sx={{
-                                            p: 1.25,
-                                            borderRadius: 1.5,
-                                            bgcolor: alpha(theme.palette.success.main, 0.045),
-                                          }}
-                                        >
-                                          <Stack
-                                            direction={{ xs: "column", sm: "row" }}
-                                            spacing={1}
-                                            alignItems={{ xs: "stretch", sm: "center" }}
-                                            justifyContent="space-between"
+                                      {invoiceAttachments.map(
+                                        (attachment, index) => (
+                                          <Paper
+                                            key={
+                                              attachment.id ||
+                                              `${po.poCode}-attachment-${index}`
+                                            }
+                                            variant="outlined"
+                                            sx={{
+                                              p: 1.25,
+                                              borderRadius: 1.5,
+                                              bgcolor: alpha(
+                                                theme.palette.success.main,
+                                                0.045,
+                                              ),
+                                            }}
                                           >
-                                            <Box sx={{ minWidth: 0 }}>
-                                              <Typography
-                                                variant="body2"
-                                                fontWeight={800}
-                                                sx={{
-                                                  overflow: "hidden",
-                                                  textOverflow: "ellipsis",
-                                                  whiteSpace: "nowrap",
-                                                }}
-                                              >
-                                                {attachment.filename || "Invoice PDF"}
-                                              </Typography>
+                                            <Stack
+                                              direction={{
+                                                xs: "column",
+                                                sm: "row",
+                                              }}
+                                              spacing={1}
+                                              alignItems={{
+                                                xs: "stretch",
+                                                sm: "center",
+                                              }}
+                                              justifyContent="space-between"
+                                            >
+                                              <Box sx={{ minWidth: 0 }}>
+                                                <Typography
+                                                  variant="body2"
+                                                  fontWeight={800}
+                                                  sx={{
+                                                    overflow: "hidden",
+                                                    textOverflow: "ellipsis",
+                                                    whiteSpace: "nowrap",
+                                                  }}
+                                                >
+                                                  {attachment.filename ||
+                                                    "Invoice PDF"}
+                                                </Typography>
 
-                                              <Typography variant="caption" color="text.secondary">
-                                                {attachment.uploadedAt
-                                                  ? `Uploaded ${formatPurchaseOrderDate(
-                                                      attachment.uploadedAt
-                                                    )}`
-                                                  : "Saved invoice attachment"}
-                                              </Typography>
-                                            </Box>
+                                                <Typography
+                                                  variant="caption"
+                                                  color="text.secondary"
+                                                >
+                                                  {attachment.uploadedAt
+                                                    ? `Uploaded ${formatPurchaseOrderDate(
+                                                        attachment.uploadedAt,
+                                                      )}`
+                                                    : "Saved invoice attachment"}
+                                                </Typography>
+                                              </Box>
 
-                                            <Stack direction="row" spacing={1}>
-                                              <Button
-                                                type="button"
-                                                size="small"
-                                                variant="contained"
-                                                startIcon={<OpenInNewRoundedIcon />}
-                                                onClick={() => openPurchaseOrderAttachment(attachment)}
-                                                sx={{ borderRadius: 999, fontWeight: 800 }}
+                                              <Stack
+                                                direction="row"
+                                                spacing={1}
                                               >
-                                                Open PDF
-                                              </Button>
+                                                <Button
+                                                  type="button"
+                                                  size="small"
+                                                  variant="contained"
+                                                  startIcon={
+                                                    <OpenInNewRoundedIcon />
+                                                  }
+                                                  onClick={() =>
+                                                    openPurchaseOrderAttachment(
+                                                      attachment,
+                                                    )
+                                                  }
+                                                  sx={{
+                                                    borderRadius: 999,
+                                                    fontWeight: 800,
+                                                  }}
+                                                >
+                                                  Open PDF
+                                                </Button>
 
-                                              <Button
-                                                component="a"
-                                                href={attachment.downloadUrl}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                size="small"
-                                                variant="outlined"
-                                                startIcon={<CloudDownloadRoundedIcon />}
-                                                sx={{ borderRadius: 999, fontWeight: 800 }}
-                                              >
-                                                Download
-                                              </Button>
+                                                <Button
+                                                  component="a"
+                                                  href={attachment.downloadUrl}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  size="small"
+                                                  variant="outlined"
+                                                  startIcon={
+                                                    <CloudDownloadRoundedIcon />
+                                                  }
+                                                  sx={{
+                                                    borderRadius: 999,
+                                                    fontWeight: 800,
+                                                  }}
+                                                >
+                                                  Download
+                                                </Button>
+                                              </Stack>
                                             </Stack>
-                                          </Stack>
-                                        </Paper>
-                                      ))}
+                                          </Paper>
+                                        ),
+                                      )}
                                     </Stack>
                                   ) : (
                                     <Alert severity="info" variant="outlined">
-                                      No supplier invoice PDF has been attached to this PO yet.
+                                      No supplier invoice PDF has been attached
+                                      to this PO yet.
                                     </Alert>
                                   )}
                                 </Stack>
@@ -8309,7 +9790,10 @@ Supply line`}
                   </Stack>
                 </Section>
 
-                <Section title="Billing" icon={<ReceiptLongRoundedIcon color="primary" />}>
+                <Section
+                  title="Billing"
+                  icon={<ReceiptLongRoundedIcon color="primary" />}
+                >
                   {canCloseFollowUpWithoutReturnVisit ? (
                     <Alert
                       severity="warning"
@@ -8328,40 +9812,52 @@ Supply line`}
                         </Button>
                       }
                     >
-                      <strong>Customer no longer needs a return visit?</strong> Close the
-                      follow-up and send the existing completed work to Ready to Bill without
-                      changing the original trip outcome.
+                      <strong>Customer no longer needs a return visit?</strong>{" "}
+                      Close the follow-up and send the existing completed work
+                      to Ready to Bill without changing the original trip
+                      outcome.
                     </Alert>
                   ) : null}
 
-                  {ticket.followUpClosure?.status === "closed_without_return_visit" ? (
+                  {ticket.followUpClosure?.status ===
+                  "closed_without_return_visit" ? (
                     <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
                       <strong>Follow-up closed without a return visit.</strong>{" "}
-                      {ticket.followUpClosure.reasonLabel}. Note: {ticket.followUpClosure.note}
+                      {ticket.followUpClosure.reasonLabel}. Note:{" "}
+                      {ticket.followUpClosure.note}
                     </Alert>
                   ) : null}
 
                   {!ticket.billing ? (
                     <Stack spacing={1.5}>
                       <Alert severity="info" variant="outlined">
-                        No billing packet yet. It appears after a trip is completed as{" "}
-                        <strong>Resolved — Ready to Bill</strong>.
+                        No billing packet yet. It appears after a trip is
+                        completed as <strong>Resolved — Ready to Bill</strong>.
                       </Alert>
 
                       {canBill ? (
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                        >
                           <Button
                             variant="contained"
                             onClick={handleResyncBillingPacket}
                             disabled={billingSaving || isInvoicedTicket}
                           >
-                            {billingSaving ? "Resyncing..." : "Resync Billing Packet"}
+                            {billingSaving
+                              ? "Resyncing..."
+                              : "Resync Billing Packet"}
                           </Button>
                         </Stack>
                       ) : null}
 
-                      {billingErr ? <Alert severity="error">{billingErr}</Alert> : null}
-                      {billingOk ? <Alert severity="success">{billingOk}</Alert> : null}
+                      {billingErr ? (
+                        <Alert severity="error">{billingErr}</Alert>
+                      ) : null}
+                      {billingOk ? (
+                        <Alert severity="success">{billingOk}</Alert>
+                      ) : null}
                     </Stack>
                   ) : (
                     <Stack spacing={2}>
@@ -8377,14 +9873,19 @@ Supply line`}
                         alignItems={{ xs: "flex-start", sm: "center" }}
                         spacing={1}
                       >
-                        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                          <Typography variant="body1">
-                            Status:
-                          </Typography>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          flexWrap="wrap"
+                        >
+                          <Typography variant="body1">Status:</Typography>
                           <Chip
                             size="small"
                             color={getBillingTone(ticket.billing.status)}
-                            label={formatBillingPacketStatus(ticket.billing.status)}
+                            label={formatBillingPacketStatus(
+                              ticket.billing.status,
+                            )}
                           />
                           {ticket.billing.invoiceSource ? (
                             <Chip
@@ -8402,7 +9903,10 @@ Supply line`}
                         ) : null}
                       </Stack>
 
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+                      <Paper
+                        variant="outlined"
+                        sx={{ p: 1.5, borderRadius: 1 }}
+                      >
                         <Stack spacing={1}>
                           <Typography variant="subtitle1" fontWeight={700}>
                             Labor Summary
@@ -8411,19 +9915,25 @@ Supply line`}
                           <Typography variant="body1">
                             Total billed hours:{" "}
                             <strong>
-                              {Number(ticket.billing.labor.totalHours || 0).toFixed(2)}
+                              {Number(
+                                ticket.billing.labor.totalHours || 0,
+                              ).toFixed(2)}
                             </strong>
                           </Typography>
 
                           {ticket.billing.readyToBillTripId ? (
                             <Typography variant="body2" color="text.secondary">
-                              Ready-to-bill trip: {ticket.billing.readyToBillTripId}
+                              Ready-to-bill trip:{" "}
+                              {ticket.billing.readyToBillTripId}
                             </Typography>
                           ) : null}
                         </Stack>
                       </Paper>
 
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+                      <Paper
+                        variant="outlined"
+                        sx={{ p: 1.5, borderRadius: 1 }}
+                      >
                         <Stack spacing={1.5}>
                           <Typography variant="subtitle1" fontWeight={700}>
                             Materials Billing
@@ -8434,8 +9944,12 @@ Supply line`}
                             multiline
                             minRows={4}
                             value={billingMaterialsSummaryEdit}
-                            onChange={(e) => setBillingMaterialsSummaryEdit(e.target.value)}
-                            disabled={!canBill || billingSaving || isInvoicedTicket}
+                            onChange={(e) =>
+                              setBillingMaterialsSummaryEdit(e.target.value)
+                            }
+                            disabled={
+                              !canBill || billingSaving || isInvoicedTicket
+                            }
                             placeholder={`Example: Angle stop, wax ring, PVC fittings for drain reset`}
                             helperText="This will become the summarized materials line description for invoicing."
                           />
@@ -8445,41 +9959,55 @@ Supply line`}
                             type="number"
                             inputProps={{ min: 0, step: 0.01 }}
                             value={billingMaterialsAmountEdit}
-                            onChange={(e) => setBillingMaterialsAmountEdit(e.target.value)}
-                            disabled={!canBill || billingSaving || isInvoicedTicket}
+                            onChange={(e) =>
+                              setBillingMaterialsAmountEdit(e.target.value)
+                            }
+                            disabled={
+                              !canBill || billingSaving || isInvoicedTicket
+                            }
                             placeholder="0.00"
                             helperText="Enter the total billed materials amount."
                           />
 
                           {canBill ? (
-                            <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={1}
+                            >
                               <Button
                                 variant="contained"
                                 onClick={handleSaveBillingPacketDetails}
                                 disabled={billingSaving || isInvoicedTicket}
                               >
-                                {billingSaving ? "Saving..." : "Save Billing Details"}
+                                {billingSaving
+                                  ? "Saving..."
+                                  : "Save Billing Details"}
                               </Button>
                             </Stack>
                           ) : null}
                         </Stack>
                       </Paper>
 
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+                      <Paper
+                        variant="outlined"
+                        sx={{ p: 1.5, borderRadius: 1 }}
+                      >
                         <Stack spacing={1}>
                           <Typography variant="subtitle1" fontWeight={700}>
                             Invoice Details
                           </Typography>
 
                           <Typography variant="body2" color="text.secondary">
-                            Resolution notes and work notes remain stored for office reference, but
-                            the future QBO invoice flow will use the service date range plus the
-                            summarized labor/materials billing model.
+                            Resolution notes and work notes remain stored for
+                            office reference, but the future QBO invoice flow
+                            will use the service date range plus the summarized
+                            labor/materials billing model.
                           </Typography>
 
                           {ticket.billing.qboDocNumber ? (
                             <Typography variant="body1">
-                              Invoice Number: <strong>{ticket.billing.qboDocNumber}</strong>
+                              Invoice Number:{" "}
+                              <strong>{ticket.billing.qboDocNumber}</strong>
                             </Typography>
                           ) : null}
 
@@ -8502,15 +10030,21 @@ Supply line`}
                           ) : null}
 
                           {ticket.billing.invoiceError ? (
-                            <Alert severity="error">{ticket.billing.invoiceError}</Alert>
+                            <Alert severity="error">
+                              {ticket.billing.invoiceError}
+                            </Alert>
                           ) : null}
                         </Stack>
                       </Paper>
 
                       {canBill ? (
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                        >
                           {(ticket.billing.status === "ready_to_bill" ||
-                            ticket.billing.status === "invoice_failed") && !isInvoicedTicket ? (
+                            ticket.billing.status === "invoice_failed") &&
+                          !isInvoicedTicket ? (
                             <Button
                               variant="contained"
                               onClick={handleCreateQboInvoice}
@@ -8529,7 +10063,9 @@ Supply line`}
                             onClick={() => markBillingStatus("invoiced")}
                             disabled={billingSaving || isInvoicedTicket}
                           >
-                            {billingSaving ? "Working..." : "Mark Invoiced Manually"}
+                            {billingSaving
+                              ? "Working..."
+                              : "Mark Invoiced Manually"}
                           </Button>
 
                           <Button
@@ -8550,101 +10086,373 @@ Supply line`}
                         </Stack>
                       ) : null}
 
-                      {billingErr ? <Alert severity="error">{billingErr}</Alert> : null}
-                      {billingOk ? <Alert severity="success">{billingOk}</Alert> : null}
+                      {billingErr ? (
+                        <Alert severity="error">{billingErr}</Alert>
+                      ) : null}
+                      {billingOk ? (
+                        <Alert severity="success">{billingOk}</Alert>
+                      ) : null}
                     </Stack>
                   )}
                 </Section>
 
-<Section title="Activity Log" icon={<BuildRoundedIcon color="primary" />}>
-  <Stack spacing={1.5}>
-    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
-      <Stack spacing={0.5}>
-        <Typography variant="body2">
-          <strong>Active:</strong> {String(ticket.active)}
-        </Typography>
-        <Typography variant="body2">
-          <strong>Created At:</strong> {ticket.createdAt || "—"}
-        </Typography>
-        <Typography variant="body2">
-          <strong>Updated At:</strong> {ticket.updatedAt || "—"}
-        </Typography>
-      </Stack>
-    </Paper>
-
-    <Divider />
-
-    <Typography variant="subtitle1" fontWeight={800}>
-      Activity Log
-    </Typography>
-
-    {activityEntries.length === 0 ? (
-      <Alert severity="info" variant="outlined">
-        No system activity has been logged for this service ticket yet.
-      </Alert>
-    ) : (
-      <Stack spacing={1}>
-        {activityEntries.map((entry) => (
-          <Paper
-            key={entry.id}
-            variant="outlined"
-            sx={{
-              p: 1.25,
-              borderRadius: 1,
-              bgcolor: alpha(theme.palette.primary.main, 0.025),
-            }}
-          >
-            <Stack spacing={0.75}>
-              <Stack
-                direction={{ xs: "column", sm: "row" }}
-                spacing={1}
-                justifyContent="space-between"
-                alignItems={{ xs: "flex-start", sm: "center" }}
-              >
-                <Typography variant="subtitle2" fontWeight={800}>
-                  {entry.title || "Activity"}
-                </Typography>
-
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={formatActivityDate(entry.createdAt)}
-                  sx={{ borderRadius: 1, fontWeight: 700 }}
-                />
-              </Stack>
-
-              {entry.description ? (
-                <Typography variant="body2" color="text.secondary">
-                  {entry.description}
-                </Typography>
-              ) : null}
-
-              {entry.details?.length ? (
-                <Stack spacing={0.35}>
-                  {entry.details.slice(0, 8).map((detail, index) => (
-                    <Typography
-                      key={`${entry.id}-detail-${index}`}
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ display: "block" }}
+                <Section
+                  title="Ticket Audit Summary"
+                  icon={<BuildRoundedIcon color="primary" />}
+                >
+                  <Stack spacing={1.5}>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 1.5,
+                        borderRadius: 1,
+                        bgcolor: alpha(theme.palette.primary.main, 0.025),
+                      }}
                     >
-                      • {detail}
-                    </Typography>
-                  ))}
-                </Stack>
-              ) : null}
+                      <Stack spacing={1}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          flexWrap="wrap"
+                          useFlexGap
+                        >
+                          <Chip
+                            size="small"
+                            color={
+                              ticket.active === false ? "default" : "success"
+                            }
+                            variant="outlined"
+                            label={
+                              ticket.active === false ? "Inactive" : "Active"
+                            }
+                            sx={{ borderRadius: 1, fontWeight: 800 }}
+                          />
+                        </Stack>
 
-              <Typography variant="caption" color="text.secondary">
-                Logged by {entry.createdByName || "System"}
-                {entry.createdByRole ? ` • ${entry.createdByRole}` : ""}
-              </Typography>
-            </Stack>
-          </Paper>
-        ))}
-      </Stack>
-    )}
-  </Stack>
-</Section>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1.25}
+                          divider={
+                            isMobile ? undefined : (
+                              <Divider orientation="vertical" flexItem />
+                            )
+                          }
+                        >
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              fontWeight={800}
+                            >
+                              Created By
+                            </Typography>
+                            <Typography
+                              variant="body2"
+                              fontWeight={800}
+                              sx={{ overflowWrap: "anywhere" }}
+                            >
+                              {ticket.createdByName ||
+                                ticket.requestedByName ||
+                                (ticket.createdByUid || ticket.requestedByUid
+                                  ? middleTruncate(
+                                      ticket.createdByUid ||
+                                        ticket.requestedByUid,
+                                    )
+                                  : "System / Legacy")}
+                            </Typography>
+                            {ticket.createdByRole ? (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {ticket.createdByRole}
+                              </Typography>
+                            ) : null}
+                          </Box>
+
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              fontWeight={800}
+                            >
+                              Created At
+                            </Typography>
+                            <Typography variant="body2" fontWeight={800}>
+                              {formatActivityDate(ticket.createdAt)}
+                            </Typography>
+                          </Box>
+
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              fontWeight={800}
+                            >
+                              Last Updated By
+                            </Typography>
+                            <Typography
+                              variant="body2"
+                              fontWeight={800}
+                              sx={{ overflowWrap: "anywhere" }}
+                            >
+                              {ticket.updatedByName ||
+                                (ticket.updatedByUid
+                                  ? middleTruncate(ticket.updatedByUid)
+                                  : "—")}
+                            </Typography>
+                            {ticket.updatedByRole ? (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {ticket.updatedByRole}
+                              </Typography>
+                            ) : null}
+                          </Box>
+
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              fontWeight={800}
+                            >
+                              Updated At
+                            </Typography>
+                            <Typography variant="body2" fontWeight={800}>
+                              {formatActivityDate(ticket.updatedAt)}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                      </Stack>
+                    </Paper>
+
+                    <Divider />
+
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1.25}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "stretch", sm: "center" }}
+                    >
+                      <Box>
+                        <Typography variant="subtitle1" fontWeight={800}>
+                          Activity Log
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Timeline of meaningful ticket, trip, PO, attachment,
+                          and billing events.
+                        </Typography>
+                      </Box>
+
+                      <TextField
+                        select
+                        size="small"
+                        label="Filter"
+                        value={activityFilter}
+                        onChange={(e) => setActivityFilter(e.target.value)}
+                        sx={{ minWidth: { xs: "100%", sm: 170 } }}
+                      >
+                        {[
+                          "all",
+                          "ticket",
+                          "trip",
+                          "attachment",
+                          "po",
+                          "billing",
+                          "location",
+                        ].map((value) => (
+                          <MenuItem key={value} value={value}>
+                            {getActivityFilterLabel(value)}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Stack>
+
+                    {activityEntriesForDisplay.length === 0 ? (
+                      <Alert severity="info" variant="outlined">
+                        No activity matches this filter yet.
+                      </Alert>
+                    ) : (
+                      <Stack spacing={0.9}>
+                        {activityEntriesForDisplay.map((entry) => {
+                          const tone = getActivityTone(entry.type);
+                          const actor = entry.createdByName || "System";
+                          const role = entry.createdByRole || "DC Flow";
+
+                          return (
+                            <Paper
+                              key={entry.id}
+                              variant="outlined"
+                              sx={{
+                                p: { xs: 1.15, sm: 1.35 },
+                                borderRadius: 1.2,
+                                minWidth: 0,
+                                bgcolor: alpha(
+                                  theme.palette.common.white,
+                                  0.015,
+                                ),
+                                borderColor: alpha(theme.palette.divider, 0.9),
+                                transition:
+                                  "border-color 120ms ease, background-color 120ms ease",
+                                "&:hover": {
+                                  bgcolor: alpha(
+                                    theme.palette.common.white,
+                                    0.028,
+                                  ),
+                                  borderColor: alpha(
+                                    theme.palette[tone].main,
+                                    0.36,
+                                  ),
+                                },
+                              }}
+                            >
+                              <Stack
+                                direction="row"
+                                spacing={1.25}
+                                alignItems="flex-start"
+                                sx={{ minWidth: 0 }}
+                              >
+                                <Box
+                                  sx={{
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: "999px",
+                                    display: "grid",
+                                    placeItems: "center",
+                                    color: `${tone}.main`,
+                                    bgcolor: alpha(
+                                      theme.palette[tone].main,
+                                      0.12,
+                                    ),
+                                    border: "1px solid",
+                                    borderColor: alpha(
+                                      theme.palette[tone].main,
+                                      0.32,
+                                    ),
+                                    fontSize: 17,
+                                    flexShrink: 0,
+                                    mt: 0.15,
+                                  }}
+                                >
+                                  {getActivityIcon(entry.type)}
+                                </Box>
+
+                                <Stack
+                                  direction={{ xs: "column", md: "row" }}
+                                  spacing={{ xs: 0.9, md: 1.5 }}
+                                  justifyContent="space-between"
+                                  alignItems={{
+                                    xs: "stretch",
+                                    md: "flex-start",
+                                  }}
+                                  sx={{ minWidth: 0, flex: 1 }}
+                                >
+                                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                                    <Typography
+                                      variant="subtitle2"
+                                      fontWeight={900}
+                                      sx={{
+                                        lineHeight: 1.2,
+                                        overflowWrap: "anywhere",
+                                      }}
+                                    >
+                                      {entry.title || "Activity"}
+                                    </Typography>
+
+                                    {entry.description ? (
+                                      <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                        sx={{
+                                          mt: 0.25,
+                                          lineHeight: 1.35,
+                                          overflowWrap: "anywhere",
+                                        }}
+                                      >
+                                        {entry.description}
+                                      </Typography>
+                                    ) : null}
+
+                                    {entry.details?.length ? (
+                                      <Box
+                                        sx={{
+                                          mt: 0.85,
+                                          pl: 1,
+                                          borderLeft: "2px solid",
+                                          borderColor: alpha(
+                                            theme.palette[tone].main,
+                                            0.38,
+                                          ),
+                                        }}
+                                      >
+                                        <Stack spacing={0.35}>
+                                          {entry.details
+                                            .slice(0, 8)
+                                            .map((detail, detailIndex) => (
+                                              <Typography
+                                                key={`${entry.id}-detail-${detailIndex}`}
+                                                variant="caption"
+                                                color="text.secondary"
+                                                sx={{
+                                                  display: "block",
+                                                  lineHeight: 1.35,
+                                                  overflowWrap: "anywhere",
+                                                }}
+                                              >
+                                                {detail}
+                                              </Typography>
+                                            ))}
+                                        </Stack>
+                                      </Box>
+                                    ) : null}
+                                  </Box>
+
+                                  <Box
+                                    sx={{
+                                      minWidth: { xs: 0, md: 170 },
+                                      textAlign: { xs: "left", md: "right" },
+                                      flexShrink: 0,
+                                      pt: { xs: 0.25, md: 0 },
+                                    }}
+                                  >
+                                    <Typography
+                                      variant="body2"
+                                      fontWeight={900}
+                                      sx={{
+                                        lineHeight: 1.2,
+                                        overflowWrap: "anywhere",
+                                      }}
+                                    >
+                                      {actor}
+                                    </Typography>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      display="block"
+                                      sx={{ lineHeight: 1.25 }}
+                                    >
+                                      {role}
+                                    </Typography>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      display="block"
+                                      sx={{ lineHeight: 1.25, mt: 0.35 }}
+                                    >
+                                      {formatActivityDate(entry.createdAt)}
+                                    </Typography>
+                                  </Box>
+                                </Stack>
+                              </Stack>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    )}
+                  </Stack>
+                </Section>
               </Stack>
             </Box>
 
@@ -8659,9 +10467,10 @@ Supply line`}
               <DialogContent dividers>
                 <Stack spacing={2} sx={{ pt: 0.5 }}>
                   <Alert severity="info" variant="outlined">
-                    The completed trip will remain recorded as <strong>Follow-Up</strong>. This
-                    closes the outstanding return visit and creates a billing packet for the
-                    completed labor and materials already recorded.
+                    The completed trip will remain recorded as{" "}
+                    <strong>Follow-Up</strong>. This closes the outstanding
+                    return visit and creates a billing packet for the completed
+                    labor and materials already recorded.
                   </Alert>
 
                   <TextField
@@ -8700,7 +10509,10 @@ Supply line`}
               </DialogContent>
 
               <DialogActions>
-                <Button onClick={closeCloseFollowUpDialog} disabled={closeFollowUpSaving}>
+                <Button
+                  onClick={closeCloseFollowUpDialog}
+                  disabled={closeFollowUpSaving}
+                >
                   Cancel
                 </Button>
                 <Button
@@ -8708,7 +10520,9 @@ Supply line`}
                   onClick={handleCloseFollowUpWithoutReturnVisit}
                   disabled={closeFollowUpSaving || !closeFollowUpNote.trim()}
                 >
-                  {closeFollowUpSaving ? "Sending to Billing..." : "Send to Ready to Bill"}
+                  {closeFollowUpSaving
+                    ? "Sending to Billing..."
+                    : "Send to Ready to Bill"}
                 </Button>
               </DialogActions>
             </Dialog>
@@ -8731,8 +10545,9 @@ Supply line`}
               <DialogContent dividers>
                 <Stack spacing={2} sx={{ pt: 0.5 }}>
                   <Alert severity="info" variant="outlined">
-                    Customer stays locked on this ticket. Choose one of this customer&apos;s service
-                    locations, or quick add a new one using Google address search.
+                    Customer stays locked on this ticket. Choose one of this
+                    customer&apos;s service locations, or quick add a new one
+                    using Google address search.
                   </Alert>
 
                   <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
@@ -8752,7 +10567,9 @@ Supply line`}
                         select
                         label="Service Location"
                         value={selectedServiceAddressId}
-                        onChange={(e) => setSelectedServiceAddressId(e.target.value)}
+                        onChange={(e) =>
+                          setSelectedServiceAddressId(e.target.value)
+                        }
                         disabled={locationSaving}
                         helperText={
                           customerServiceAddresses.length > 0
@@ -8770,42 +10587,56 @@ Supply line`}
                         ))}
                       </TextField>
 
-                      {selectedServiceAddressId ? (
-                        (() => {
-                          const selected = customerServiceAddresses.find(
-                            (addr) => addr.id === selectedServiceAddressId
-                          );
+                      {selectedServiceAddressId
+                        ? (() => {
+                            const selected = customerServiceAddresses.find(
+                              (addr) => addr.id === selectedServiceAddressId,
+                            );
 
-                          if (!selected) return null;
+                            if (!selected) return null;
 
-                          return (
-                            <Paper
-                              variant="outlined"
-                              sx={{
-                                p: 1.5,
-                                borderRadius: 2,
-                                backgroundColor: alpha(theme.palette.primary.main, 0.035),
-                              }}
-                            >
-                              <Typography variant="body2" color="text.secondary">
-                                Selected location
-                              </Typography>
-                              <Typography variant="body1" fontWeight={800} sx={{ mt: 0.5 }}>
-                                {selected.label || "Service Address"}
-                              </Typography>
-                              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                                {buildInlineAddress(
-                                  selected.addressLine1,
-                                  selected.addressLine2,
-                                  selected.city,
-                                  selected.state,
-                                  selected.postalCode
-                                )}
-                              </Typography>
-                            </Paper>
-                          );
-                        })()
-                      ) : null}
+                            return (
+                              <Paper
+                                variant="outlined"
+                                sx={{
+                                  p: 1.5,
+                                  borderRadius: 2,
+                                  backgroundColor: alpha(
+                                    theme.palette.primary.main,
+                                    0.035,
+                                  ),
+                                }}
+                              >
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                >
+                                  Selected location
+                                </Typography>
+                                <Typography
+                                  variant="body1"
+                                  fontWeight={800}
+                                  sx={{ mt: 0.5 }}
+                                >
+                                  {selected.label || "Service Address"}
+                                </Typography>
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                  sx={{ mt: 0.5 }}
+                                >
+                                  {buildInlineAddress(
+                                    selected.addressLine1,
+                                    selected.addressLine2,
+                                    selected.city,
+                                    selected.state,
+                                    selected.postalCode,
+                                  )}
+                                </Typography>
+                              </Paper>
+                            );
+                          })()
+                        : null}
 
                       <Button
                         variant="outlined"
@@ -8816,7 +10647,11 @@ Supply line`}
                           setQuickAddMode(true);
                         }}
                         disabled={locationSaving}
-                        sx={{ alignSelf: "flex-start", borderRadius: 999, fontWeight: 700 }}
+                        sx={{
+                          alignSelf: "flex-start",
+                          borderRadius: 999,
+                          fontWeight: 700,
+                        }}
                       >
                         Quick Add Service Location
                       </Button>
@@ -8843,13 +10678,20 @@ Supply line`}
                           setQuickServiceAddressSearch(value);
                           markQuickServiceAddressManual();
                         }}
-                        onSelectAddress={handleQuickServiceGoogleAddressSelected}
+                        onSelectAddress={
+                          handleQuickServiceGoogleAddressSelected
+                        }
                         helperText="Start typing to search for a real address, or keep entering it manually below."
                         placeholder="Start typing a service address..."
                         disabled={locationSaving}
                       />
 
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        flexWrap="wrap"
+                        useFlexGap
+                      >
                         <Chip
                           size="small"
                           label={
@@ -8858,10 +10700,14 @@ Supply line`}
                               : "Manual entry"
                           }
                           color={
-                            quickServiceAddressSource === "google_places" ? "primary" : "default"
+                            quickServiceAddressSource === "google_places"
+                              ? "primary"
+                              : "default"
                           }
                           variant={
-                            quickServiceAddressSource === "google_places" ? "filled" : "outlined"
+                            quickServiceAddressSource === "google_places"
+                              ? "filled"
+                              : "outlined"
                           }
                           sx={{ borderRadius: 99, fontWeight: 700 }}
                         />
@@ -8893,7 +10739,10 @@ Supply line`}
                       <Box
                         sx={{
                           display: "grid",
-                          gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            sm: "repeat(3, minmax(0, 1fr))",
+                          },
                           gap: 2,
                         }}
                       >
@@ -8952,14 +10801,20 @@ Supply line`}
                           setLocationErr("");
                         }}
                         disabled={locationSaving}
-                        sx={{ alignSelf: "flex-start", borderRadius: 999, fontWeight: 700 }}
+                        sx={{
+                          alignSelf: "flex-start",
+                          borderRadius: 999,
+                          fontWeight: 700,
+                        }}
                       >
                         Back to Existing Locations
                       </Button>
                     </Stack>
                   )}
 
-                  {locationErr ? <Alert severity="error">{locationErr}</Alert> : null}
+                  {locationErr ? (
+                    <Alert severity="error">{locationErr}</Alert>
+                  ) : null}
                 </Stack>
               </DialogContent>
 
@@ -8989,7 +10844,11 @@ Supply line`}
                   <Button
                     variant="contained"
                     onClick={handleSaveSelectedServiceLocation}
-                    disabled={locationSaving || isInvoicedTicket || !selectedServiceAddressId}
+                    disabled={
+                      locationSaving ||
+                      isInvoicedTicket ||
+                      !selectedServiceAddressId
+                    }
                   >
                     {locationSaving ? "Saving..." : "Save Location"}
                   </Button>
@@ -9082,7 +10941,9 @@ Supply line`}
                     select
                     label="Secondary Technician (optional)"
                     value={editTripSecondaryTechUid}
-                    onChange={(e) => setEditTripSecondaryTechUid(e.target.value)}
+                    onChange={(e) =>
+                      setEditTripSecondaryTechUid(e.target.value)
+                    }
                   >
                     <MenuItem value="">— None —</MenuItem>
                     {technicians
@@ -9117,7 +10978,9 @@ Supply line`}
                     control={
                       <Checkbox
                         checked={editTripUseDefaultHelper}
-                        onChange={(e) => setEditTripUseDefaultHelper(e.target.checked)}
+                        onChange={(e) =>
+                          setEditTripUseDefaultHelper(e.target.checked)
+                        }
                       />
                     }
                     label="Use default helper pairing"
@@ -9163,7 +11026,9 @@ Supply line`}
                     select
                     label="Secondary Helper (optional)"
                     value={editTripSecondaryHelperUid}
-                    onChange={(e) => setEditTripSecondaryHelperUid(e.target.value)}
+                    onChange={(e) =>
+                      setEditTripSecondaryHelperUid(e.target.value)
+                    }
                   >
                     <MenuItem value="">— None —</MenuItem>
                     {helperCandidates.map((helper) => {
@@ -9216,7 +11081,9 @@ Supply line`}
                       control={
                         <Checkbox
                           checked={editTripHolidayOverride}
-                          onChange={(e) => setEditTripHolidayOverride(e.target.checked)}
+                          onChange={(e) =>
+                            setEditTripHolidayOverride(e.target.checked)
+                          }
                         />
                       }
                       label="Override holiday conflict for this trip"
@@ -9241,7 +11108,9 @@ Supply line`}
                           <Checkbox
                             checked={editTripDispatchOverrideEnabled}
                             onChange={(e) =>
-                              setEditTripDispatchOverrideEnabled(e.target.checked)
+                              setEditTripDispatchOverrideEnabled(
+                                e.target.checked,
+                              )
                             }
                           />
                         }
@@ -9263,13 +11132,15 @@ Supply line`}
                     </Stack>
                   ) : null}
 
-                  {editTripErr ? <Alert severity="error">{editTripErr}</Alert> : null}
+                  {editTripErr ? (
+                    <Alert severity="error">{editTripErr}</Alert>
+                  ) : null}
 
                   <Typography variant="body2" color="text.secondary">
-                    Scheduled or in-progress trip overlaps can be saved with Dispatch Override.
-                    The new trip remains planned and cannot be started while another trip is
-                    running. PTO and holidays remain blocked unless their separate override is
-                    enabled.
+                    Scheduled or in-progress trip overlaps can be saved with
+                    Dispatch Override. The new trip remains planned and cannot
+                    be started while another trip is running. PTO and holidays
+                    remain blocked unless their separate override is enabled.
                   </Typography>
                 </Stack>
               </DialogContent>
@@ -9279,7 +11150,9 @@ Supply line`}
                 <Button
                   variant="contained"
                   onClick={handleSaveTripEdit}
-                  disabled={editTripSaving || isInvoicedTicket || !editCanSubmit}
+                  disabled={
+                    editTripSaving || isInvoicedTicket || !editCanSubmit
+                  }
                 >
                   {editTripSaving ? "Saving..." : "Save Changes"}
                 </Button>

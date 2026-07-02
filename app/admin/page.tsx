@@ -106,7 +106,7 @@ function AdminToolCard({
         href={href}
         sx={{
           height: "100%",
-          borderRadius: 3,
+          borderRadius: 1,
           alignItems: "stretch",
         }}
       >

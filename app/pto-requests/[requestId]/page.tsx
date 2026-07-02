@@ -1057,7 +1057,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                   elevation={0}
                   sx={{
                     p: 1.5,
-                    borderRadius: 3,
+                    borderRadius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                   }}
                 >
@@ -1072,7 +1072,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                   elevation={0}
                   sx={{
                     p: 1.5,
-                    borderRadius: 3,
+                    borderRadius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                   }}
                 >
@@ -1087,7 +1087,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                   elevation={0}
                   sx={{
                     p: 1.5,
-                    borderRadius: 3,
+                    borderRadius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                   }}
                 >
@@ -1114,7 +1114,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       elevation={0}
                       sx={{
                         p: 1.5,
-                        borderRadius: 3,
+                        borderRadius: 1,
                         border: `1px solid ${theme.palette.divider}`,
                         backgroundColor: impact.isInProgress
                           ? alpha(theme.palette.warning.main, 0.06)
@@ -1221,7 +1221,7 @@ export default function PTORequestDetailPage({ params }: Props) {
               elevation={0}
               sx={{
                 p: { xs: 2.5, md: 3 },
-                borderRadius: 5,
+                borderRadius: 1,
                 border: `1px solid ${theme.palette.divider}`,
                 backgroundColor: theme.palette.background.paper,
               }}
@@ -1259,7 +1259,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                 elevation={0}
                 sx={{
                   p: 2.5,
-                  borderRadius: 4,
+                  borderRadius: 1,
                   border: `1px solid ${theme.palette.divider}`,
                 }}
               >
@@ -1270,13 +1270,13 @@ export default function PTORequestDetailPage({ params }: Props) {
             ) : null}
 
             {error ? (
-              <Alert severity="error" sx={{ borderRadius: 3 }}>
+              <Alert severity="error" sx={{ borderRadius: 1 }}>
                 {error}
               </Alert>
             ) : null}
 
             {saveMsg ? (
-              <Alert severity="success" sx={{ borderRadius: 3 }}>
+              <Alert severity="success" sx={{ borderRadius: 1 }}>
                 {saveMsg}
               </Alert>
             ) : null}
@@ -1295,7 +1295,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       flex: "1 1 220px",
                       minWidth: 0,
                       p: 2,
-                      borderRadius: 4,
+                      borderRadius: 1,
                       border: `1px solid ${theme.palette.divider}`,
                       backgroundColor: alpha(theme.palette.primary.main, 0.06),
                     }}
@@ -1322,7 +1322,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       flex: "1 1 220px",
                       minWidth: 0,
                       p: 2,
-                      borderRadius: 4,
+                      borderRadius: 1,
                       border: `1px solid ${theme.palette.divider}`,
                       backgroundColor: alpha(theme.palette.warning.main, 0.06),
                     }}
@@ -1346,7 +1346,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       flex: "1 1 220px",
                       minWidth: 0,
                       p: 2,
-                      borderRadius: 4,
+                      borderRadius: 1,
                       border: `1px solid ${theme.palette.divider}`,
                       backgroundColor: alpha(theme.palette.secondary.main, 0.06),
                     }}
@@ -1373,7 +1373,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       flex: "1 1 220px",
                       minWidth: 0,
                       p: 2,
-                      borderRadius: 4,
+                      borderRadius: 1,
                       border: `1px solid ${theme.palette.divider}`,
                       backgroundColor:
                         requestItem.status === "approved"
@@ -1406,7 +1406,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       elevation={0}
                       sx={{
                         p: { xs: 2, md: 3 },
-                        borderRadius: 5,
+                        borderRadius: 1,
                         border: `1px solid ${theme.palette.divider}`,
                         backgroundColor: theme.palette.background.paper,
                       }}
@@ -1491,7 +1491,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                       elevation={0}
                       sx={{
                         p: { xs: 2, md: 3 },
-                        borderRadius: 5,
+                        borderRadius: 1,
                         border: `1px solid ${theme.palette.divider}`,
                         backgroundColor: theme.palette.background.paper,
                       }}
@@ -1513,7 +1513,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                             elevation={0}
                             sx={{
                               p: 2,
-                              borderRadius: 3,
+                              borderRadius: 1,
                               border: `1px dashed ${theme.palette.divider}`,
                               backgroundColor: alpha(theme.palette.text.primary, 0.02),
                             }}
@@ -1547,7 +1547,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                           elevation={0}
                           sx={{
                             p: 2,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             border: `1px solid ${theme.palette.divider}`,
                             backgroundColor: alpha(theme.palette.info.main, 0.06),
                           }}
@@ -1568,7 +1568,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                         elevation={0}
                         sx={{
                           p: { xs: 2, md: 3 },
-                          borderRadius: 5,
+                          borderRadius: 1,
                           border: `1px solid ${theme.palette.divider}`,
                           backgroundColor: theme.palette.background.paper,
                         }}
@@ -1606,7 +1606,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                     sx={{
                       flex: 0.95,
                       p: { xs: 2, md: 3 },
-                      borderRadius: 5,
+                      borderRadius: 1,
                       border: `1px solid ${theme.palette.divider}`,
                       backgroundColor: theme.palette.background.paper,
                       minWidth: 0,
@@ -1651,7 +1651,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                           elevation={0}
                           sx={{
                             p: 2,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             border: `1px solid ${theme.palette.divider}`,
                             backgroundColor: alpha(theme.palette.secondary.main, 0.05),
                           }}
@@ -1674,7 +1674,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                           elevation={0}
                           sx={{
                             p: 2,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             border: `1px solid ${theme.palette.divider}`,
                             backgroundColor: alpha(theme.palette.error.main, 0.05),
                           }}
@@ -1724,7 +1724,7 @@ export default function PTORequestDetailPage({ params }: Props) {
                           elevation={0}
                           sx={{
                             p: 2,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             border: `1px solid ${theme.palette.divider}`,
                             backgroundColor: alpha(theme.palette.text.primary, 0.04),
                           }}
