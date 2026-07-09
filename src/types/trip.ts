@@ -43,6 +43,32 @@ export type TripLink = {
   projectStageKey?: "roughIn" | "topOutVent" | "trimFinish" | "tm_work";
 };
 
+export type TripWorkNote = {
+  id: string;
+  text: string;
+
+  createdAt: string;
+  createdByUid: string;
+  createdByName?: string | null;
+
+  updatedAt?: string | null;
+  updatedByUid?: string | null;
+  updatedByName?: string | null;
+};
+
+export type TripMaterialNote = {
+  id: string;
+  text: string;
+
+  createdAt: string;
+  createdByUid: string;
+  createdByName?: string | null;
+
+  updatedAt?: string | null;
+  updatedByUid?: string | null;
+  updatedByName?: string | null;
+};
+
 export type Trip = {
   id: string;
 
@@ -60,7 +86,32 @@ export type Trip = {
 
   sourceKey: string; // unique deterministic key for idempotent sync
 
+  /**
+   * General trip/scheduling notes.
+   * This is still useful for office/admin scheduling context.
+   */
   notes?: string;
+
+  /**
+   * Field-facing work notes used during active trips.
+   * This should be available for both service and project trips.
+   */
+  workNotes?: TripWorkNote[];
+
+  /**
+   * Optional structured material notes during the trip.
+   * Useful when crews want to keep material tracking separate from general work notes.
+   */
+  materialNotes?: TripMaterialNote[];
+
+  /**
+   * Simple summary fields used during closeout / billing history.
+   * These support the existing project trip closeout flow.
+   */
+  workNotesSummary?: string | null;
+  materialsUsedToday?: string | null;
+  materialsSummary?: string | null;
+
   cancelReason?: string;
 
   active: boolean;

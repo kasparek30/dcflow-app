@@ -219,3 +219,7 @@ export function needsYearEndMileage(
 
   return !entry?.endMileage;
 }
+
+export function getFleetMileageReminderTaxYear(date = new Date()): number {
+  return date.getFullYear() - 1;
+}

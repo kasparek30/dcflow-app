@@ -109,6 +109,17 @@ type TripLink = {
   projectStageKey?: string | null;
 };
 
+type TripWorkNote = {
+  id: string;
+  text: string;
+  createdAt: string;
+  createdByUid: string;
+  createdByName?: string | null;
+  updatedAt?: string | null;
+  updatedByUid?: string | null;
+  updatedByName?: string | null;
+};
+
 type ProjectTripMaterial = {
   id?: string;
   name?: string | null;
@@ -150,6 +161,9 @@ type TripDoc = {
   crew?: TripCrew | null;
   crewConfirmed?: TripCrew | null;
   link?: TripLink | null;
+  notes?: string | null;
+  workNotes?: TripWorkNote[] | null;
+  workNotesSummary?: string | null;
   timerState?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
@@ -162,6 +176,7 @@ type TripDoc = {
   updatedAt?: string | null;
   closeout?: {
     needsMoreWork?: string | boolean | null;
+    workNotes?: string | null;
     materialsUsedToday?: string | null;
     materialNotes?: string | null;
   } | null;
@@ -505,6 +520,52 @@ function tripNeedsMoreWork(trip?: TripDoc | null) {
   return false;
 }
 
+function getLatestTripWorkNote(trip?: TripDoc | null) {
+  const notes = Array.isArray(trip?.workNotes) ? trip.workNotes : [];
+  const current = notes.find((note) => note.id === "current_trip_work_note");
+  if (current) return current;
+  return notes[notes.length - 1] || null;
+}
+
+function getTripWorkNotesSummary(trip?: TripDoc | null) {
+  if (!trip) return "";
+  const latestNote = getLatestTripWorkNote(trip);
+
+  return (
+    safeTrim(trip.workNotesSummary) ||
+    safeTrim(latestNote?.text) ||
+    safeTrim(trip.closeout?.workNotes) ||
+    safeTrim(trip.notes) ||
+    ""
+  );
+}
+
+function buildCurrentTripWorkNotes(args: {
+  trip?: TripDoc | null;
+  text: string;
+  stamp: string;
+  actorUid: string;
+  actorName: string;
+}) {
+  const text = safeTrim(args.text);
+  if (!text) return [];
+
+  const existing = getLatestTripWorkNote(args.trip);
+
+  return [
+    {
+      id: "current_trip_work_note",
+      text,
+      createdAt: safeTrim(existing?.createdAt) || args.stamp,
+      createdByUid: safeTrim(existing?.createdByUid) || args.actorUid || "",
+      createdByName: safeTrim(existing?.createdByName) || args.actorName || null,
+      updatedAt: args.stamp,
+      updatedByUid: args.actorUid || null,
+      updatedByName: args.actorName || null,
+    },
+  ];
+}
+
 function isProjectOfficeClosedish(status?: string | null) {
   const s = safeTrim(status).toLowerCase();
   return s === "field_complete" || s === "invoiced" || s === "closed";
@@ -714,6 +775,9 @@ function useRealtimeActiveTrip(uid: string) {
         crew: d.crew ?? null,
         crewConfirmed: d.crewConfirmed ?? null,
         link: d.link ?? null,
+        notes: d.notes ?? null,
+        workNotes: Array.isArray(d.workNotes) ? d.workNotes : null,
+        workNotesSummary: d.workNotesSummary ?? null,
         timerState: d.timerState ?? null,
         startedAt: d.startedAt ?? d.actualStartAt ?? null,
         completedAt: d.completedAt ?? d.actualEndAt ?? null,
@@ -2162,6 +2226,7 @@ export default function AppShell({
         activeTrip.closeout?.materialNotes ||
         activeTrip.closeout?.materialsUsedToday,
     );
+    const savedWorkNote = getTripWorkNotesSummary(activeTrip);
 
     setProjectCloseoutDecision("");
     setProjectTodayResult("done_today");
@@ -2171,9 +2236,9 @@ export default function AppShell({
     setProjectTimerStoppedAt(timerStoppedAt);
     setProjectCorrectHoursOpen(false);
     setProjectCrewHours(buildProjectCloseoutCrewHours(crew, suggestedHours));
-    setProjectOptionalNoteOpen(false);
+    setProjectOptionalNoteOpen(Boolean(savedWorkNote));
     setProjectMaterialsOpen(Boolean(savedMaterialNote));
-    setProjectCloseoutNotes("");
+    setProjectCloseoutNotes(savedWorkNote);
     setProjectMaterialsSummary(savedMaterialNote);
     setProjectRequestedReturnDate("");
     setProjectCloseoutError("");
@@ -2295,6 +2360,9 @@ export default function AppShell({
           timeWindow: d.timeWindow ?? "all_day",
           crew: d.crew ?? null,
           link: d.link ?? null,
+          notes: d.notes ?? null,
+          workNotes: Array.isArray(d.workNotes) ? d.workNotes : null,
+          workNotesSummary: d.workNotesSummary ?? null,
           timerState: d.timerState ?? null,
           actualStartAt: d.actualStartAt ?? null,
           actualEndAt: d.actualEndAt ?? null,
@@ -2350,6 +2418,15 @@ export default function AppShell({
         crewHoursAdjusted,
         timerElapsedMinutes: projectTimerMinutes,
         timerRoundedHours: hoursNumber,
+        notes: closeoutNotes || null,
+        workNotes: buildCurrentTripWorkNotes({
+          trip: activeTrip,
+          text: closeoutNotes,
+          stamp: savedAt,
+          actorUid: myUid || "",
+          actorName: myDisplayName || "Field Crew",
+        }),
+        workNotesSummary: closeoutNotes || null,
         materialsSummary: materialsSummary || null,
         materialNotes: materialsSummary || null,
         materialsLoggedAt: materialsSummary ? stamp : null,
@@ -2576,9 +2653,17 @@ export default function AppShell({
   }
 
   function navigateToActiveTrip(
-    action?: "note" | "follow_up" | "resolved" | "attachment",
+    action?: "note" | "follow_up" | "resolved" | "attachment" | "project_note",
   ) {
     if (!activeTripCard) return;
+
+    if (action === "project_note") {
+      const url = new URL(activeTripCard.href, window.location.origin);
+      url.hash = "work-notes-for-this-trip";
+      router.push(`${url.pathname}${url.search}${url.hash}`);
+      setActiveTripSheetOpen(false);
+      return;
+    }
 
     if (!hasServiceTicketTarget || !action) {
       router.push(activeTripCard.href);
@@ -3877,6 +3962,16 @@ export default function AppShell({
                 }}
               >
                 Finish Day
+              </Button>
+
+              <Button
+                variant="outlined"
+                color="primary"
+                startIcon={<NoteAltOutlinedIcon />}
+                sx={{ gridColumn: "1 / -1" }}
+                onClick={() => navigateToActiveTrip("project_note")}
+              >
+                Work Notes
               </Button>
 
               <Button

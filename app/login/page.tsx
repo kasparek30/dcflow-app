@@ -1,7 +1,8 @@
+// app/login/page.tsx
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
@@ -22,14 +23,32 @@ import { auth, db } from "../../src/lib/firebase";
 
 type AppUser = {
   uid: string;
-  displayName: string;
-  email: string;
-  role: string;
-  active: boolean;
+  displayName?: string;
+  email?: string;
+  role?: string;
+  active?: boolean;
 };
 
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
+}
+
+function normalizeRole(role?: string | null) {
+  return safeTrim(role).toLowerCase();
+}
+
+function destinationForRole(role?: string | null) {
+  const cleanRole = normalizeRole(role);
+
+  if (
+    cleanRole === "technician" ||
+    cleanRole === "helper" ||
+    cleanRole === "apprentice"
+  ) {
+    return "/technician/my-day";
+  }
+
+  return "/dashboard";
 }
 
 const wave = keyframes`
@@ -56,46 +75,75 @@ export default function LoginPage() {
     return Boolean(safeTrim(email)) && Boolean(safeTrim(password)) && !loading;
   }, [email, password, loading]);
 
-  async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
+  async function navigateAfterLogin(destination: string) {
+    router.replace(destination);
+    router.refresh();
+
+    window.setTimeout(() => {
+      if (typeof window !== "undefined" && window.location.pathname === "/login") {
+        window.location.assign(destination);
+      }
+    }, 900);
+  }
+
+  async function handleLogin(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    const cleanEmail = safeTrim(email);
+    const cleanPassword = String(password || "");
+
+    if (!cleanEmail || !cleanPassword) {
+      setError("Email and password are required.");
+      return;
+    }
+
     setError("");
     setLoading(true);
 
     try {
-      const credential = await signInWithEmailAndPassword(auth, email, password);
+      const credential = await signInWithEmailAndPassword(auth, cleanEmail, cleanPassword);
       const uid = credential.user.uid;
 
       const userRef = doc(db, "users", uid);
       const snap = await getDoc(userRef);
 
       if (!snap.exists()) {
-        setError("No matching DCFlow user profile found.");
+        setError(`No matching DCFlow user profile found at users/${uid}.`);
         setLoading(false);
         return;
       }
 
-      const appUser = snap.data() as AppUser;
+      const data = snap.data() as AppUser;
 
-      if (!appUser.active) {
+      const appUser: AppUser = {
+        ...data,
+        uid: data.uid || snap.id,
+      };
+
+      if (appUser.active === false) {
         setError("Your account is inactive.");
         setLoading(false);
         return;
       }
 
-      if (appUser.role === "technician" || appUser.role === "helper") {
-        router.push("/technician/my-day");
+      const role = normalizeRole(appUser.role);
+
+      if (!role) {
+        setError("Your DCFlow user profile is missing a role.");
+        setLoading(false);
         return;
       }
 
-      router.push("/dashboard");
+      const destination = destinationForRole(role);
+      await navigateAfterLogin(destination);
     } catch (err: unknown) {
+      setLoading(false);
+
       if (err instanceof Error) {
         setError(err.message);
       } else {
         setError("Login failed.");
       }
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -113,7 +161,6 @@ export default function LoginPage() {
         backgroundColor: "#070A0F",
       }}
     >
-      {/* Main blue glow */}
       <Box
         aria-hidden
         sx={{
@@ -125,7 +172,6 @@ export default function LoginPage() {
         }}
       />
 
-      {/* Secondary glow */}
       <Box
         aria-hidden
         sx={{
@@ -142,7 +188,6 @@ export default function LoginPage() {
         }}
       />
 
-      {/* Grid overlay */}
       <Box
         aria-hidden
         sx={{
@@ -168,7 +213,7 @@ export default function LoginPage() {
           position: "relative",
           width: "100%",
           maxWidth: 540,
-          borderRadius: 5,
+          borderRadius: 2,
           overflow: "hidden",
           border: `1px solid ${alpha("#FFFFFF", 0.1)}`,
           background: `
@@ -179,7 +224,6 @@ export default function LoginPage() {
           boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
         }}
       >
-        {/* Accent bar */}
         <Box
           sx={{
             height: 4,
@@ -189,7 +233,6 @@ export default function LoginPage() {
         />
 
         <Stack spacing={3} sx={{ p: { xs: 2.25, sm: 3 } }}>
-          {/* Logo */}
           <Box
             sx={{
               pt: 1,
@@ -216,7 +259,6 @@ export default function LoginPage() {
             </Box>
           </Box>
 
-          {/* Header */}
           <Stack spacing={1} alignItems="center" textAlign="center">
             <Typography
               variant="h4"
@@ -232,7 +274,6 @@ export default function LoginPage() {
             </Typography>
           </Stack>
 
-          {/* Form */}
           <Box component="form" onSubmit={handleLogin}>
             <Stack spacing={2}>
               <TextField
@@ -248,7 +289,7 @@ export default function LoginPage() {
                 InputLabelProps={{ shrink: true }}
                 sx={{
                   "& .MuiOutlinedInput-root": {
-                    borderRadius: 3,
+                    borderRadius: 1,
                     color: "#FFFFFF",
                     backgroundColor: alpha("#000000", 0.24),
                     transition: "all 180ms ease",
@@ -290,7 +331,7 @@ export default function LoginPage() {
                 InputLabelProps={{ shrink: true }}
                 sx={{
                   "& .MuiOutlinedInput-root": {
-                    borderRadius: 3,
+                    borderRadius: 1,
                     color: "#FFFFFF",
                     backgroundColor: alpha("#000000", 0.24),
                     transition: "all 180ms ease",
@@ -403,7 +444,6 @@ export default function LoginPage() {
             </Stack>
           </Box>
 
-          {/* Footer */}
           <Stack
             direction={{ xs: "column", sm: "row" }}
             spacing={1.25}

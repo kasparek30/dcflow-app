@@ -483,7 +483,138 @@ function normalizeStageStatus(value: any) {
     .trim()
     .toLowerCase()
     .replaceAll(" ", "_")
-    .replaceAll("-", "_");
+    .replaceAll("-", "_")
+    .replaceAll("/", "_");
+}
+
+function stageKeyAliases(stageKey: string) {
+  const key = String(stageKey || "").trim();
+
+  const known: Record<string, string[]> = {
+    roughIn: ["roughIn", "rough_in", "rough-in", "rough", "roughInStage"],
+    topOutVent: [
+      "topOutVent",
+      "top_out_vent",
+      "top-out-vent",
+      "topOut",
+      "top_out",
+      "top-out",
+      "vent",
+      "topOutVentStage",
+    ],
+    trimFinish: [
+      "trimFinish",
+      "trim_finish",
+      "trim-finish",
+      "trim",
+      "finish",
+      "trimFinishStage",
+    ],
+  };
+
+  const baseAliases = known[key] || [key];
+
+  return Array.from(
+    new Set(
+      [
+        ...baseAliases,
+        key,
+        key.replaceAll("_", ""),
+        key.replaceAll("-", ""),
+        key.replaceAll("_", "-"),
+        key.replaceAll("-", "_"),
+      ].filter(Boolean)
+    )
+  );
+}
+
+function getObjectValueByStageAlias(source: any, stageKey: string) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+
+  const aliases = stageKeyAliases(stageKey);
+
+  for (const alias of aliases) {
+    if (source?.[alias]) return source[alias];
+  }
+
+  return null;
+}
+
+function findArrayEntryByStageAlias(source: any, stageKey: string) {
+  if (!Array.isArray(source)) return null;
+
+  const aliases = new Set(
+    stageKeyAliases(stageKey).map((value) => normalizeStageStatus(value))
+  );
+
+  return (
+    source.find((item) => {
+      const candidates = [
+        item?.key,
+        item?.id,
+        item?.stageKey,
+        item?.projectStageKey,
+        item?.stage,
+        item?.name,
+        item?.label,
+        item?.title,
+      ];
+
+      return candidates
+        .map((value) => normalizeStageStatus(value))
+        .filter(Boolean)
+        .some((value) => aliases.has(value));
+    }) || null
+  );
+}
+
+function getStageScopedData(projectData: any, stageKey: string) {
+  // Project Detail stores the canonical staged-project objects directly on the
+  // project doc as roughIn / topOutVent / trimFinish. Keep those top-level
+  // objects first so Schedule reads the same source of truth.
+  const directStage = getObjectValueByStageAlias(projectData, stageKey);
+
+  const stage =
+    directStage ||
+    getObjectValueByStageAlias(projectData?.stages, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.stages, stageKey) ||
+    getObjectValueByStageAlias(projectData?.projectStages, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.projectStages, stageKey) ||
+    null;
+
+  const stageBilling =
+    directStage?.billing ||
+    directStage ||
+    getObjectValueByStageAlias(projectData?.stageBilling, stageKey) ||
+    getObjectValueByStageAlias(projectData?.stageBillings, stageKey) ||
+    getObjectValueByStageAlias(projectData?.billingStages, stageKey) ||
+    getObjectValueByStageAlias(projectData?.billing?.stages, stageKey) ||
+    getObjectValueByStageAlias(projectData?.billing?.stageBilling, stageKey) ||
+    getObjectValueByStageAlias(projectData?.billing?.stageBillings, stageKey) ||
+    getObjectValueByStageAlias(projectData?.stageCloseouts, stageKey) ||
+    getObjectValueByStageAlias(projectData?.closeouts, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.stageBilling, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.stageBillings, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.billingStages, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.billing?.stages, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.billing?.stageBilling, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.billing?.stageBillings, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.stageCloseouts, stageKey) ||
+    findArrayEntryByStageAlias(projectData?.closeouts, stageKey) ||
+    null;
+
+  return { stage, stageBilling };
+}
+
+function stageStatusMapValue(mapPath: any, stageKey: string) {
+  if (!mapPath || typeof mapPath !== "object" || Array.isArray(mapPath)) return "";
+
+  for (const alias of stageKeyAliases(stageKey)) {
+    const value = mapPath?.[alias];
+    if (String(value || "").trim()) return value;
+  }
+
+  return "";
 }
 
 function isOpenProjectStageStatus(value: any) {
@@ -505,6 +636,7 @@ function isOpenProjectStageStatus(value: any) {
     "archived",
     "cancelled",
     "canceled",
+    "billed",
   ]);
 
   return !closedStatuses.has(status);
@@ -533,21 +665,105 @@ function projectStageLabel(stageKey: string) {
 }
 
 function stageStatusFromProjectData(projectData: any, stageKey: string) {
-  const stage = projectData?.stages?.[stageKey];
+  const key = String(stageKey || "").trim();
+  if (!key) return "not_started";
 
-  const candidates = [
+  const { stage, stageBilling } = getStageScopedData(projectData, key);
+
+  // Match Project Detail behavior: stage billingStatus / billed state freezes a
+  // stage even when the field-work status remains not_started/scheduled.
+  const billingCandidates = [
+    stage?.billingStatus,
+    stage?.invoiceStatus,
+    stage?.billing?.status,
+    stage?.billing?.billingStatus,
+    stage?.billing?.invoiceStatus,
+
+    stageBilling?.billingStatus,
+    stageBilling?.invoiceStatus,
+    stageBilling?.status,
+    stageBilling?.stageStatus,
+    stageBilling?.workflowStatus,
+    stageBilling?.fieldStatus,
+    stageBilling?.closeoutStatus,
+
+    stageStatusMapValue(projectData?.stageBillingStatuses, key),
+    stageStatusMapValue(projectData?.stageBillingStatus, key),
+    stageStatusMapValue(projectData?.billing?.stageBillingStatus, key),
+    stageStatusMapValue(projectData?.billing?.stageInvoiceStatus, key),
+
+    projectData?.[`${key}BillingStatus`],
+    projectData?.[`${key}InvoiceStatus`],
+  ];
+
+  const billingStatus = billingCandidates
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+
+  if (billingStatus) return billingStatus;
+
+  if (stage?.billed === true || stageBilling?.billed === true) return "invoiced";
+
+  const billingMarkers = [
+    stage?.readyToBillAt,
+    stage?.invoicedAt,
+    stage?.invoiceDate,
+    stage?.invoiceNumber,
+    stage?.invoiceId,
+    stage?.billing?.readyToBillAt,
+    stage?.billing?.invoicedAt,
+    stage?.billing?.invoiceDate,
+    stage?.billing?.invoiceNumber,
+    stage?.billing?.invoiceId,
+    stageBilling?.readyToBillAt,
+    stageBilling?.invoicedAt,
+    stageBilling?.invoiceDate,
+    stageBilling?.invoiceNumber,
+    stageBilling?.invoiceId,
+    stageStatusMapValue(projectData?.billing?.stageInvoicedAt, key),
+    stageStatusMapValue(projectData?.billing?.stageInvoiceDate, key),
+    stageStatusMapValue(projectData?.billing?.stageInvoiceNumber, key),
+  ];
+
+  if (billingMarkers.some((value) => String(value || "").trim())) return "invoiced";
+
+  const fieldCandidates = [
     stage?.status,
     stage?.stageStatus,
     stage?.workflowStatus,
-    projectData?.stageStatuses?.[stageKey],
-    projectData?.stageStatus?.[stageKey],
-    projectData?.stagesStatus?.[stageKey],
-    projectData?.[`${stageKey}Status`],
+    stage?.fieldStatus,
+    stage?.closeoutStatus,
+
+    stageStatusMapValue(projectData?.stageStatuses, key),
+    stageStatusMapValue(projectData?.stageStatus, key),
+    stageStatusMapValue(projectData?.stagesStatus, key),
+    stageStatusMapValue(projectData?.stageWorkflowStatus, key),
+    stageStatusMapValue(projectData?.billing?.stageStatuses, key),
+    stageStatusMapValue(projectData?.billing?.stageStatus, key),
+
+    projectData?.[`${key}Status`],
   ];
 
-  return candidates
+  const fieldStatus = fieldCandidates
     .map((value) => String(value || "").trim())
-    .find(Boolean) || "not_started";
+    .find(Boolean);
+
+  if (fieldStatus) return fieldStatus;
+
+  const completedMarkers = [
+    stage?.completedAt,
+    stage?.completedDate,
+    stage?.fieldCompletedAt,
+    stage?.fieldCompletedDate,
+    stageBilling?.completedAt,
+    stageBilling?.completedDate,
+    stageStatusMapValue(projectData?.stageCompletedAt, key),
+    stageStatusMapValue(projectData?.stageCompletedDate, key),
+  ];
+
+  if (completedMarkers.some((value) => String(value || "").trim())) return "complete";
+
+  return "not_started";
 }
 
 function extractProjectStageOptions(projectData: any): ProjectStageOption[] {
@@ -620,7 +836,7 @@ function extractProjectStageOptions(projectData: any): ProjectStageOption[] {
 
   return stageKeys
     .map((stageKey) => {
-      const stageData = projectData?.stages?.[stageKey] || {};
+      const { stage: stageData } = getStageScopedData(projectData, stageKey);
       const status = stageStatusFromProjectData(projectData, stageKey);
 
       if (!isOpenProjectStageStatus(status)) return null;
@@ -1506,7 +1722,7 @@ export default function SchedulePage() {
     appUser?.role === "dispatcher" ||
     appUser?.role === "manager";
 
-  const [view, setView] = useState<ViewMode>("day");
+  const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => todayIsoLocal());
 
   const [isMobile, setIsMobile] = useState(false);
@@ -2065,47 +2281,45 @@ const estHours =
   }
 
   async function loadOpenProjectsIfNeeded() {
-    if (openProjectItems.length) return;
+  setOpenProjectsLoading(true);
+  setOpenProjectsErr("");
 
-    setOpenProjectsLoading(true);
-    setOpenProjectsErr("");
+  try {
+    const snap = await getDocs(query(collection(db, "projects"), orderBy("updatedAt", "desc"), limit(250)));
 
-    try {
-      const snap = await getDocs(query(collection(db, "projects"), orderBy("updatedAt", "desc"), limit(250)));
+    const items: PickerItem[] = snap.docs
+      .map((ds) => {
+        const d = ds.data() as any;
+        const id = ds.id;
+        if (!projectIsSchedulableByStatus(d)) return null;
 
-      const items: PickerItem[] = snap.docs
-        .map((ds) => {
-          const d = ds.data() as any;
-          const id = ds.id;
-          if (!projectIsSchedulableByStatus(d)) return null;
+        const stageOptions = extractProjectStageOptions(d);
+        if (stageOptions.length === 0) return null;
 
-          const stageOptions = extractProjectStageOptions(d);
-          if (stageOptions.length === 0) return null;
+        const name = String(d.projectName ?? d.name ?? d.title ?? "Project").trim();
+        const customer = String(d.customerDisplayName ?? "").trim();
+        const line1 = String(d.serviceAddressLine1 ?? "").trim();
+        const city = String(d.serviceCity ?? "").trim();
 
-          const name = String(d.projectName ?? d.name ?? d.title ?? "Project").trim();
-          const customer = String(d.customerDisplayName ?? "").trim();
-          const line1 = String(d.serviceAddressLine1 ?? "").trim();
-          const city = String(d.serviceCity ?? "").trim();
+        return {
+          id,
+          label: name || "Project",
+          sublabel: `${customer || "Customer"}${line1 ? ` — ${line1}` : ""}${city ? `, ${city}` : ""}`,
+          metaLeft: "Project",
+          metaRight: `${stageOptions.length} open stage${stageOptions.length === 1 ? "" : "s"}`,
+          projectStageOptions: stageOptions,
+        } as PickerItem;
+      })
+      .filter(Boolean) as PickerItem[];
 
-          return {
-            id,
-            label: name || "Project",
-            sublabel: `${customer || "Customer"}${line1 ? ` — ${line1}` : ""}${city ? `, ${city}` : ""}`,
-            metaLeft: "Project",
-            metaRight: `${stageOptions.length} open stage${stageOptions.length === 1 ? "" : "s"}`,
-            projectStageOptions: stageOptions,
-          } as PickerItem;
-        })
-        .filter(Boolean) as PickerItem[];
-
-      setOpenProjectItems(items);
-    } catch (e: any) {
-      setOpenProjectsErr(e?.message || "Failed to load projects.");
-      setOpenProjectItems([]);
-    } finally {
-      setOpenProjectsLoading(false);
-    }
+    setOpenProjectItems(items);
+  } catch (e: any) {
+    setOpenProjectsErr(e?.message || "Failed to load projects.");
+    setOpenProjectItems([]);
+  } finally {
+    setOpenProjectsLoading(false);
   }
+}
 
   function findTechName(uid: string) {
     const t = techs.find((x) => x.uid === uid);
@@ -2229,19 +2443,53 @@ function slotDefaults(slot: SlotKey) {
       return setAddErr(addTripType === "service" ? "Choose an open Service Ticket." : "Choose a Project.");
     }
 
-    if (addTripType === "project") {
-      if (advancedId && !chosenId) {
-        return setAddErr("Choose the project from the list so DCFlow can verify its open stages.");
-      }
+    let verifiedProjectStage: ProjectStageOption | null = selectedProjectStage;
 
-      if (!addProjectStageKey) {
-        return setAddErr("Choose an open project stage before scheduling this project trip.");
-      }
+if (addTripType === "project") {
+  if (advancedId && !chosenId) {
+    return setAddErr("Choose the project from the list so DCFlow can verify its open stages.");
+  }
 
-      if (!selectedProjectStageOptions.some((stage) => stage.key === addProjectStageKey)) {
-        return setAddErr("That project stage is not open for scheduling. Choose another stage.");
-      }
+  if (!addProjectStageKey) {
+    return setAddErr("Choose an open project stage before scheduling this project trip.");
+  }
+
+  if (!selectedProjectStageOptions.some((stage) => stage.key === addProjectStageKey)) {
+    return setAddErr("That project stage is not open for scheduling. Choose another stage.");
+  }
+
+  try {
+    const liveProjectSnap = await getDoc(doc(db, "projects", linkId));
+
+    if (!liveProjectSnap.exists()) {
+      return setAddErr("That project could not be found.");
     }
+
+    const liveStageOptions = extractProjectStageOptions(liveProjectSnap.data() as any);
+    verifiedProjectStage =
+      liveStageOptions.find((stage) => stage.key === addProjectStageKey) || null;
+
+    if (!verifiedProjectStage) {
+      setOpenProjectItems((prev) =>
+        prev
+          .map((item) =>
+            item.id === linkId
+              ? {
+                  ...item,
+                  projectStageOptions: liveStageOptions,
+                  metaRight: `${liveStageOptions.length} open stage${liveStageOptions.length === 1 ? "" : "s"}`,
+                }
+              : item
+          )
+          .filter((item) => item.id !== linkId || (item.projectStageOptions || []).length > 0)
+      );
+
+      return setAddErr("That project stage is already complete, invoiced, or closed. Choose another open stage.");
+    }
+  } catch (e: any) {
+    return setAddErr(e?.message || "Could not verify the project stage before scheduling.");
+  }
+}
 
 const liveDefaultHelpers = helpers
   .filter(
@@ -2398,9 +2646,9 @@ if (addTripType === "project") {
     updatedAt: now,
   };
 
-  if (normalizeStageStatus(selectedProjectStage?.status) !== "in_progress") {
-    projectUpdatePayload[`stages.${addProjectStageKey}.status`] = "scheduled";
-  }
+  if (normalizeStageStatus(verifiedProjectStage?.status) !== "in_progress") {
+  projectUpdatePayload[`stages.${addProjectStageKey}.status`] = "scheduled";
+}
 
   await updateDoc(doc(db, "projects", linkId), projectUpdatePayload);
 }
@@ -3469,56 +3717,58 @@ closeAddModal();
   }
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return;
 
-    const mq = window.matchMedia("(max-width: 860px)");
-    const mobileNow = Boolean(mq.matches);
-    setIsMobile(mobileNow);
+  const mq = window.matchMedia("(max-width: 860px)");
+  const mobileNow = Boolean(mq.matches);
+  const defaultView: ViewMode = mobileNow ? "day" : "week";
 
-    try {
-      const url = new URL(window.location.href);
-      const v = (url.searchParams.get("view") || "").toLowerCase();
-      const d = (url.searchParams.get("date") || "").trim();
+  setIsMobile(mobileNow);
 
-      if (v === "day" || v === "week") {
-        setView(v);
-        if (v === "day" && !d) setAnchorIso(todayIsoLocal());
-      } else if (v === "month") {
-        // Month view is intentionally hidden from the main Schedule UI.
-        // Old / bookmarked month URLs are routed to Week view instead.
-        setView("week");
-      } else {
-        setView("day");
-        setAnchorIso(todayIsoLocal());
-      }
+  try {
+    const url = new URL(window.location.href);
+    const v = (url.searchParams.get("view") || "").toLowerCase();
+    const d = (url.searchParams.get("date") || "").trim();
 
-      if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
-
-      const hide = url.searchParams.get("hideCompleted");
-      if (hide === "0") setHideCompleted(false);
-
-      const tf = url.searchParams.get("tech");
-      if (tf) setTechFilter(tf);
-
-      const sf = url.searchParams.get("status");
-      if (sf) setStatusFilter(sf);
-    } catch {
-      setView("day");
+    if (v === "day" || v === "week") {
+      setView(v);
+      if (v === "day" && !d) setAnchorIso(todayIsoLocal());
+    } else if (v === "month") {
+      // Month view is intentionally hidden from the main Schedule UI.
+      // Old / bookmarked month URLs are routed to Week view instead.
+      setView("week");
+    } else {
+      setView(defaultView);
       setAnchorIso(todayIsoLocal());
-    } finally {
-      setSchedulePrefsReady(true);
     }
 
-    const apply = () => setIsMobile(Boolean(mq.matches));
+    if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setAnchorIso(d);
 
-    try {
-      mq.addEventListener("change", apply);
-      return () => mq.removeEventListener("change", apply);
-    } catch {
-      mq.addListener(apply);
-      return () => mq.removeListener(apply);
-    }
-  }, []);
+    const hide = url.searchParams.get("hideCompleted");
+    if (hide === "0") setHideCompleted(false);
+
+    const tf = url.searchParams.get("tech");
+    if (tf) setTechFilter(tf);
+
+    const sf = url.searchParams.get("status");
+    if (sf) setStatusFilter(sf);
+  } catch {
+    setView(defaultView);
+    setAnchorIso(todayIsoLocal());
+  } finally {
+    setSchedulePrefsReady(true);
+  }
+
+  const apply = () => setIsMobile(Boolean(mq.matches));
+
+  try {
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  } catch {
+    mq.addListener(apply);
+    return () => mq.removeListener(apply);
+  }
+}, []);
 
   useEffect(() => {
     if (!schedulePrefsReady) return;

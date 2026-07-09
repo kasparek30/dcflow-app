@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { useParams, useRouter } from "next/navigation";
 import {
   Alert,
@@ -14,6 +14,7 @@ import {
   CircularProgress,
   Divider,
   Stack,
+  TextField,
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -23,6 +24,7 @@ import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
 import MapRoundedIcon from "@mui/icons-material/MapRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
 import PeopleAltRoundedIcon from "@mui/icons-material/PeopleAltRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 
 import AppShell from "../../../../components/AppShell";
@@ -41,6 +43,17 @@ type TripCrew = {
   secondaryHelperName?: string | null;
 };
 
+type TripWorkNote = {
+  id: string;
+  text: string;
+  createdAt: string;
+  createdByUid: string;
+  createdByName?: string | null;
+  updatedAt?: string | null;
+  updatedByUid?: string | null;
+  updatedByName?: string | null;
+};
+
 type ProjectTrip = {
   id: string;
   active: boolean;
@@ -50,7 +63,19 @@ type ProjectTrip = {
   timeWindow?: string | null;
   startTime?: string | null;
   endTime?: string | null;
+
+  /**
+   * Legacy / scheduling notes.
+   * Existing data may still live here.
+   */
   notes?: string | null;
+
+  /**
+   * Field-facing notes for this trip only.
+   */
+  workNotes?: TripWorkNote[] | null;
+  workNotesSummary?: string | null;
+
   timerState?: string | null;
   billingPeriodLabel?: string | null;
   crew?: TripCrew | null;
@@ -59,6 +84,8 @@ type ProjectTrip = {
     projectId?: string | null;
     projectStageKey?: string | null;
   } | null;
+  updatedAt?: string | null;
+  updatedByUid?: string | null;
 };
 
 type FieldProject = {
@@ -73,6 +100,10 @@ type FieldProject = {
 
 function safeTrim(value: unknown) {
   return String(value ?? "").trim();
+}
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function isFieldRole(role?: string | null) {
@@ -164,6 +195,19 @@ function formatTripSchedule(trip?: ProjectTrip | null) {
   return date;
 }
 
+function formatDateTime(value?: string | null) {
+  const raw = safeTrim(value);
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function buildAddress(project?: FieldProject | null) {
   if (!project) return "";
   const cityStateZip = [project.serviceCity, project.serviceState, project.servicePostalCode]
@@ -195,13 +239,72 @@ function buildMapsUrl(address: string) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cleanAddress)}`;
 }
 
+function getActorName(appUser: any) {
+  return (
+    safeTrim(appUser?.displayName) ||
+    safeTrim(appUser?.name) ||
+    safeTrim(appUser?.email) ||
+    "Field Crew"
+  );
+}
+
+function getCurrentTripWorkNote(trip?: ProjectTrip | null) {
+  if (!trip) return null;
+
+  const notes = Array.isArray(trip.workNotes) ? trip.workNotes : [];
+  const current = notes.find((note) => note.id === "current_trip_work_note");
+  if (current) return current;
+
+  return notes[notes.length - 1] || null;
+}
+
+function buildNextWorkNotes(args: {
+  trip: ProjectTrip;
+  text: string;
+  actorUid: string;
+  actorName: string;
+  stamp: string;
+}) {
+  const existingNotes = Array.isArray(args.trip.workNotes) ? args.trip.workNotes : [];
+  const existingIndex = existingNotes.findIndex((note) => note.id === "current_trip_work_note");
+
+  const existing = existingIndex >= 0 ? existingNotes[existingIndex] : null;
+
+  const nextNote: TripWorkNote = existing
+    ? {
+        ...existing,
+        text: args.text,
+        updatedAt: args.stamp,
+        updatedByUid: args.actorUid || null,
+        updatedByName: args.actorName || null,
+      }
+    : {
+        id: "current_trip_work_note",
+        text: args.text,
+        createdAt: args.stamp,
+        createdByUid: args.actorUid || "",
+        createdByName: args.actorName || null,
+        updatedAt: args.stamp,
+        updatedByUid: args.actorUid || null,
+        updatedByName: args.actorName || null,
+      };
+
+  if (existingIndex >= 0) {
+    return existingNotes.map((note, index) => (index === existingIndex ? nextNote : note));
+  }
+
+  return [...existingNotes, nextNote];
+}
+
 function SectionCard({
   icon,
   title,
+  subtitle,
   children,
 }: {
   icon: ReactNode;
   title: string;
+  subtitle?: string;
   children: ReactNode;
 }) {
   const theme = useTheme();
@@ -210,13 +313,13 @@ function SectionCard({
     <Card
       elevation={0}
       sx={{
-        borderRadius: 3,
+        borderRadius: 1,
         border: `1px solid ${theme.palette.divider}`,
         backgroundImage: "none",
       }}
     >
       <CardContent sx={{ p: 2.25, "&:last-child": { pb: 2.25 } }}>
-        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 1.25 }}>
+        <Stack direction="row" spacing={1.25} alignItems="flex-start" sx={{ mb: 1.25 }}>
           <Box
             sx={{
               width: 36,
@@ -226,14 +329,24 @@ function SectionCard({
               placeItems: "center",
               color: "primary.main",
               bgcolor: alpha(theme.palette.primary.main, 0.1),
+              flex: "0 0 auto",
             }}
           >
             {icon}
           </Box>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            {title}
-          </Typography>
+
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              {title}
+            </Typography>
+            {subtitle ? (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.15 }}>
+                {subtitle}
+              </Typography>
+            ) : null}
+          </Box>
         </Stack>
+
         {children}
       </CardContent>
     </Card>
@@ -244,6 +357,7 @@ export default function FieldProjectTripPage() {
   const router = useRouter();
   const params = useParams<{ tripId: string }>();
   const routeTripId = typeof params?.tripId === "string" ? params.tripId : "";
+  const theme = useTheme();
   const { appUser, loading: authLoading } = useAuthContext();
 
   const [tripLoading, setTripLoading] = useState(true);
@@ -252,8 +366,15 @@ export default function FieldProjectTripPage() {
   const [project, setProject] = useState<FieldProject | null>(null);
   const [error, setError] = useState("");
 
+  const [workNotesDraft, setWorkNotesDraft] = useState("");
+  const [workNotesDirty, setWorkNotesDirty] = useState(false);
+  const [workNotesSaving, setWorkNotesSaving] = useState(false);
+  const [workNotesSuccess, setWorkNotesSuccess] = useState("");
+  const [workNotesError, setWorkNotesError] = useState("");
+
   const role = safeTrim(appUser?.role).toLowerCase();
   const uid = safeTrim(appUser?.uid);
+  const actorName = getActorName(appUser);
 
   useEffect(() => {
     if (authLoading || !appUser) return;
@@ -285,11 +406,15 @@ export default function FieldProjectTripPage() {
           startTime: data.startTime ?? null,
           endTime: data.endTime ?? null,
           notes: data.notes ?? null,
+          workNotes: Array.isArray(data.workNotes) ? data.workNotes : [],
+          workNotesSummary: data.workNotesSummary ?? null,
           timerState: data.timerState ?? null,
           billingPeriodLabel: data.billingPeriodLabel ?? null,
           crew: data.crew ?? null,
           crewConfirmed: data.crewConfirmed ?? null,
           link: data.link ?? null,
+          updatedAt: data.updatedAt ?? null,
+          updatedByUid: data.updatedByUid ?? null,
         };
 
         if (item.type.toLowerCase() !== "project") {
@@ -319,6 +444,18 @@ export default function FieldProjectTripPage() {
     if (isFieldRole(role)) return isUidOnCrew(uid, crewForAccess);
     return false;
   }, [trip, appUser, role, uid, crewForAccess]);
+
+  const canEditWorkNotes = useMemo(() => {
+    if (!trip || !appUser || !permittedToViewTrip) return false;
+
+    const status = safeTrim(trip.status).toLowerCase();
+    const timerState = safeTrim(trip.timerState).toLowerCase();
+
+    if (status === "complete" || status === "completed" || status === "cancelled") return false;
+    if (timerState === "complete") return false;
+
+    return isElevatedRole(role) || isFieldRole(role);
+  }, [trip, appUser, permittedToViewTrip, role]);
 
   useEffect(() => {
     if (tripLoading || !trip || !appUser) return;
@@ -366,16 +503,89 @@ export default function FieldProjectTripPage() {
     return () => unsub();
   }, [trip?.link?.projectId, permittedToViewTrip]);
 
+  useEffect(() => {
+    if (!trip) {
+      setWorkNotesDraft("");
+      setWorkNotesDirty(false);
+      return;
+    }
+
+    if (workNotesDirty || workNotesSaving) return;
+
+    const currentNote = getCurrentTripWorkNote(trip);
+    const nextDraft = safeTrim(trip.workNotesSummary) || safeTrim(currentNote?.text) || "";
+
+    setWorkNotesDraft(nextDraft);
+  }, [trip, workNotesDirty, workNotesSaving]);
+
   const address = useMemo(() => buildAddress(project), [project]);
   const mapsUrl = useMemo(() => buildMapsUrl(address), [address]);
   const crewLine = useMemo(() => buildCrewLine(trip?.crewConfirmed || trip?.crew || null), [trip]);
   const currentStatus = formatStatus(trip?.status, trip?.timerState);
   const scheduledLine = formatTripSchedule(trip);
   const tripStageLabel = stageLabel(trip?.link?.projectStageKey, trip?.billingPeriodLabel);
+  const currentWorkNote = getCurrentTripWorkNote(trip);
+  const lastSavedLabel = formatDateTime(currentWorkNote?.updatedAt || currentWorkNote?.createdAt || null);
+  const todayWorkInstructions = safeTrim(trip?.notes);
 
   function openMaps() {
     if (!mapsUrl || typeof window === "undefined") return;
     window.open(mapsUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function saveWorkNotes() {
+    if (!trip || !canEditWorkNotes) return;
+
+    const text = safeTrim(workNotesDraft);
+    const stamp = nowIso();
+
+    setWorkNotesSaving(true);
+    setWorkNotesSuccess("");
+    setWorkNotesError("");
+
+    try {
+      const nextWorkNotes = buildNextWorkNotes({
+        trip,
+        text,
+        actorUid: uid,
+        actorName,
+        stamp,
+      });
+
+      const patch = {
+        workNotes: nextWorkNotes,
+        workNotesSummary: text || null,
+
+        /**
+         * Temporary compatibility:
+         * Existing project closeout/history code may still read trip.notes.
+         * Once app/projects/[projectId]/page.tsx is migrated to workNotesSummary,
+         * this can be changed so notes stays purely scheduling/admin notes.
+         */
+        notes: text || null,
+
+        updatedAt: stamp,
+        updatedByUid: uid || null,
+      };
+
+      await updateDoc(doc(db, "trips", trip.id), patch as any);
+
+      setTrip((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...patch,
+            }
+          : prev,
+      );
+
+      setWorkNotesDirty(false);
+      setWorkNotesSuccess("Work notes saved for this trip.");
+    } catch (err: any) {
+      setWorkNotesError(err?.message || "Failed to save work notes.");
+    } finally {
+      setWorkNotesSaving(false);
+    }
   }
 
   return (
@@ -406,7 +616,7 @@ export default function FieldProjectTripPage() {
             <Alert severity="info">Returning to My Day…</Alert>
           ) : (
             <Stack spacing={1.5}>
-              <Card elevation={0} sx={{ borderRadius: 3, border: (t) => `1px solid ${t.palette.divider}` }}>
+              <Card elevation={0} sx={{ borderRadius: 1, border: (t) => `1px solid ${t.palette.divider}` }}>
                 <CardContent sx={{ p: 2.25, "&:last-child": { pb: 2.25 } }}>
                   <Stack spacing={1.25}>
                     <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
@@ -459,10 +669,94 @@ export default function FieldProjectTripPage() {
                 ) : null}
               </SectionCard>
 
-              <SectionCard icon={<NotesRoundedIcon fontSize="small" />} title="Today’s Work">
-                <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
-                  {safeTrim(trip.notes) || "No work instructions have been added for this visit."}
-                </Typography>
+              {todayWorkInstructions ? (
+                <SectionCard
+                  icon={<NotesRoundedIcon fontSize="small" />}
+                  title="Today’s Work / Instructions"
+                  subtitle="Office or scheduling notes for this visit."
+                >
+                  <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+                    {todayWorkInstructions}
+                  </Typography>
+                </SectionCard>
+              ) : null}
+
+              <SectionCard
+                icon={<NotesRoundedIcon fontSize="small" />}
+                title="Work Notes for This Trip"
+                subtitle="These notes stay attached to this visit only. Previous project notes will show on the Project ID page."
+              >
+                <Stack spacing={1.5}>
+                  <TextField
+                    value={workNotesDraft}
+                    onChange={(event) => {
+                      setWorkNotesDraft(event.target.value);
+                      setWorkNotesDirty(true);
+                      setWorkNotesSuccess("");
+                      setWorkNotesError("");
+                    }}
+                    placeholder="Example: Set tubs, need more 3/4 PEX rings, builder asked about hose bib location..."
+                    multiline
+                    minRows={5}
+                    fullWidth
+                    disabled={!canEditWorkNotes || workNotesSaving}
+                    inputProps={{ maxLength: 4000 }}
+                  />
+
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    alignItems={{ xs: "stretch", sm: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <Typography variant="caption" color="text.secondary">
+                      {lastSavedLabel
+                        ? `Last saved ${lastSavedLabel}`
+                        : "Not saved yet for this trip."}
+                    </Typography>
+
+                    <Button
+                      variant="contained"
+                      startIcon={<SaveRoundedIcon />}
+                      onClick={saveWorkNotes}
+                      disabled={!canEditWorkNotes || workNotesSaving}
+                      sx={{ borderRadius: 2, fontWeight: 800 }}
+                    >
+                      {workNotesSaving ? "Saving..." : "Save Work Notes"}
+                    </Button>
+                  </Stack>
+
+                  {!canEditWorkNotes ? (
+                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
+                      Work notes are read-only once the trip is complete, cancelled, or unavailable to your crew.
+                    </Alert>
+                  ) : null}
+
+                  {workNotesSuccess ? (
+                    <Alert severity="success" variant="outlined" sx={{ borderRadius: 2 }}>
+                      {workNotesSuccess}
+                    </Alert>
+                  ) : null}
+
+                  {workNotesError ? (
+                    <Alert severity="error" variant="outlined" sx={{ borderRadius: 2 }}>
+                      {workNotesError}
+                    </Alert>
+                  ) : null}
+
+                  <Box
+                    sx={{
+                      borderRadius: 1,
+                      p: 1.25,
+                      bgcolor: alpha(theme.palette.info.main, 0.06),
+                      border: `1px solid ${alpha(theme.palette.info.main, 0.14)}`,
+                    }}
+                  >
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                      Field note rule: this box is for today’s trip only. It will not pull notes from previous project visits.
+                    </Typography>
+                  </Box>
+                </Stack>
               </SectionCard>
 
               <SectionCard icon={<PeopleAltRoundedIcon fontSize="small" />} title="Working Today">
@@ -474,11 +768,11 @@ export default function FieldProjectTripPage() {
               <Divider sx={{ my: 0.5 }} />
 
               {currentStatus === "In Progress" || currentStatus === "Paused" ? (
-                <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+                <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
                   Use the trip bar at the bottom of the screen to pause, resume, or finish today’s project work.
                 </Alert>
               ) : currentStatus === "Scheduled" ? (
-                <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+                <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
                   Start this project visit from your My Day trip card when work begins.
                 </Alert>
               ) : null}

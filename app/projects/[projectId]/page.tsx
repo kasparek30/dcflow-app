@@ -222,6 +222,19 @@ type TripCrew = {
   secondaryHelperName?: string | null;
 };
 
+type TripWorkNote = {
+  id: string;
+  text: string;
+
+  createdAt: string;
+  createdByUid: string;
+  createdByName?: string | null;
+
+  updatedAt?: string | null;
+  updatedByUid?: string | null;
+  updatedByName?: string | null;
+};
+
 type ProjectTripMaterial = {
   id?: string;
   name?: string | null;
@@ -265,6 +278,13 @@ type TripDoc = {
     serviceTicketId?: string | null;
   } | null;
   notes?: string | null;
+  /**
+   * Field-facing notes for this trip only.
+   * These are accumulated into the Project Work Notes History on this page.
+   */
+  workNotes?: TripWorkNote[] | null;
+  workNotesSummary?: string | null;
+
   cancelReason?: string | null;
   timerState?: TripTimerState | string | null;
   startedAt?: string | null;
@@ -1063,6 +1083,21 @@ function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
   );
 }
 
+function buildCrewLineForHistory(crew?: TripCrew | null) {
+  if (!crew) return "Crew not listed";
+
+  const names = [
+    crew.primaryTechName || crew.primaryTechUid,
+    crew.helperName || crew.helperUid,
+    crew.secondaryTechName || crew.secondaryTechUid,
+    crew.secondaryHelperName || crew.secondaryHelperUid,
+  ]
+    .map(safeTrim)
+    .filter(Boolean);
+
+  return names.length ? names.join(" · ") : "Crew not listed";
+}
+
 function statusChipColor(
   status: string,
 ): "default" | "primary" | "success" | "warning" | "error" {
@@ -1596,6 +1631,43 @@ export default function ProjectDetailPage() {
     () => getEffectiveProjectOfficeStatus(project, projectTrips),
     [project, projectTrips],
   );
+  const projectWorkNoteHistoryItems = useMemo(() => {
+  return projectTrips
+    .filter((trip) => trip.active !== false)
+    .map((trip) => {
+      const workNotes = getTripWorkNotesSummary(trip);
+      const materials = getCloseoutMaterialNotes(trip);
+      const savedAt = getTripWorkNotesSavedAt(trip);
+      const savedBy = getTripWorkNotesSavedBy(trip);
+
+      return {
+        trip,
+        workNotes,
+        materials:
+          materials && materials !== "No additional material notes." ? materials : "",
+        savedAt,
+        savedBy,
+      };
+    })
+    .filter((item) => item.workNotes || item.materials)
+    .sort((a, b) => {
+      const aMs =
+        parseIsoMs(a.savedAt || null) ||
+        parseIsoMs(a.trip.completedAt || null) ||
+        parseIsoMs(a.trip.updatedAt || null) ||
+        parseIsoMs(a.trip.date || null) ||
+        0;
+
+      const bMs =
+        parseIsoMs(b.savedAt || null) ||
+        parseIsoMs(b.trip.completedAt || null) ||
+        parseIsoMs(b.trip.updatedAt || null) ||
+        parseIsoMs(b.trip.date || null) ||
+        0;
+
+      return bMs - aMs;
+    });
+}, [projectTrips]);
   const projectOfficeLocked = projectOfficeStatus === "invoiced" || projectOfficeStatus === "closed";
   const projectFieldWorkLocked = projectOfficeLocked || projectOfficeStatus === "field_complete";
   const projectHasStageBilling = getEnabledStages(project?.projectType || "").length > 0;
@@ -2448,6 +2520,8 @@ const canMarkTmReadyToBill =
             crew: d.crew ?? null,
             link: d.link ?? null,
             notes: d.notes ?? null,
+            workNotes: Array.isArray(d.workNotes) ? d.workNotes : [],
+            workNotesSummary: d.workNotesSummary ?? null,
             cancelReason: d.cancelReason ?? null,
             timerState: d.timerState ?? "idle",
             startedAt: d.startedAt ?? d.actualStartAt ?? null,
@@ -2668,7 +2742,7 @@ const canMarkTmReadyToBill =
   useEffect(() => {
     const next: Record<string, string> = {};
     for (const trip of projectTrips) {
-      next[trip.id] = trip.notes || "";
+      next[trip.id] = getTripWorkNotesSummary(trip);
     }
     setTripNoteDrafts(next);
   }, [projectTrips]);
@@ -3490,6 +3564,8 @@ const canMarkTmReadyToBill =
           crew: d.crew ?? null,
           link: d.link ?? null,
           notes: d.notes ?? null,
+          workNotes: Array.isArray(d.workNotes) ? d.workNotes : [],
+          workNotesSummary: d.workNotesSummary ?? null,
           cancelReason: d.cancelReason ?? null,
           timerState: d.timerState ?? "idle",
           startedAt: d.startedAt ?? d.actualStartAt ?? null,
@@ -4016,29 +4092,63 @@ const canMarkTmReadyToBill =
     }
   }
 
+  function buildNextTripWorkNotes(t: TripDoc, text: string, stamp: string): TripWorkNote[] {
+    const existingNotes = Array.isArray(t.workNotes) ? t.workNotes : [];
+    const existingIndex = existingNotes.findIndex((note) => note.id === "current_trip_work_note");
+    const existing = existingIndex >= 0 ? existingNotes[existingIndex] : null;
+
+    const nextNote: TripWorkNote = existing
+      ? {
+          ...existing,
+          text,
+          updatedAt: stamp,
+          updatedByUid: myUid || null,
+          updatedByName: actorDisplayName || null,
+        }
+      : {
+          id: "current_trip_work_note",
+          text,
+          createdAt: stamp,
+          createdByUid: myUid || "",
+          createdByName: actorDisplayName || null,
+          updatedAt: stamp,
+          updatedByUid: myUid || null,
+          updatedByName: actorDisplayName || null,
+        };
+
+    if (existingIndex >= 0) {
+      return existingNotes.map((note, index) => (index === existingIndex ? nextNote : note));
+    }
+
+    return [...existingNotes, nextNote];
+  }
+
   async function saveTripNotes(t: TripDoc) {
     if (!canCurrentUserOperateTrip(t)) return;
 
-    const noteValue = safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? "");
+    const noteValue = safeTrim(tripNoteDrafts[t.id] ?? getTripWorkNotesSummary(t) ?? "");
     setTripActionBusyId(t.id);
 
     try {
       const now = nowIso();
+      const nextWorkNotes = buildNextTripWorkNotes(t, noteValue, now);
 
-      await updateDoc(doc(db, "trips", t.id), {
+      const patch = {
         notes: noteValue || null,
+        workNotes: noteValue ? nextWorkNotes : [],
+        workNotesSummary: noteValue || null,
         updatedAt: now,
         updatedByUid: myUid || null,
-      } as any);
+      };
+
+      await updateDoc(doc(db, "trips", t.id), patch as any);
 
       setProjectTrips((prev) =>
         prev.map((x) =>
           x.id === t.id
             ? {
                 ...x,
-                notes: noteValue || null,
-                updatedAt: now,
-                updatedByUid: myUid || null,
+                ...patch,
               }
             : x,
         ),
@@ -4046,12 +4156,12 @@ const canMarkTmReadyToBill =
 
       void recordProjectActivity({
         type: "trip_notes_saved",
-        title: "Trip notes saved",
+        title: "Trip work notes saved",
         description: `${t.date} • ${formatTripWindow(String(t.timeWindow || ""))} • ${t.startTime}-${t.endTime}`,
-        details: noteValue ? [noteValue] : ["Notes cleared"],
+        details: noteValue ? [noteValue] : ["Work notes cleared"],
       });
     } catch (err: any) {
-      alert(err?.message || "Failed to save trip notes.");
+      alert(err?.message || "Failed to save trip work notes.");
     } finally {
       setTripActionBusyId(null);
     }
@@ -4186,7 +4296,7 @@ const canMarkTmReadyToBill =
       outcome: hasStage ? "done_today" : isTmProject ? "done_today" : "complete_project",
       needsMoreWork: "no",
       hoursWorkedToday: estimateTripHours(t),
-      workNotes: safeTrim(tripNoteDrafts[t.id] ?? t.notes ?? ""),
+      workNotes: safeTrim(tripNoteDrafts[t.id] ?? getTripWorkNotesSummary(t) ?? t.notes ?? ""),
       materialsUsedToday: safeTrim(
         t.materialNotes ||
           (t.closeout as any)?.materialNotes ||
@@ -4237,6 +4347,8 @@ const canMarkTmReadyToBill =
       const workNotes = safeTrim(closeoutModal.workNotes);
       const materials = safeTrim(closeoutModal.materialsUsedToday);
 
+      const nextWorkNotes = workNotes ? buildNextTripWorkNotes(t, workNotes, now) : [];
+
       const tripPatch: Record<string, any> = {
         status: "complete",
         timerState: "stopped",
@@ -4244,6 +4356,8 @@ const canMarkTmReadyToBill =
         pausedAt: null,
         active: true,
         notes: workNotes || null,
+        workNotes: nextWorkNotes,
+        workNotesSummary: workNotes || null,
         materialsUsedToday: materials || null,
         materialNotes: materials || null,
         materialsSummary: materials || null,
@@ -5106,6 +5220,7 @@ if (Object.keys(cleanProjectPatch).length > 1) {
       const now = nowIso();
       const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
       const notes =
+        getTripWorkNotesSummary(t) ||
         safeTrim((t.closeout as any)?.workNotes) ||
         safeTrim(t.notes) ||
         "";
@@ -5260,14 +5375,71 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     return safeTrim((t.closeout as any)?.savedByName) || "Unknown user";
   }
 
-  function getCloseoutWorkSummary(t?: TripDoc | null) {
-    if (!t) return "—";
-    return (
-      safeTrim((t.closeout as any)?.workNotes) ||
-      safeTrim(t.notes) ||
-      "No work summary saved."
-    );
-  }
+  function getLatestTripWorkNote(t?: TripDoc | null) {
+  const notes = Array.isArray(t?.workNotes) ? t.workNotes : [];
+  const current = notes.find((note) => note.id === "current_trip_work_note");
+  if (current) return current;
+  return notes[notes.length - 1] || null;
+}
+
+function getTripWorkNotesSummary(t?: TripDoc | null) {
+  if (!t) return "";
+
+  const latestNote = getLatestTripWorkNote(t);
+
+  return (
+    safeTrim(t.workNotesSummary) ||
+    safeTrim(latestNote?.text) ||
+    safeTrim((t.closeout as any)?.workNotes) ||
+    safeTrim(t.notes) ||
+    ""
+  );
+}
+
+function getTripWorkNotesSavedAt(t?: TripDoc | null) {
+  if (!t) return "";
+
+  const latestNote = getLatestTripWorkNote(t);
+
+  return (
+    safeTrim(latestNote?.updatedAt) ||
+    safeTrim(latestNote?.createdAt) ||
+    safeTrim((t.closeout as any)?.savedAt) ||
+    safeTrim(t.updatedAt) ||
+    safeTrim(t.completedAt) ||
+    ""
+  );
+}
+
+function getTripWorkNotesSavedBy(t?: TripDoc | null) {
+  if (!t) return "Unknown user";
+
+  const latestNote = getLatestTripWorkNote(t);
+
+  return (
+    safeTrim(latestNote?.updatedByName) ||
+    safeTrim(latestNote?.createdByName) ||
+    safeTrim((t.closeout as any)?.savedByName) ||
+    "Unknown user"
+  );
+}
+
+function getProjectTripHistoryLabel(t?: TripDoc | null) {
+  const billingLabel = safeTrim(t?.billingPeriodLabel);
+  if (billingLabel) return billingLabel;
+
+  const stageKey = safeTrim(t?.link?.projectStageKey);
+  if (stageKey === "roughIn") return "Rough-In";
+  if (stageKey === "topOutVent") return "Top-Out / Vent";
+  if (stageKey === "trimFinish") return "Trim / Finish";
+  if (stageKey === "tm_work") return "Time + Materials Visit";
+
+  return "Project Trip";
+}
+
+function getCloseoutWorkSummary(t?: TripDoc | null) {
+  return getTripWorkNotesSummary(t) || "No work summary saved.";
+}
 
   function getCloseoutMaterialNotes(t?: TripDoc | null) {
     if (!t) return "—";
@@ -5787,12 +5959,134 @@ if (nextStatus === "active_work") {
     );
   }
 
+  function ProjectWorkNotesHistoryCard() {
+  return (
+    <SectionCard
+      title="Project Work Notes History"
+      subtitle="Accumulated field notes from each project trip. Field crews only edit today’s trip notes from their project trip page."
+      icon={<HistoryRoundedIcon color="primary" />}
+    >
+      {projectWorkNoteHistoryItems.length === 0 ? (
+        <Alert severity="info" variant="outlined" sx={{ borderRadius: 1 }}>
+          No project work notes have been saved yet.
+        </Alert>
+      ) : (
+        <Stack spacing={1.25}>
+          {projectWorkNoteHistoryItems.map((item) => {
+            const trip = item.trip;
+            const canViewTrip = canCurrentUserViewTrip(trip);
+            const crew = buildCrewLineForHistory(trip.crew || null);
+            const historyLabel = getProjectTripHistoryLabel(trip);
+
+            return (
+              <Paper
+                key={trip.id}
+                variant="outlined"
+                sx={{
+                  p: 2,
+                  borderRadius: 1,
+                  bgcolor: (muiTheme) => alpha(muiTheme.palette.primary.main, 0.025),
+                }}
+              >
+                <Stack spacing={1.25}>
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    spacing={1.25}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", md: "center" }}
+                  >
+                    <Box>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                          {formatTripDate(trip.date)}
+                        </Typography>
+
+                        <Chip
+                          size="small"
+                          label={historyLabel}
+                          color="primary"
+                          variant="outlined"
+                          sx={{ borderRadius: 99, fontWeight: 700 }}
+                        />
+
+                        <Chip
+                          size="small"
+                          label={(trip.status || "planned").replaceAll("_", " ")}
+                          color={statusChipColor(trip.status)}
+                          variant="outlined"
+                          sx={{ borderRadius: 99 }}
+                        />
+                      </Stack>
+
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                        {formatTripWindow(String(trip.timeWindow || "all_day"))} •{" "}
+                        {trip.startTime || "--:--"}–{trip.endTime || "--:--"}
+                      </Typography>
+
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>
+                        Crew: {crew}
+                      </Typography>
+                    </Box>
+
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {canViewTrip ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<OpenInNewRoundedIcon />}
+                          onClick={() => openCloseoutDetails(trip)}
+                          sx={{ borderRadius: 99 }}
+                        >
+                          View Trip
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  </Stack>
+
+                  {item.workNotes ? (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }}>
+                        Work Notes
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.4, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+                        {item.workNotes}
+                      </Typography>
+                    </Box>
+                  ) : null}
+
+                  {item.materials ? (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }}>
+                        Materials / Material Notes
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.4, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+                        {item.materials}
+                      </Typography>
+                    </Box>
+                  ) : null}
+
+                  <Divider />
+
+                  <Typography variant="caption" color="text.secondary">
+                    Saved by {item.savedBy}
+                    {item.savedAt ? ` • ${formatDateTime(item.savedAt)}` : ""}
+                  </Typography>
+                </Stack>
+              </Paper>
+            );
+          })}
+        </Stack>
+      )}
+    </SectionCard>
+  );
+}
+
   function TripRow({ t }: { t: TripDoc }) {
     const canEditThis = canCurrentUserEditTrip(t);
     const canOperateThis = canCurrentUserOperateTrip(t);
     const cancelled = t.status === "cancelled" || t.active === false;
     const busy = tripActionBusyId === t.id || closeoutModal.saving;
-    const noteValue = tripNoteDrafts[t.id] ?? t.notes ?? "";
+    const noteValue = tripNoteDrafts[t.id] ?? getTripWorkNotesSummary(t) ?? "";
     const tripPurchaseOrders = purchaseOrdersByTrip.get(t.id) || [];
     const poBusy = poActionBusyTripId === t.id;
 
@@ -5967,7 +6261,7 @@ if (nextStatus === "active_work") {
             {String(t.status || "").toLowerCase() !== "complete" ? (
               <>
                 <TextField
-                  label="Work Notes"
+                  label="Work Notes for This Trip"
                   value={noteValue}
                   onChange={(e) =>
                     setTripNoteDrafts((prev) => ({
@@ -5975,6 +6269,7 @@ if (nextStatus === "active_work") {
                       [t.id]: e.target.value,
                     }))
                   }
+                  placeholder="Notes saved here stay attached to this trip only."
                   multiline
                   minRows={3}
                   disabled={!canOperateThis || busy}
@@ -6408,7 +6703,7 @@ if (nextStatus === "active_work") {
                   </Typography>
 
                   <TextField
-                    label="Work Notes"
+                    label="Work Notes for This Trip"
                     value={closeoutModal.workNotes}
                     onChange={(e) =>
                       setCloseoutModal((prev) => ({
@@ -9169,6 +9464,8 @@ if (nextStatus === "active_work") {
                 </SectionCard>
                 </>
               )}
+
+              <ProjectWorkNotesHistoryCard />
 
               <SectionCard
                 title="Plans / Attachments"
