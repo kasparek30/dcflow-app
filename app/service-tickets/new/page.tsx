@@ -1,7 +1,7 @@
 // app/service-tickets/new/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -1041,6 +1041,8 @@ export default function NewServiceTicketPage() {
   const [customersError, setCustomersError] = useState("");
 
   const [customerSearch, setCustomerSearch] = useState("");
+  const [customerSearchFocused, setCustomerSearchFocused] = useState(false);
+  const customerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [selectedServiceAddressId, setSelectedServiceAddressId] = useState("");
 
@@ -1749,8 +1751,27 @@ export default function NewServiceTicketPage() {
     setSelectedEndTime(times.end);
   }
 
+  function dismissMobileKeyboard() {
+    customerSearchInputRef.current?.blur();
+
+    if (
+      typeof document !== "undefined" &&
+      document.activeElement instanceof HTMLElement
+    ) {
+      document.activeElement.blur();
+    }
+  }
+
   function handleSelectCustomer(customerId: string) {
+    dismissMobileKeyboard();
+
+    const pickedCustomer = customers.find((customer) => customer.id === customerId);
+    if (pickedCustomer) {
+      setCustomerSearch(pickedCustomer.displayName);
+    }
+
     setSelectedCustomerId(customerId);
+    setCustomerSearchFocused(false);
     setQuickAddServiceLocationOpen(false);
     resetQuickAddServiceLocationForm();
     setError("");
@@ -2314,7 +2335,15 @@ export default function NewServiceTicketPage() {
   return (
     <ProtectedPage fallbackTitle="New Service Ticket">
       <AppShell appUser={appUser}>
-        <Box sx={{ maxWidth: 980, mx: "auto", px: { xs: 2, sm: 3 }, py: 3 }}>
+        <Box
+          sx={{
+            maxWidth: 980,
+            mx: "auto",
+            px: { xs: 2, sm: 3 },
+            pt: { xs: 2, sm: 3 },
+            pb: { xs: 14, sm: 3 },
+          }}
+        >
           <Stack spacing={3}>
             <Box>
               <Typography
@@ -2392,8 +2421,17 @@ export default function NewServiceTicketPage() {
                             label="Search customer"
                             value={customerSearch}
                             onChange={(e) => setCustomerSearch(e.target.value)}
+                            onFocus={() => setCustomerSearchFocused(true)}
+                            onBlur={() => {
+                              window.setTimeout(
+                                () => setCustomerSearchFocused(false),
+                                120,
+                              );
+                            }}
+                            inputRef={customerSearchInputRef}
                             placeholder="Start typing to find a customer"
                             fullWidth
+                            autoComplete="off"
                             InputProps={{
                               startAdornment: (
                                 <InputAdornment position="start">
@@ -2516,7 +2554,27 @@ export default function NewServiceTicketPage() {
                                 </CardContent>
                               </Card>
                             ) : (
-                              <Stack spacing={1.25}>
+                              <Stack
+                                spacing={1.25}
+                                sx={{
+                                  maxHeight: {
+                                    xs: customerSearchFocused
+                                      ? "min(46dvh, 420px)"
+                                      : "none",
+                                    sm: "none",
+                                  },
+                                  overflowY: {
+                                    xs: customerSearchFocused
+                                      ? "auto"
+                                      : "visible",
+                                    sm: "visible",
+                                  },
+                                  pr: { xs: 0.5, sm: 0 },
+                                  pb: { xs: 1, sm: 0 },
+                                  WebkitOverflowScrolling: "touch",
+                                  scrollPaddingBottom: "24px",
+                                }}
+                              >
                                 {filteredCustomers.map((customer) => (
                                   <Card
                                     key={customer.id}
@@ -3881,8 +3939,12 @@ export default function NewServiceTicketPage() {
                   sx={{
                     borderRadius: 1,
                     position: "sticky",
-                    bottom: 16,
-                    zIndex: 2,
+                    bottom: {
+                      xs: "calc(84px + env(safe-area-inset-bottom))",
+                      sm: 16,
+                    },
+                    zIndex: { xs: 20, sm: 2 },
+                    display: { xs: selectedCustomer ? "block" : "none", sm: "block" },
                     bgcolor: "background.paper",
                     mt: 2,
                     boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.08)}`,

@@ -2178,6 +2178,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const canWorkTrip =
     appUser?.role === "admin" ||
+    appUser?.role === "manager" ||
     appUser?.role === "technician" ||
     appUser?.role === "helper" ||
     appUser?.role === "apprentice";
@@ -2211,6 +2212,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     appUser?.role === "technician" ||
     appUser?.role === "helper" ||
     appUser?.role === "apprentice";
+
+  const canClaimAndStartFromTicket =
+    appUser?.role === "admin" || appUser?.role === "manager" || isFieldUser;
 
   const myUid = appUser?.uid || "";
 
@@ -6409,12 +6413,13 @@ Supply line`}
     const role = String(appUser?.role || "")
       .trim()
       .toLowerCase();
+    const isAdminManagerClaimer = role === "admin" || role === "manager";
     const isTechnicianClaimer = role === "technician";
     const isHelperClaimer = role === "helper" || role === "apprentice";
 
-    if (!isTechnicianClaimer && !isHelperClaimer) {
+    if (!isAdminManagerClaimer && !isTechnicianClaimer && !isHelperClaimer) {
       alert(
-        "Quick Claim & Start is only available to technicians, helpers, and apprentices.",
+        "Claim & Start Trip is only available to admins, managers, technicians, helpers, and apprentices.",
       );
       return;
     }
@@ -6450,7 +6455,27 @@ Supply line`}
     let helperUid = "";
     let helperName: string | null = null;
 
-    if (isTechnicianClaimer) {
+    if (isAdminManagerClaimer) {
+      primaryTechUid = myUid;
+      primaryTechName =
+        appUser?.displayName || (role === "manager" ? "Manager" : "Admin");
+
+      const claimantPto = getApprovedPtoForEmployeeOnDate(
+        myUid,
+        isoTodayLocal(),
+        ptoRequests,
+      );
+
+      if (claimantPto) {
+        alert(
+          `${getPtoUnavailableMessage(
+            primaryTechName,
+            claimantPto,
+          )} You cannot claim and start a service ticket while marked unavailable.`,
+        );
+        return;
+      }
+    } else if (isTechnicianClaimer) {
       primaryTechUid = myUid;
       primaryTechName = appUser?.displayName || "Technician";
 
@@ -6566,7 +6591,7 @@ Supply line`}
     }
 
     if (!primaryTechUid.trim()) {
-      alert("Unable to determine the primary technician for this trip.");
+      alert("Unable to determine the primary field worker for this trip.");
       return;
     }
 
@@ -6587,6 +6612,9 @@ Supply line`}
       const ticketRef = doc(db, "serviceTickets", ticket.id);
       const tripsRef = collection(db, "trips");
       const newTripRef = doc(tripsRef);
+      const activityRef = doc(
+        collection(db, "serviceTickets", ticket.id, "activity"),
+      );
 
       await runTransaction(db, async (tx) => {
         const liveTicket = await tx.get(ticketRef);
@@ -6634,7 +6662,9 @@ Supply line`}
             projectId: null,
             projectStageKey: null,
           },
-          notes: null,
+          notes: isAdminManagerClaimer
+            ? `Claimed and started from Service Ticket by ${primaryTechName}.`
+            : null,
           cancelReason: null,
           timerState: "running",
           actualStartAt: nowString,
@@ -6651,6 +6681,8 @@ Supply line`}
           readyToBillAt: null,
           createdAt: nowString,
           createdByUid: myUid,
+          createdByName: appUser?.displayName || null,
+          createdByRole: appUser?.role || null,
           updatedAt: nowString,
           updatedByUid: myUid,
         });
@@ -6667,7 +6699,31 @@ Supply line`}
           assignedTechnicianIds: helperUid
             ? [primaryTechUid, helperUid]
             : [primaryTechUid],
+          scheduledDate: isoTodayLocal(),
+          scheduledStartTime: hhmmLocal(now),
+          scheduledEndTime: hhmmLocal(addMinutes(now, 60)),
+          scheduledTimeWindow: "custom",
+          scheduledTripId: newTripRef.id,
+          activeTripId: newTripRef.id,
           ...getTicketAuditFields(nowString),
+        });
+
+        tx.set(activityRef, {
+          type: isAdminManagerClaimer
+            ? "service_trip_claimed_started_admin_manager"
+            : "service_trip_claimed_started",
+          title: "Trip Claimed & Started",
+          description: `${primaryTechName} claimed this service ticket and started the trip timer.`,
+          details: [
+            `Trip: ${newTripRef.id}`,
+            `Lead: ${primaryTechName}`,
+            helperName ? `Helper: ${helperName}` : "",
+            `Started: ${formatActivityDate(nowString)}`,
+          ].filter(Boolean),
+          createdAt: nowString,
+          createdByUid: myUid || null,
+          createdByName: appUser?.displayName || "System",
+          createdByRole: appUser?.role || null,
         });
       });
 
@@ -7952,7 +8008,7 @@ Supply line`}
                 spacing={1}
                 sx={{ width: { xs: "100%", md: "auto" }, minWidth: 0 }}
               >
-                {isFieldUser &&
+                {canClaimAndStartFromTicket &&
                 !ticket.assignedTechnicianId &&
                 !hasOpenTrips(trips) ? (
                   <Button

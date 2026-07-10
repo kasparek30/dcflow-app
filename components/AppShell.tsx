@@ -3372,7 +3372,14 @@ export default function AppShell({
     );
   }, [mobileMoreItems]);
 
-  const suppressGlobalActiveTripSurface = false;
+  const suppressGlobalActiveTripSurface =
+    isMobile && pathname.startsWith("/service-tickets/new");
+
+  useEffect(() => {
+    if (suppressGlobalActiveTripSurface) {
+      setActiveTripSheetOpen(false);
+    }
+  }, [suppressGlobalActiveTripSurface]);
 
   const mobileBottomNavValue = useMemo(() => {
     const activeItem = mobilePrimaryNav.find((item) =>

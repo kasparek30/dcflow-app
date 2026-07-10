@@ -75,16 +75,14 @@ export default function LoginPage() {
     return Boolean(safeTrim(email)) && Boolean(safeTrim(password)) && !loading;
   }, [email, password, loading]);
 
-  async function navigateAfterLogin(destination: string) {
-    router.replace(destination);
-    router.refresh();
-
-    window.setTimeout(() => {
-      if (typeof window !== "undefined" && window.location.pathname === "/login") {
-        window.location.assign(destination);
-      }
-    }, 900);
+async function navigateAfterLogin(destination: string) {
+  if (typeof window !== "undefined") {
+    window.location.replace(destination);
+    return;
   }
+
+  router.replace(destination);
+}
 
   async function handleLogin(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -105,7 +103,21 @@ export default function LoginPage() {
       const uid = credential.user.uid;
 
       const userRef = doc(db, "users", uid);
-      const snap = await getDoc(userRef);
+
+const snap = await Promise.race([
+  getDoc(userRef),
+  new Promise<never>((_, reject) =>
+    window.setTimeout(
+      () =>
+        reject(
+          new Error(
+            "Login succeeded, but DCFlow could not load the user profile. Check Firestore access or the users profile document.",
+          ),
+        ),
+      8000,
+    ),
+  ),
+]);
 
       if (!snap.exists()) {
         setError(`No matching DCFlow user profile found at users/${uid}.`);
