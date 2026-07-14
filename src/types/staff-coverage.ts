@@ -33,9 +33,15 @@ export type StaffCoverage = {
 
   actualStartAt?: string | null;
   actualEndAt?: string | null;
+  actualHours?: number | null;
 
   confirmedAt?: string | null;
   confirmedByUid?: string | null;
+
+  adjustedAt?: string | null;
+  adjustedByUid?: string | null;
+  adjustedByName?: string | null;
+  adjustmentNote?: string | null;
 
   notes?: string | null;
 

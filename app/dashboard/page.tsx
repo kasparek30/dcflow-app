@@ -22,11 +22,17 @@ import {
   Chip,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   IconButton,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -459,6 +465,47 @@ function buildLocalIsoFromDateAndTime(dateIso: string, hhmm: string) {
     0,
     0,
   ).toISOString();
+}
+
+function calculatePaidStaffHours(
+  startTime: string,
+  endTime: string,
+  unpaidBreakMinutes: number,
+) {
+  const start = minutesFromHHMM(startTime);
+  const end = minutesFromHHMM(endTime);
+  if (start == null || end == null || end <= start) return null;
+
+  const paidMinutes = Math.max(0, end - start - unpaidBreakMinutes);
+  return Math.round((paidMinutes / 60) * 100) / 100;
+}
+
+function buildStaffAdjustmentNotes(
+  existingNotes: string,
+  item: DashboardStaffCoverageItem,
+  actualStartTime: string,
+  actualEndTime: string,
+  unpaidBreakMinutes: number,
+  paidHours: number,
+  adjustmentNote: string,
+) {
+  const adjustmentLines = [
+    "Staff adjustment:",
+    `Scheduled: ${formatTime12h(item.startTime)}–${formatTime12h(
+      item.endTime,
+    )} (${item.scheduledHours.toFixed(2)} paid hrs)`,
+    `Actual: ${formatTime12h(actualStartTime)}–${formatTime12h(
+      actualEndTime,
+    )} (${paidHours.toFixed(2)} paid hrs)`,
+    unpaidBreakMinutes > 0
+      ? `Unpaid lunch: ${unpaidBreakMinutes / 60}h`
+      : "Unpaid lunch: none",
+    adjustmentNote ? `Reason: ${adjustmentNote}` : "",
+  ].filter(Boolean);
+
+  return [safeTrim(existingNotes), adjustmentLines.join("\n")]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function labelForStaffWorkType(workType?: string | null) {
@@ -2458,12 +2505,14 @@ function MyStaffHoursSection({
   message,
   error,
   onConfirm,
+  onEditActual,
 }: {
   items: DashboardStaffCoverageItem[];
   confirmingId: string;
   message: string;
   error: string;
   onConfirm: (item: DashboardStaffCoverageItem) => void;
+  onEditActual: (item: DashboardStaffCoverageItem) => void;
 }) {
   const unconfirmedCount = items.filter(
     (item) => !item.confirmedAt && item.status !== "completed",
@@ -2565,17 +2614,32 @@ function MyStaffHoursSection({
                     </Box>
 
                     {!confirmed ? (
-                      <Button
-                        variant="contained"
-                        size="small"
-                        onClick={() => onConfirm(item)}
-                        disabled={confirmingId === item.id}
-                        sx={{ borderRadius: 999, flexShrink: 0 }}
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                        sx={{ flexShrink: 0 }}
                       >
-                        {confirmingId === item.id
-                          ? "Confirming..."
-                          : "Confirm Hours"}
-                      </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() => onEditActual(item)}
+                          disabled={confirmingId === item.id}
+                          sx={{ borderRadius: 999 }}
+                        >
+                          Edit Actual
+                        </Button>
+                        <Button
+                          variant="contained"
+                          size="small"
+                          onClick={() => onConfirm(item)}
+                          disabled={confirmingId === item.id}
+                          sx={{ borderRadius: 999 }}
+                        >
+                          {confirmingId === item.id
+                            ? "Confirming..."
+                            : "Confirm Hours"}
+                        </Button>
+                      </Stack>
                     ) : (
                       <Button
                         component={Link}
@@ -2624,6 +2688,14 @@ export default function DashboardPage() {
     useState("");
   const [staffCoverageMessage, setStaffCoverageMessage] = useState("");
   const [staffCoverageError, setStaffCoverageError] = useState("");
+  const [staffEditItem, setStaffEditItem] =
+    useState<DashboardStaffCoverageItem | null>(null);
+  const [staffEditStartTime, setStaffEditStartTime] = useState("08:00");
+  const [staffEditEndTime, setStaffEditEndTime] = useState("17:00");
+  const [staffEditUnpaidBreakMinutes, setStaffEditUnpaidBreakMinutes] =
+    useState(0);
+  const [staffEditNote, setStaffEditNote] = useState("");
+  const [savingStaffEdit, setSavingStaffEdit] = useState(false);
 
   useEffect(() => {
     setDashboardLoading(true);
@@ -3024,6 +3096,162 @@ export default function DashboardPage() {
     return () => unsubStaffCoverage();
   }, [appUser?.uid]);
 
+  const staffEditPaidHours = useMemo(() => {
+    if (!staffEditItem) return null;
+    return calculatePaidStaffHours(
+      staffEditStartTime,
+      staffEditEndTime,
+      staffEditUnpaidBreakMinutes,
+    );
+  }, [staffEditEndTime, staffEditItem, staffEditStartTime, staffEditUnpaidBreakMinutes]);
+
+  function handleOpenStaffActualEdit(item: DashboardStaffCoverageItem) {
+    setStaffCoverageError("");
+    setStaffCoverageMessage("");
+    setStaffEditItem(item);
+    setStaffEditStartTime(item.startTime || "08:00");
+    setStaffEditEndTime(item.endTime || "17:00");
+    setStaffEditUnpaidBreakMinutes(item.unpaidBreakMinutes || 0);
+    setStaffEditNote("");
+  }
+
+  function handleCloseStaffActualEdit() {
+    if (savingStaffEdit) return;
+    setStaffEditItem(null);
+    setStaffEditNote("");
+  }
+
+  async function handleSaveStaffActualEdit() {
+    if (!appUser?.uid) {
+      setStaffCoverageError("Missing signed-in user.");
+      return;
+    }
+
+    if (!staffEditItem) return;
+
+    if (!staffEditItem.linkedTimeEntryId) {
+      setStaffCoverageError("This staff coverage row has no linked time entry.");
+      return;
+    }
+
+    if (!isStaffCoverageReadyToConfirm(staffEditItem)) {
+      setStaffCoverageError(
+        "This shift is not ready to confirm yet. Staff hours can be edited after the scheduled shift ends.",
+      );
+      return;
+    }
+
+    const paidHours = calculatePaidStaffHours(
+      staffEditStartTime,
+      staffEditEndTime,
+      staffEditUnpaidBreakMinutes,
+    );
+
+    if (paidHours == null || paidHours <= 0) {
+      setStaffCoverageError("Actual end time must be after actual start time.");
+      return;
+    }
+
+    const actualStartAt = buildLocalIsoFromDateAndTime(
+      staffEditItem.date,
+      staffEditStartTime,
+    );
+    const actualEndAt = buildLocalIsoFromDateAndTime(
+      staffEditItem.date,
+      staffEditEndTime,
+    );
+
+    if (!actualStartAt || !actualEndAt) {
+      setStaffCoverageError("Enter a valid actual start and end time.");
+      return;
+    }
+
+    setSavingStaffEdit(true);
+    setStaffCoverageError("");
+    setStaffCoverageMessage("");
+
+    try {
+      const now = new Date().toISOString();
+
+      if (staffEditItem.linkedWeeklyTimesheetId) {
+        const timesheetSnap = await getDoc(
+          doc(db, "weeklyTimesheets", staffEditItem.linkedWeeklyTimesheetId),
+        );
+
+        if (
+          timesheetSnap.exists() &&
+          isLockedWeeklyTimesheetStatus((timesheetSnap.data() as any).status)
+        ) {
+          throw new Error(
+            "This weekly timesheet has already been submitted or locked. Ask an admin to reject/unlock it before editing hours.",
+          );
+        }
+      }
+
+      const timeEntryRef = doc(db, "timeEntries", staffEditItem.linkedTimeEntryId);
+      const timeEntrySnap = await getDoc(timeEntryRef);
+      const existingTimeEntry = timeEntrySnap.exists()
+        ? (timeEntrySnap.data() as any)
+        : {};
+      const nextNotes = buildStaffAdjustmentNotes(
+        safeTrim(existingTimeEntry.notes),
+        staffEditItem,
+        staffEditStartTime,
+        staffEditEndTime,
+        staffEditUnpaidBreakMinutes,
+        paidHours,
+        staffEditNote.trim(),
+      );
+
+      const batch = writeBatch(db);
+
+      batch.update(doc(db, "staffCoverage", staffEditItem.id), {
+        status: "completed",
+        actualStartAt,
+        actualEndAt,
+        actualHours: paidHours,
+        unpaidBreakMinutes: staffEditUnpaidBreakMinutes,
+        confirmedAt: now,
+        confirmedByUid: appUser.uid,
+        adjustedAt: now,
+        adjustedByUid: appUser.uid,
+        adjustedByName: appUser.displayName || null,
+        adjustmentNote: staffEditNote.trim() || null,
+        updatedAt: now,
+        updatedByUid: appUser.uid,
+        updatedByName: appUser.displayName || null,
+      });
+
+      batch.update(timeEntryRef, {
+        source: "staff_adjusted",
+        hours: paidHours,
+        hoursSource: paidHours,
+        actualStartAt,
+        actualEndAt,
+        unpaidBreakMinutes: staffEditUnpaidBreakMinutes,
+        confirmedAt: now,
+        confirmedByUid: appUser.uid,
+        adjustedAt: now,
+        adjustedByUid: appUser.uid,
+        notes: nextNotes || null,
+        updatedAt: now,
+        updatedByUid: appUser.uid,
+      });
+
+      await batch.commit();
+
+      setStaffCoverageMessage("Actual staff hours saved and confirmed.");
+      setStaffEditItem(null);
+      setStaffEditNote("");
+    } catch (err: unknown) {
+      setStaffCoverageError(
+        err instanceof Error ? err.message : "Failed to save actual staff hours.",
+      );
+    } finally {
+      setSavingStaffEdit(false);
+    }
+  }
+
   async function handleConfirmStaffCoverage(item: DashboardStaffCoverageItem) {
     if (!appUser?.uid) {
       setStaffCoverageError("Missing signed-in user.");
@@ -3358,6 +3586,7 @@ export default function DashboardPage() {
                     message={staffCoverageMessage}
                     error={staffCoverageError}
                     onConfirm={handleConfirmStaffCoverage}
+                    onEditActual={handleOpenStaffActualEdit}
                   />
                 ) : null}
 
@@ -3553,6 +3782,140 @@ export default function DashboardPage() {
                 </SectionCard>
               </Stack>
             </Box>
+
+            <Dialog
+              open={Boolean(staffEditItem)}
+              onClose={handleCloseStaffActualEdit}
+              fullWidth
+              maxWidth="sm"
+              PaperProps={{
+                sx: {
+                  borderRadius: 1.4,
+                  border: `1px solid ${alpha(theme.palette.common.white, 0.1)}`,
+                  backgroundImage: "none",
+                  backgroundColor: "background.paper",
+                },
+              }}
+            >
+              <DialogTitle>
+                <Stack spacing={0.75}>
+                  <Typography variant="h6" fontWeight={900}>
+                    Edit Actual Staff Hours
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Confirm the actual time worked when it differs from the
+                    scheduled staff coverage.
+                  </Typography>
+                </Stack>
+              </DialogTitle>
+
+              <DialogContent>
+                <Stack spacing={2} sx={{ pt: 1 }}>
+                  {staffEditItem ? (
+                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+                      Scheduled {labelForStaffWorkType(staffEditItem.workType)} on{" "}
+                      {staffEditItem.date}: {formatTime12h(staffEditItem.startTime)}–
+                      {formatTime12h(staffEditItem.endTime)} •{" "}
+                      {staffEditItem.scheduledHours.toFixed(2)} paid hrs
+                    </Alert>
+                  ) : null}
+
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                    }}
+                  >
+                    <TextField
+                      label="Actual Start"
+                      type="time"
+                      value={staffEditStartTime}
+                      onChange={(event) =>
+                        setStaffEditStartTime(event.target.value)
+                      }
+                      disabled={savingStaffEdit}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                    />
+
+                    <TextField
+                      label="Actual End"
+                      type="time"
+                      value={staffEditEndTime}
+                      onChange={(event) => setStaffEditEndTime(event.target.value)}
+                      disabled={savingStaffEdit}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                    />
+                  </Box>
+
+                  <FormControl fullWidth>
+                    <InputLabel>Unpaid Lunch</InputLabel>
+                    <Select
+                      label="Unpaid Lunch"
+                      value={String(staffEditUnpaidBreakMinutes)}
+                      onChange={(event) =>
+                        setStaffEditUnpaidBreakMinutes(Number(event.target.value))
+                      }
+                      disabled={savingStaffEdit}
+                    >
+                      <MenuItem value="0">None</MenuItem>
+                      <MenuItem value="30">30 minutes</MenuItem>
+                      <MenuItem value="60">1 hour</MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  <TextField
+                    label="Reason / Note"
+                    value={staffEditNote}
+                    onChange={(event) => setStaffEditNote(event.target.value)}
+                    disabled={savingStaffEdit}
+                    multiline
+                    minRows={3}
+                    placeholder="Example: left early, came in late, worked through lunch, stayed late, etc."
+                    fullWidth
+                  />
+
+                  <Chip
+                    icon={<AccessTimeRoundedIcon />}
+                    label={
+                      staffEditPaidHours == null
+                        ? "Enter a valid actual time range"
+                        : `${staffEditPaidHours.toFixed(2)} paid hours${
+                            staffEditUnpaidBreakMinutes > 0
+                              ? ` • ${staffEditUnpaidBreakMinutes / 60}h lunch`
+                              : ""
+                          }`
+                    }
+                    color={staffEditPaidHours ? "primary" : "default"}
+                    variant={staffEditPaidHours ? "filled" : "outlined"}
+                    sx={{ alignSelf: "flex-start", fontWeight: 800 }}
+                  />
+                </Stack>
+              </DialogContent>
+
+              <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                <Button
+                  onClick={handleCloseStaffActualEdit}
+                  disabled={savingStaffEdit}
+                  variant="outlined"
+                  sx={{ borderRadius: 999 }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveStaffActualEdit}
+                  disabled={
+                    savingStaffEdit || !staffEditItem || !staffEditPaidHours
+                  }
+                  variant="contained"
+                  sx={{ borderRadius: 999 }}
+                >
+                  {savingStaffEdit ? "Saving..." : "Save Actual Hours"}
+                </Button>
+              </DialogActions>
+            </Dialog>
 
             {projectFollowUps.length > 0 || readyInvoiceProjects.length > 0 ? (
               <SectionCard

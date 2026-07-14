@@ -160,6 +160,19 @@ function formatTime12h(hhmm?: string | null) {
     : `${hh}:${String(parsed.mm).padStart(2, "0")}${suffix}`;
 }
 
+function formatIsoTime12h(value?: string | null) {
+  const raw = safeTrim(value);
+  if (!raw) return "";
+
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) return "";
+
+  return dt.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function labelForStaffWorkType(workType?: string | null) {
   const normalized = safeTrim(workType).toLowerCase();
 
@@ -791,16 +804,26 @@ export default function WeeklyTimesheetPage() {
         const workType = safeTrim((entry as any).workType);
         const start = safeTrim((entry as any).scheduledStartTime);
         const end = safeTrim((entry as any).scheduledEndTime);
-        const timeText =
-          start && end ? `${formatTime12h(start)}–${formatTime12h(end)}` : "";
+        const source = safeTrim((entry as any).source).toLowerCase();
+        const actualStart = formatIsoTime12h((entry as any).actualStartAt);
+        const actualEnd = formatIsoTime12h((entry as any).actualEndAt);
+        const scheduledText =
+          start && end
+            ? `Scheduled ${formatTime12h(start)}–${formatTime12h(end)}`
+            : "";
+        const actualText =
+          actualStart && actualEnd ? `Actual ${actualStart}–${actualEnd}` : "";
         const lunch = Number((entry as any).unpaidBreakMinutes || 0);
         const lunchText = lunch > 0 ? `${lunch / 60}h lunch` : "no lunch";
 
         return {
           title: labelForStaffWorkType(workType),
-          subtitle: [timeText, lunchText]
-            .filter(Boolean)
-            .join(" • "),
+          subtitle:
+            source === "staff_adjusted"
+              ? [actualText, scheduledText, lunchText].filter(Boolean).join(" • ")
+              : [scheduledText || actualText, lunchText]
+                  .filter(Boolean)
+                  .join(" • "),
         };
       }
 
@@ -1433,12 +1456,18 @@ export default function WeeklyTimesheetPage() {
                                             <Chip
                                               size="small"
                                               label={
-                                                (entry as any).confirmedAt
+                                                safeTrim((entry as any).source) ===
+                                                "staff_adjusted"
+                                                  ? "Staff adjusted"
+                                                  : (entry as any).confirmedAt
                                                   ? "Staff confirmed"
                                                   : "Staff scheduled"
                                               }
                                               color={
-                                                (entry as any).confirmedAt
+                                                safeTrim((entry as any).source) ===
+                                                "staff_adjusted"
+                                                  ? "info"
+                                                  : (entry as any).confirmedAt
                                                   ? "success"
                                                   : "warning"
                                               }

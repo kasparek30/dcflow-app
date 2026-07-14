@@ -94,6 +94,8 @@ export type TimeEntry = {
   actualEndAt?: string | null;
   confirmedAt?: string | null;
   confirmedByUid?: string | null;
+  adjustedAt?: string | null;
+  adjustedByUid?: string | null;
 
   createdByUid?: string | null;
   updatedByUid?: string | null;
