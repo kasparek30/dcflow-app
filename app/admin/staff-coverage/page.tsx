@@ -51,6 +51,7 @@ type StaffEmployeeOption = {
   role: string;
   laborRoleType?: string | null;
   defaultStaffCoverageWorkType?: StaffCoverageWorkType | null;
+  defaultStaffCoverageUnpaidBreakMinutes?: number | null;
 };
 
 const WORK_TYPE_OPTIONS: Array<{
@@ -236,8 +237,27 @@ export default function StaffCoverageAdminPage() {
     }, [startTime, endTime]);
 
     useEffect(() => {
-    setUnpaidBreakMinutes(defaultUnpaidBreakMinutes(startTime, endTime));
-    }, [startTime, endTime]);
+      const start = minutesFromHHMM(startTime);
+      const end = minutesFromHHMM(endTime);
+
+      if (start == null || end == null || end <= start) {
+        setUnpaidBreakMinutes(0);
+        return;
+      }
+
+      const grossMinutes = end - start;
+
+      if (
+        grossMinutes >= 8 * 60 &&
+        selectedEmployee &&
+        typeof selectedEmployee.defaultStaffCoverageUnpaidBreakMinutes === "number"
+      ) {
+        setUnpaidBreakMinutes(selectedEmployee.defaultStaffCoverageUnpaidBreakMinutes);
+        return;
+      }
+
+      setUnpaidBreakMinutes(defaultUnpaidBreakMinutes(startTime, endTime));
+    }, [startTime, endTime, selectedEmployee]);
 
     const scheduledHours = useMemo(() => {
     return calculatePaidHours(startTime, endTime, unpaidBreakMinutes);
@@ -271,7 +291,11 @@ export default function StaffCoverageAdminPage() {
           staffCoverageEligible: data.staffCoverageEligible ?? undefined,
           defaultStaffCoverageWorkType:
             data.defaultStaffCoverageWorkType ?? null,
-        };
+          defaultStaffCoverageUnpaidBreakMinutes:
+            typeof data.defaultStaffCoverageUnpaidBreakMinutes === "number"
+              ? data.defaultStaffCoverageUnpaidBreakMinutes
+              : null,
+                  };
       });
 
       const employeeOptions = userItems
@@ -284,6 +308,10 @@ export default function StaffCoverageAdminPage() {
           laborRoleType: user.laborRoleType ?? null,
           defaultStaffCoverageWorkType:
             user.defaultStaffCoverageWorkType ?? null,
+          defaultStaffCoverageUnpaidBreakMinutes:
+            typeof user.defaultStaffCoverageUnpaidBreakMinutes === "number"
+              ? user.defaultStaffCoverageUnpaidBreakMinutes
+              : null,
         }))
         .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
@@ -325,7 +353,7 @@ export default function StaffCoverageAdminPage() {
             updatedByName: data.updatedByName ?? null,
           } satisfies StaffCoverage;
         })
-        .filter((row) => row.active !== false)
+        .filter((row) => row.active !== false && row.date >= todayIsoLocal())
         .sort((a, b) => {
           const byDate = a.date.localeCompare(b.date);
           if (byDate !== 0) return byDate;
@@ -344,7 +372,12 @@ export default function StaffCoverageAdminPage() {
           ) || employeeOptions[0];
 
         setEmployeeId(peggy.uid);
-        setWorkType(peggy.defaultStaffCoverageWorkType || "dispatch");
+          setWorkType(peggy.defaultStaffCoverageWorkType || "dispatch");
+          setUnpaidBreakMinutes(
+            typeof peggy.defaultStaffCoverageUnpaidBreakMinutes === "number"
+              ? peggy.defaultStaffCoverageUnpaidBreakMinutes
+              : defaultUnpaidBreakMinutes(startTime, endTime)
+          );
       }
     } catch (err: any) {
       setError(err?.message || "Failed to load staff coverage.");
@@ -362,6 +395,7 @@ export default function StaffCoverageAdminPage() {
     setEmployeeId(nextEmployeeId);
 
     const employee = employees.find((item) => item.uid === nextEmployeeId);
+
     if (employee?.defaultStaffCoverageWorkType) {
       setWorkType(employee.defaultStaffCoverageWorkType);
     } else if (employee?.role === "dispatcher") {
@@ -371,6 +405,12 @@ export default function StaffCoverageAdminPage() {
     } else {
       setWorkType("office");
     }
+
+    setUnpaidBreakMinutes(
+      typeof employee?.defaultStaffCoverageUnpaidBreakMinutes === "number"
+        ? employee.defaultStaffCoverageUnpaidBreakMinutes
+        : defaultUnpaidBreakMinutes(startTime, endTime)
+    );
   }
 
   async function handleCreateCoverage() {
@@ -695,7 +735,7 @@ export default function StaffCoverageAdminPage() {
             <Card
               elevation={0}
               sx={{
-                borderRadius: 3,
+                borderRadius: 1,
                 border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
                 backgroundColor: alpha(theme.palette.primary.main, 0.06),
               }}
@@ -867,7 +907,7 @@ export default function StaffCoverageAdminPage() {
                   elevation={0}
                   sx={{
                     p: 3,
-                    borderRadius: 3,
+                    borderRadius: 1,
                     border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                   }}
                 >
@@ -884,7 +924,7 @@ export default function StaffCoverageAdminPage() {
                     elevation={0}
                     sx={{
                       p: { xs: 1.75, md: 2 },
-                      borderRadius: 3,
+                      borderRadius: 1,
                       border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                       backgroundColor: "background.paper",
                     }}

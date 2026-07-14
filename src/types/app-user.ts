@@ -46,4 +46,5 @@ export type AppUser = {
   fieldAssignable?: boolean;
   staffCoverageEligible?: boolean;
   defaultStaffCoverageWorkType?: StaffCoverageWorkType | null;
+  defaultStaffCoverageUnpaidBreakMinutes?: number | null;
 };

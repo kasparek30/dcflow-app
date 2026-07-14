@@ -138,6 +138,41 @@ function formatDisplayDate(isoDate: string) {
   });
 }
 
+function parseHHMM(hhmm: string) {
+  if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  const [hh, mm] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return { hh, mm };
+}
+
+function formatTime12h(hhmm?: string | null) {
+  const parsed = parseHHMM(String(hhmm || ""));
+  if (!parsed) return "—";
+
+  let hh = parsed.hh;
+  const suffix = hh >= 12 ? "PM" : "AM";
+  hh = hh % 12;
+  if (hh === 0) hh = 12;
+
+  return parsed.mm === 0
+    ? `${hh}${suffix}`
+    : `${hh}:${String(parsed.mm).padStart(2, "0")}${suffix}`;
+}
+
+function labelForStaffWorkType(workType?: string | null) {
+  const normalized = safeTrim(workType).toLowerCase();
+
+  if (normalized === "dispatch") return "Dispatch Coverage";
+  if (normalized === "billing") return "Billing";
+  if (normalized === "office") return "Office";
+  if (normalized === "admin") return "Admin";
+  if (normalized === "shop") return "Shop";
+  if (normalized === "other") return "Other";
+
+  return "Staff Coverage";
+}
+
 function formatStatus(status: WeeklyTimesheetStatus) {
   switch (status) {
     case "draft":
@@ -380,6 +415,24 @@ export default function WeeklyTimesheetPage() {
             entryStatus: data.entryStatus ?? "draft",
             createdAt: data.createdAt ?? undefined,
             updatedAt: data.updatedAt ?? undefined,
+            hoursLocked:
+              typeof data.hoursLocked === "boolean"
+                ? data.hoursLocked
+                : undefined,
+            hoursSource:
+              typeof data.hoursSource === "number" ? data.hoursSource : undefined,
+            staffCoverageId: data.staffCoverageId ?? undefined,
+            workType: data.workType ?? undefined,
+            scheduledStartTime: data.scheduledStartTime ?? undefined,
+            scheduledEndTime: data.scheduledEndTime ?? undefined,
+            unpaidBreakMinutes:
+              typeof data.unpaidBreakMinutes === "number"
+                ? data.unpaidBreakMinutes
+                : undefined,
+            actualStartAt: data.actualStartAt ?? undefined,
+            actualEndAt: data.actualEndAt ?? undefined,
+            confirmedAt: data.confirmedAt ?? undefined,
+            confirmedByUid: data.confirmedByUid ?? undefined,
           };
         });
 
@@ -733,6 +786,24 @@ export default function WeeklyTimesheetPage() {
     }
 
     if (cat === "office") {
+      const staffCoverageId = safeTrim((entry as any).staffCoverageId);
+      if (staffCoverageId) {
+        const workType = safeTrim((entry as any).workType);
+        const start = safeTrim((entry as any).scheduledStartTime);
+        const end = safeTrim((entry as any).scheduledEndTime);
+        const timeText =
+          start && end ? `${formatTime12h(start)}–${formatTime12h(end)}` : "";
+        const lunch = Number((entry as any).unpaidBreakMinutes || 0);
+        const lunchText = lunch > 0 ? `${lunch / 60}h lunch` : "no lunch";
+
+        return {
+          title: labelForStaffWorkType(workType),
+          subtitle: [timeText, lunchText]
+            .filter(Boolean)
+            .join(" • "),
+        };
+      }
+
       return {
         title: "Office Time",
         subtitle: truncateLine(firstMeaningfulLine((entry as any).notes), 60),
@@ -1354,6 +1425,23 @@ export default function WeeklyTimesheetPage() {
                                               size="small"
                                               label="Calendar holiday"
                                               color="success"
+                                              variant="outlined"
+                                              sx={{ fontWeight: 600 }}
+                                            />
+                                          ) : null}
+                                          {safeTrim((entry as any).staffCoverageId) ? (
+                                            <Chip
+                                              size="small"
+                                              label={
+                                                (entry as any).confirmedAt
+                                                  ? "Staff confirmed"
+                                                  : "Staff scheduled"
+                                              }
+                                              color={
+                                                (entry as any).confirmedAt
+                                                  ? "success"
+                                                  : "warning"
+                                              }
                                               variant="outlined"
                                               sx={{ fontWeight: 600 }}
                                             />

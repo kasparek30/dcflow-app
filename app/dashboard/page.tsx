@@ -11,6 +11,7 @@ import {
   onSnapshot,
   query,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import {
   Alert,
@@ -48,6 +49,7 @@ import ConstructionRoundedIcon from "@mui/icons-material/ConstructionRounded";
 import PlumbingRoundedIcon from "@mui/icons-material/PlumbingRounded";
 import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
 
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -328,6 +330,26 @@ type PendingMaterialOrderItem = {
   updatedAt?: string | null;
 };
 
+type DashboardStaffCoverageItem = {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  employeeRole: string;
+  workType: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  scheduledHours: number;
+  unpaidBreakMinutes: number;
+  status: string;
+  active: boolean;
+  linkedTimeEntryId?: string | null;
+  linkedWeeklyTimesheetId?: string | null;
+  confirmedAt?: string | null;
+  confirmedByUid?: string | null;
+  notes?: string | null;
+};
+
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
 }
@@ -393,6 +415,98 @@ function formatDateOnly(value?: string | null) {
     month: "short",
     day: "numeric",
   });
+}
+
+function parseHHMM(hhmm: string) {
+  if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  const [hh, mm] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return { hh, mm };
+}
+
+function minutesFromHHMM(hhmm: string) {
+  const parsed = parseHHMM(hhmm);
+  if (!parsed) return null;
+  return parsed.hh * 60 + parsed.mm;
+}
+
+function formatTime12h(hhmm?: string | null) {
+  const parsed = parseHHMM(String(hhmm || ""));
+  if (!parsed) return "—";
+
+  let hh = parsed.hh;
+  const suffix = hh >= 12 ? "PM" : "AM";
+  hh = hh % 12;
+  if (hh === 0) hh = 12;
+
+  return parsed.mm === 0
+    ? `${hh}${suffix}`
+    : `${hh}:${String(parsed.mm).padStart(2, "0")}${suffix}`;
+}
+
+function buildLocalIsoFromDateAndTime(dateIso: string, hhmm: string) {
+  const parsed = parseHHMM(hhmm);
+  if (!parsed || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return null;
+
+  const [year, month, day] = dateIso.split("-").map(Number);
+  return new Date(
+    year,
+    month - 1,
+    day,
+    parsed.hh,
+    parsed.mm,
+    0,
+    0,
+  ).toISOString();
+}
+
+function labelForStaffWorkType(workType?: string | null) {
+  const normalized = safeTrim(workType).toLowerCase();
+
+  if (normalized === "dispatch") return "Dispatch Coverage";
+  if (normalized === "billing") return "Billing";
+  if (normalized === "office") return "Office";
+  if (normalized === "admin") return "Admin";
+  if (normalized === "shop") return "Shop";
+  if (normalized === "other") return "Other";
+
+  return "Staff Coverage";
+}
+
+function isLockedWeeklyTimesheetStatus(status?: string | null) {
+  const s = safeTrim(status).toLowerCase();
+  return (
+    s === "submitted" ||
+    s === "approved" ||
+    s === "exported" ||
+    s === "exported_to_quickbooks"
+  );
+}
+
+function isStaffCoverageReadyToConfirm(item: DashboardStaffCoverageItem) {
+  if (item.active === false) return false;
+
+  const status = safeTrim(item.status).toLowerCase();
+  if (status === "cancelled" || status === "completed") return false;
+  if (item.confirmedAt) return false;
+
+  const today = todayIsoLocal();
+
+  // Past scheduled coverage can be confirmed.
+  if (item.date < today) return true;
+
+  // Future scheduled coverage should not show yet.
+  if (item.date > today) return false;
+
+  // Today's coverage should show only after the scheduled shift end time.
+  const endMinutes = minutesFromHHMM(item.endTime);
+  if (endMinutes == null) return false;
+
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  return nowMinutes >= endMinutes;
 }
 
 function hasMaterialOrderInvoiceSignal(order: DashboardMaterialOrderDoc) {
@@ -2338,6 +2452,152 @@ function LiveFieldWorkSection({
   );
 }
 
+function MyStaffHoursSection({
+  items,
+  confirmingId,
+  message,
+  error,
+  onConfirm,
+}: {
+  items: DashboardStaffCoverageItem[];
+  confirmingId: string;
+  message: string;
+  error: string;
+  onConfirm: (item: DashboardStaffCoverageItem) => void;
+}) {
+  const unconfirmedCount = items.filter(
+    (item) => !item.confirmedAt && item.status !== "completed",
+  ).length;
+
+  return (
+    <SectionCard
+      title="My Staff Hours"
+      subtitle="Review and confirm scheduled office, dispatch, billing, or admin coverage."
+      icon={<SupportAgentRoundedIcon />}
+      count={unconfirmedCount}
+      accent={unconfirmedCount > 0 ? "primary" : "success"}
+    >
+      <Stack spacing={1.25}>
+        {error ? (
+          <Alert severity="error" variant="outlined" sx={{ borderRadius: 3 }}>
+            {error}
+          </Alert>
+        ) : null}
+
+        {message ? (
+          <Alert severity="success" variant="outlined" sx={{ borderRadius: 3 }}>
+            {message}
+          </Alert>
+        ) : null}
+
+        {items.length === 0 ? (
+          <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
+            No staff coverage is currently scheduled for you.
+          </Alert>
+        ) : (
+          <Stack spacing={1.25}>
+            {items.map((item) => {
+              const confirmed =
+                Boolean(item.confirmedAt) || item.status === "completed";
+
+              return (
+                <Box
+                  key={item.id}
+                  sx={{
+                    borderRadius: 1.2,
+                    border: (theme) =>
+                      `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                    backgroundColor: (theme) =>
+                      alpha(theme.palette.common.white, 0.02),
+                    px: 1.5,
+                    py: 1.5,
+                  }}
+                >
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1.25}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Stack
+                        direction="row"
+                        spacing={0.75}
+                        alignItems="center"
+                        flexWrap="wrap"
+                        useFlexGap
+                      >
+                        <Typography variant="subtitle2" fontWeight={900}>
+                          {labelForStaffWorkType(item.workType)}
+                        </Typography>
+
+                        <Chip
+                          size="small"
+                          label={confirmed ? "Confirmed" : "Needs Confirmation"}
+                          color={confirmed ? "success" : "warning"}
+                          variant={confirmed ? "filled" : "outlined"}
+                          sx={{ fontWeight: 800 }}
+                        />
+                      </Stack>
+
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{ mt: 0.5 }}
+                      >
+                        {item.date} • {formatTime12h(item.startTime)}–
+                        {formatTime12h(item.endTime)} •{" "}
+                        {item.scheduledHours.toFixed(2)} paid hrs
+                        {item.unpaidBreakMinutes > 0
+                          ? ` • ${item.unpaidBreakMinutes / 60}h lunch`
+                          : ""}
+                      </Typography>
+
+                      {item.notes ? (
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ mt: 0.5 }}
+                        >
+                          {item.notes}
+                        </Typography>
+                      ) : null}
+                    </Box>
+
+                    {!confirmed ? (
+                      <Button
+                        variant="contained"
+                        size="small"
+                        onClick={() => onConfirm(item)}
+                        disabled={confirmingId === item.id}
+                        sx={{ borderRadius: 999, flexShrink: 0 }}
+                      >
+                        {confirmingId === item.id
+                          ? "Confirming..."
+                          : "Confirm Hours"}
+                      </Button>
+                    ) : (
+                      <Button
+                        component={Link}
+                        href="/weekly-timesheet"
+                        variant="outlined"
+                        size="small"
+                        sx={{ borderRadius: 999, flexShrink: 0 }}
+                      >
+                        Review Timesheet
+                      </Button>
+                    )}
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Stack>
+        )}
+      </Stack>
+    </SectionCard>
+  );
+}
+
 export default function DashboardPage() {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -2357,6 +2617,13 @@ export default function DashboardPage() {
     DashboardMaterialOrderDoc[]
   >([]);
   const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [myStaffCoverage, setMyStaffCoverage] = useState<
+    DashboardStaffCoverageItem[]
+  >([]);
+  const [confirmingStaffCoverageId, setConfirmingStaffCoverageId] =
+    useState("");
+  const [staffCoverageMessage, setStaffCoverageMessage] = useState("");
+  const [staffCoverageError, setStaffCoverageError] = useState("");
 
   useEffect(() => {
     setDashboardLoading(true);
@@ -2697,6 +2964,149 @@ export default function DashboardPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!appUser?.uid) {
+      setMyStaffCoverage([]);
+      return;
+    }
+
+    const unsubStaffCoverage = onSnapshot(
+      query(
+        collection(db, "staffCoverage"),
+        where("employeeId", "==", appUser.uid),
+        where("active", "==", true),
+        limit(50),
+      ),
+      (snap) => {
+        const items = snap.docs
+          .map((docSnap) => {
+            const data = docSnap.data() as any;
+
+            return {
+              id: docSnap.id,
+              employeeId: safeTrim(data.employeeId),
+              employeeName: safeTrim(data.employeeName) || "Employee",
+              employeeRole: safeTrim(data.employeeRole),
+              workType: safeTrim(data.workType) || "office",
+              date: safeTrim(data.date),
+              startTime: safeTrim(data.startTime),
+              endTime: safeTrim(data.endTime),
+              scheduledHours:
+                typeof data.scheduledHours === "number"
+                  ? data.scheduledHours
+                  : 0,
+              unpaidBreakMinutes:
+                typeof data.unpaidBreakMinutes === "number"
+                  ? data.unpaidBreakMinutes
+                  : 0,
+              status: safeTrim(data.status) || "scheduled",
+              active: data.active !== false,
+              linkedTimeEntryId: safeTrim(data.linkedTimeEntryId) || null,
+              linkedWeeklyTimesheetId:
+                safeTrim(data.linkedWeeklyTimesheetId) || null,
+              confirmedAt: safeTrim(data.confirmedAt) || null,
+              confirmedByUid: safeTrim(data.confirmedByUid) || null,
+              notes: safeTrim(data.notes) || null,
+            } satisfies DashboardStaffCoverageItem;
+          })
+          .filter(isStaffCoverageReadyToConfirm)
+          .sort((a, b) => {
+            const byDate = a.date.localeCompare(b.date);
+            if (byDate !== 0) return byDate;
+            return a.startTime.localeCompare(b.startTime);
+          });
+
+        setMyStaffCoverage(items);
+      },
+      () => setMyStaffCoverage([]),
+    );
+
+    return () => unsubStaffCoverage();
+  }, [appUser?.uid]);
+
+  async function handleConfirmStaffCoverage(item: DashboardStaffCoverageItem) {
+    if (!appUser?.uid) {
+      setStaffCoverageError("Missing signed-in user.");
+      return;
+    }
+
+    if (!item.linkedTimeEntryId) {
+      setStaffCoverageError("This staff coverage row has no linked time entry.");
+      return;
+    }
+
+    if (!isStaffCoverageReadyToConfirm(item)) {
+      setStaffCoverageError(
+        "This shift is not ready to confirm yet. Staff hours can be confirmed after the scheduled shift ends.",
+      );
+      return;
+    }
+
+    setConfirmingStaffCoverageId(item.id);
+    setStaffCoverageError("");
+    setStaffCoverageMessage("");
+
+    try {
+      const now = new Date().toISOString();
+
+      if (item.linkedWeeklyTimesheetId) {
+        const timesheetSnap = await getDoc(
+          doc(db, "weeklyTimesheets", item.linkedWeeklyTimesheetId),
+        );
+
+        if (
+          timesheetSnap.exists() &&
+          isLockedWeeklyTimesheetStatus((timesheetSnap.data() as any).status)
+        ) {
+          throw new Error(
+            "This weekly timesheet has already been submitted or locked. Ask an admin to reject/unlock it before confirming hours.",
+          );
+        }
+      }
+
+      const actualStartAt = buildLocalIsoFromDateAndTime(
+        item.date,
+        item.startTime,
+      );
+      const actualEndAt = buildLocalIsoFromDateAndTime(item.date, item.endTime);
+
+      const batch = writeBatch(db);
+
+      batch.update(doc(db, "staffCoverage", item.id), {
+        status: "completed",
+        actualStartAt,
+        actualEndAt,
+        confirmedAt: now,
+        confirmedByUid: appUser.uid,
+        updatedAt: now,
+        updatedByUid: appUser.uid,
+        updatedByName: appUser.displayName || null,
+      });
+
+      batch.update(doc(db, "timeEntries", item.linkedTimeEntryId), {
+        source: "staff_confirmed",
+        hours: item.scheduledHours,
+        hoursSource: item.scheduledHours,
+        actualStartAt,
+        actualEndAt,
+        confirmedAt: now,
+        confirmedByUid: appUser.uid,
+        updatedAt: now,
+        updatedByUid: appUser.uid,
+      });
+
+      await batch.commit();
+
+      setStaffCoverageMessage("Staff hours confirmed.");
+    } catch (err: unknown) {
+      setStaffCoverageError(
+        err instanceof Error ? err.message : "Failed to confirm staff hours.",
+      );
+    } finally {
+      setConfirmingStaffCoverageId("");
+    }
+  }
+
   const projectFollowUps = useMemo(
     () => buildProjectFollowUpItems(dashboardProjects, dashboardProjectTrips),
     [dashboardProjects, dashboardProjectTrips],
@@ -2941,6 +3351,16 @@ export default function DashboardPage() {
               }}
             >
               <Stack spacing={2}>
+                {myStaffCoverage.length > 0 ? (
+                  <MyStaffHoursSection
+                    items={myStaffCoverage}
+                    confirmingId={confirmingStaffCoverageId}
+                    message={staffCoverageMessage}
+                    error={staffCoverageError}
+                    onConfirm={handleConfirmStaffCoverage}
+                  />
+                ) : null}
+
                 {reviewTickets.length > 0 ? (
                   <SectionCard
                     title="Needs Review"

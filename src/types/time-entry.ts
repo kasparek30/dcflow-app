@@ -3,7 +3,7 @@
 import type { StaffCoverageWorkType } from "./app-user";
 
 export type TimeEntryCategory =
-  // ✅ current Firestore categories
+  // Current Firestore categories
   | "service"
   | "project"
   | "meeting"
@@ -12,7 +12,7 @@ export type TimeEntryCategory =
   | "pto"
   | "holiday"
   | "manual_other"
-  // ✅ legacy categories that may still exist in older docs
+  // Legacy categories that may still exist in older docs
   | "service_ticket"
   | "project_stage";
 
@@ -27,9 +27,10 @@ export type TimeEntrySource =
   | "trip_daily_confirm"
   | "company_meeting"
   | "project_trip_closeout"
-  // ✅ Staff Coverage
+  // Staff Coverage
   | "staff_schedule"
   | "staff_confirmed"
+  | "staff_adjusted"
   | "staff_clock";
 
 export type TimeEntryStatus =

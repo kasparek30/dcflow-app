@@ -76,6 +76,7 @@ export type EmployeeProfile = {
   fieldAssignable?: boolean;
   staffCoverageEligible?: boolean;
   defaultStaffCoverageWorkType?: StaffCoverageWorkType | null;
+  defaultStaffCoverageUnpaidBreakMinutes?: number | null;
 
   // Company gear / apparel
   shirtSize?: ShirtSize | "";

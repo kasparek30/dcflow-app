@@ -8,6 +8,7 @@ import {
   getDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   collection,
   getDocs,
   orderBy,
@@ -301,6 +302,11 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
   const [defaultStaffCoverageWorkType, setDefaultStaffCoverageWorkType] =
     useState("");
 
+  const [
+    defaultStaffCoverageUnpaidBreakMinutes,
+    setDefaultStaffCoverageUnpaidBreakMinutes,
+  ] = useState(60);
+
   const [shirtSize, setShirtSize] = useState<ShirtSize | "">("");
   const [gearNotes, setGearNotes] = useState("");
 
@@ -390,6 +396,10 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
               : undefined,
           defaultStaffCoverageWorkType:
             d.defaultStaffCoverageWorkType ?? undefined,
+          defaultStaffCoverageUnpaidBreakMinutes:
+            typeof d.defaultStaffCoverageUnpaidBreakMinutes === "number"
+              ? d.defaultStaffCoverageUnpaidBreakMinutes
+              : undefined,
           shirtSize: d.shirtSize ?? "",
           gearNotes: d.gearNotes ?? undefined,
           licenseInfo: d.licenseInfo ?? undefined,
@@ -425,6 +435,11 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         );
         setDefaultStaffCoverageWorkType(
           String(item.defaultStaffCoverageWorkType ?? "")
+        );
+        setDefaultStaffCoverageUnpaidBreakMinutes(
+          typeof item.defaultStaffCoverageUnpaidBreakMinutes === "number"
+            ? item.defaultStaffCoverageUnpaidBreakMinutes
+            : 60
         );
         setShirtSize((item.shirtSize ?? "") as ShirtSize | "");
         setGearNotes(item.gearNotes || "");
@@ -568,6 +583,9 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         defaultStaffCoverageWorkType: defaultStaffCoverageWorkType.trim()
           ? defaultStaffCoverageWorkType.trim()
           : null,
+        defaultStaffCoverageUnpaidBreakMinutes: staffCoverageEligible
+          ? defaultStaffCoverageUnpaidBreakMinutes
+          : null,
         shirtSize: shirtSize || null,
         gearNotes: gearNotes.trim() ? gearNotes.trim() : null,
         licenseInfo: {
@@ -600,6 +618,13 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
       if (previousUserUid && previousUserUid !== nextUserUid) {
         await updateDoc(doc(db, "users", previousUserUid), {
           employeeProfileId: null,
+
+          showOnSchedule: deleteField(),
+          fieldAssignable: deleteField(),
+          staffCoverageEligible: deleteField(),
+          defaultStaffCoverageWorkType: deleteField(),
+          defaultStaffCoverageUnpaidBreakMinutes: deleteField(),
+
           updatedAt: nowIso,
         });
       }
@@ -609,6 +634,14 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
           employeeProfileId: profile.id,
           displayName: payload.displayName,
           email: payload.email,
+
+          showOnSchedule: payload.showOnSchedule,
+          fieldAssignable: payload.fieldAssignable,
+          staffCoverageEligible: payload.staffCoverageEligible,
+          defaultStaffCoverageWorkType: payload.defaultStaffCoverageWorkType,
+          defaultStaffCoverageUnpaidBreakMinutes:
+            payload.defaultStaffCoverageUnpaidBreakMinutes,
+
           updatedAt: nowIso,
         });
       }
@@ -627,6 +660,8 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
         staffCoverageEligible: payload.staffCoverageEligible,
         defaultStaffCoverageWorkType:
           (payload.defaultStaffCoverageWorkType as any) || undefined,
+        defaultStaffCoverageUnpaidBreakMinutes:
+          payload.defaultStaffCoverageUnpaidBreakMinutes ?? undefined,
         shirtSize: payload.shirtSize || "",
         gearNotes: payload.gearNotes || undefined,
         licenseInfo: {
@@ -1314,23 +1349,45 @@ export default function EmployeeProfileDetailPage({ params }: PageProps) {
                             label="Staff Coverage Eligible"
                           />
                         </Box>
+                        <Box
+                          sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                            gap: 2,
+                          }}
+                        >
+                          <FormControl fullWidth disabled={!staffCoverageEligible}>
+                            <InputLabel>Default Staff Coverage Work Type</InputLabel>
+                            <Select
+                              label="Default Staff Coverage Work Type"
+                              value={defaultStaffCoverageWorkType}
+                              onChange={(e: SelectChangeEvent) =>
+                                setDefaultStaffCoverageWorkType(e.target.value)
+                              }
+                            >
+                              {staffCoverageWorkTypes.map((option) => (
+                                <MenuItem key={option.value || "none"} value={option.value}>
+                                  {option.label}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
 
-                        <FormControl fullWidth disabled={!staffCoverageEligible}>
-                          <InputLabel>Default Staff Coverage Work Type</InputLabel>
-                          <Select
-                            label="Default Staff Coverage Work Type"
-                            value={defaultStaffCoverageWorkType}
-                            onChange={(e: SelectChangeEvent) =>
-                              setDefaultStaffCoverageWorkType(e.target.value)
-                            }
-                          >
-                            {staffCoverageWorkTypes.map((option) => (
-                              <MenuItem key={option.value || "none"} value={option.value}>
-                                {option.label}
-                              </MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
+                          <FormControl fullWidth disabled={!staffCoverageEligible}>
+                            <InputLabel>Default Unpaid Lunch</InputLabel>
+                            <Select
+                              label="Default Unpaid Lunch"
+                              value={String(defaultStaffCoverageUnpaidBreakMinutes)}
+                              onChange={(e: SelectChangeEvent) =>
+                                setDefaultStaffCoverageUnpaidBreakMinutes(Number(e.target.value))
+                              }
+                            >
+                              <MenuItem value="0">None</MenuItem>
+                              <MenuItem value="30">30 minutes</MenuItem>
+                              <MenuItem value="60">1 hour</MenuItem>
+                            </Select>
+                          </FormControl>
+                        </Box>
                       </Stack>
                     </Box>
                   </Card>
