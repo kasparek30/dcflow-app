@@ -1,5 +1,3 @@
-// src/types/time-entry.ts
-
 import type { StaffCoverageWorkType } from "./app-user";
 
 export type TimeEntryCategory =
@@ -34,11 +32,7 @@ export type TimeEntrySource =
   | "staff_clock";
 
 export type TimeEntryStatus =
-  | "draft"
-  | "submitted"
-  | "approved"
-  | "rejected"
-  | "exported";
+  "draft" | "submitted" | "approved" | "rejected" | "exported";
 
 export type ProjectStageKey = "roughIn" | "topOutVent" | "trimFinish";
 
@@ -79,7 +73,6 @@ export type TimeEntry = {
   hoursSource?: number;
   tripId?: string;
 
-  // Existing newer optional fields used by some workflows
   companyEventId?: string | null;
   title?: string | null;
   location?: string | null;
@@ -90,8 +83,13 @@ export type TimeEntry = {
   scheduledStartTime?: string | null;
   scheduledEndTime?: string | null;
   unpaidBreakMinutes?: number;
+
+  // Exact worked and lunch timestamps
   actualStartAt?: string | null;
   actualEndAt?: string | null;
+  lunchStartAt?: string | null;
+  lunchEndAt?: string | null;
+
   confirmedAt?: string | null;
   confirmedByUid?: string | null;
   adjustedAt?: string | null;

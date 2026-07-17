@@ -1,17 +1,8 @@
-// src/types/weekly-timesheet.ts
-
 export type WeeklyTimesheetStatus =
-  | "draft"
-  | "submitted"
-  | "approved"
-  | "rejected"
-  | "exported_to_quickbooks";
+  "draft" | "submitted" | "approved" | "rejected" | "exported_to_quickbooks";
 
 export type QuickBooksExportStatus =
-  | "not_ready"
-  | "ready"
-  | "exported"
-  | "failed";
+  "not_ready" | "ready" | "exported" | "failed";
 
 export type WeeklyTimesheet = {
   id: string;

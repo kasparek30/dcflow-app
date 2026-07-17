@@ -1049,6 +1049,26 @@ function getEnabledStages(projectType: string): StageKey[] {
   return ["roughIn", "topOutVent", "trimFinish"];
 }
 
+function getDefaultActiveStageTab(project: Project): StageKey | null {
+  const enabled = getEnabledStages(project.projectType);
+  if (enabled.length === 0) return null;
+
+  const stageStatus = (stageKey: StageKey) =>
+    safeTrim((project as any)?.[stageKey]?.status).toLowerCase();
+
+  const inProgressStage = enabled.find(
+    (stageKey) => stageStatus(stageKey) === "in_progress",
+  );
+  if (inProgressStage) return inProgressStage;
+
+  const nextOpenStage = enabled.find(
+    (stageKey) => stageStatus(stageKey) !== "complete",
+  );
+  if (nextOpenStage) return nextOpenStage;
+
+  return enabled[enabled.length - 1] || null;
+}
+
 function makeProjectTripId(projectId: string, stageKey: StageKey, dateIso: string) {
   const suffix = Math.random().toString(36).slice(2, 7);
   return `proj_${projectId}_${stageKey}_${dateIso}_${suffix}`;
@@ -1611,6 +1631,8 @@ export default function ProjectDetailPage() {
   const [stageSaveSuccess, setStageSaveSuccess] = useState("");
 
   const [activeStageTab, setActiveStageTab] = useState<StageKey>("roughIn");
+  const [showCompletedStageTrips, setShowCompletedStageTrips] = useState(false);
+  const [prefersAppleMapsClient, setPrefersAppleMapsClient] = useState(false);
 
   const myUid = String(appUser?.uid || "").trim();
   const actorDisplayName =
@@ -1985,13 +2007,22 @@ const canMarkTmReadyToBill =
     [locationPreviewAddress],
   );
 
-  function openLocationInPreferredMaps() {
-    const targetUrl = prefersAppleMaps()
-      ? buildAppleMapsSearchUrl(locationPreviewAddress)
-      : locationPreviewGoogleMapsUrl;
+  const locationPreviewAppleMapsUrl = useMemo(
+    () => buildAppleMapsSearchUrl(locationPreviewAddress),
+    [locationPreviewAddress],
+  );
 
-    if (!targetUrl || typeof window === "undefined") return;
-    window.open(targetUrl, "_blank", "noopener,noreferrer");
+  const locationPreferredMapsUrl = prefersAppleMapsClient
+    ? locationPreviewAppleMapsUrl
+    : locationPreviewGoogleMapsUrl;
+
+  const locationPreferredMapsLabel = prefersAppleMapsClient
+    ? "Open in Apple Maps"
+    : "Open in Google Maps";
+
+  function openLocationInPreferredMaps() {
+    if (!locationPreferredMapsUrl || typeof window === "undefined") return;
+    window.open(locationPreferredMapsUrl, "_blank", "noopener,noreferrer");
   }
 
   function mergeProjectState(patch: any) {
@@ -2388,8 +2419,8 @@ const canMarkTmReadyToBill =
         setTrimFinishScheduledEndDate((item.trimFinish as any).scheduledEndDate ?? "");
         setTrimFinishCompletedDate(item.trimFinish.completedDate ?? "");
 
-        const enabled = getEnabledStages(item.projectType);
-        if (enabled.length > 0) setActiveStageTab(enabled[0]);
+        const defaultStageTab = getDefaultActiveStageTab(item);
+        if (defaultStageTab) setActiveStageTab(defaultStageTab);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to load project.");
       } finally {
@@ -2733,11 +2764,20 @@ const canMarkTmReadyToBill =
   ]);
 
   useEffect(() => {
-    if (enabledStages.length === 0) return;
+    if (!project || enabledStages.length === 0) return;
     if (!enabledStages.includes(activeStageTab)) {
-      setActiveStageTab(enabledStages[0]);
+      const defaultStageTab = getDefaultActiveStageTab(project);
+      if (defaultStageTab) setActiveStageTab(defaultStageTab);
     }
-  }, [enabledStages, activeStageTab]);
+  }, [project, enabledStages, activeStageTab]);
+
+  useEffect(() => {
+    setShowCompletedStageTrips(false);
+  }, [activeStageTab]);
+
+  useEffect(() => {
+    setPrefersAppleMapsClient(prefersAppleMaps());
+  }, []);
 
   useEffect(() => {
     const next: Record<string, string> = {};
@@ -7943,18 +7983,14 @@ if (nextStatus === "active_work") {
                         </Box>
 
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-
-                          {locationPreviewGoogleMapsUrl ? (
+                          {locationPreferredMapsUrl ? (
                             <Button
-                              component="a"
-                              href={locationPreviewGoogleMapsUrl}
-                              target="_blank"
-                              rel="noreferrer"
                               variant="outlined"
                               startIcon={<MapRoundedIcon />}
+                              onClick={openLocationInPreferredMaps}
                               sx={{ borderRadius: 99 }}
                             >
-                              Open Web Map
+                              {locationPreferredMapsLabel}
                             </Button>
                           ) : null}
                         </Stack>
@@ -8705,6 +8741,15 @@ if (nextStatus === "active_work") {
                     const activeStageBillingSummary = summarizeStageBillingTrips(activeStageTab);
                     const activeStageBillingAmount = Number(activeStage?.billedAmount || (previewStageAmounts as any)[activeStageTab] || 0);
                     const activeStageBillingFrozen = isFrozenStageBilling(activeStageTab);
+                    const visibleStageTrips = activeStageTrips.filter((trip) => canCurrentUserViewTrip(trip));
+                    const openStageTrips = visibleStageTrips.filter((trip) => {
+                      const status = safeTrim(trip.status).toLowerCase();
+                      return status !== "complete" && status !== "cancelled" && trip.active !== false;
+                    });
+                    const completedStageTrips = visibleStageTrips.filter((trip) => {
+                      const status = safeTrim(trip.status).toLowerCase();
+                      return status === "complete" || status === "cancelled" || trip.active === false;
+                    });
 
                     return (
                       <Stack spacing={2}>
@@ -9143,10 +9188,18 @@ if (nextStatus === "active_work") {
                                   Stage Trips
                                 </Typography>
                                 <Chip
-                                  label={activeStageTrips.length}
+                                  label={`${openStageTrips.length} open`}
                                   size="small"
+                                  color={openStageTrips.length > 0 ? "primary" : "default"}
                                   variant="outlined"
                                 />
+                                {completedStageTrips.length > 0 ? (
+                                  <Chip
+                                    label={`${completedStageTrips.length} completed`}
+                                    size="small"
+                                    variant="outlined"
+                                  />
+                                ) : null}
                               </Stack>
 
                               {canEditProject && !projectFieldWorkLocked && !activeStageBillingFrozen ? (
@@ -9172,17 +9225,63 @@ if (nextStatus === "active_work") {
                             {tripsLoading ? <Typography>Loading trips...</Typography> : null}
                             {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
 
-                            {!tripsLoading && !tripsError && activeStageTrips.length === 0 ? (
+                            {!tripsLoading && !tripsError && visibleStageTrips.length === 0 ? (
                               <Alert severity="info" variant="outlined">
                                 No trips created for this stage yet.
                               </Alert>
                             ) : null}
 
-                            {!tripsLoading && !tripsError && activeStageTrips.length > 0 ? (
+                            {!tripsLoading && !tripsError && visibleStageTrips.length > 0 ? (
                               <Stack spacing={1.5}>
-                                {activeStageTrips.map((t) => (
-                                  <TripRow key={t.id} t={t} />
-                                ))}
+                                {openStageTrips.length > 0 ? (
+                                  <Stack spacing={1.5}>
+                                    {openStageTrips.map((t) => (
+                                      <TripRow key={t.id} t={t} />
+                                    ))}
+                                  </Stack>
+                                ) : (
+                                  <Alert severity="success" variant="outlined" sx={{ borderRadius: 1 }}>
+                                    No open trips for this stage right now.
+                                  </Alert>
+                                )}
+
+                                {completedStageTrips.length > 0 ? (
+                                  <Paper
+                                    variant="outlined"
+                                    sx={{
+                                      borderRadius: 1,
+                                      overflow: "hidden",
+                                      bgcolor: alpha(theme.palette.primary.main, 0.015),
+                                    }}
+                                  >
+                                    <Button
+                                      fullWidth
+                                      onClick={() => setShowCompletedStageTrips((prev) => !prev)}
+                                      sx={{
+                                        justifyContent: "space-between",
+                                        px: 2,
+                                        py: 1.25,
+                                        borderRadius: 0,
+                                        fontWeight: 800,
+                                      }}
+                                    >
+                                      <span>
+                                        Completed / Cancelled Trips ({completedStageTrips.length})
+                                      </span>
+                                      <span>{showCompletedStageTrips ? "Hide" : "Show"}</span>
+                                    </Button>
+
+                                    {showCompletedStageTrips ? (
+                                      <Box sx={{ p: 1.5, pt: 0 }}>
+                                        <Stack spacing={1.5}>
+                                          {completedStageTrips.map((t) => (
+                                            <TripRow key={t.id} t={t} />
+                                          ))}
+                                        </Stack>
+                                      </Box>
+                                    ) : null}
+                                  </Paper>
+                                ) : null}
                               </Stack>
                             ) : null}
                           </Stack>

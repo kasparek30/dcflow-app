@@ -1,13 +1,17 @@
 // app/weekly-timesheet/page.tsx
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   doc,
   getDoc,
   getDocs,
+  query,
   setDoc,
+  where,
+  writeBatch,
 } from "firebase/firestore";
 import {
   Alert,
@@ -75,6 +79,18 @@ type DisplayTimeEntry = TimeEntry & {
   synthetic?: boolean;
 };
 
+type StaffCoverageMini = {
+  id: string;
+  employeeId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  status: string;
+  active: boolean;
+  confirmedAt?: string | null;
+  linkedTimeEntryId?: string | null;
+};
+
 function toIsoDate(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -105,25 +121,25 @@ function buildPayrollWeekDays(weekOffset: number): PayrollDay[] {
     {
       label: "Tuesday",
       isoDate: toIsoDate(
-        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1)
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 1),
       ),
     },
     {
       label: "Wednesday",
       isoDate: toIsoDate(
-        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2)
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 2),
       ),
     },
     {
       label: "Thursday",
       isoDate: toIsoDate(
-        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3)
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 3),
       ),
     },
     {
       label: "Friday",
       isoDate: toIsoDate(
-        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4)
+        new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 4),
       ),
     },
   ];
@@ -265,6 +281,27 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function todayIsoLocal() {
+  return toIsoDate(new Date());
+}
+
+function minutesFromHHMM(hhmm: string) {
+  const parsed = parseHHMM(hhmm);
+  if (!parsed) return null;
+  return parsed.hh * 60 + parsed.mm;
+}
+
+function hasShiftEnded(item: StaffCoverageMini) {
+  const today = todayIsoLocal();
+  if (item.date < today) return true;
+  if (item.date > today) return false;
+
+  const endMinutes = minutesFromHHMM(item.endTime);
+  if (endMinutes == null) return false;
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes() >= endMinutes;
+}
+
 function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
@@ -366,19 +403,23 @@ export default function WeeklyTimesheetPage() {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [timesheet, setTimesheet] = useState<WeeklyTimesheet | null>(null);
-  const [holidayByDate, setHolidayByDate] = useState<Record<string, CompanyHoliday>>({});
+  const [holidayByDate, setHolidayByDate] = useState<
+    Record<string, CompanyHoliday>
+  >({});
+  const [staffCoverage, setStaffCoverage] = useState<StaffCoverageMini[]>([]);
 
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
-  const [weekOffset, setWeekOffset] = useState(-1);
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState(appUser?.uid || "");
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState(
+    appUser?.uid || "",
+  );
   const [employeeNote, setEmployeeNote] = useState("");
 
   const canSelectOtherEmployee =
     appUser?.role === "admin" ||
-    appUser?.role === "manager" ||
-    appUser?.role === "dispatcher";
+    appUser?.role === "manager";
 
   const isOwnTimesheet =
     Boolean(appUser?.uid) && selectedEmployeeId === appUser?.uid;
@@ -433,7 +474,9 @@ export default function WeeklyTimesheetPage() {
                 ? data.hoursLocked
                 : undefined,
             hoursSource:
-              typeof data.hoursSource === "number" ? data.hoursSource : undefined,
+              typeof data.hoursSource === "number"
+                ? data.hoursSource
+                : undefined,
             staffCoverageId: data.staffCoverageId ?? undefined,
             workType: data.workType ?? undefined,
             scheduledStartTime: data.scheduledStartTime ?? undefined,
@@ -442,6 +485,8 @@ export default function WeeklyTimesheetPage() {
               typeof data.unpaidBreakMinutes === "number"
                 ? data.unpaidBreakMinutes
                 : undefined,
+            lunchStartAt: data.lunchStartAt ?? undefined,
+            lunchEndAt: data.lunchEndAt ?? undefined,
             actualStartAt: data.actualStartAt ?? undefined,
             actualEndAt: data.actualEndAt ?? undefined,
             confirmedAt: data.confirmedAt ?? undefined,
@@ -461,7 +506,8 @@ export default function WeeklyTimesheetPage() {
             preferredTechnicianId: data.preferredTechnicianId ?? null,
             preferredTechnicianName: data.preferredTechnicianName ?? null,
             holidayEligible: data.holidayEligible ?? undefined,
-            defaultDailyHolidayHours: data.defaultDailyHolidayHours ?? undefined,
+            defaultDailyHolidayHours:
+              data.defaultDailyHolidayHours ?? undefined,
           };
         });
 
@@ -471,7 +517,9 @@ export default function WeeklyTimesheetPage() {
         setUsers(userItems);
       } catch (err: unknown) {
         setError(
-          err instanceof Error ? err.message : "Failed to load weekly timesheet data."
+          err instanceof Error
+            ? err.message
+            : "Failed to load weekly timesheet data.",
         );
       } finally {
         setLoading(false);
@@ -481,7 +529,10 @@ export default function WeeklyTimesheetPage() {
     loadBaseData();
   }, []);
 
-  const payrollWeekDays = useMemo(() => buildPayrollWeekDays(weekOffset), [weekOffset]);
+  const payrollWeekDays = useMemo(
+    () => buildPayrollWeekDays(weekOffset),
+    [weekOffset],
+  );
   const weekStart = payrollWeekDays[0]?.isoDate ?? "";
   const weekEnd = payrollWeekDays[4]?.isoDate ?? "";
 
@@ -506,7 +557,9 @@ export default function WeeklyTimesheetPage() {
           const active = typeof d.active === "boolean" ? d.active : true;
           if (!active) continue;
 
-          const rawDate = String(d.date ?? d.holidayDate ?? d.holiday_date ?? "").trim();
+          const rawDate = String(
+            d.date ?? d.holidayDate ?? d.holiday_date ?? "",
+          ).trim();
           if (!rawDate || !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) continue;
           if (rawDate < weekStart || rawDate > weekEnd) continue;
 
@@ -557,14 +610,23 @@ export default function WeeklyTimesheetPage() {
           employeeRole: data.employeeRole ?? "",
           weekStartDate: data.weekStartDate ?? "",
           weekEndDate: data.weekEndDate ?? "",
-          timeEntryIds: Array.isArray(data.timeEntryIds) ? data.timeEntryIds : [],
+          timeEntryIds: Array.isArray(data.timeEntryIds)
+            ? data.timeEntryIds
+            : [],
           totalHours: typeof data.totalHours === "number" ? data.totalHours : 0,
-          regularHours: typeof data.regularHours === "number" ? data.regularHours : 0,
-          overtimeHours: typeof data.overtimeHours === "number" ? data.overtimeHours : 0,
+          regularHours:
+            typeof data.regularHours === "number" ? data.regularHours : 0,
+          overtimeHours:
+            typeof data.overtimeHours === "number" ? data.overtimeHours : 0,
           ptoHours: typeof data.ptoHours === "number" ? data.ptoHours : 0,
-          holidayHours: typeof data.holidayHours === "number" ? data.holidayHours : 0,
-          billableHours: typeof data.billableHours === "number" ? data.billableHours : 0,
-          nonBillableHours: typeof data.nonBillableHours === "number" ? data.nonBillableHours : 0,
+          holidayHours:
+            typeof data.holidayHours === "number" ? data.holidayHours : 0,
+          billableHours:
+            typeof data.billableHours === "number" ? data.billableHours : 0,
+          nonBillableHours:
+            typeof data.nonBillableHours === "number"
+              ? data.nonBillableHours
+              : 0,
           status: data.status ?? "draft",
           submittedAt: data.submittedAt ?? undefined,
           submittedById: data.submittedById ?? undefined,
@@ -587,13 +649,63 @@ export default function WeeklyTimesheetPage() {
         setEmployeeNote(item.employeeNote ?? "");
       } catch (err: unknown) {
         setError(
-          err instanceof Error ? err.message : "Failed to load weekly timesheet record."
+          err instanceof Error
+            ? err.message
+            : "Failed to load weekly timesheet record.",
         );
       }
     }
 
     loadTimesheetDoc();
   }, [selectedEmployeeId, weekStart]);
+
+  useEffect(() => {
+    async function loadStaffCoverage() {
+      if (!selectedEmployeeId || !weekStart || !weekEnd) {
+        setStaffCoverage([]);
+        return;
+      }
+
+      try {
+        const snap = await getDocs(
+          query(
+            collection(db, "staffCoverage"),
+            where("employeeId", "==", selectedEmployeeId),
+          ),
+        );
+
+        const items = snap.docs
+          .map((docSnap) => {
+            const data = docSnap.data() as any;
+            return {
+              id: docSnap.id,
+              employeeId: safeTrim(data.employeeId),
+              date: safeTrim(data.date),
+              startTime: safeTrim(data.startTime),
+              endTime: safeTrim(data.endTime),
+              status: safeTrim(data.status) || "scheduled",
+              active: data.active !== false,
+              confirmedAt: safeTrim(data.confirmedAt) || null,
+              linkedTimeEntryId: safeTrim(data.linkedTimeEntryId) || null,
+            } satisfies StaffCoverageMini;
+          })
+          .filter((item) => item.active)
+          .filter((item) => item.date >= weekStart && item.date <= weekEnd)
+          .sort((a, b) => {
+            const byDate = a.date.localeCompare(b.date);
+            return byDate !== 0
+              ? byDate
+              : a.startTime.localeCompare(b.startTime);
+          });
+
+        setStaffCoverage(items);
+      } catch {
+        setStaffCoverage([]);
+      }
+    }
+
+    void loadStaffCoverage();
+  }, [selectedEmployeeId, weekEnd, weekStart]);
 
   const rawWeekEntries = useMemo(() => {
     if (!selectedEmployeeId) return [];
@@ -602,7 +714,7 @@ export default function WeeklyTimesheetPage() {
         (entry) =>
           entry.employeeId === selectedEmployeeId &&
           entry.entryDate >= weekStart &&
-          entry.entryDate <= weekEnd
+          entry.entryDate <= weekEnd,
       )
       .sort((a, b) => {
         const byDate = a.entryDate.localeCompare(b.entryDate);
@@ -660,7 +772,14 @@ export default function WeeklyTimesheetPage() {
     }
 
     return out;
-  }, [holidayByDate, payrollWeekDays, rawWeekEntries, selectedEmployee, weekEnd, weekStart]);
+  }, [
+    holidayByDate,
+    payrollWeekDays,
+    rawWeekEntries,
+    selectedEmployee,
+    weekEnd,
+    weekStart,
+  ]);
 
   const weekEntries = useMemo<DisplayTimeEntry[]>(() => {
     return [...rawWeekEntries, ...syntheticHolidayEntries].sort((a, b) => {
@@ -671,7 +790,9 @@ export default function WeeklyTimesheetPage() {
   }, [rawWeekEntries, syntheticHolidayEntries]);
 
   const persistedTimeEntryIds = useMemo(() => {
-    return weekEntries.filter((entry) => !entry.synthetic).map((entry) => entry.id);
+    return weekEntries
+      .filter((entry) => !entry.synthetic)
+      .map((entry) => entry.id);
   }, [weekEntries]);
 
   useEffect(() => {
@@ -769,7 +890,10 @@ export default function WeeklyTimesheetPage() {
 
     if (cat === "meeting") {
       const title = "Meeting";
-      const subtitle = truncateLine(firstMeaningfulLine((entry as any).notes), 60);
+      const subtitle = truncateLine(
+        firstMeaningfulLine((entry as any).notes),
+        60,
+      );
       return { title, subtitle };
     }
 
@@ -814,13 +938,22 @@ export default function WeeklyTimesheetPage() {
         const actualText =
           actualStart && actualEnd ? `Actual ${actualStart}–${actualEnd}` : "";
         const lunch = Number((entry as any).unpaidBreakMinutes || 0);
-        const lunchText = lunch > 0 ? `${lunch / 60}h lunch` : "no lunch";
+        const lunchStart = formatIsoTime12h((entry as any).lunchStartAt);
+        const lunchEnd = formatIsoTime12h((entry as any).lunchEndAt);
+        const lunchText =
+          lunch > 0
+            ? lunchStart && lunchEnd
+              ? `Lunch ${lunchStart}–${lunchEnd} • ${lunch} min unpaid`
+              : `${lunch} min unpaid lunch`
+            : "no lunch";
 
         return {
           title: labelForStaffWorkType(workType),
           subtitle:
             source === "staff_adjusted"
-              ? [actualText, scheduledText, lunchText].filter(Boolean).join(" • ")
+              ? [actualText, scheduledText, lunchText]
+                  .filter(Boolean)
+                  .join(" • ")
               : [scheduledText || actualText, lunchText]
                   .filter(Boolean)
                   .join(" • "),
@@ -854,7 +987,7 @@ export default function WeeklyTimesheetPage() {
     for (const day of payrollWeekDays) {
       result[day.isoDate] = (entriesByDay[day.isoDate] ?? []).reduce(
         (sum, entry) => sum + Number(entry.hours || 0),
-        0
+        0,
       );
     }
     return result;
@@ -902,12 +1035,49 @@ export default function WeeklyTimesheetPage() {
   const isLocked =
     currentStatus === "approved" || currentStatus === "exported_to_quickbooks";
 
+  const activeStaffCoverage = useMemo(
+    () =>
+      staffCoverage.filter((item) => {
+        const status = safeTrim(item.status).toLowerCase();
+        return item.active && status !== "cancelled";
+      }),
+    [staffCoverage],
+  );
+
+  const unconfirmedCompletedCoverage = useMemo(
+    () =>
+      activeStaffCoverage.filter((item) => {
+        const confirmed =
+          Boolean(item.confirmedAt) ||
+          safeTrim(item.status).toLowerCase() === "completed";
+        return !confirmed && hasShiftEnded(item);
+      }),
+    [activeStaffCoverage],
+  );
+
+  const futureScheduledCoverage = useMemo(
+    () =>
+      activeStaffCoverage.filter((item) => {
+        const confirmed =
+          Boolean(item.confirmedAt) ||
+          safeTrim(item.status).toLowerCase() === "completed";
+        return !confirmed && !hasShiftEnded(item);
+      }),
+    [activeStaffCoverage],
+  );
+
+  const staffScheduleReady =
+    activeStaffCoverage.length === 0 ||
+    (unconfirmedCompletedCoverage.length === 0 &&
+      futureScheduledCoverage.length === 0);
+
   const canSaveDraftOrNote = !isLocked;
   const canSubmit =
     Boolean(selectedEmployee) &&
     isOwnTimesheet &&
     !isLocked &&
-    currentStatus !== "submitted";
+    currentStatus !== "submitted" &&
+    staffScheduleReady;
 
   async function handleSubmitTimesheet() {
     if (!selectedEmployee || !appUser?.uid) {
@@ -955,14 +1125,28 @@ export default function WeeklyTimesheetPage() {
         updatedById: appUser.uid,
       };
 
-      await setDoc(
+      const batch = writeBatch(db);
+      batch.set(
         doc(db, "weeklyTimesheets", docId),
         {
           ...payload,
           createdAt: timesheet?.createdAt ?? now,
         },
-        { merge: true }
+        { merge: true },
       );
+
+      for (const entry of weekEntries) {
+        if (entry.synthetic) continue;
+        batch.update(doc(db, "timeEntries", entry.id), {
+          timesheetId: docId,
+          entryStatus: "submitted",
+          hoursLocked: true,
+          updatedAt: now,
+          updatedByUid: appUser.uid,
+        });
+      }
+
+      await batch.commit();
 
       setTimesheet({
         id: docId,
@@ -990,7 +1174,11 @@ export default function WeeklyTimesheetPage() {
 
       setSaveMsg("Weekly timesheet submitted.");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to submit weekly timesheet.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to submit weekly timesheet.",
+      );
     } finally {
       setSaving(false);
     }
@@ -1030,13 +1218,14 @@ export default function WeeklyTimesheetPage() {
           billableHours: computedTotals.billableHours,
           nonBillableHours: computedTotals.nonBillableHours,
           status: nextStatus,
-          quickbooksExportStatus: timesheet?.quickbooksExportStatus ?? "not_ready",
+          quickbooksExportStatus:
+            timesheet?.quickbooksExportStatus ?? "not_ready",
           employeeNote: employeeNote.trim() || null,
           createdAt: timesheet?.createdAt ?? now,
           updatedAt: now,
           updatedById: appUser.uid,
         },
-        { merge: true }
+        { merge: true },
       );
 
       setTimesheet((prev) => ({
@@ -1066,7 +1255,7 @@ export default function WeeklyTimesheetPage() {
       setSaveMsg(
         nextStatus === "submitted"
           ? "Note saved. Timesheet remains submitted."
-          : "Draft saved."
+          : "Draft saved.",
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save draft.");
@@ -1092,7 +1281,7 @@ export default function WeeklyTimesheetPage() {
                 border: `1px solid ${alpha(theme.palette.divider, 0.7)}`,
                 background: `linear-gradient(135deg, ${alpha(
                   theme.palette.primary.main,
-                  0.08
+                  0.08,
                 )} 0%, ${alpha(theme.palette.secondary.main, 0.06)} 100%)`,
               }}
             >
@@ -1118,7 +1307,10 @@ export default function WeeklyTimesheetPage() {
                       <SummarizeRoundedIcon />
                     </Box>
                     <Box>
-                      <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1.1 }}>
+                      <Typography
+                        variant="h4"
+                        sx={{ fontWeight: 800, lineHeight: 1.1 }}
+                      >
                         Weekly Timesheet
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
@@ -1166,7 +1358,7 @@ export default function WeeklyTimesheetPage() {
                     variant="contained"
                     onClick={() => setWeekOffset(0)}
                     sx={{
-                      bgcolor: alpha(theme.palette.primary.main, 0.10),
+                      bgcolor: alpha(theme.palette.primary.main, 0.1),
                       color: theme.palette.primary.main,
                       boxShadow: "none",
                       "&:hover": {
@@ -1206,7 +1398,10 @@ export default function WeeklyTimesheetPage() {
                   sx={{ color: "text.secondary" }}
                 >
                   <DescriptionRoundedIcon fontSize="small" />
-                  <Typography variant="h6" sx={{ fontWeight: 700, color: "text.primary" }}>
+                  <Typography
+                    variant="h6"
+                    sx={{ fontWeight: 700, color: "text.primary" }}
+                  >
                     Payroll Week Details
                   </Typography>
                 </Stack>
@@ -1219,7 +1414,9 @@ export default function WeeklyTimesheetPage() {
                   <Box sx={{ flex: 1 }}>
                     {canSelectOtherEmployee ? (
                       <FormControl fullWidth>
-                        <InputLabel id="timesheet-employee-label">Employee</InputLabel>
+                        <InputLabel id="timesheet-employee-label">
+                          Employee
+                        </InputLabel>
                         <Select
                           labelId="timesheet-employee-label"
                           value={selectedEmployeeId}
@@ -1249,7 +1446,10 @@ export default function WeeklyTimesheetPage() {
                           <Typography variant="body2" color="text.secondary">
                             Employee:
                           </Typography>
-                          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                          <Typography
+                            variant="subtitle1"
+                            sx={{ fontWeight: 700 }}
+                          >
                             {selectedEmployee?.displayName || "—"}
                           </Typography>
                         </Stack>
@@ -1312,6 +1512,81 @@ export default function WeeklyTimesheetPage() {
 
             {!loading && selectedEmployee ? (
               <>
+                {isOwnTimesheet && activeStaffCoverage.length > 0 ? (
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      p: { xs: 2, md: 2.5 },
+                      borderRadius: 1,
+                      border: `1px solid ${alpha(
+                        staffScheduleReady
+                          ? theme.palette.success.main
+                          : theme.palette.warning.main,
+                        0.45,
+                      )}`,
+                      bgcolor: alpha(
+                        staffScheduleReady
+                          ? theme.palette.success.main
+                          : theme.palette.warning.main,
+                        0.06,
+                      ),
+                    }}
+                  >
+                    <Stack
+                      direction={{ xs: "column", md: "row" }}
+                      spacing={2}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", md: "center" }}
+                    >
+                      <Box>
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          {staffScheduleReady
+                            ? "Ready to submit for payroll"
+                            : "Staff hours still need attention"}
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ mt: 0.5 }}
+                        >
+                          {staffScheduleReady
+                            ? "All scheduled staff shifts for this payroll week are complete and confirmed."
+                            : unconfirmedCompletedCoverage.length > 0
+                              ? `${unconfirmedCompletedCoverage.length} completed shift${
+                                  unconfirmedCompletedCoverage.length === 1
+                                    ? ""
+                                    : "s"
+                                } still need confirmation.`
+                              : `${futureScheduledCoverage.length} scheduled shift${
+                                  futureScheduledCoverage.length === 1
+                                    ? ""
+                                    : "s"
+                                } remain later in this payroll week.`}
+                        </Typography>
+                      </Box>
+
+                      {!staffScheduleReady ? (
+                        <Button
+                          component={Link}
+                          href="/dashboard"
+                          variant="contained"
+                          color="warning"
+                        >
+                          Review Staff Hours
+                        </Button>
+                      ) : (
+                        <Chip
+                          icon={<CheckCircleRoundedIcon />}
+                          label="All shifts confirmed"
+                          color="success"
+                          variant="filled"
+                          sx={{ fontWeight: 700 }}
+                        />
+                      )}
+                    </Stack>
+                  </Paper>
+                ) : null}
+
                 <Stack spacing={2}>
                   {payrollWeekDays.map((day) => {
                     const dayEntries = entriesByDay[day.isoDate] ?? [];
@@ -1339,7 +1614,10 @@ export default function WeeklyTimesheetPage() {
                               <Typography variant="h6" sx={{ fontWeight: 800 }}>
                                 {day.label} {formatDisplayDate(day.isoDate)}
                               </Typography>
-                              <Typography variant="body2" color="text.secondary">
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
                                 {day.isoDate}
                               </Typography>
                             </Box>
@@ -1362,15 +1640,21 @@ export default function WeeklyTimesheetPage() {
                                 bgcolor: alpha(theme.palette.grey[500], 0.06),
                               }}
                             >
-                              <Typography variant="body2" color="text.secondary">
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
                                 No entries for this day.
                               </Typography>
                             </Paper>
                           ) : (
                             <Stack spacing={1.25}>
                               {dayEntries.map((entry) => {
-                                const { title, subtitle } = renderTitleAndSubtitle(entry);
-                                const pill = categoryPillLabel((entry as any).category);
+                                const { title, subtitle } =
+                                  renderTitleAndSubtitle(entry);
+                                const pill = categoryPillLabel(
+                                  (entry as any).category,
+                                );
 
                                 return (
                                   <Paper
@@ -1380,7 +1664,10 @@ export default function WeeklyTimesheetPage() {
                                       p: 2,
                                       borderRadius: 1,
                                       border: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
-                                      bgcolor: alpha(theme.palette.background.default, 0.7),
+                                      bgcolor: alpha(
+                                        theme.palette.background.default,
+                                        0.7,
+                                      ),
                                     }}
                                   >
                                     <Stack spacing={1.5}>
@@ -1413,7 +1700,12 @@ export default function WeeklyTimesheetPage() {
                                           ) : null}
                                         </Box>
 
-                                        <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+                                        <Box
+                                          sx={{
+                                            textAlign: "right",
+                                            flexShrink: 0,
+                                          }}
+                                        >
                                           <Typography
                                             variant="subtitle1"
                                             sx={{ fontWeight: 900 }}
@@ -1426,20 +1718,37 @@ export default function WeeklyTimesheetPage() {
                                       <Stack
                                         direction={{ xs: "column", sm: "row" }}
                                         spacing={1}
-                                        alignItems={{ xs: "flex-start", sm: "center" }}
+                                        alignItems={{
+                                          xs: "flex-start",
+                                          sm: "center",
+                                        }}
                                         justifyContent="space-between"
                                       >
-                                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                        <Stack
+                                          direction="row"
+                                          spacing={1}
+                                          flexWrap="wrap"
+                                          useFlexGap
+                                        >
                                           <Chip
                                             size="small"
                                             label={pill}
-                                            color={getCategoryChipColor(pill) as any}
+                                            color={
+                                              getCategoryChipColor(pill) as any
+                                            }
                                             variant="filled"
-                                            sx={{ textTransform: "capitalize", fontWeight: 700 }}
+                                            sx={{
+                                              textTransform: "capitalize",
+                                              fontWeight: 700,
+                                            }}
                                           />
                                           <Chip
                                             size="small"
-                                            label={entry.billable ? "Billable" : "Non-billable"}
+                                            label={
+                                              entry.billable
+                                                ? "Billable"
+                                                : "Non-billable"
+                                            }
                                             variant="outlined"
                                             sx={{ fontWeight: 600 }}
                                           />
@@ -1452,24 +1761,28 @@ export default function WeeklyTimesheetPage() {
                                               sx={{ fontWeight: 600 }}
                                             />
                                           ) : null}
-                                          {safeTrim((entry as any).staffCoverageId) ? (
+                                          {safeTrim(
+                                            (entry as any).staffCoverageId,
+                                          ) ? (
                                             <Chip
                                               size="small"
                                               label={
-                                                safeTrim((entry as any).source) ===
-                                                "staff_adjusted"
+                                                safeTrim(
+                                                  (entry as any).source,
+                                                ) === "staff_adjusted"
                                                   ? "Staff adjusted"
                                                   : (entry as any).confirmedAt
-                                                  ? "Staff confirmed"
-                                                  : "Staff scheduled"
+                                                    ? "Staff confirmed"
+                                                    : "Staff scheduled"
                                               }
                                               color={
-                                                safeTrim((entry as any).source) ===
-                                                "staff_adjusted"
+                                                safeTrim(
+                                                  (entry as any).source,
+                                                ) === "staff_adjusted"
                                                   ? "info"
                                                   : (entry as any).confirmedAt
-                                                  ? "success"
-                                                  : "warning"
+                                                    ? "success"
+                                                    : "warning"
                                               }
                                               variant="outlined"
                                               sx={{ fontWeight: 600 }}
@@ -1537,7 +1850,10 @@ export default function WeeklyTimesheetPage() {
                           <Typography variant="caption" color="text.secondary">
                             {label}
                           </Typography>
-                          <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>
+                          <Typography
+                            variant="h5"
+                            sx={{ fontWeight: 800, mt: 0.5 }}
+                          >
                             {Number(value).toFixed(2)}
                           </Typography>
                         </Paper>
@@ -1561,8 +1877,9 @@ export default function WeeklyTimesheetPage() {
                     </Stack>
 
                     <Typography variant="body2" color="text.secondary">
-                      Overtime is calculated only from worked-hour categories above 40.
-                      PTO and holiday do not count toward the 40-hour threshold.
+                      Overtime is calculated only from worked-hour categories
+                      above 40. PTO and holiday do not count toward the 40-hour
+                      threshold.
                     </Typography>
                   </Stack>
                 </Paper>
@@ -1607,8 +1924,8 @@ export default function WeeklyTimesheetPage() {
                           {saving
                             ? "Saving..."
                             : currentStatus === "submitted"
-                            ? "Save Note"
-                            : "Save Draft"}
+                              ? "Save Note"
+                              : "Save Draft"}
                         </Button>
                       ) : null}
 
@@ -1627,10 +1944,12 @@ export default function WeeklyTimesheetPage() {
                               ? currentStatus === "submitted"
                                 ? "Already Submitted"
                                 : currentStatus === "approved"
-                                ? "Approved"
-                                : currentStatus === "exported_to_quickbooks"
-                                ? "Exported"
-                                : "Submission Unavailable"
+                                  ? "Approved"
+                                  : currentStatus === "exported_to_quickbooks"
+                                    ? "Exported"
+                                    : !staffScheduleReady
+                                      ? "Confirm Scheduled Shifts First"
+                                      : "Submission Unavailable"
                               : "View Only"
                           }
                           variant="outlined"

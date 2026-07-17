@@ -71,7 +71,9 @@ declare global {
 
 function loadGoogleMapsScript(apiKey: string) {
   if (typeof window === "undefined") {
-    return Promise.reject(new Error("Google Maps can only load in the browser."));
+    return Promise.reject(
+      new Error("Google Maps can only load in the browser."),
+    );
   }
 
   if (window.google?.maps) {
@@ -347,6 +349,8 @@ type DashboardStaffCoverageItem = {
   endTime: string;
   scheduledHours: number;
   unpaidBreakMinutes: number;
+  lunchStartAt?: string | null;
+  lunchEndAt?: string | null;
   status: string;
   active: boolean;
   linkedTimeEntryId?: string | null;
@@ -451,6 +455,14 @@ function formatTime12h(hhmm?: string | null) {
     : `${hh}:${String(parsed.mm).padStart(2, "0")}${suffix}`;
 }
 
+function formatIsoTime12h(value?: string | null) {
+  const raw = safeTrim(value);
+  if (!raw) return "";
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) return "";
+  return dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 function buildLocalIsoFromDateAndTime(dateIso: string, hhmm: string) {
   const parsed = parseHHMM(hhmm);
   if (!parsed || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return null;
@@ -480,6 +492,53 @@ function calculatePaidStaffHours(
   return Math.round((paidMinutes / 60) * 100) / 100;
 }
 
+function calculateLunchMinutes(lunchStartTime: string, lunchEndTime: string) {
+  const start = minutesFromHHMM(lunchStartTime);
+  const end = minutesFromHHMM(lunchEndTime);
+  if (start == null || end == null || end <= start) return null;
+  return end - start;
+}
+
+function isLunchInsideShift(
+  shiftStartTime: string,
+  shiftEndTime: string,
+  lunchStartTime: string,
+  lunchEndTime: string,
+) {
+  const shiftStart = minutesFromHHMM(shiftStartTime);
+  const shiftEnd = minutesFromHHMM(shiftEndTime);
+  const lunchStart = minutesFromHHMM(lunchStartTime);
+  const lunchEnd = minutesFromHHMM(lunchEndTime);
+
+  if (
+    shiftStart == null ||
+    shiftEnd == null ||
+    lunchStart == null ||
+    lunchEnd == null
+  ) {
+    return false;
+  }
+
+  return (
+    lunchStart >= shiftStart && lunchEnd <= shiftEnd && lunchEnd > lunchStart
+  );
+}
+
+function formatLunchSummary(
+  unpaidBreakMinutes: number,
+  lunchStartAt?: string | null,
+  lunchEndAt?: string | null,
+) {
+  if (unpaidBreakMinutes <= 0) return "No unpaid lunch";
+
+  const lunchStart = lunchStartAt ? formatIsoTime12h(lunchStartAt) : "";
+  const lunchEnd = lunchEndAt ? formatIsoTime12h(lunchEndAt) : "";
+
+  return lunchStart && lunchEnd
+    ? `${lunchStart}–${lunchEnd} • ${unpaidBreakMinutes} min unpaid lunch`
+    : `${unpaidBreakMinutes} min unpaid lunch`;
+}
+
 function buildStaffAdjustmentNotes(
   existingNotes: string,
   item: DashboardStaffCoverageItem,
@@ -488,6 +547,8 @@ function buildStaffAdjustmentNotes(
   unpaidBreakMinutes: number,
   paidHours: number,
   adjustmentNote: string,
+  lunchStartTime?: string,
+  lunchEndTime?: string,
 ) {
   const adjustmentLines = [
     "Staff adjustment:",
@@ -498,7 +559,11 @@ function buildStaffAdjustmentNotes(
       actualEndTime,
     )} (${paidHours.toFixed(2)} paid hrs)`,
     unpaidBreakMinutes > 0
-      ? `Unpaid lunch: ${unpaidBreakMinutes / 60}h`
+      ? lunchStartTime && lunchEndTime
+        ? `Unpaid lunch: ${formatTime12h(lunchStartTime)}–${formatTime12h(
+            lunchEndTime,
+          )} (${unpaidBreakMinutes} min)`
+        : `Unpaid lunch: ${unpaidBreakMinutes} min`
       : "Unpaid lunch: none",
     adjustmentNote ? `Reason: ${adjustmentNote}` : "",
   ].filter(Boolean);
@@ -531,22 +596,28 @@ function isLockedWeeklyTimesheetStatus(status?: string | null) {
   );
 }
 
-function isStaffCoverageReadyToConfirm(item: DashboardStaffCoverageItem) {
+function isStaffCoverageVisibleForConfirmation(
+  item: DashboardStaffCoverageItem,
+) {
   if (item.active === false) return false;
 
   const status = safeTrim(item.status).toLowerCase();
   if (status === "cancelled" || status === "completed") return false;
   if (item.confirmedAt) return false;
 
+  // Show past shifts and today's shift. Future shifts remain hidden.
+  return item.date <= todayIsoLocal();
+}
+
+function canQuickConfirmStaffCoverage(item: DashboardStaffCoverageItem) {
+  if (!isStaffCoverageVisibleForConfirmation(item)) return false;
+
   const today = todayIsoLocal();
 
-  // Past scheduled coverage can be confirmed.
+  // Past shifts can always use the scheduled-hours quick confirmation.
   if (item.date < today) return true;
 
-  // Future scheduled coverage should not show yet.
-  if (item.date > today) return false;
-
-  // Today's coverage should show only after the scheduled shift end time.
+  // Today's one-click confirmation becomes available after the scheduled end.
   const endMinutes = minutesFromHHMM(item.endTime);
   if (endMinutes == null) return false;
 
@@ -554,6 +625,13 @@ function isStaffCoverageReadyToConfirm(item: DashboardStaffCoverageItem) {
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   return nowMinutes >= endMinutes;
+}
+
+function currentTimeHHMM() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}`;
 }
 
 function hasMaterialOrderInvoiceSignal(order: DashboardMaterialOrderDoc) {
@@ -2548,6 +2626,8 @@ function MyStaffHoursSection({
             {items.map((item) => {
               const confirmed =
                 Boolean(item.confirmedAt) || item.status === "completed";
+              const isToday = item.date === todayIsoLocal();
+              const quickConfirmAvailable = canQuickConfirmStaffCoverage(item);
 
               return (
                 <Box
@@ -2597,10 +2677,24 @@ function MyStaffHoursSection({
                         {item.date} • {formatTime12h(item.startTime)}–
                         {formatTime12h(item.endTime)} •{" "}
                         {item.scheduledHours.toFixed(2)} paid hrs
-                        {item.unpaidBreakMinutes > 0
-                          ? ` • ${item.unpaidBreakMinutes / 60}h lunch`
-                          : ""}
+                        {` • ${formatLunchSummary(
+                          item.unpaidBreakMinutes,
+                          item.lunchStartAt,
+                          item.lunchEndAt,
+                        )}`}
                       </Typography>
+
+                      {isToday && !quickConfirmAvailable ? (
+                        <Typography
+                          variant="body2"
+                          color="info.main"
+                          sx={{ mt: 0.65, fontWeight: 700 }}
+                        >
+                          Today’s shift is available now. Use Edit Actual when
+                          you finish for the day; one-click confirmation unlocks
+                          after {formatTime12h(item.endTime)}.
+                        </Typography>
+                      ) : null}
 
                       {item.notes ? (
                         <Typography
@@ -2628,17 +2722,34 @@ function MyStaffHoursSection({
                         >
                           Edit Actual
                         </Button>
-                        <Button
-                          variant="contained"
-                          size="small"
-                          onClick={() => onConfirm(item)}
-                          disabled={confirmingId === item.id}
-                          sx={{ borderRadius: 999 }}
+                        <Tooltip
+                          title={
+                            quickConfirmAvailable
+                              ? "Confirm the scheduled shift as shown"
+                              : `Available after ${formatTime12h(
+                                  item.endTime,
+                                )}; use Edit Actual to finish earlier`
+                          }
                         >
-                          {confirmingId === item.id
-                            ? "Confirming..."
-                            : "Confirm Hours"}
-                        </Button>
+                          <span>
+                            <Button
+                              variant="contained"
+                              size="small"
+                              onClick={() => onConfirm(item)}
+                              disabled={
+                                confirmingId === item.id ||
+                                !quickConfirmAvailable
+                              }
+                              sx={{ borderRadius: 999 }}
+                            >
+                              {confirmingId === item.id
+                                ? "Confirming..."
+                                : quickConfirmAvailable
+                                  ? "Confirm Hours"
+                                  : "Confirm After Shift"}
+                            </Button>
+                          </span>
+                        </Tooltip>
                       </Stack>
                     ) : (
                       <Button
@@ -2694,6 +2805,12 @@ export default function DashboardPage() {
   const [staffEditEndTime, setStaffEditEndTime] = useState("17:00");
   const [staffEditUnpaidBreakMinutes, setStaffEditUnpaidBreakMinutes] =
     useState(0);
+  const [staffEditLunchMode, setStaffEditLunchMode] = useState<
+    "none" | "30" | "60" | "actual"
+  >("none");
+  const [staffEditLunchStartTime, setStaffEditLunchStartTime] =
+    useState("12:00");
+  const [staffEditLunchEndTime, setStaffEditLunchEndTime] = useState("13:00");
   const [staffEditNote, setStaffEditNote] = useState("");
   const [savingStaffEdit, setSavingStaffEdit] = useState(false);
 
@@ -3071,6 +3188,8 @@ export default function DashboardPage() {
                 typeof data.unpaidBreakMinutes === "number"
                   ? data.unpaidBreakMinutes
                   : 0,
+              lunchStartAt: safeTrim(data.lunchStartAt) || null,
+              lunchEndAt: safeTrim(data.lunchEndAt) || null,
               status: safeTrim(data.status) || "scheduled",
               active: data.active !== false,
               linkedTimeEntryId: safeTrim(data.linkedTimeEntryId) || null,
@@ -3081,7 +3200,7 @@ export default function DashboardPage() {
               notes: safeTrim(data.notes) || null,
             } satisfies DashboardStaffCoverageItem;
           })
-          .filter(isStaffCoverageReadyToConfirm)
+          .filter(isStaffCoverageVisibleForConfirmation)
           .sort((a, b) => {
             const byDate = a.date.localeCompare(b.date);
             if (byDate !== 0) return byDate;
@@ -3096,22 +3215,71 @@ export default function DashboardPage() {
     return () => unsubStaffCoverage();
   }, [appUser?.uid]);
 
+  const staffEditCalculatedLunchMinutes = useMemo(() => {
+    if (staffEditLunchMode !== "actual") return staffEditUnpaidBreakMinutes;
+    return calculateLunchMinutes(
+      staffEditLunchStartTime,
+      staffEditLunchEndTime,
+    );
+  }, [
+    staffEditLunchEndTime,
+    staffEditLunchMode,
+    staffEditLunchStartTime,
+    staffEditUnpaidBreakMinutes,
+  ]);
+
   const staffEditPaidHours = useMemo(() => {
-    if (!staffEditItem) return null;
+    if (!staffEditItem || staffEditCalculatedLunchMinutes == null) return null;
     return calculatePaidStaffHours(
       staffEditStartTime,
       staffEditEndTime,
-      staffEditUnpaidBreakMinutes,
+      staffEditCalculatedLunchMinutes,
     );
-  }, [staffEditEndTime, staffEditItem, staffEditStartTime, staffEditUnpaidBreakMinutes]);
+  }, [
+    staffEditCalculatedLunchMinutes,
+    staffEditEndTime,
+    staffEditItem,
+    staffEditStartTime,
+  ]);
 
   function handleOpenStaffActualEdit(item: DashboardStaffCoverageItem) {
     setStaffCoverageError("");
     setStaffCoverageMessage("");
     setStaffEditItem(item);
     setStaffEditStartTime(item.startTime || "08:00");
-    setStaffEditEndTime(item.endTime || "17:00");
-    setStaffEditUnpaidBreakMinutes(item.unpaidBreakMinutes || 0);
+
+    const today = todayIsoLocal();
+    const scheduledEndMinutes = minutesFromHHMM(item.endTime);
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const shouldDefaultEndToNow =
+      item.date === today &&
+      scheduledEndMinutes != null &&
+      nowMinutes < scheduledEndMinutes;
+
+    setStaffEditEndTime(
+      shouldDefaultEndToNow ? currentTimeHHMM() : item.endTime || "17:00",
+    );
+    const existingLunchMinutes = item.unpaidBreakMinutes || 0;
+    const existingLunchStart = item.lunchStartAt
+      ? new Date(item.lunchStartAt).toTimeString().slice(0, 5)
+      : "12:00";
+    const existingLunchEnd = item.lunchEndAt
+      ? new Date(item.lunchEndAt).toTimeString().slice(0, 5)
+      : "13:00";
+
+    setStaffEditUnpaidBreakMinutes(existingLunchMinutes);
+    setStaffEditLunchMode(
+      item.lunchStartAt && item.lunchEndAt
+        ? "actual"
+        : existingLunchMinutes === 30
+          ? "30"
+          : existingLunchMinutes === 60
+            ? "60"
+            : "none",
+    );
+    setStaffEditLunchStartTime(existingLunchStart);
+    setStaffEditLunchEndTime(existingLunchEnd);
     setStaffEditNote("");
   }
 
@@ -3119,6 +3287,7 @@ export default function DashboardPage() {
     if (savingStaffEdit) return;
     setStaffEditItem(null);
     setStaffEditNote("");
+    setStaffEditLunchMode("none");
   }
 
   async function handleSaveStaffActualEdit() {
@@ -3129,14 +3298,33 @@ export default function DashboardPage() {
 
     if (!staffEditItem) return;
 
-    if (!staffEditItem.linkedTimeEntryId) {
-      setStaffCoverageError("This staff coverage row has no linked time entry.");
+    if (!isStaffCoverageVisibleForConfirmation(staffEditItem)) {
+      setStaffCoverageError(
+        "This shift is not available for confirmation yet.",
+      );
       return;
     }
 
-    if (!isStaffCoverageReadyToConfirm(staffEditItem)) {
+    const unpaidBreakMinutes = staffEditCalculatedLunchMinutes;
+
+    if (unpaidBreakMinutes == null) {
       setStaffCoverageError(
-        "This shift is not ready to confirm yet. Staff hours can be edited after the scheduled shift ends.",
+        "Lunch clock-in time must be after the lunch clock-out time.",
+      );
+      return;
+    }
+
+    if (
+      staffEditLunchMode === "actual" &&
+      !isLunchInsideShift(
+        staffEditStartTime,
+        staffEditEndTime,
+        staffEditLunchStartTime,
+        staffEditLunchEndTime,
+      )
+    ) {
+      setStaffCoverageError(
+        "Actual lunch times must fall inside the actual work shift.",
       );
       return;
     }
@@ -3144,7 +3332,7 @@ export default function DashboardPage() {
     const paidHours = calculatePaidStaffHours(
       staffEditStartTime,
       staffEditEndTime,
-      staffEditUnpaidBreakMinutes,
+      unpaidBreakMinutes,
     );
 
     if (paidHours == null || paidHours <= 0) {
@@ -3165,6 +3353,21 @@ export default function DashboardPage() {
       setStaffCoverageError("Enter a valid actual start and end time.");
       return;
     }
+
+    const lunchStartAt =
+      staffEditLunchMode === "actual"
+        ? buildLocalIsoFromDateAndTime(
+            staffEditItem.date,
+            staffEditLunchStartTime,
+          )
+        : null;
+    const lunchEndAt =
+      staffEditLunchMode === "actual"
+        ? buildLocalIsoFromDateAndTime(
+            staffEditItem.date,
+            staffEditLunchEndTime,
+          )
+        : null;
 
     setSavingStaffEdit(true);
     setStaffCoverageError("");
@@ -3188,7 +3391,10 @@ export default function DashboardPage() {
         }
       }
 
-      const timeEntryRef = doc(db, "timeEntries", staffEditItem.linkedTimeEntryId);
+      const linkedTimeEntryId =
+        safeTrim(staffEditItem.linkedTimeEntryId) ||
+        `staff_${staffEditItem.id}`;
+      const timeEntryRef = doc(db, "timeEntries", linkedTimeEntryId);
       const timeEntrySnap = await getDoc(timeEntryRef);
       const existingTimeEntry = timeEntrySnap.exists()
         ? (timeEntrySnap.data() as any)
@@ -3198,19 +3404,24 @@ export default function DashboardPage() {
         staffEditItem,
         staffEditStartTime,
         staffEditEndTime,
-        staffEditUnpaidBreakMinutes,
+        unpaidBreakMinutes,
         paidHours,
         staffEditNote.trim(),
+        staffEditLunchMode === "actual" ? staffEditLunchStartTime : undefined,
+        staffEditLunchMode === "actual" ? staffEditLunchEndTime : undefined,
       );
 
       const batch = writeBatch(db);
 
       batch.update(doc(db, "staffCoverage", staffEditItem.id), {
         status: "completed",
+        linkedTimeEntryId,
         actualStartAt,
         actualEndAt,
         actualHours: paidHours,
-        unpaidBreakMinutes: staffEditUnpaidBreakMinutes,
+        unpaidBreakMinutes,
+        lunchStartAt,
+        lunchEndAt,
         confirmedAt: now,
         confirmedByUid: appUser.uid,
         adjustedAt: now,
@@ -3222,21 +3433,40 @@ export default function DashboardPage() {
         updatedByName: appUser.displayName || null,
       });
 
-      batch.update(timeEntryRef, {
-        source: "staff_adjusted",
-        hours: paidHours,
-        hoursSource: paidHours,
-        actualStartAt,
-        actualEndAt,
-        unpaidBreakMinutes: staffEditUnpaidBreakMinutes,
-        confirmedAt: now,
-        confirmedByUid: appUser.uid,
-        adjustedAt: now,
-        adjustedByUid: appUser.uid,
-        notes: nextNotes || null,
-        updatedAt: now,
-        updatedByUid: appUser.uid,
-      });
+      batch.set(
+        timeEntryRef,
+        {
+          employeeId: staffEditItem.employeeId,
+          employeeName: staffEditItem.employeeName,
+          employeeRole: staffEditItem.employeeRole,
+          entryDate: staffEditItem.date,
+          category: "office",
+          payType: "regular",
+          billable: false,
+          source: "staff_adjusted",
+          entryStatus: "draft",
+          staffCoverageId: staffEditItem.id,
+          workType: staffEditItem.workType,
+          scheduledStartTime: staffEditItem.startTime,
+          scheduledEndTime: staffEditItem.endTime,
+          hours: paidHours,
+          hoursSource: paidHours,
+          actualStartAt,
+          actualEndAt,
+          unpaidBreakMinutes,
+          lunchStartAt,
+          lunchEndAt,
+          confirmedAt: now,
+          confirmedByUid: appUser.uid,
+          adjustedAt: now,
+          adjustedByUid: appUser.uid,
+          notes: nextNotes || null,
+          createdAt: safeTrim(existingTimeEntry.createdAt) || now,
+          updatedAt: now,
+          updatedByUid: appUser.uid,
+        },
+        { merge: true },
+      );
 
       await batch.commit();
 
@@ -3245,7 +3475,9 @@ export default function DashboardPage() {
       setStaffEditNote("");
     } catch (err: unknown) {
       setStaffCoverageError(
-        err instanceof Error ? err.message : "Failed to save actual staff hours.",
+        err instanceof Error
+          ? err.message
+          : "Failed to save actual staff hours.",
       );
     } finally {
       setSavingStaffEdit(false);
@@ -3258,14 +3490,11 @@ export default function DashboardPage() {
       return;
     }
 
-    if (!item.linkedTimeEntryId) {
-      setStaffCoverageError("This staff coverage row has no linked time entry.");
-      return;
-    }
-
-    if (!isStaffCoverageReadyToConfirm(item)) {
+    if (!canQuickConfirmStaffCoverage(item)) {
       setStaffCoverageError(
-        "This shift is not ready to confirm yet. Staff hours can be confirmed after the scheduled shift ends.",
+        `One-click confirmation becomes available after ${formatTime12h(
+          item.endTime,
+        )}. Use Edit Actual to finish and confirm the shift earlier.`,
       );
       return;
     }
@@ -3297,13 +3526,24 @@ export default function DashboardPage() {
         item.startTime,
       );
       const actualEndAt = buildLocalIsoFromDateAndTime(item.date, item.endTime);
+      const linkedTimeEntryId =
+        safeTrim(item.linkedTimeEntryId) || `staff_${item.id}`;
+      const timeEntryRef = doc(db, "timeEntries", linkedTimeEntryId);
+      const timeEntrySnap = await getDoc(timeEntryRef);
+      const existingTimeEntry = timeEntrySnap.exists()
+        ? (timeEntrySnap.data() as any)
+        : {};
 
       const batch = writeBatch(db);
 
       batch.update(doc(db, "staffCoverage", item.id), {
         status: "completed",
+        linkedTimeEntryId,
         actualStartAt,
         actualEndAt,
+        unpaidBreakMinutes: item.unpaidBreakMinutes,
+        lunchStartAt: item.lunchStartAt || null,
+        lunchEndAt: item.lunchEndAt || null,
         confirmedAt: now,
         confirmedByUid: appUser.uid,
         updatedAt: now,
@@ -3311,17 +3551,37 @@ export default function DashboardPage() {
         updatedByName: appUser.displayName || null,
       });
 
-      batch.update(doc(db, "timeEntries", item.linkedTimeEntryId), {
-        source: "staff_confirmed",
-        hours: item.scheduledHours,
-        hoursSource: item.scheduledHours,
-        actualStartAt,
-        actualEndAt,
-        confirmedAt: now,
-        confirmedByUid: appUser.uid,
-        updatedAt: now,
-        updatedByUid: appUser.uid,
-      });
+      batch.set(
+        timeEntryRef,
+        {
+          employeeId: item.employeeId,
+          employeeName: item.employeeName,
+          employeeRole: item.employeeRole,
+          entryDate: item.date,
+          category: "office",
+          payType: "regular",
+          billable: false,
+          source: "staff_confirmed",
+          entryStatus: "draft",
+          staffCoverageId: item.id,
+          workType: item.workType,
+          scheduledStartTime: item.startTime,
+          scheduledEndTime: item.endTime,
+          hours: item.scheduledHours,
+          hoursSource: item.scheduledHours,
+          actualStartAt,
+          actualEndAt,
+          unpaidBreakMinutes: item.unpaidBreakMinutes,
+          lunchStartAt: item.lunchStartAt || null,
+          lunchEndAt: item.lunchEndAt || null,
+          confirmedAt: now,
+          confirmedByUid: appUser.uid,
+          createdAt: safeTrim(existingTimeEntry.createdAt) || now,
+          updatedAt: now,
+          updatedByUid: appUser.uid,
+        },
+        { merge: true },
+      );
 
       await batch.commit();
 
@@ -3812,9 +4072,14 @@ export default function DashboardPage() {
               <DialogContent>
                 <Stack spacing={2} sx={{ pt: 1 }}>
                   {staffEditItem ? (
-                    <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>
-                      Scheduled {labelForStaffWorkType(staffEditItem.workType)} on{" "}
-                      {staffEditItem.date}: {formatTime12h(staffEditItem.startTime)}–
+                    <Alert
+                      severity="info"
+                      variant="outlined"
+                      sx={{ borderRadius: 3 }}
+                    >
+                      Scheduled {labelForStaffWorkType(staffEditItem.workType)}{" "}
+                      on {staffEditItem.date}:{" "}
+                      {formatTime12h(staffEditItem.startTime)}–
                       {formatTime12h(staffEditItem.endTime)} •{" "}
                       {staffEditItem.scheduledHours.toFixed(2)} paid hrs
                     </Alert>
@@ -3843,7 +4108,9 @@ export default function DashboardPage() {
                       label="Actual End"
                       type="time"
                       value={staffEditEndTime}
-                      onChange={(event) => setStaffEditEndTime(event.target.value)}
+                      onChange={(event) =>
+                        setStaffEditEndTime(event.target.value)
+                      }
                       disabled={savingStaffEdit}
                       InputLabelProps={{ shrink: true }}
                       fullWidth
@@ -3854,17 +4121,59 @@ export default function DashboardPage() {
                     <InputLabel>Unpaid Lunch</InputLabel>
                     <Select
                       label="Unpaid Lunch"
-                      value={String(staffEditUnpaidBreakMinutes)}
-                      onChange={(event) =>
-                        setStaffEditUnpaidBreakMinutes(Number(event.target.value))
-                      }
+                      value={staffEditLunchMode}
+                      onChange={(event) => {
+                        const mode = event.target.value as
+                          "none" | "30" | "60" | "actual";
+                        setStaffEditLunchMode(mode);
+                        if (mode === "none") setStaffEditUnpaidBreakMinutes(0);
+                        if (mode === "30") setStaffEditUnpaidBreakMinutes(30);
+                        if (mode === "60") setStaffEditUnpaidBreakMinutes(60);
+                      }}
                       disabled={savingStaffEdit}
                     >
-                      <MenuItem value="0">None</MenuItem>
+                      <MenuItem value="none">No lunch</MenuItem>
                       <MenuItem value="30">30 minutes</MenuItem>
                       <MenuItem value="60">1 hour</MenuItem>
+                      <MenuItem value="actual">
+                        Enter actual lunch times
+                      </MenuItem>
                     </Select>
                   </FormControl>
+
+                  {staffEditLunchMode === "actual" ? (
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gap: 2,
+                        gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                      }}
+                    >
+                      <TextField
+                        label="Clocked Out for Lunch"
+                        type="time"
+                        value={staffEditLunchStartTime}
+                        onChange={(event) =>
+                          setStaffEditLunchStartTime(event.target.value)
+                        }
+                        disabled={savingStaffEdit}
+                        InputLabelProps={{ shrink: true }}
+                        fullWidth
+                      />
+
+                      <TextField
+                        label="Clocked Back In"
+                        type="time"
+                        value={staffEditLunchEndTime}
+                        onChange={(event) =>
+                          setStaffEditLunchEndTime(event.target.value)
+                        }
+                        disabled={savingStaffEdit}
+                        InputLabelProps={{ shrink: true }}
+                        fullWidth
+                      />
+                    </Box>
+                  ) : null}
 
                   <TextField
                     label="Reason / Note"
@@ -3883,8 +4192,8 @@ export default function DashboardPage() {
                       staffEditPaidHours == null
                         ? "Enter a valid actual time range"
                         : `${staffEditPaidHours.toFixed(2)} paid hours${
-                            staffEditUnpaidBreakMinutes > 0
-                              ? ` • ${staffEditUnpaidBreakMinutes / 60}h lunch`
+                            Number(staffEditCalculatedLunchMinutes || 0) > 0
+                              ? ` • ${staffEditCalculatedLunchMinutes} min lunch`
                               : ""
                           }`
                     }

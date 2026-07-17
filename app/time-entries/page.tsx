@@ -408,8 +408,7 @@ function TimeEntriesPageContent() {
 
   const canSeeAll =
     appUser?.role === "admin" ||
-    appUser?.role === "manager" ||
-    appUser?.role === "dispatcher";
+    appUser?.role === "manager";
 
   const requestedWeekStart = safeTrim(searchParams.get("weekStart"));
   const showRejectedFocus = searchParams.get("showRejected") === "1";
