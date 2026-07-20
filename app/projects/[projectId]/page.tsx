@@ -4893,30 +4893,32 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     try {
       const now = nowIso();
       const existingPeriods = getProjectBillingPeriods(project);
-      const openPeriod = getCurrentOpenBillingPeriod(project) || createOpenBillingPeriod({
-        project,
-        actorUid: myUid || null,
-        actorName: actorDisplayName || null,
-        openedAt: now,
-      });
+      const openPeriod =
+        getCurrentOpenBillingPeriod(project) ||
+        createOpenBillingPeriod({
+          project,
+          actorUid: myUid || null,
+          actorName: actorDisplayName || null,
+          openedAt: now,
+        });
       const summary = summarizeBillingPeriodTrips(eligibleTrips);
 
-      const frozenPeriod: ProjectBillingPeriod = {
+      const frozenPeriod = stripUndefinedDeep<ProjectBillingPeriod>({
         ...openPeriod,
         label: openPeriod.label || `Billing ${openPeriod.sequence}`,
         status: "ready_to_bill",
         readyToBillAt: now,
-        readyToBillByUid: myUid || undefined,
-        readyToBillByName: actorDisplayName || undefined,
+        readyToBillByUid: myUid || null,
+        readyToBillByName: actorDisplayName || null,
         tripIds: summary.tripIds,
         tripCount: summary.tripCount,
         totalHours: summary.totalHours,
         materialsCount: summary.materialsCount,
-        dateFrom: summary.dateFrom,
-        dateTo: summary.dateTo,
-      };
+        dateFrom: summary.dateFrom || null,
+        dateTo: summary.dateTo || null,
+      } as ProjectBillingPeriod);
 
-      const nextPeriods = existingPeriods
+      let nextPeriods = existingPeriods
         .filter((period) => period.id !== frozenPeriod.id)
         .concat(frozenPeriod)
         .sort((a, b) => a.sequence - b.sequence);
@@ -4924,36 +4926,53 @@ if (Object.keys(cleanProjectPatch).length > 1) {
       let currentBillingPeriodId: string | null = null;
       if (!project.fieldCompletedAt) {
         const nextOpen = createOpenBillingPeriod({
-          project: { ...(project as any), billingPeriods: nextPeriods } as Project,
+          project: {
+            ...(project as any),
+            billingPeriods: stripUndefinedDeep(nextPeriods),
+          } as Project,
           actorUid: myUid || null,
           actorName: actorDisplayName || null,
           openedAt: now,
         });
-        nextPeriods.push(nextOpen);
+
+        nextPeriods = [...nextPeriods, nextOpen].sort(
+          (a, b) => a.sequence - b.sequence,
+        );
         currentBillingPeriodId = nextOpen.id;
       }
 
-      const batch = writeBatch(db);
-      batch.update(doc(db, "projects", project.id), {
-        billingPeriods: nextPeriods,
-        currentBillingPeriodId: currentBillingPeriodId,
+      // Firestore rejects undefined values anywhere inside nested arrays and
+      // objects. Billing periods contain optional metadata such as dateFrom,
+      // dateTo, actor fields, and invoice fields, so clean the entire nested
+      // array before passing it to WriteBatch.update().
+      const cleanNextPeriods = stripUndefinedDeep(nextPeriods);
+
+      const projectPatch = stripUndefinedDeep({
+        billingPeriods: cleanNextPeriods,
+        currentBillingPeriodId,
         projectOfficeStatus: "ready_to_invoice",
         readyToInvoiceAt: now,
         readyToInvoiceByUid: myUid || null,
         readyToInvoiceByName: actorDisplayName || null,
         updatedAt: now,
-      } as any);
+      });
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "projects", project.id), projectPatch as any);
 
       for (const trip of eligibleTrips) {
-        batch.update(doc(db, "trips", trip.id), {
+        const tripPatch = stripUndefinedDeep({
           billingPeriodId: frozenPeriod.id,
           billingPeriodSequence: frozenPeriod.sequence,
-          billingPeriodLabel: frozenPeriod.label,
+          billingPeriodLabel:
+            frozenPeriod.label || `Billing ${frozenPeriod.sequence}`,
           billingPeriodStatus: "ready_to_bill",
           readyToBillAt: now,
           updatedAt: now,
           updatedByUid: myUid || null,
-        } as any);
+        });
+
+        batch.update(doc(db, "trips", trip.id), tripPatch as any);
       }
 
       await batch.commit();
@@ -4965,7 +4984,8 @@ if (Object.keys(cleanProjectPatch).length > 1) {
                 ...trip,
                 billingPeriodId: frozenPeriod.id,
                 billingPeriodSequence: frozenPeriod.sequence,
-                billingPeriodLabel: frozenPeriod.label,
+                billingPeriodLabel:
+                  frozenPeriod.label || `Billing ${frozenPeriod.sequence}`,
                 billingPeriodStatus: "ready_to_bill",
                 readyToBillAt: now,
                 updatedAt: now,
@@ -4976,28 +4996,36 @@ if (Object.keys(cleanProjectPatch).length > 1) {
       );
 
       mergeProjectState({
-        billingPeriods: nextPeriods,
-        currentBillingPeriodId: currentBillingPeriodId || undefined,
-        projectOfficeStatus: "ready_to_invoice",
-        readyToInvoiceAt: now,
-        readyToInvoiceByUid: myUid || undefined,
-        readyToInvoiceByName: actorDisplayName || undefined,
-        updatedAt: now,
+        ...projectPatch,
+        billingPeriods: cleanNextPeriods,
       });
       setActiveTmBillingTab(frozenPeriod.id);
 
       void recordProjectActivity({
         type: "project_updated",
         title: "T&M billing period marked ready to bill",
-        description: `${summary.tripCount} trip(s) frozen into ${frozenPeriod.label || `Billing ${frozenPeriod.sequence}`}.`,
+        description: `${summary.tripCount} trip(s) frozen into ${
+          frozenPeriod.label || `Billing ${frozenPeriod.sequence}`
+        }.`,
         details: [
           `Hours: ${summary.totalHours.toFixed(2)}`,
           `Materials notes: ${summary.materialsCount}`,
-          ...(summary.dateFrom ? [`Date range: ${summary.dateFrom}${summary.dateTo && summary.dateTo !== summary.dateFrom ? ` → ${summary.dateTo}` : ""}`] : []),
+          ...(summary.dateFrom
+            ? [
+                `Date range: ${summary.dateFrom}${
+                  summary.dateTo && summary.dateTo !== summary.dateFrom
+                    ? ` → ${summary.dateTo}`
+                    : ""
+                }`,
+              ]
+            : []),
         ],
       });
     } catch (err: any) {
-      alert(err?.message || "Failed to mark the current T&M period ready to bill.");
+      alert(
+        err?.message ||
+          "Failed to mark the current T&M period ready to bill.",
+      );
     }
   }
 
