@@ -85,6 +85,14 @@ import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import { queueProjectTripTimeEntryWrites } from "../src/lib/project-trip-time-entries";
+import {
+  completeAllWorkerTimers,
+  getWorkerTimerMinutesAt,
+  getWorkerTimerStatus,
+  pauseWorkerOnTrip,
+  resumeWorkerOnTrip,
+  type WorkerTimersByUid,
+} from "../src/lib/worker-trip-timers";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 
 type PauseBlock = {
@@ -170,6 +178,7 @@ type TripDoc = {
   actualStartAt?: string | null;
   actualEndAt?: string | null;
   pauseBlocks?: PauseBlock[] | null;
+  workerTimers?: WorkerTimersByUid | null;
   materials?: ProjectTripMaterial[] | null;
   materialsSummary?: string | null;
   materialNotes?: string | null;
@@ -784,6 +793,7 @@ function useRealtimeActiveTrip(uid: string) {
         actualStartAt: d.actualStartAt ?? d.startedAt ?? null,
         actualEndAt: d.actualEndAt ?? d.completedAt ?? null,
         pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
+        workerTimers: d.workerTimers ?? null,
         materials: Array.isArray(d.materials) ? d.materials : null,
         materialsSummary: d.materialsSummary ?? null,
         materialNotes: d.materialNotes ?? d.closeout?.materialNotes ?? null,
@@ -802,7 +812,14 @@ function useRealtimeActiveTrip(uid: string) {
         if (!union.has(id)) map.delete(id);
       }
 
-      const chosen = pickLatestTrip(Array.from(map.values()));
+      const candidates = Array.from(map.values());
+      const running = candidates.filter(
+        (candidate) => getWorkerTimerStatus(candidate, u) === "running",
+      );
+      const paused = candidates.filter(
+        (candidate) => getWorkerTimerStatus(candidate, u) === "paused",
+      );
+      const chosen = pickLatestTrip(running) || pickLatestTrip(paused);
       setTrip(chosen);
     }
 
@@ -836,7 +853,10 @@ function useRealtimeActiveTrip(uid: string) {
   return trip;
 }
 
-async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
+async function buildActiveTripCard(
+  trip: TripDoc,
+  workerUid: string,
+): Promise<ActiveTripCard> {
   const serviceTicketId = safeTrim(trip.link?.serviceTicketId);
   const projectId = safeTrim(trip.link?.projectId);
   const tripId = trip.id;
@@ -875,7 +895,7 @@ async function buildActiveTripCard(trip: TripDoc): Promise<ActiveTripCard> {
     secondaryLine = "Tap to return";
   }
 
-  const ts = safeTrim(trip.timerState).toLowerCase();
+  const ts = getWorkerTimerStatus(trip, workerUid);
   const statusLabel = ts === "paused" ? "Paused" : "Running";
 
   return { tripId, href, statusLabel, primaryLine, secondaryLine };
@@ -1865,7 +1885,7 @@ export default function AppShell({
         setActiveTripCard(null);
         return;
       }
-      const card = await buildActiveTripCard(activeTrip);
+      const card = await buildActiveTripCard(activeTrip, myUid);
       if (!cancelled) setActiveTripCard(card);
     }
 
@@ -1879,6 +1899,7 @@ export default function AppShell({
     activeTrip?.timerState,
     activeTrip?.link?.serviceTicketId,
     activeTrip?.link?.projectId,
+    myUid,
   ]);
 
   useEffect(() => {
@@ -2042,12 +2063,12 @@ export default function AppShell({
 
   const liveMinutes = useMemo(() => {
     if (!activeTrip) return 0;
-    return getProjectTripTimerMinutesAt(activeTrip, nowMs) ?? 0;
+    return getWorkerTimerMinutesAt(activeTrip, myUid, nowMs) ?? 0;
   }, [activeTrip, nowMs]);
 
   const timerState = useMemo(
-    () => safeTrim(activeTrip?.timerState).toLowerCase(),
-    [activeTrip?.timerState],
+    () => getWorkerTimerStatus(activeTrip, myUid),
+    [activeTrip, myUid],
   );
 
   const isPaused = timerState === "paused";
@@ -2130,21 +2151,12 @@ export default function AppShell({
     if (!activeTrip || !canQuickAct || pillActionBusy) return;
     setPillActionBusy(true);
     try {
-      const tripRef = doc(db, "trips", activeTrip.id);
-      const stamp = nowIso();
-      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
-        ? [...activeTrip.pauseBlocks]
-        : [];
-      const openIdx = findOpenPauseIndex(curBlocks);
-      if (openIdx !== -1) return;
-      curBlocks.push({ startAt: stamp, endAt: null });
-
-      await updateDoc(tripRef, {
-        timerState: "paused",
-        pauseBlocks: curBlocks,
-        updatedAt: stamp,
-        updatedByUid: myUid || null,
-      } as any);
+      await pauseWorkerOnTrip({
+        db,
+        tripId: activeTrip.id,
+        workerUid: myUid,
+        actorUid: myUid,
+      });
     } finally {
       setPillActionBusy(false);
     }
@@ -2154,21 +2166,12 @@ export default function AppShell({
     if (!activeTrip || !canQuickAct || pillActionBusy) return;
     setPillActionBusy(true);
     try {
-      const tripRef = doc(db, "trips", activeTrip.id);
-      const stamp = nowIso();
-      const curBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
-        ? [...activeTrip.pauseBlocks]
-        : [];
-      const openIdx = findOpenPauseIndex(curBlocks);
-      if (openIdx === -1) return;
-      curBlocks[openIdx] = { ...curBlocks[openIdx], endAt: stamp };
-
-      await updateDoc(tripRef, {
-        timerState: "running",
-        pauseBlocks: curBlocks,
-        updatedAt: stamp,
-        updatedByUid: myUid || null,
-      } as any);
+      await resumeWorkerOnTrip({
+        db,
+        tripId: activeTrip.id,
+        workerUid: myUid,
+        actorUid: myUid,
+      });
     } finally {
       setPillActionBusy(false);
     }
@@ -2205,8 +2208,9 @@ export default function AppShell({
 
     const timerStoppedAt = nowIso();
     const timerStoppedMs = parseIsoMs(timerStoppedAt);
-    const elapsedMinutes = getProjectTripTimerMinutesAt(
+    const elapsedMinutes = getWorkerTimerMinutesAt(
       activeTrip,
+      myUid,
       timerStoppedMs,
     );
 
@@ -2220,6 +2224,14 @@ export default function AppShell({
 
     const suggestedHours = roundProjectTimerMinutesToHours(elapsedMinutes);
     const crew = activeTrip.crewConfirmed || activeTrip.crew || null;
+    const crewRows = buildProjectCloseoutCrewHours(crew, suggestedHours).map((member) => {
+      const memberMinutes = getWorkerTimerMinutesAt(activeTrip, member.uid, timerStoppedMs);
+      const memberHours = roundProjectTimerMinutesToHours(Number(memberMinutes || 0));
+      return {
+        ...member,
+        hours: (memberHours > 0 ? memberHours : suggestedHours).toFixed(2),
+      };
+    });
     const savedMaterialNote = safeTrim(
       activeTrip.materialNotes ||
         activeTrip.materialsSummary ||
@@ -2235,7 +2247,7 @@ export default function AppShell({
     setProjectTimerMinutes(elapsedMinutes);
     setProjectTimerStoppedAt(timerStoppedAt);
     setProjectCorrectHoursOpen(false);
-    setProjectCrewHours(buildProjectCloseoutCrewHours(crew, suggestedHours));
+    setProjectCrewHours(crewRows);
     setProjectOptionalNoteOpen(Boolean(savedWorkNote));
     setProjectMaterialsOpen(Boolean(savedMaterialNote));
     setProjectCloseoutNotes(savedWorkNote);
@@ -2338,6 +2350,12 @@ export default function AppShell({
         };
       }
 
+      const completedWorkerTimers = completeAllWorkerTimers(
+        activeTrip,
+        stamp,
+        myUid || null,
+      );
+
       const relatedTripsSnap = await getDocs(
         query(
           collection(db, "trips"),
@@ -2407,6 +2425,7 @@ export default function AppShell({
         actualStartAt: activeTrip.actualStartAt || stamp,
         actualEndAt: stamp,
         pauseBlocks,
+        workerTimers: completedWorkerTimers,
         completedAt: stamp,
         completedByUid: myUid || null,
         closeoutDecision: projectTodayResult,
@@ -2568,6 +2587,7 @@ export default function AppShell({
           actualEndAt: stamp,
           completedAt: stamp,
           pauseBlocks,
+          workerTimers: completedWorkerTimers,
         } as any,
         projectId,
         projectStageKey: projectIdStageKey || null,
@@ -3124,6 +3144,7 @@ export default function AppShell({
             actualStartAt: d.actualStartAt ?? null,
             actualEndAt: d.actualEndAt ?? null,
             pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
+            workerTimers: d.workerTimers ?? null,
             updatedAt: d.updatedAt ?? null,
             closeout: d.closeout ?? null,
             needsMoreTime:

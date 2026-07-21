@@ -36,9 +36,14 @@ import AssignmentLateRoundedIcon from "@mui/icons-material/AssignmentLateRounded
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import CelebrationRoundedIcon from "@mui/icons-material/CelebrationRounded";
 import FiberManualRecordRoundedIcon from "@mui/icons-material/FiberManualRecordRounded";
+import PauseCircleRoundedIcon from "@mui/icons-material/PauseCircleRounded";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
+import {
+  getWorkerTimerStatus,
+  type WorkerTimersByUid,
+} from "../../src/lib/worker-trip-timers";
 
 type TechRow = { uid: string; name: string };
 
@@ -71,6 +76,7 @@ type TripDoc = {
   crew?: TripCrew | null;
   link?: TripLink | null;
   timerState?: string | null;
+  workerTimers?: WorkerTimersByUid | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -175,10 +181,31 @@ function normalizeStatus(s?: string) {
   return String(s || "").trim().toLowerCase();
 }
 
-function isTripActivelyWorking(t: TripDoc) {
+function tripTimerStatusForRow(t: TripDoc, workerUid: string | null) {
+  if (workerUid) {
+    return getWorkerTimerStatus(t, workerUid);
+  }
+
+  const workerStatuses = Object.values(t.workerTimers || {}).map((timer) =>
+    normalizeStatus(timer?.status)
+  );
+
+  if (workerStatuses.includes("running")) return "running";
+  if (workerStatuses.includes("paused")) return "paused";
+  if (
+    workerStatuses.length > 0 &&
+    workerStatuses.every((status) => status === "complete")
+  ) {
+    return "complete";
+  }
+
+  const legacyTimer = normalizeStatus(t.timerState || "");
+  if (legacyTimer) return legacyTimer;
+
   const status = normalizeStatus(t.status);
-  const timer = normalizeStatus(t.timerState || "");
-  return status === "in_progress" || timer === "running";
+  if (status === "in_progress") return "running";
+  if (status === "complete" || status === "completed") return "complete";
+  return "not_started";
 }
 
 function statusTone(status?: string) {
@@ -477,6 +504,10 @@ export default function OfficeDisplayPage() {
               crew: d.crew ?? null,
               link: d.link ?? null,
               timerState: d.timerState ?? null,
+              workerTimers:
+                d.workerTimers && typeof d.workerTimers === "object"
+                  ? d.workerTimers
+                  : null,
               createdAt: d.createdAt ?? undefined,
               updatedAt: d.updatedAt ?? undefined,
             };
@@ -813,7 +844,7 @@ export default function OfficeDisplayPage() {
     appUser?.role === "manager" ||
     appUser?.role === "office_display";
 
-  function renderTripCard(t: TripDoc) {
+  function renderTripCard(t: TripDoc, workerUid: string | null) {
     const sid = String(t.link?.serviceTicketId || "").trim();
     const pid = String(t.link?.projectId || "").trim();
     const ticket = sid ? ticketMap[sid] : undefined;
@@ -828,7 +859,9 @@ export default function OfficeDisplayPage() {
     const isCompleted =
       normalizeStatus(t.status) === "complete" ||
       normalizeStatus(t.status) === "completed";
-    const isActiveNow = isTripActivelyWorking(t);
+    const rowTimerStatus = tripTimerStatusForRow(t, workerUid);
+    const isActiveNow = rowTimerStatus === "running";
+    const isPausedNow = rowTimerStatus === "paused";
 
     const activePalette =
       tripType === "project"
@@ -855,6 +888,17 @@ export default function OfficeDisplayPage() {
             liveColor: "#E5F7FF",
           };
 
+    const pausedPalette = {
+      border: "rgba(245, 158, 11, 0.42)",
+      bgTop: "rgba(245, 158, 11, 0.11)",
+      bgBottom: "rgba(245, 158, 11, 0.045)",
+      iconBg: "rgba(245, 158, 11, 0.18)",
+      iconColor: "#FFD89C",
+      chipBg: "rgba(245, 158, 11, 0.14)",
+      chipBorder: "rgba(245, 158, 11, 0.30)",
+      chipColor: "#FFE6B7",
+    };
+
     return (
       <Paper
         key={t.id}
@@ -868,10 +912,14 @@ export default function OfficeDisplayPage() {
           overflow: "hidden",
           background: isActiveNow
             ? `linear-gradient(180deg, ${activePalette.bgTop} 0%, ${activePalette.bgBottom} 100%)`
-            : "background.paper",
+            : isPausedNow
+              ? `linear-gradient(180deg, ${pausedPalette.bgTop} 0%, ${pausedPalette.bgBottom} 100%)`
+              : "background.paper",
           border: isActiveNow
             ? `1px solid ${activePalette.border}`
-            : `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            : isPausedNow
+              ? `1px solid ${pausedPalette.border}`
+              : `1px solid ${alpha("#FFFFFF", 0.08)}`,
           boxShadow: isActiveNow
             ? `0 0 0 1px ${alpha(activePalette.glow, 0.32)}, 0 0 20px ${alpha(
                 activePalette.glow,
@@ -929,14 +977,18 @@ export default function OfficeDisplayPage() {
                   flexShrink: 0,
                   backgroundColor: isActiveNow
                     ? activePalette.iconBg
-                    : tripType === "project"
-                      ? alpha(theme.palette.warning.main, 0.14)
-                      : alpha(theme.palette.primary.main, 0.14),
+                    : isPausedNow
+                      ? pausedPalette.iconBg
+                      : tripType === "project"
+                        ? alpha(theme.palette.warning.main, 0.14)
+                        : alpha(theme.palette.primary.main, 0.14),
                   color: isActiveNow
                     ? activePalette.iconColor
-                    : tripType === "project"
-                      ? "#FFD89C"
-                      : theme.palette.primary.light,
+                    : isPausedNow
+                      ? pausedPalette.iconColor
+                      : tripType === "project"
+                        ? "#FFD89C"
+                        : theme.palette.primary.light,
                 }}
               >
                 {tripType === "project" ? (
@@ -998,6 +1050,34 @@ export default function OfficeDisplayPage() {
                         },
                       }}
                     />
+                  ) : isPausedNow ? (
+                    <Chip
+                      icon={
+                        <PauseCircleRoundedIcon
+                          sx={{
+                            fontSize: "13px !important",
+                            color: `${pausedPalette.chipColor} !important`,
+                          }}
+                        />
+                      }
+                      label="Paused"
+                      size="small"
+                      sx={{
+                        height: 20,
+                        ml: 0.25,
+                        borderRadius: 999,
+                        color: pausedPalette.chipColor,
+                        backgroundColor: pausedPalette.chipBg,
+                        border: `1px solid ${pausedPalette.chipBorder}`,
+                        flexShrink: 0,
+                        "& .MuiChip-label": {
+                          px: 0.75,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          letterSpacing: "0.02em",
+                        },
+                      }}
+                    />
                   ) : null}
                 </Stack>
 
@@ -1019,7 +1099,7 @@ export default function OfficeDisplayPage() {
               </Box>
             </Stack>
 
-            {!isActiveNow ? (
+            {!isActiveNow && !isPausedNow ? (
               <Chip
                 label={tone.label}
                 size="small"
@@ -1045,12 +1125,22 @@ export default function OfficeDisplayPage() {
                 <ScheduleRoundedIcon
                   sx={{
                     fontSize: 13,
-                    color: isActiveNow ? activePalette.iconColor : "text.secondary",
+                    color: isActiveNow
+                      ? activePalette.iconColor
+                      : isPausedNow
+                        ? pausedPalette.iconColor
+                        : "text.secondary",
                   }}
                 />
                 <Typography
                   variant="caption"
-                  sx={{ color: isActiveNow ? activePalette.liveColor : "text.secondary" }}
+                  sx={{
+                    color: isActiveNow
+                      ? activePalette.liveColor
+                      : isPausedNow
+                        ? pausedPalette.chipColor
+                        : "text.secondary",
+                  }}
                 >
                   {timeText}
                 </Typography>
@@ -1061,13 +1151,21 @@ export default function OfficeDisplayPage() {
                   <LocationOnRoundedIcon
                     sx={{
                       fontSize: 13,
-                      color: isActiveNow ? activePalette.iconColor : "text.secondary",
+                      color: isActiveNow
+                      ? activePalette.iconColor
+                      : isPausedNow
+                        ? pausedPalette.iconColor
+                        : "text.secondary",
                     }}
                   />
                   <Typography
                     variant="caption"
                     sx={{
-                      color: isActiveNow ? activePalette.liveColor : "text.secondary",
+                      color: isActiveNow
+                        ? activePalette.liveColor
+                        : isPausedNow
+                          ? pausedPalette.chipColor
+                          : "text.secondary",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
@@ -1541,7 +1639,12 @@ export default function OfficeDisplayPage() {
                             },
                           }}
                         >
-                          {cellTrips.map(renderTripCard)}
+                          {cellTrips.map((trip) =>
+                            renderTripCard(
+                              trip,
+                              rowKey === "UNASSIGNED" ? null : rowKey
+                            )
+                          )}
                         </Box>
                       )}
                     </Box>

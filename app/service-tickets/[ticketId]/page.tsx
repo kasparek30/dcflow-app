@@ -69,6 +69,17 @@ import AddressAutocompleteField from "../../../components/AddressAutocompleteFie
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
+import {
+  completeAllWorkerTimers,
+  getWorkerTimer,
+  getWorkerTimerMinutesAt,
+  getWorkerTimerStatus,
+  sumWorkerPausedMinutes,
+  pauseWorkerOnTrip,
+  resumeWorkerOnTrip,
+  switchWorkerToTrip,
+  type WorkerTimersByUid,
+} from "../../../src/lib/worker-trip-timers";
 import PictureAsPdfRoundedIcon from "@mui/icons-material/PictureAsPdfRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import CloudDownloadRoundedIcon from "@mui/icons-material/CloudDownloadRounded";
@@ -182,6 +193,7 @@ type TripDoc = {
   startedByUid?: string | null;
   endedByUid?: string | null;
   pauseBlocks?: PauseBlock[];
+  workerTimers?: WorkerTimersByUid | null;
   actualMinutes?: number | null;
   billableHours?: number | null;
   workNotes?: string | null;
@@ -3082,6 +3094,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       startedByUid: trip.startedByUid ?? null,
       endedByUid: trip.endedByUid ?? null,
       pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
+      workerTimers: trip.workerTimers ?? null,
       actualMinutes:
         typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
       billableHours:
@@ -5258,16 +5271,14 @@ Supply line`}
       return;
     }
 
-    if (!canStartTrip(trip.status, trip.timerState)) {
+    const workerState = getWorkerTimerStatus(trip, myUid);
+    const status = normalizeTripStatus(trip.status);
+    if (
+      status === "complete" ||
+      status === "cancelled" ||
+      workerState === "running"
+    ) {
       setTripErr(trip.id, "This trip is not in a startable state.");
-      return;
-    }
-
-    if (hasInProgressTrips(trips.filter((t) => t.id !== trip.id))) {
-      setTripErr(
-        trip.id,
-        "Another trip on this ticket is already in progress.",
-      );
       return;
     }
 
@@ -5277,22 +5288,8 @@ Supply line`}
       date: trip.date || isoTodayLocal(),
       ptoRequests,
     });
-
     if (ptoStartBlockMessage) {
       setTripErr(trip.id, ptoStartBlockMessage);
-      return;
-    }
-
-    const runningConflicts = await findRunningTripsForCrewUids({
-      crewUids: crewUidsFromCrew(startCrew),
-      excludeTripId: trip.id,
-    });
-
-    if (runningConflicts.length > 0) {
-      setTripErr(
-        trip.id,
-        `Cannot start this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`,
-      );
       return;
     }
 
@@ -5301,31 +5298,26 @@ Supply line`}
     setTripSavingFlag(trip.id, true);
 
     try {
-      const now = nowIso();
-
-      await updateDoc(doc(db, "trips", trip.id), {
-        status: "in_progress",
-        timerState: "running",
-        actualStartAt: trip.actualStartAt || now,
-        actualEndAt: null,
-        startedByUid: trip.startedByUid || myUid,
-        crewConfirmed: trip.crewConfirmed || trip.crew || null,
-        pauseBlocks: Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : [],
-        updatedAt: now,
-        updatedByUid: myUid,
+      const result = await switchWorkerToTrip({
+        db,
+        tripId: trip.id,
+        workerUid: myUid,
+        actorUid: myUid,
+        startWholeCrewWhenTripNotStarted: true,
       });
+      const now = result.stamp;
 
       const nextTrips = trips.map((t) =>
         t.id === trip.id
           ? {
               ...t,
               status: "in_progress",
-              timerState: "running",
+              timerState: result.timerState,
+              workerTimers: result.workerTimers,
               actualStartAt: t.actualStartAt || now,
               actualEndAt: null,
               startedByUid: t.startedByUid || myUid,
               crewConfirmed: t.crewConfirmed || t.crew || null,
-              pauseBlocks: Array.isArray(t.pauseBlocks) ? t.pauseBlocks : [],
               updatedAt: now,
               updatedByUid: myUid,
             }
@@ -5345,18 +5337,21 @@ Supply line`}
       }
 
       await logServiceTicketActivity({
-        type: "service_trip_started",
-        title: "Trip Started",
-        description: "Trip was started in the field.",
+        type: workerState === "paused" ? "service_trip_resumed" : "service_trip_started",
+        title: workerState === "paused" ? "Trip Resumed" : "Trip Started",
+        description:
+          workerState === "paused"
+            ? "Employee resumed this service trip."
+            : "Trip was started in the field.",
         details: [
-          `Crew: ${(trip.crewConfirmed || trip.crew)?.primaryTechName || "Assigned crew"}`,
+          `Employee: ${appUser?.displayName || myUid}`,
           `Time: ${formatTripTimeRange(trip.startTime, trip.endTime)}`,
           `Trip: ${trip.id}`,
         ],
         createdAt: now,
       });
 
-      setTripOk(trip.id, "Trip started.");
+      setTripOk(trip.id, workerState === "paused" ? "Resumed." : "Trip started.");
     } catch (err: unknown) {
       setTripErr(
         trip.id,
@@ -5369,14 +5364,8 @@ Supply line`}
 
   async function handlePauseTrip(trip: TripDoc) {
     if (!canWorkTrip || !myUid) return;
-
     if (!canCurrentUserActOnTrip(trip)) {
       setTripErr(trip.id, "You are not assigned to this trip.");
-      return;
-    }
-
-    if (!canPauseTrip(trip.status, trip.timerState)) {
-      setTripErr(trip.id, "This trip cannot be paused right now.");
       return;
     }
 
@@ -5385,42 +5374,34 @@ Supply line`}
     setTripSavingFlag(trip.id, true);
 
     try {
-      const now = nowIso();
-      const pauseBlocks = [
-        ...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : []),
-      ];
-
-      const hasOpenPause = pauseBlocks.some(
-        (block) => block?.startAt && !block?.endAt,
-      );
-      if (hasOpenPause) {
-        setTripErr(trip.id, "This trip is already paused.");
-        return;
-      }
-
-      pauseBlocks.push({ startAt: now, endAt: null });
-
-      await updateDoc(doc(db, "trips", trip.id), {
-        timerState: "paused",
-        pauseBlocks,
-        updatedAt: now,
-        updatedByUid: myUid,
+      const result = await pauseWorkerOnTrip({
+        db,
+        tripId: trip.id,
+        workerUid: myUid,
+        actorUid: myUid,
       });
 
       setTrips((prev) =>
         prev.map((t) =>
-          t.id === trip.id ? { ...t, timerState: "paused", pauseBlocks } : t,
+          t.id === trip.id
+            ? {
+                ...t,
+                timerState: result.timerState,
+                workerTimers: result.workerTimers,
+                updatedAt: result.stamp || nowIso(),
+                updatedByUid: myUid,
+              }
+            : t,
         ),
       );
 
       await logServiceTicketActivity({
         type: "service_trip_paused",
         title: "Trip Paused",
-        description: "Trip timer was paused.",
+        description: `${appUser?.displayName || "Employee"} paused their trip timer.`,
         details: [`Trip: ${trip.id}`],
-        createdAt: now,
+        createdAt: result.stamp || nowIso(),
       });
-
       setTripOk(trip.id, "Paused.");
     } catch (err: unknown) {
       setTripErr(
@@ -5434,22 +5415,8 @@ Supply line`}
 
   async function handleResumeTrip(trip: TripDoc) {
     if (!canWorkTrip || !myUid) return;
-
     if (!canCurrentUserActOnTrip(trip)) {
       setTripErr(trip.id, "You are not assigned to this trip.");
-      return;
-    }
-
-    if (!canResumeTrip(trip.status, trip.timerState)) {
-      setTripErr(trip.id, "This trip cannot be resumed right now.");
-      return;
-    }
-
-    if (hasInProgressTrips(trips.filter((t) => t.id !== trip.id))) {
-      setTripErr(
-        trip.id,
-        "Another trip on this ticket is already in progress.",
-      );
       return;
     }
 
@@ -5459,22 +5426,8 @@ Supply line`}
       date: trip.date || isoTodayLocal(),
       ptoRequests,
     });
-
     if (ptoResumeBlockMessage) {
       setTripErr(trip.id, ptoResumeBlockMessage);
-      return;
-    }
-
-    const runningConflicts = await findRunningTripsForCrewUids({
-      crewUids: crewUidsFromCrew(resumeCrew),
-      excludeTripId: trip.id,
-    });
-
-    if (runningConflicts.length > 0) {
-      setTripErr(
-        trip.id,
-        `Cannot resume this trip because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`,
-      );
       return;
     }
 
@@ -5483,47 +5436,35 @@ Supply line`}
     setTripSavingFlag(trip.id, true);
 
     try {
-      const now = nowIso();
-      const pauseBlocks = [
-        ...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : []),
-      ];
-
-      let foundOpenPause = false;
-
-      for (let i = pauseBlocks.length - 1; i >= 0; i--) {
-        if (pauseBlocks[i] && pauseBlocks[i].startAt && !pauseBlocks[i].endAt) {
-          pauseBlocks[i] = { ...pauseBlocks[i], endAt: now };
-          foundOpenPause = true;
-          break;
-        }
-      }
-
-      if (!foundOpenPause) {
-        setTripErr(trip.id, "No active pause block was found to resume.");
-        return;
-      }
-
-      await updateDoc(doc(db, "trips", trip.id), {
-        timerState: "running",
-        pauseBlocks,
-        updatedAt: now,
-        updatedByUid: myUid,
+      const result = await resumeWorkerOnTrip({
+        db,
+        tripId: trip.id,
+        workerUid: myUid,
+        actorUid: myUid,
       });
 
       setTrips((prev) =>
         prev.map((t) =>
-          t.id === trip.id ? { ...t, timerState: "running", pauseBlocks } : t,
+          t.id === trip.id
+            ? {
+                ...t,
+                status: "in_progress",
+                timerState: result.timerState,
+                workerTimers: result.workerTimers,
+                updatedAt: result.stamp,
+                updatedByUid: myUid,
+              }
+            : t,
         ),
       );
 
       await logServiceTicketActivity({
         type: "service_trip_resumed",
         title: "Trip Resumed",
-        description: "Trip timer was resumed.",
+        description: `${appUser?.displayName || "Employee"} resumed their trip timer.`,
         details: [`Trip: ${trip.id}`],
-        createdAt: now,
+        createdAt: result.stamp,
       });
-
       setTripOk(trip.id, "Resumed.");
     } catch (err: unknown) {
       setTripErr(
@@ -5639,6 +5580,8 @@ Supply line`}
         }
       }
 
+      const completedWorkerTimers = completeAllWorkerTimers(trip, now, myUid);
+
       const startAt = trip.actualStartAt || now;
       const gross = minutesBetweenIso(startAt, now);
       const paused = sumPausedMinutes(pauseBlocks, now);
@@ -5677,6 +5620,18 @@ Supply line`}
       }
 
       const hoursToUse = getHoursToUse(trip.id, actualMinutes);
+      const completionMs = new Date(now).getTime();
+      const payrollHoursByUid = Object.fromEntries(
+        crewMembers.map((member) => {
+          const memberMinutes = getWorkerTimerMinutesAt(
+            { ...trip, workerTimers: completedWorkerTimers } as any,
+            member.uid,
+            completionMs,
+          );
+          const memberHours = getDefaultBillableHours(Number(memberMinutes || 0));
+          return [member.uid, memberHours > 0 ? memberHours : hoursToUse];
+        }),
+      ) as Record<string, number>;
       const entryDate = trip.date;
       const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
 
@@ -5688,6 +5643,7 @@ Supply line`}
           actualEndAt: now,
           endedByUid: myUid,
           pauseBlocks,
+          workerTimers: completedWorkerTimers,
           actualMinutes,
           billableHours: hoursToUse,
           workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
@@ -5726,7 +5682,7 @@ Supply line`}
           trip,
           member,
           entryDate,
-          hoursGenerated: hoursToUse,
+          hoursGenerated: payrollHoursByUid[member.uid] || hoursToUse,
           weekStartDate,
           weekEndDate,
           timesheetId,
@@ -5747,6 +5703,7 @@ Supply line`}
               actualEndAt: now,
               endedByUid: myUid,
               pauseBlocks,
+              workerTimers: completedWorkerTimers,
               actualMinutes,
               billableHours: hoursToUse,
               workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
@@ -6595,18 +6552,7 @@ Supply line`}
       return;
     }
 
-    const runningConflicts = await findRunningTripsForCrewUids({
-      crewUids: Array.from(
-        new Set([primaryTechUid, helperUid].filter(Boolean)),
-      ),
-    });
 
-    if (runningConflicts.length > 0) {
-      alert(
-        `Cannot claim and start because one of the assigned crew members already has a running trip: ${runningConflicts[0].summary}`,
-      );
-      return;
-    }
 
     try {
       const ticketRef = doc(db, "serviceTickets", ticket.id);
@@ -6672,6 +6618,21 @@ Supply line`}
           startedByUid: myUid,
           endedByUid: null,
           pauseBlocks: [],
+          workerTimers: Object.fromEntries(
+            [primaryTechUid, helperUid]
+              .filter(Boolean)
+              .map((uid) => [
+                uid,
+                {
+                  status: "running",
+                  startedAt: nowString,
+                  endedAt: null,
+                  pauseBlocks: [],
+                  updatedAt: nowString,
+                  updatedByUid: myUid,
+                },
+              ]),
+          ),
           actualMinutes: null,
           workNotes: null,
           resolutionNotes: null,
@@ -6726,6 +6687,16 @@ Supply line`}
           createdByRole: appUser?.role || null,
         });
       });
+
+      for (const workerUid of [primaryTechUid, helperUid].filter(Boolean)) {
+        await switchWorkerToTrip({
+          db,
+          tripId: newTripRef.id,
+          workerUid,
+          actorUid: myUid,
+          startWholeCrewWhenTripNotStarted: false,
+        });
+      }
 
       window.location.reload();
     } catch (err: any) {
@@ -8639,26 +8610,40 @@ Supply line`}
                     {trips.map((trip) => {
                       const canAct = canCurrentUserActOnTrip(trip);
                       const savingThis = Boolean(tripActionSaving[trip.id]);
-                      const timerState = normalizeTripTimerState(trip);
-                      const pausedTrip = isTripPaused(trip);
-                      const runningTrip = isTripRunning(trip);
-                      const pausedMinutes = sumPausedMinutes(
-                        trip.pauseBlocks,
+                      const timerState = getWorkerTimerStatus(trip, myUid);
+                      const pausedTrip = timerState === "paused";
+                      const runningTrip = timerState === "running";
+                      const workerTimer = getWorkerTimer(
+                        trip,
+                        myUid,
                         liveNowIso,
                       );
+                      const billableMinutes =
+                        getWorkerTimerMinutesAt(trip, myUid, liveNowMs) || 0;
+                      const workerTimerEndMs =
+                        workerTimer?.status === "complete" && workerTimer.endedAt
+                          ? Date.parse(workerTimer.endedAt)
+                          : liveNowMs;
+                      const workerTimerStartMs = workerTimer?.startedAt
+                        ? Date.parse(workerTimer.startedAt)
+                        : Number.NaN;
                       const grossMinutes =
-                        trip.actualStartAt && !trip.actualEndAt
-                          ? minutesBetweenIso(trip.actualStartAt, liveNowIso)
-                          : trip.actualStartAt && trip.actualEndAt
-                            ? minutesBetweenIso(
-                                trip.actualStartAt,
-                                trip.actualEndAt,
-                              )
-                            : 0;
-                      const billableMinutes = Math.max(
-                        0,
-                        grossMinutes - pausedMinutes,
-                      );
+                        Number.isFinite(workerTimerStartMs) &&
+                        Number.isFinite(workerTimerEndMs) &&
+                        workerTimerEndMs >= workerTimerStartMs
+                          ? Math.max(
+                              0,
+                              Math.round(
+                                (workerTimerEndMs - workerTimerStartMs) / 60000,
+                              ),
+                            )
+                          : 0;
+                      const pausedMinutes = workerTimer
+                        ? sumWorkerPausedMinutes(
+                            workerTimer.pauseBlocks,
+                            workerTimerEndMs,
+                          )
+                        : 0;
                       const finishMode = finishModeByTrip[trip.id] || "none";
                       const showFinishPanel =
                         normalizeTripStatus(trip.status) === "in_progress" &&
@@ -8666,12 +8651,12 @@ Supply line`}
                       const anotherTripInProgress = hasInProgressTrips(
                         trips.filter((t) => t.id !== trip.id),
                       );
-                      const canQuickStart = canCurrentUserQuickStartTrip({
-                        trip,
-                        role: appUser?.role,
-                        uid: myUid,
-                        canStartTripRole,
-                      });
+                      const canQuickStart =
+                        canStartTripRole &&
+                        canAct &&
+                        timerState !== "running" &&
+                        normalizeTripStatus(trip.status) !== "complete" &&
+                        normalizeTripStatus(trip.status) !== "cancelled";
                       const followUpNoteMissing =
                         finishMode === "follow_up" &&
                         !String(tripFollowUpNotes[trip.id] || "").trim();
@@ -8848,7 +8833,7 @@ Supply line`}
                             </Stack>
 
                             <Stack spacing={1}>
-                              {canStartTrip(trip.status, trip.timerState) ? (
+                              {timerState === "not_started" ? (
                                 <Button
                                   variant="contained"
                                   color="primary"
@@ -8858,7 +8843,6 @@ Supply line`}
                                   disabled={
                                     !canQuickStart ||
                                     savingThis ||
-                                    anotherTripInProgress ||
                                     isInvoicedTicket
                                   }
                                   fullWidth
@@ -8878,7 +8862,7 @@ Supply line`}
                                 useFlexGap
                                 flexWrap="wrap"
                               >
-                                {canPauseTrip(trip.status, trip.timerState) ? (
+                                {runningTrip ? (
                                   <Button
                                     variant="outlined"
                                     color="warning"
@@ -8893,7 +8877,7 @@ Supply line`}
                                   </Button>
                                 ) : null}
 
-                                {canResumeTrip(trip.status, trip.timerState) ? (
+                                {pausedTrip ? (
                                   <Button
                                     variant="contained"
                                     color="primary"

@@ -60,6 +60,11 @@ import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { formatTimeRange12h } from "../../../src/lib/time-format";
+import {
+  getWorkerTimerStatus,
+  switchWorkerToTrip,
+  type WorkerTimersByUid,
+} from "../../../src/lib/worker-trip-timers";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import {
   generatePurchaseOrderForProjectTrip,
@@ -105,6 +110,7 @@ type Trip = {
   completedAt?: string | null;
   completedByUid?: string | null;
   timerState?: string | null;
+  workerTimers?: WorkerTimersByUid | null;
 };
 
 type DailyCrewOverride = {
@@ -138,6 +144,7 @@ type MyDayItem = {
   projectId?: string | null;
   projectStageKey?: string | null;
   timerState?: string;
+  workerTimerState?: string;
   isActive?: boolean;
   isPaused?: boolean;
   hasAttachments?: boolean;
@@ -820,163 +827,119 @@ function buildPtoGuardedTripFromSnapshot(tripId: string, data: any): Trip {
     completedAt: data.completedAt ?? null,
     completedByUid: data.completedByUid ?? null,
     timerState: data.timerState ?? null,
+    workerTimers: data.workerTimers ?? null,
   };
 }
 
 async function startProjectTripFromMyDay(args: {
   tripId: string;
+  workerUid: string;
   startedByUid: string;
 }) {
-  const { tripId, startedByUid } = args;
-
+  const { tripId, workerUid, startedByUid } = args;
   if (!tripId) throw new Error("Missing tripId.");
+  if (!workerUid) throw new Error("Missing workerUid.");
 
   const stamp = nowIso();
   const tripRef = doc(db, "trips", tripId);
-
   const guardSnap = await getDoc(tripRef);
   if (!guardSnap.exists()) throw new Error("Trip not found.");
 
   const guardTrip = buildPtoGuardedTripFromSnapshot(tripId, guardSnap.data() as any);
   const ptoGuard = await resolveCrewPtoStartGuard(guardTrip);
-
   if (ptoGuard.blockingMessages.length > 0) {
     throw new Error(ptoGuard.blockingMessages[0]);
   }
 
-  const result = await runTransaction(db, async (tx) => {
-    const tripSnap = await tx.get(tripRef);
-    if (!tripSnap.exists()) throw new Error("Trip not found.");
-
-    const tripData = tripSnap.data() as any;
-    const tripType = String(tripData.type || "").toLowerCase();
-    if (tripType !== "project") throw new Error("Only project trips can be started from My Day.");
-
-    const status = normalizeStatus(tripData.status);
-    const timerState = normalizeTimerState(tripData.timerState, tripData.status);
-
-    if (status === "cancelled") throw new Error("This trip has been cancelled.");
-    if (status === "complete" || status === "completed") {
-      throw new Error("This trip is already complete.");
-    }
-    if (timerState === "running" || timerState === "paused") {
-      return {
-        alreadyStarted: true,
-        projectId: String(tripData.link?.projectId || "").trim() || null,
-        projectStageKey: String(tripData.link?.projectStageKey || "").trim() || null,
-        crewWarnings: ptoGuard.warnings,
-      };
-    }
-
-    tx.update(tripRef, {
-      status: "in_progress",
-      timerState: "running",
-      actualStartAt: tripData.actualStartAt ?? stamp,
-      actualEndAt: null,
-      completedAt: null,
-      completedByUid: null,
-      active: true,
+  if (ptoGuard.changed) {
+    await updateDoc(tripRef, {
       crew: ptoGuard.cleanedCrew,
       crewConfirmed: ptoGuard.cleanedCrew,
       startCrewAvailabilityWarnings: ptoGuard.warnings,
       updatedAt: stamp,
       updatedByUid: startedByUid || null,
     });
+  }
 
-    return {
-      alreadyStarted: false,
-      projectId: String(tripData.link?.projectId || "").trim() || null,
-      projectStageKey: String(tripData.link?.projectStageKey || "").trim() || null,
-      crewWarnings: ptoGuard.warnings,
-    };
+  const result = await switchWorkerToTrip({
+    db,
+    tripId,
+    workerUid,
+    actorUid: startedByUid || workerUid,
+    startWholeCrewWhenTripNotStarted: true,
   });
 
-  const safeStage = String(result.projectStageKey || "").trim();
+  const projectId = String(guardTrip.link?.projectId || "").trim() || null;
+  const projectStageKey = String(guardTrip.link?.projectStageKey || "").trim() || null;
   if (
-    result.projectId &&
-    (safeStage === "roughIn" || safeStage === "topOutVent" || safeStage === "trimFinish")
+    projectId &&
+    (projectStageKey === "roughIn" ||
+      projectStageKey === "topOutVent" ||
+      projectStageKey === "trimFinish")
   ) {
     try {
-      await updateDoc(doc(db, "projects", result.projectId), {
-        [`${safeStage}.status`]: "in_progress",
+      await updateDoc(doc(db, "projects", projectId), {
+        [`${projectStageKey}.status`]: "in_progress",
         updatedAt: stamp,
       });
     } catch {
-      // non-blocking stage status update
+      // Non-blocking stage status update.
     }
   }
 
-  return result;
+  return {
+    ...result,
+    alreadyStarted: normalizeStatus(guardTrip.status) === "in_progress",
+    projectId,
+    projectStageKey,
+    crewWarnings: ptoGuard.warnings,
+  };
 }
 
 async function startServiceTripFromMyDay(args: {
   tripId: string;
+  workerUid: string;
   startedByUid: string;
 }) {
-  const { tripId, startedByUid } = args;
-
+  const { tripId, workerUid, startedByUid } = args;
   if (!tripId) throw new Error("Missing tripId.");
+  if (!workerUid) throw new Error("Missing workerUid.");
 
   const stamp = nowIso();
   const tripRef = doc(db, "trips", tripId);
-
   const guardSnap = await getDoc(tripRef);
   if (!guardSnap.exists()) throw new Error("Trip not found.");
 
   const guardTrip = buildPtoGuardedTripFromSnapshot(tripId, guardSnap.data() as any);
   const ptoGuard = await resolveCrewPtoStartGuard(guardTrip);
-
   if (ptoGuard.blockingMessages.length > 0) {
     throw new Error(ptoGuard.blockingMessages[0]);
   }
 
-  const result = await runTransaction(db, async (tx) => {
-    const tripSnap = await tx.get(tripRef);
-    if (!tripSnap.exists()) throw new Error("Trip not found.");
-
-    const tripData = tripSnap.data() as any;
-    const tripType = String(tripData.type || "").toLowerCase();
-    if (tripType !== "service") throw new Error("Only service trips can be started from My Day.");
-
-    const status = normalizeStatus(tripData.status);
-    const timerState = normalizeTimerState(tripData.timerState, tripData.status);
-
-    if (status === "cancelled") throw new Error("This trip has been cancelled.");
-    if (status === "complete" || status === "completed") {
-      throw new Error("This trip is already complete.");
-    }
-
-    if (timerState === "running" || timerState === "paused") {
-      return {
-        alreadyStarted: true,
-        serviceTicketId: String(tripData.link?.serviceTicketId || "").trim() || null,
-        crewWarnings: ptoGuard.warnings,
-      };
-    }
-
-    tx.update(tripRef, {
-      status: "in_progress",
-      timerState: "running",
-      actualStartAt: tripData.actualStartAt ?? stamp,
-      actualEndAt: null,
-      completedAt: null,
-      completedByUid: null,
-      active: true,
+  if (ptoGuard.changed) {
+    await updateDoc(tripRef, {
       crew: ptoGuard.cleanedCrew,
       crewConfirmed: ptoGuard.cleanedCrew,
       startCrewAvailabilityWarnings: ptoGuard.warnings,
       updatedAt: stamp,
       updatedByUid: startedByUid || null,
     });
+  }
 
-    return {
-      alreadyStarted: false,
-      serviceTicketId: String(tripData.link?.serviceTicketId || "").trim() || null,
-      crewWarnings: ptoGuard.warnings,
-    };
+  const result = await switchWorkerToTrip({
+    db,
+    tripId,
+    workerUid,
+    actorUid: startedByUid || workerUid,
+    startWholeCrewWhenTripNotStarted: true,
   });
 
-  return result;
+  return {
+    ...result,
+    alreadyStarted: normalizeStatus(guardTrip.status) === "in_progress",
+    serviceTicketId: String(guardTrip.link?.serviceTicketId || "").trim() || null,
+    crewWarnings: ptoGuard.warnings,
+  };
 }
 
 function canGeneratePoForTrip(item: MyDayItem) {
@@ -1276,6 +1239,7 @@ export default function TechnicianMyDayPage() {
               completedAt: d.completedAt ?? null,
               completedByUid: d.completedByUid ?? null,
               timerState: d.timerState ?? null,
+              workerTimers: d.workerTimers ?? null,
             };
           });
 
@@ -1577,8 +1541,9 @@ return {
 
         const status = normalizeStatus(trip.status) || "planned";
         const timerState = normalizeTimerState(trip.timerState, trip.status);
-        const isPaused = status === "in_progress" && timerState === "paused";
-        const isActive = status === "in_progress";
+        const workerTimerState = getWorkerTimerStatus(trip, whoUid);
+        const isPaused = workerTimerState === "paused";
+        const isActive = workerTimerState === "running" || workerTimerState === "paused";
 
         const serviceTicketId = trip.link?.serviceTicketId || "";
         const st = serviceTicketId ? ticketById[serviceTicketId] : undefined;
@@ -1639,6 +1604,7 @@ return {
           projectId: trip.link?.projectId ?? null,
           projectStageKey: trip.link?.projectStageKey ?? null,
           timerState,
+          workerTimerState,
           isActive,
           isPaused,
           hasAttachments: Boolean(st?.hasAttachments),
@@ -1687,6 +1653,7 @@ return {
     try {
       const res = await startProjectTripFromMyDay({
         tripId: item.id,
+        workerUid: whoUid,
         startedByUid: myUid || whoUid,
       });
 
@@ -1694,20 +1661,6 @@ return {
         setStartWarning(res.crewWarnings.join(" "));
       }
 
-      setTrips((prev) =>
-        prev.map((trip) =>
-          trip.id === item.id
-            ? {
-                ...trip,
-                status: "in_progress",
-                timerState: "running",
-                completedAt: null,
-                completedByUid: null,
-                active: true,
-              }
-            : trip
-        )
-      );
 
       if (res.alreadyStarted) {
         window.location.href = isFieldCrewRole
@@ -1736,6 +1689,7 @@ return {
     try {
       const res = await startServiceTripFromMyDay({
         tripId: item.id,
+        workerUid: whoUid,
         startedByUid: myUid || whoUid,
       });
 
@@ -1743,20 +1697,6 @@ return {
         setStartWarning(res.crewWarnings.join(" "));
       }
 
-      setTrips((prev) =>
-        prev.map((trip) =>
-          trip.id === item.id
-            ? {
-                ...trip,
-                status: "in_progress",
-                timerState: "running",
-                completedAt: null,
-                completedByUid: null,
-                active: true,
-              }
-            : trip
-        )
-      );
 
       if (res.alreadyStarted) {
         window.location.href = item.href;
@@ -1849,7 +1789,11 @@ async function handleGeneratePo(item: MyDayItem) {
             }}
             sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
           >
-            {startBusyTripId === item.id ? "Starting..." : "Start Work"}
+            {startBusyTripId === item.id
+              ? "Switching..."
+              : item.workerTimerState === "paused"
+                ? "Resume Work"
+                : "Start Work"}
           </Button>
 
           {canGeneratePo ? (
@@ -1936,7 +1880,11 @@ async function handleGeneratePo(item: MyDayItem) {
             handleStartProjectFromCard(item);
           }}
         >
-          {startBusyTripId === item.id ? "Starting..." : "Start Work"}
+          {startBusyTripId === item.id
+            ? "Switching..."
+            : item.workerTimerState === "paused"
+              ? "Resume Work"
+              : "Start Work"}
         </Button>
 
         {canGeneratePo ? (
@@ -2407,7 +2355,7 @@ PTO coverage is active right now.
                     const canStartProject =
                       isProject &&
                       !currentPto &&
-                      !item.isActive &&
+                      item.workerTimerState !== "running" &&
                       !isCompleted &&
                       item.status !== "cancelled" &&
                       (canViewOtherEmployees || whoUid === myUid);
@@ -2415,7 +2363,7 @@ PTO coverage is active right now.
                     const canStartService =
                       isService &&
                       !currentPto &&
-                      !item.isActive &&
+                      item.workerTimerState !== "running" &&
                       !isCompleted &&
                       item.status !== "cancelled" &&
                       (canViewOtherEmployees || whoUid === myUid);

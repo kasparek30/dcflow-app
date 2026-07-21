@@ -1,6 +1,9 @@
-// src/lib/project-trip-time-entries.ts
 import { doc, getDoc, writeBatch, type WriteBatch } from "firebase/firestore";
 import { db } from "./firebase";
+import {
+  getWorkerTimerMinutesAt,
+  type WorkerTimersByUid,
+} from "./worker-trip-timers";
 
 type TripCrew = {
   primaryTechUid?: string | null;
@@ -21,7 +24,12 @@ type ProjectTripLite = {
   endTime?: string | null;
   status?: string | null;
   timerState?: string | null;
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
+  pauseBlocks?: Array<{ startAt: string; endAt: string | null }> | null;
+  workerTimers?: WorkerTimersByUid | null;
   crew?: TripCrew | null;
+  crewConfirmed?: TripCrew | null;
   billingPeriodId?: string | null;
   billingPeriodSequence?: number | null;
   billingPeriodLabel?: string | null;
@@ -110,7 +118,6 @@ function uniqueCrewMembers(crew?: TripCrew | null): CrewMemberForTimeEntry[] {
     if (!uid || seen.has(uid)) return;
 
     seen.add(uid);
-
     members.push({
       uid,
       name: safeTrim(input.name) || "Employee",
@@ -124,19 +131,16 @@ function uniqueCrewMembers(crew?: TripCrew | null): CrewMemberForTimeEntry[] {
     name: crew?.primaryTechName,
     crewRole: "primaryTech",
   });
-
   pushMember({
     uid: crew?.helperUid,
     name: crew?.helperName,
     crewRole: "helper",
   });
-
   pushMember({
     uid: crew?.secondaryTechUid,
     name: crew?.secondaryTechName,
     crewRole: "secondaryTech",
   });
-
   pushMember({
     uid: crew?.secondaryHelperUid,
     name: crew?.secondaryHelperName,
@@ -152,7 +156,6 @@ async function resolveUserProfileFallback(member: CrewMemberForTimeEntry) {
     if (!snap.exists()) return member;
 
     const data = snap.data() as any;
-
     return {
       ...member,
       name:
@@ -167,14 +170,28 @@ async function resolveUserProfileFallback(member: CrewMemberForTimeEntry) {
   }
 }
 
-function resolveHoursForMember(
-  defaultHours: number,
-  memberUid: string,
-  crewHoursByUid?: ProjectTripCrewHoursByUid | null,
-) {
-  const memberHours = Number(crewHoursByUid?.[memberUid]);
-  if (Number.isFinite(memberHours) && memberHours > 0) return memberHours;
-  return defaultHours;
+function roundWorkerMinutesToHours(minutes: number) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
+  return Math.max(0.5, Math.round(minutes / 30) * 0.5);
+}
+
+function resolveHoursForMember(args: {
+  trip: ProjectTripLite;
+  defaultHours: number;
+  memberUid: string;
+  crewHoursByUid?: ProjectTripCrewHoursByUid | null;
+}) {
+  const explicitHours = Number(args.crewHoursByUid?.[args.memberUid]);
+  if (Number.isFinite(explicitHours) && explicitHours > 0) return explicitHours;
+
+  if (args.trip.workerTimers?.[args.memberUid]) {
+    const endMs = new Date(args.trip.actualEndAt || new Date().toISOString()).getTime();
+    const minutes = getWorkerTimerMinutesAt(args.trip as any, args.memberUid, endMs);
+    const timerHours = roundWorkerMinutesToHours(Number(minutes || 0));
+    if (timerHours > 0) return timerHours;
+  }
+
+  return args.defaultHours;
 }
 
 export async function queueProjectTripTimeEntryWrites(
@@ -196,19 +213,10 @@ export async function queueProjectTripTimeEntryWrites(
   const projectId = safeTrim(args.projectId) || safeTrim(trip?.link?.projectId);
 
   if (!tripId) {
-    return {
-      memberCount: 0,
-      createdOrUpdatedEntryIds: [],
-      skippedReason: "Missing trip id.",
-    };
+    return { memberCount: 0, createdOrUpdatedEntryIds: [], skippedReason: "Missing trip id." };
   }
-
   if (!projectId) {
-    return {
-      memberCount: 0,
-      createdOrUpdatedEntryIds: [],
-      skippedReason: "Missing project id.",
-    };
+    return { memberCount: 0, createdOrUpdatedEntryIds: [], skippedReason: "Missing project id." };
   }
 
   const defaultHours = Number(args.hours);
@@ -220,8 +228,7 @@ export async function queueProjectTripTimeEntryWrites(
     };
   }
 
-  const crewMembers = uniqueCrewMembers(trip.crew || null);
-
+  const crewMembers = uniqueCrewMembers(trip.crewConfirmed || trip.crew || null);
   if (crewMembers.length === 0) {
     return {
       memberCount: 0,
@@ -242,16 +249,21 @@ export async function queueProjectTripTimeEntryWrites(
   const billingPeriodId = safeTrim(trip.billingPeriodId) || null;
   const billingPeriodLabel = safeTrim(trip.billingPeriodLabel) || null;
   const billingPeriodSequence = Number(trip.billingPeriodSequence);
-
   const createdOrUpdatedEntryIds: string[] = [];
 
   for (const rawMember of crewMembers) {
     const member = await resolveUserProfileFallback(rawMember);
-    const memberHours = resolveHoursForMember(defaultHours, member.uid, args.crewHoursByUid);
+    const memberHours = resolveHoursForMember({
+      trip,
+      defaultHours,
+      memberUid: member.uid,
+      crewHoursByUid: args.crewHoursByUid,
+    });
+
+    if (!Number.isFinite(memberHours) || memberHours <= 0) continue;
 
     const timesheetId = buildWeeklyTimesheetId(member.uid, weekStartDate);
     const timeEntryId = buildProjectTripTimeEntryId(tripId, member.uid);
-
     const timesheetRef = doc(db, "weeklyTimesheets", timesheetId);
     const timeEntryRef = doc(db, "timeEntries", timeEntryId);
 
@@ -263,7 +275,6 @@ export async function queueProjectTripTimeEntryWrites(
     const existingTimesheet = timesheetSnap.exists()
       ? (timesheetSnap.data() as any)
       : null;
-
     const existingEntry = timeEntrySnap.exists()
       ? (timeEntrySnap.data() as any)
       : null;
@@ -297,22 +308,18 @@ export async function queueProjectTripTimeEntryWrites(
         weekStartDate,
         weekEndDate,
         timesheetId,
-
         category: "project",
         payType: "regular",
         billable: true,
-
         source: args.source || "project_trip_closeout",
         sourceType: "project_trip",
         sourceTripId: tripId,
         sourceTripStatus: safeTrim(trip.status) || "complete",
-
         hours: memberHours,
         hoursSource: memberHours,
         defaultTripHours: defaultHours,
         hoursAdjustedFromTripDefault: Math.abs(memberHours - defaultHours) > 0.001,
         hoursLocked: true,
-
         tripId,
         projectId,
         projectStageKey,
@@ -321,12 +328,9 @@ export async function queueProjectTripTimeEntryWrites(
         billingPeriodSequence: Number.isFinite(billingPeriodSequence)
           ? billingPeriodSequence
           : null,
-
         crewRole: member.crewRole,
-
         entryStatus: safeTrim(existingEntry?.entryStatus) || "draft",
         notes: safeTrim(args.notes) || null,
-
         createdAt: existingEntry?.createdAt ?? stamp,
         createdByUid: existingEntry?.createdByUid ?? actorUid,
         updatedAt: stamp,
@@ -340,7 +344,7 @@ export async function queueProjectTripTimeEntryWrites(
   }
 
   return {
-    memberCount: crewMembers.length,
+    memberCount: createdOrUpdatedEntryIds.length,
     createdOrUpdatedEntryIds,
   };
 }
@@ -357,12 +361,7 @@ export async function upsertProjectTripTimeEntriesForCrew(args: {
   source?: string;
 }): Promise<ProjectTripTimeEntrySyncResult> {
   const batch = writeBatch(db);
-
   const result = await queueProjectTripTimeEntryWrites(batch, args);
-
-  if (result.memberCount > 0) {
-    await batch.commit();
-  }
-
+  if (result.memberCount > 0) await batch.commit();
   return result;
 }
