@@ -8613,20 +8613,38 @@ Supply line`}
                       const timerState = getWorkerTimerStatus(trip, myUid);
                       const pausedTrip = timerState === "paused";
                       const runningTrip = timerState === "running";
-                      const workerTimer = getWorkerTimer(
-                        trip,
-                        myUid,
-                        liveNowIso,
-                      );
-                      const billableMinutes =
-                        getWorkerTimerMinutesAt(trip, myUid, liveNowMs) || 0;
+                      const timerDisplayUid =
+                        String(
+                          trip.crewConfirmed?.primaryTechUid ||
+                            trip.crew?.primaryTechUid ||
+                            Object.keys(trip.workerTimers || {})[0] ||
+                            "",
+                        ).trim();
+
+                      const workerTimer = timerDisplayUid
+                        ? getWorkerTimer(trip, timerDisplayUid, liveNowIso)
+                        : null;
+
+                      const isCompletedTrip =
+                        normalizeTripStatus(trip.status) === "complete";
+
+                      const legacyEndMs = trip.actualEndAt
+                        ? Date.parse(trip.actualEndAt)
+                        : liveNowMs;
+
                       const workerTimerEndMs =
                         workerTimer?.status === "complete" && workerTimer.endedAt
                           ? Date.parse(workerTimer.endedAt)
-                          : liveNowMs;
+                          : isCompletedTrip && Number.isFinite(legacyEndMs)
+                            ? legacyEndMs
+                            : liveNowMs;
+
                       const workerTimerStartMs = workerTimer?.startedAt
                         ? Date.parse(workerTimer.startedAt)
-                        : Number.NaN;
+                        : trip.actualStartAt
+                          ? Date.parse(trip.actualStartAt)
+                          : Number.NaN;
+
                       const grossMinutes =
                         Number.isFinite(workerTimerStartMs) &&
                         Number.isFinite(workerTimerEndMs) &&
@@ -8637,13 +8655,38 @@ Supply line`}
                                 (workerTimerEndMs - workerTimerStartMs) / 60000,
                               ),
                             )
-                          : 0;
+                          : Math.max(0, Number(trip.actualMinutes || 0));
+
                       const pausedMinutes = workerTimer
                         ? sumWorkerPausedMinutes(
                             workerTimer.pauseBlocks,
                             workerTimerEndMs,
                           )
+                        : Array.isArray(trip.pauseBlocks)
+                          ? sumPausedMinutes(
+                              trip.pauseBlocks,
+                              new Date(workerTimerEndMs).toISOString(),
+                            )
+                          : 0;
+
+                      const computedWorkerMinutes = timerDisplayUid
+                        ? getWorkerTimerMinutesAt(
+                            trip,
+                            timerDisplayUid,
+                            liveNowMs,
+                          )
                         : 0;
+
+                      const billableMinutes =
+                        Number(computedWorkerMinutes || 0) > 0
+                          ? Number(computedWorkerMinutes)
+                          : Math.max(
+                              0,
+                              Number(
+                                trip.actualMinutes ??
+                                  grossMinutes - pausedMinutes,
+                              ),
+                            );
                       const finishMode = finishModeByTrip[trip.id] || "none";
                       const showFinishPanel =
                         normalizeTripStatus(trip.status) === "in_progress" &&
