@@ -1330,6 +1330,7 @@ function canCurrentUserQuickStartTrip(args: {
   const status = String(trip.status || "")
     .toLowerCase()
     .trim();
+
   if (
     status === "cancelled" ||
     status === "complete" ||
@@ -1338,8 +1339,18 @@ function canCurrentUserQuickStartTrip(args: {
     return false;
   }
 
-  if (role === "admin") return true;
-  return isUidOnTripCrew(uid, trip.crew || null);
+  if (
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager"
+  ) {
+    return true;
+  }
+
+  return isUidOnTripCrew(
+    uid,
+    trip.crewConfirmed || trip.crew || null,
+  );
 }
 
 function crewUidsFromCrew(crew?: TripCrew | null) {
@@ -5263,104 +5274,161 @@ Supply line`}
     }
   }
 
-  async function handleStartTrip(trip: TripDoc) {
-    if (!canStartTripRole || !myUid) return;
+async function handleStartTrip(trip: TripDoc) {
+  if (!canStartTripRole || !myUid) return;
 
-    if (!canCurrentUserActOnTrip(trip) && appUser?.role !== "admin") {
-      setTripErr(trip.id, "You are not assigned to this trip.");
-      return;
-    }
+  const role = normalizeRole(appUser?.role);
 
-    const workerState = getWorkerTimerStatus(trip, myUid);
-    const status = normalizeTripStatus(trip.status);
-    if (
-      status === "complete" ||
-      status === "cancelled" ||
-      workerState === "running"
-    ) {
-      setTripErr(trip.id, "This trip is not in a startable state.");
-      return;
-    }
+  const canStartForCrew =
+    role === "admin" ||
+    role === "dispatcher" ||
+    role === "manager";
 
-    const startCrew = trip.crewConfirmed || trip.crew || null;
-    const ptoStartBlockMessage = getCrewPtoStartBlockMessage({
-      crew: startCrew,
-      date: trip.date || isoTodayLocal(),
-      ptoRequests,
-    });
-    if (ptoStartBlockMessage) {
-      setTripErr(trip.id, ptoStartBlockMessage);
-      return;
-    }
+  const isAssignedWorker = canCurrentUserActOnTrip(trip);
 
-    setTripErr(trip.id, "");
-    setTripOk(trip.id, "");
-    setTripSavingFlag(trip.id, true);
-
-    try {
-      const result = await switchWorkerToTrip({
-        db,
-        tripId: trip.id,
-        workerUid: myUid,
-        actorUid: myUid,
-        startWholeCrewWhenTripNotStarted: true,
-      });
-      const now = result.stamp;
-
-      const nextTrips = trips.map((t) =>
-        t.id === trip.id
-          ? {
-              ...t,
-              status: "in_progress",
-              timerState: result.timerState,
-              workerTimers: result.workerTimers,
-              actualStartAt: t.actualStartAt || now,
-              actualEndAt: null,
-              startedByUid: t.startedByUid || myUid,
-              crewConfirmed: t.crewConfirmed || t.crew || null,
-              updatedAt: now,
-              updatedByUid: myUid,
-            }
-          : t,
-      );
-
-      setTrips(nextTrips);
-      setAvailabilityTripsByDate((prev) => ({
-        ...prev,
-        [trip.date]: nextTrips.filter((t) => t.date === trip.date),
-      }));
-      setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-
-      const nextStatus = deriveNextTicketStatus(nextTrips);
-      if (ticket?.id && nextStatus !== ticket.status) {
-        await persistTicketStatus(nextStatus, now);
-      }
-
-      await logServiceTicketActivity({
-        type: workerState === "paused" ? "service_trip_resumed" : "service_trip_started",
-        title: workerState === "paused" ? "Trip Resumed" : "Trip Started",
-        description:
-          workerState === "paused"
-            ? "Employee resumed this service trip."
-            : "Trip was started in the field.",
-        details: [
-          `Employee: ${appUser?.displayName || myUid}`,
-          `Time: ${formatTripTimeRange(trip.startTime, trip.endTime)}`,
-          `Trip: ${trip.id}`,
-        ],
-        createdAt: now,
-      });
-
-      setTripOk(trip.id, workerState === "paused" ? "Resumed." : "Trip started.");
-    } catch (err: unknown) {
-      setTripErr(
-        trip.id,
-        err instanceof Error ? err.message : "Failed to start trip.",
-      );
-    } finally {
-      setTripSavingFlag(trip.id, false);
-    }
+  if (!isAssignedWorker && !canStartForCrew) {
+    setTripErr(trip.id, "You are not assigned to this trip.");
+    return;
   }
+
+  const startCrew = trip.crewConfirmed || trip.crew || null;
+  const assignedCrewUids = crewUidsFromCrew(startCrew);
+
+  if (assignedCrewUids.length === 0) {
+    setTripErr(trip.id, "This trip does not have an assigned crew.");
+    return;
+  }
+
+  /*
+   * Field employees start their own worker timer.
+   * Admin, dispatcher, and manager users who are not assigned to the trip
+   * start the trip on behalf of the first assigned crew member.
+   *
+   * actorUid remains the logged-in user for audit history.
+   */
+  const workerUid =
+    isAssignedWorker && isUidOnTripCrew(myUid, startCrew)
+      ? myUid
+      : assignedCrewUids[0];
+
+  const workerState = getWorkerTimerStatus(trip, workerUid);
+  const status = normalizeTripStatus(trip.status);
+
+  if (
+    status === "complete" ||
+    status === "cancelled" ||
+    workerState === "running"
+  ) {
+    setTripErr(trip.id, "This trip is not in a startable state.");
+    return;
+  }
+
+  const ptoStartBlockMessage = getCrewPtoStartBlockMessage({
+    crew: startCrew,
+    date: trip.date || isoTodayLocal(),
+    ptoRequests,
+  });
+
+  if (ptoStartBlockMessage) {
+    setTripErr(trip.id, ptoStartBlockMessage);
+    return;
+  }
+
+  setTripErr(trip.id, "");
+  setTripOk(trip.id, "");
+  setTripSavingFlag(trip.id, true);
+
+  try {
+    const result = await switchWorkerToTrip({
+      db,
+      tripId: trip.id,
+      workerUid,
+      actorUid: myUid,
+      startWholeCrewWhenTripNotStarted: true,
+    });
+
+    const now = result.stamp;
+
+    const nextTrips = trips.map((t) =>
+      t.id === trip.id
+        ? {
+            ...t,
+            status: "in_progress",
+            timerState: result.timerState,
+            workerTimers: result.workerTimers,
+            actualStartAt: t.actualStartAt || now,
+            actualEndAt: null,
+            startedByUid: t.startedByUid || myUid,
+            crewConfirmed: t.crewConfirmed || t.crew || null,
+            updatedAt: now,
+            updatedByUid: myUid,
+          }
+        : t,
+    );
+
+    setTrips(nextTrips);
+
+    setAvailabilityTripsByDate((prev) => ({
+      ...prev,
+      [trip.date]: nextTrips.filter((t) => t.date === trip.date),
+    }));
+
+    setFinishModeByTrip((prev) => ({
+      ...prev,
+      [trip.id]: "none",
+    }));
+
+    const nextStatus = deriveNextTicketStatus(nextTrips);
+
+    if (ticket?.id && nextStatus !== ticket.status) {
+      await persistTicketStatus(nextStatus, now);
+    }
+
+    const startedForCrew = workerUid !== myUid;
+    const crewLabel = getTripCrewLabel(trip);
+
+    await logServiceTicketActivity({
+      type:
+        workerState === "paused"
+          ? "service_trip_resumed"
+          : "service_trip_started",
+      title: workerState === "paused" ? "Trip Resumed" : "Trip Started",
+      description:
+        workerState === "paused"
+          ? startedForCrew
+            ? "Service trip was resumed for the assigned crew."
+            : "Employee resumed this service trip."
+          : startedForCrew
+            ? "Service trip was started for the assigned crew."
+            : "Trip was started in the field.",
+      details: [
+        `Started by: ${appUser?.displayName || myUid}`,
+        startedForCrew && crewLabel ? `Crew: ${crewLabel}` : "",
+        `Time: ${formatTripTimeRange(trip.startTime, trip.endTime)}`,
+        `Trip: ${trip.id}`,
+      ].filter(Boolean),
+      createdAt: now,
+    });
+
+    setTripOk(
+      trip.id,
+      workerState === "paused"
+        ? startedForCrew
+          ? "Trip resumed for crew."
+          : "Resumed."
+        : startedForCrew
+          ? "Trip started for crew."
+          : "Trip started.",
+    );
+  } catch (err: unknown) {
+    setTripErr(
+      trip.id,
+      err instanceof Error ? err.message : "Failed to start trip.",
+    );
+  } finally {
+    setTripSavingFlag(trip.id, false);
+  }
+}
 
   async function handlePauseTrip(trip: TripDoc) {
     if (!canWorkTrip || !myUid) return;

@@ -1967,6 +1967,16 @@ const selectedProjectStage = useMemo(() => {
   return selectedProjectStageOptions.find((stage) => stage.key === addProjectStageKey) || null;
 }, [addTripType, selectedProjectStageOptions, addProjectStageKey]);
 
+const selectedProjectUsesFieldStages = useMemo(() => {
+  if (addTripType !== "project") return false;
+
+  return selectedProjectStageOptions.some((stage) =>
+    ["roughIn", "topOutVent", "trimFinish"].includes(
+      String(stage.key || "").trim(),
+    ),
+  );
+}, [addTripType, selectedProjectStageOptions]);
+
 const addEstimateHours = addTripType === "service" ? selectedAddPickerItem?.estimatedHours ?? null : null;
 const addShouldRecommendAllDay =
   addTripType === "service" &&
@@ -2553,6 +2563,11 @@ const secondaryHelperName = secondaryHelperUid
   ? employeeNamesByUid[secondaryHelperUid] || "Unnamed Helper"
   : null;
 
+      const canonicalProjectStageKey =
+        addTripType === "project" && selectedProjectUsesFieldStages
+          ? addProjectStageKey
+          : null;
+
       const dispatchOverride =
         liveConflicts.softMessages.length > 0
           ? ({
@@ -2597,10 +2612,10 @@ actualMinutes: null,
         link: {
           serviceTicketId: addTripType === "service" ? linkId : null,
           projectId: addTripType === "project" ? linkId : null,
-          projectStageKey: addTripType === "project" ? addProjectStageKey : null,
-          stageKey: addTripType === "project" ? addProjectStageKey : null,
+          projectStageKey: canonicalProjectStageKey,
+          stageKey: canonicalProjectStageKey,
         },
-        projectStageKey: addTripType === "project" ? addProjectStageKey : null,
+        projectStageKey: canonicalProjectStageKey,
         notes: addNotes.trim() || null,
         cancelReason: null,
         createdAt: now,
@@ -2641,14 +2656,24 @@ if (addTripType === "service") {
 
 if (addTripType === "project") {
   const projectUpdatePayload: any = {
-    [`stages.${addProjectStageKey}.scheduledTripIds`]: arrayUnion(created.id),
-    [`stages.${addProjectStageKey}.lastScheduledTripId`]: created.id,
     updatedAt: now,
   };
 
-  if (normalizeStageStatus(verifiedProjectStage?.status) !== "in_progress") {
-  projectUpdatePayload[`stages.${addProjectStageKey}.status`] = "scheduled";
-}
+  if (canonicalProjectStageKey) {
+    projectUpdatePayload[
+      `${canonicalProjectStageKey}.scheduledTripIds`
+    ] = arrayUnion(created.id);
+    projectUpdatePayload[
+      `${canonicalProjectStageKey}.lastScheduledTripId`
+    ] = created.id;
+
+    if (
+      normalizeStageStatus(verifiedProjectStage?.status) !== "in_progress"
+    ) {
+      projectUpdatePayload[`${canonicalProjectStageKey}.status`] =
+        "scheduled";
+    }
+  }
 
   await updateDoc(doc(db, "projects", linkId), projectUpdatePayload);
 }

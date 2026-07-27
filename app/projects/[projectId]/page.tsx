@@ -1783,11 +1783,16 @@ const canMarkTmReadyToBill =
 
   const nonStageProjectTrips = useMemo(() => {
     return projectTrips
-      .filter((t) => !String(t.link?.projectStageKey || "").trim())
+      .filter((t) => {
+        if (!hasStages) return true;
+        return !String(t.link?.projectStageKey || "").trim();
+      })
       .sort((a, b) =>
-        `${a.date}_${a.startTime}_${a.id}`.localeCompare(`${b.date}_${b.startTime}_${b.id}`),
+        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+          `${b.date}_${b.startTime}_${b.id}`,
+        ),
       );
-  }, [projectTrips]);
+  }, [projectTrips, hasStages]);
 
   const activeStageTrips = hasStages ? tripsByStage[activeStageTab] || [] : [];
 
