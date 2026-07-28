@@ -76,7 +76,9 @@ import {
   getWorkerTimerStatus,
   sumWorkerPausedMinutes,
   pauseWorkerOnTrip,
+  pauseAllWorkersOnTrip,
   resumeWorkerOnTrip,
+  resumeAllWorkersOnTrip,
   switchWorkerToTrip,
   type WorkerTimersByUid,
 } from "../../../src/lib/worker-trip-timers";
@@ -1347,10 +1349,7 @@ function canCurrentUserQuickStartTrip(args: {
     return true;
   }
 
-  return isUidOnTripCrew(
-    uid,
-    trip.crewConfirmed || trip.crew || null,
-  );
+  return isUidOnTripCrew(uid, trip.crewConfirmed || trip.crew || null);
 }
 
 function crewUidsFromCrew(crew?: TripCrew | null) {
@@ -2143,6 +2142,97 @@ function getActivityFilterLabel(value: string) {
   }
 }
 
+
+function deriveTicketStatusFromTrips(args: {
+  trips: TripDoc[];
+  currentStatus?: TicketStatus | null;
+  lastCompletedOutcome?: string | null;
+}): TicketStatus {
+  const currentStatus = String(args.currentStatus || "new")
+    .trim()
+    .toLowerCase() as TicketStatus;
+
+  if (currentStatus === "invoiced") return "invoiced";
+  if (currentStatus === "cancelled") return "cancelled";
+
+  const activeTrips = args.trips.filter((trip) => trip.active !== false);
+
+  if (activeTrips.length === 0) {
+    return "new";
+  }
+
+  const sortedTrips = [...activeTrips].sort((a, b) => {
+    const dateCompare = String(a.date || "").localeCompare(
+      String(b.date || ""),
+    );
+    if (dateCompare !== 0) return dateCompare;
+
+    const startCompare = String(a.startTime || "").localeCompare(
+      String(b.startTime || ""),
+    );
+    if (startCompare !== 0) return startCompare;
+
+    const updatedCompare = String(a.updatedAt || "").localeCompare(
+      String(b.updatedAt || ""),
+    );
+    if (updatedCompare !== 0) return updatedCompare;
+
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+
+  if (
+    sortedTrips.some(
+      (trip) => normalizeTripStatus(trip.status) === "in_progress",
+    )
+  ) {
+    return "in_progress";
+  }
+
+  const openTrips = sortedTrips.filter((trip) => isOpenTripRecord(trip));
+
+  if (openTrips.length > 0) {
+    const hasCompletedFollowUpHistory = sortedTrips.some(
+      (trip) =>
+        normalizeTripStatus(trip.status) === "complete" &&
+        String(trip.outcome || "")
+          .trim()
+          .toLowerCase() === "follow_up",
+    );
+
+    return hasCompletedFollowUpHistory || currentStatus === "follow_up"
+      ? "follow_up"
+      : "scheduled";
+  }
+
+  const completedTrips = sortedTrips.filter(
+    (trip) => normalizeTripStatus(trip.status) === "complete",
+  );
+
+  if (completedTrips.length > 0) {
+    const latestCompletedTrip = completedTrips[completedTrips.length - 1];
+    const finalOutcome = String(
+      args.lastCompletedOutcome ??
+        latestCompletedTrip.outcome ??
+        (latestCompletedTrip.readyToBillAt ? "resolved" : ""),
+    )
+      .trim()
+      .toLowerCase();
+
+    if (finalOutcome === "follow_up") return "follow_up";
+    return "completed";
+  }
+
+  if (
+    sortedTrips.some(
+      (trip) => normalizeTripStatus(trip.status) === "cancelled",
+    )
+  ) {
+    return "cancelled";
+  }
+
+  return currentStatus === "follow_up" ? "follow_up" : "scheduled";
+}
+
 function Section(props: {
   title: string;
   icon?: React.ReactNode;
@@ -2908,6 +2998,40 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         );
 
         const nextTrips = tripSnap.docs.map((ds) => mapTripLikeFromDoc(ds));
+
+        const reconciledTicketStatus = deriveTicketStatusFromTrips({
+          trips: nextTrips,
+          currentStatus: nextTicket.status,
+        });
+
+        if (
+          reconciledTicketStatus !== nextTicket.status &&
+          nextTicket.status !== "invoiced" &&
+          nextTicket.status !== "cancelled"
+        ) {
+          const reconciledAt = nowIso();
+
+          await updateDoc(doc(db, "serviceTickets", id), {
+            status: reconciledTicketStatus,
+            updatedAt: reconciledAt,
+            updatedByUid: appUser?.uid || null,
+            updatedByName:
+              String(appUser?.displayName || "").trim() || "System",
+            updatedByRole: appUser?.role || null,
+            lifecycleReconciledAt: reconciledAt,
+          });
+
+          nextTicket.status = reconciledTicketStatus;
+          nextTicket.updatedAt = reconciledAt;
+          nextTicket.updatedByUid = appUser?.uid || null;
+          nextTicket.updatedByName =
+            String(appUser?.displayName || "").trim() || "System";
+          nextTicket.updatedByRole = appUser?.role || null;
+
+          setTicket(nextTicket);
+          setTicketStatusEdit(reconciledTicketStatus);
+        }
+
         setTrips(nextTrips);
 
         const nextWork: Record<string, string> = {};
@@ -3384,86 +3508,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     nextTrips: TripDoc[],
     lastCompletedOutcome?: string | null,
   ): TicketStatus {
-    const activeTrips = nextTrips.filter((trip) => trip.active !== false);
-
-    if (activeTrips.length === 0) {
-      return "new";
-    }
-
-    const sortedTrips = [...activeTrips].sort((a, b) => {
-      const dateCompare = String(a.date || "").localeCompare(
-        String(b.date || ""),
-      );
-      if (dateCompare !== 0) return dateCompare;
-
-      const startCompare = String(a.startTime || "").localeCompare(
-        String(b.startTime || ""),
-      );
-      if (startCompare !== 0) return startCompare;
-
-      const updatedCompare = String(a.updatedAt || "").localeCompare(
-        String(b.updatedAt || ""),
-      );
-      if (updatedCompare !== 0) return updatedCompare;
-
-      return String(a.id || "").localeCompare(String(b.id || ""));
+    return deriveTicketStatusFromTrips({
+      trips: nextTrips,
+      currentStatus: ticket?.status || "new",
+      lastCompletedOutcome,
     });
-
-    const hasInProgress = sortedTrips.some(
-      (trip) => normalizeTripStatus(trip.status) === "in_progress",
-    );
-    if (hasInProgress) {
-      return "in_progress";
-    }
-
-    const openTrips = sortedTrips.filter((trip) => isOpenTripRecord(trip));
-    if (openTrips.length > 0) {
-      const hasCompletedFollowUpHistory = sortedTrips.some(
-        (trip) =>
-          normalizeTripStatus(trip.status) === "complete" &&
-          String(trip.outcome || "")
-            .trim()
-            .toLowerCase() === "follow_up",
-      );
-
-      return hasCompletedFollowUpHistory || ticket?.status === "follow_up"
-        ? "follow_up"
-        : "scheduled";
-    }
-
-    const completedTrips = sortedTrips.filter(
-      (trip) => normalizeTripStatus(trip.status) === "complete",
-    );
-
-    if (completedTrips.length > 0) {
-      const latestCompletedTrip = completedTrips[completedTrips.length - 1];
-      const finalOutcome = String(
-        lastCompletedOutcome ??
-          latestCompletedTrip.outcome ??
-          (latestCompletedTrip.readyToBillAt ? "resolved" : ""),
-      )
-        .trim()
-        .toLowerCase();
-
-      if (finalOutcome === "resolved") {
-        return ticket?.status === "invoiced" ? "invoiced" : "completed";
-      }
-
-      if (finalOutcome === "follow_up") {
-        return "follow_up";
-      }
-
-      return ticket?.status === "invoiced" ? "invoiced" : "completed";
-    }
-
-    const hasCancelledTrips = sortedTrips.some(
-      (trip) => normalizeTripStatus(trip.status) === "cancelled",
-    );
-    if (hasCancelledTrips) {
-      return "cancelled";
-    }
-
-    return ticket?.status === "follow_up" ? "follow_up" : "scheduled";
   }
 
   async function persistTicketStatus(
@@ -5344,7 +5393,10 @@ async function handleStartTrip(trip: TripDoc) {
       tripId: trip.id,
       workerUid,
       actorUid: myUid,
+      actorName: appUser?.displayName || null,
+      actorRole: appUser?.role || null,
       startWholeCrewWhenTripNotStarted: true,
+      syncLinkedServiceTicket: true,
     });
 
     const now = result.stamp;
@@ -5380,7 +5432,22 @@ async function handleStartTrip(trip: TripDoc) {
 
     const nextStatus = deriveNextTicketStatus(nextTrips);
 
-    if (ticket?.id && nextStatus !== ticket.status) {
+    if (result.linkedServiceTicketUpdated) {
+      setTicket((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "in_progress",
+              activeTripId: trip.id,
+              updatedAt: now,
+              updatedByUid: myUid,
+              updatedByName: getCurrentAuditName(),
+              updatedByRole: appUser?.role || null,
+            }
+          : prev,
+      );
+      setTicketStatusEdit("in_progress");
+    } else if (ticket?.id && nextStatus !== ticket.status) {
       await persistTicketStatus(nextStatus, now);
     }
 
@@ -5432,7 +5499,10 @@ async function handleStartTrip(trip: TripDoc) {
 
   async function handlePauseTrip(trip: TripDoc) {
     if (!canWorkTrip || !myUid) return;
-    if (!canCurrentUserActOnTrip(trip)) {
+
+    const controlsWholeCrew = appUser?.role === "admin";
+
+    if (!controlsWholeCrew && !canCurrentUserActOnTrip(trip)) {
       setTripErr(trip.id, "You are not assigned to this trip.");
       return;
     }
@@ -5442,12 +5512,18 @@ async function handleStartTrip(trip: TripDoc) {
     setTripSavingFlag(trip.id, true);
 
     try {
-      const result = await pauseWorkerOnTrip({
-        db,
-        tripId: trip.id,
-        workerUid: myUid,
-        actorUid: myUid,
-      });
+      const result = controlsWholeCrew
+        ? await pauseAllWorkersOnTrip({
+            db,
+            tripId: trip.id,
+            actorUid: myUid,
+          })
+        : await pauseWorkerOnTrip({
+            db,
+            tripId: trip.id,
+            workerUid: myUid,
+            actorUid: myUid,
+          });
 
       setTrips((prev) =>
         prev.map((t) =>
@@ -5466,11 +5542,23 @@ async function handleStartTrip(trip: TripDoc) {
       await logServiceTicketActivity({
         type: "service_trip_paused",
         title: "Trip Paused",
-        description: `${appUser?.displayName || "Employee"} paused their trip timer.`,
-        details: [`Trip: ${trip.id}`],
+        description: controlsWholeCrew
+          ? "The assigned crew's trip timers were paused by an administrator."
+          : `${appUser?.displayName || "Employee"} paused their trip timer.`,
+        details: [
+          controlsWholeCrew
+            ? `Paused by: ${appUser?.displayName || myUid}`
+            : "",
+          controlsWholeCrew ? `Crew: ${getTripCrewLabel(trip)}` : "",
+          `Trip: ${trip.id}`,
+        ].filter(Boolean),
         createdAt: result.stamp || nowIso(),
       });
-      setTripOk(trip.id, "Paused.");
+
+      setTripOk(
+        trip.id,
+        controlsWholeCrew ? "Trip paused for crew." : "Paused.",
+      );
     } catch (err: unknown) {
       setTripErr(
         trip.id,
@@ -5483,7 +5571,10 @@ async function handleStartTrip(trip: TripDoc) {
 
   async function handleResumeTrip(trip: TripDoc) {
     if (!canWorkTrip || !myUid) return;
-    if (!canCurrentUserActOnTrip(trip)) {
+
+    const controlsWholeCrew = appUser?.role === "admin";
+
+    if (!controlsWholeCrew && !canCurrentUserActOnTrip(trip)) {
       setTripErr(trip.id, "You are not assigned to this trip.");
       return;
     }
@@ -5494,6 +5585,7 @@ async function handleStartTrip(trip: TripDoc) {
       date: trip.date || isoTodayLocal(),
       ptoRequests,
     });
+
     if (ptoResumeBlockMessage) {
       setTripErr(trip.id, ptoResumeBlockMessage);
       return;
@@ -5504,12 +5596,18 @@ async function handleStartTrip(trip: TripDoc) {
     setTripSavingFlag(trip.id, true);
 
     try {
-      const result = await resumeWorkerOnTrip({
-        db,
-        tripId: trip.id,
-        workerUid: myUid,
-        actorUid: myUid,
-      });
+      const result = controlsWholeCrew
+        ? await resumeAllWorkersOnTrip({
+            db,
+            tripId: trip.id,
+            actorUid: myUid,
+          })
+        : await resumeWorkerOnTrip({
+            db,
+            tripId: trip.id,
+            workerUid: myUid,
+            actorUid: myUid,
+          });
 
       setTrips((prev) =>
         prev.map((t) =>
@@ -5529,11 +5627,23 @@ async function handleStartTrip(trip: TripDoc) {
       await logServiceTicketActivity({
         type: "service_trip_resumed",
         title: "Trip Resumed",
-        description: `${appUser?.displayName || "Employee"} resumed their trip timer.`,
-        details: [`Trip: ${trip.id}`],
+        description: controlsWholeCrew
+          ? "The assigned crew's trip timers were resumed by an administrator."
+          : `${appUser?.displayName || "Employee"} resumed their trip timer.`,
+        details: [
+          controlsWholeCrew
+            ? `Resumed by: ${appUser?.displayName || myUid}`
+            : "",
+          controlsWholeCrew ? `Crew: ${getTripCrewLabel(trip)}` : "",
+          `Trip: ${trip.id}`,
+        ].filter(Boolean),
         createdAt: result.stamp,
       });
-      setTripOk(trip.id, "Resumed.");
+
+      setTripOk(
+        trip.id,
+        controlsWholeCrew ? "Trip resumed for crew." : "Resumed.",
+      );
     } catch (err: unknown) {
       setTripErr(
         trip.id,
@@ -8678,7 +8788,10 @@ async function handleStartTrip(trip: TripDoc) {
                     {trips.map((trip) => {
                       const canAct = canCurrentUserActOnTrip(trip);
                       const savingThis = Boolean(tripActionSaving[trip.id]);
-                      const timerState = getWorkerTimerStatus(trip, myUid);
+                      const controlsWholeCrew = appUser?.role === "admin";
+                      const timerState = controlsWholeCrew
+                        ? normalizeTripTimerState(trip)
+                        : getWorkerTimerStatus(trip, myUid);
                       const pausedTrip = timerState === "paused";
                       const runningTrip = timerState === "running";
                       const timerDisplayUid =
@@ -8984,7 +9097,7 @@ async function handleStartTrip(trip: TripDoc) {
                                     }
                                     sx={{ minHeight: 44 }}
                                   >
-                                    Pause
+                                    Pause Trip
                                   </Button>
                                 ) : null}
 
@@ -8999,7 +9112,7 @@ async function handleStartTrip(trip: TripDoc) {
                                     }
                                     sx={{ minHeight: 44 }}
                                   >
-                                    Resume
+                                    Resume Trip
                                   </Button>
                                 ) : null}
 

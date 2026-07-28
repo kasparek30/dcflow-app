@@ -47,6 +47,11 @@ export type TripTimerLike = {
   crew?: TripTimerCrew | null;
   crewConfirmed?: TripTimerCrew | null;
   workerTimers?: WorkerTimersByUid | null;
+  link?: {
+    serviceTicketId?: string | null;
+    projectId?: string | null;
+    projectStageKey?: string | null;
+  } | null;
 };
 
 function safeTrim(value: unknown) {
@@ -151,9 +156,10 @@ export function materializeWorkerTimers(
   trip: TripTimerLike,
   stamp: string,
 ): WorkerTimersByUid {
-  const existing = trip.workerTimers && typeof trip.workerTimers === "object"
-    ? { ...trip.workerTimers }
-    : {};
+  const existing =
+    trip.workerTimers && typeof trip.workerTimers === "object"
+      ? { ...trip.workerTimers }
+      : {};
 
   const crew = trip.crewConfirmed || trip.crew || null;
   for (const uid of getCrewUids(crew)) {
@@ -292,6 +298,14 @@ function mapTrip(id: string, data: any): TripTimerLike {
       data.workerTimers && typeof data.workerTimers === "object"
         ? data.workerTimers
         : null,
+    link:
+      data.link && typeof data.link === "object"
+        ? {
+            serviceTicketId: data.link.serviceTicketId ?? null,
+            projectId: data.link.projectId ?? null,
+            projectStageKey: data.link.projectStageKey ?? null,
+          }
+        : null,
   };
 }
 
@@ -332,11 +346,17 @@ export async function switchWorkerToTrip(args: {
   tripId: string;
   workerUid: string;
   actorUid?: string | null;
+  actorName?: string | null;
+  actorRole?: string | null;
   startWholeCrewWhenTripNotStarted?: boolean;
+  syncLinkedServiceTicket?: boolean;
 }) {
   const tripId = safeTrim(args.tripId);
   const workerUid = safeTrim(args.workerUid);
   const actorUid = safeTrim(args.actorUid) || null;
+  const actorName = safeTrim(args.actorName) || null;
+  const actorRole = safeTrim(args.actorRole) || null;
+
   if (!tripId) throw new Error("Missing trip id.");
   if (!workerUid) throw new Error("Missing worker id.");
 
@@ -346,12 +366,14 @@ export async function switchWorkerToTrip(args: {
 
   const target = mapTrip(targetSnap.id, targetSnap.data());
   const targetStatus = normalizeStatus(target.status);
+
   if (targetStatus === "complete" || targetStatus === "cancelled") {
     throw new Error("This trip is no longer available to start.");
   }
 
   const targetCrew = target.crewConfirmed || target.crew || null;
   const targetCrewUids = getCrewUids(targetCrew);
+
   if (!targetCrewUids.includes(workerUid)) {
     throw new Error("This employee is not assigned to the trip.");
   }
@@ -361,26 +383,47 @@ export async function switchWorkerToTrip(args: {
     args.startWholeCrewWhenTripNotStarted !== false &&
     targetStatus !== "in_progress" &&
     targetState === "not_started";
+
   const workersToStart = shouldStartWholeCrew ? targetCrewUids : [workerUid];
 
   const candidateTripsById = new Map<string, TripTimerLike>();
+
   for (const uid of workersToStart) {
     const trips = await queryTripsForWorker(args.db, uid);
-    for (const trip of trips) candidateTripsById.set(trip.id, trip);
+    for (const trip of trips) {
+      candidateTripsById.set(trip.id, trip);
+    }
   }
+
   candidateTripsById.set(target.id, target);
 
   const stamp = new Date().toISOString();
 
   return runTransaction(args.db, async (tx) => {
     const liveTrips = new Map<string, TripTimerLike>();
+
     for (const candidateId of candidateTripsById.keys()) {
       const snap = await tx.get(doc(args.db, "trips", candidateId));
-      if (snap.exists()) liveTrips.set(candidateId, mapTrip(candidateId, snap.data()));
+      if (snap.exists()) {
+        liveTrips.set(candidateId, mapTrip(candidateId, snap.data()));
+      }
     }
 
     const liveTarget = liveTrips.get(tripId);
     if (!liveTarget) throw new Error("Trip not found.");
+
+    const linkedServiceTicketId =
+      args.syncLinkedServiceTicket === false
+        ? ""
+        : safeTrim(liveTarget.link?.serviceTicketId);
+
+    const linkedTicketRef = linkedServiceTicketId
+      ? doc(args.db, "serviceTickets", linkedServiceTicketId)
+      : null;
+
+    const linkedTicketSnap = linkedTicketRef
+      ? await tx.get(linkedTicketRef)
+      : null;
 
     for (const uid of workersToStart) {
       for (const [candidateId, candidate] of liveTrips.entries()) {
@@ -388,9 +431,11 @@ export async function switchWorkerToTrip(args: {
 
         const timers = materializeWorkerTimers(candidate, stamp);
         const current = timers[uid];
+
         if (!current || current.status !== "running") continue;
 
         timers[uid] = pauseTimer(current, stamp, actorUid);
+
         tx.update(doc(args.db, "trips", candidateId), {
           workerTimers: timers,
           timerState: deriveTripTimerState(timers),
@@ -401,6 +446,7 @@ export async function switchWorkerToTrip(args: {
     }
 
     const targetTimers = materializeWorkerTimers(liveTarget, stamp);
+
     for (const uid of workersToStart) {
       const current = targetTimers[uid];
       targetTimers[uid] = current
@@ -418,7 +464,32 @@ export async function switchWorkerToTrip(args: {
       updatedAt: stamp,
       updatedByUid: actorUid,
     };
+
     tx.update(targetRef, targetPatch);
+
+    let linkedServiceTicketUpdated = false;
+
+    if (linkedTicketRef && linkedTicketSnap?.exists()) {
+      const liveTicket = linkedTicketSnap.data() as any;
+      const liveTicketStatus = safeTrim(liveTicket.status).toLowerCase();
+
+      if (
+        liveTicketStatus !== "invoiced" &&
+        liveTicketStatus !== "cancelled"
+      ) {
+        tx.update(linkedTicketRef, {
+          status: "in_progress",
+          activeTripId: tripId,
+          scheduledTripId: liveTicket.scheduledTripId || tripId,
+          updatedAt: stamp,
+          updatedByUid: actorUid,
+          updatedByName: actorName,
+          updatedByRole: actorRole,
+        });
+
+        linkedServiceTicketUpdated = true;
+      }
+    }
 
     return {
       tripId,
@@ -428,6 +499,11 @@ export async function switchWorkerToTrip(args: {
       stamp,
       workerTimers: targetTimers,
       timerState: targetPatch.timerState,
+      linkedServiceTicketId: linkedServiceTicketId || null,
+      linkedServiceTicketUpdated,
+      linkedServiceTicketStatus: linkedServiceTicketUpdated
+        ? "in_progress"
+        : null,
     };
   });
 }
@@ -450,9 +526,19 @@ export async function pauseWorkerOnTrip(args: {
     const trip = mapTrip(tripId, snap.data());
     const timers = materializeWorkerTimers(trip, stamp);
     const current = timers[workerUid];
-    if (!current) throw new Error("No timer exists for this employee on the trip.");
-    if (current.status === "paused") return { workerTimers: timers, timerState: deriveTripTimerState(timers) };
-    if (current.status !== "running") throw new Error("This employee's timer is not running.");
+    if (!current) {
+      throw new Error("No timer exists for this employee on the trip.");
+    }
+    if (current.status === "paused") {
+      return {
+        workerTimers: timers,
+        timerState: deriveTripTimerState(timers),
+        stamp,
+      };
+    }
+    if (current.status !== "running") {
+      throw new Error("This employee's timer is not running.");
+    }
 
     timers[workerUid] = pauseTimer(current, stamp, actorUid);
     const timerState = deriveTripTimerState(timers);
@@ -463,6 +549,61 @@ export async function pauseWorkerOnTrip(args: {
       updatedByUid: actorUid,
     });
     return { workerTimers: timers, timerState, stamp };
+  });
+}
+
+export async function pauseAllWorkersOnTrip(args: {
+  db: Firestore;
+  tripId: string;
+  actorUid?: string | null;
+}) {
+  const tripId = safeTrim(args.tripId);
+  const actorUid = safeTrim(args.actorUid) || null;
+  if (!tripId) throw new Error("Missing trip id.");
+
+  const tripRef = doc(args.db, "trips", tripId);
+  const stamp = new Date().toISOString();
+
+  return runTransaction(args.db, async (tx) => {
+    const snap = await tx.get(tripRef);
+    if (!snap.exists()) throw new Error("Trip not found.");
+
+    const trip = mapTrip(tripId, snap.data());
+    const timers = materializeWorkerTimers(trip, stamp);
+    const crew = trip.crewConfirmed || trip.crew || null;
+    const crewUids = getCrewUids(crew);
+
+    if (crewUids.length === 0) {
+      throw new Error("No assigned crew was found on this trip.");
+    }
+
+    let changed = false;
+    for (const uid of crewUids) {
+      const current = timers[uid];
+      if (!current || current.status !== "running") continue;
+      timers[uid] = pauseTimer(current, stamp, actorUid);
+      changed = true;
+    }
+
+    const timerState = deriveTripTimerState(timers);
+
+    if (changed) {
+      tx.update(tripRef, {
+        workerTimers: timers,
+        timerState,
+        updatedAt: stamp,
+        updatedByUid: actorUid,
+      });
+    }
+
+    return {
+      workerTimers: timers,
+      timerState,
+      stamp,
+      affectedWorkerUids: crewUids.filter(
+        (uid) => timers[uid]?.status === "paused",
+      ),
+    };
   });
 }
 
@@ -478,6 +619,69 @@ export async function resumeWorkerOnTrip(args: {
     workerUid: args.workerUid,
     actorUid: args.actorUid,
     startWholeCrewWhenTripNotStarted: false,
+  });
+}
+
+export async function resumeAllWorkersOnTrip(args: {
+  db: Firestore;
+  tripId: string;
+  actorUid?: string | null;
+}) {
+  const tripId = safeTrim(args.tripId);
+  const actorUid = safeTrim(args.actorUid) || null;
+  if (!tripId) throw new Error("Missing trip id.");
+
+  const tripRef = doc(args.db, "trips", tripId);
+  const stamp = new Date().toISOString();
+
+  return runTransaction(args.db, async (tx) => {
+    const snap = await tx.get(tripRef);
+    if (!snap.exists()) throw new Error("Trip not found.");
+
+    const trip = mapTrip(tripId, snap.data());
+    const status = normalizeStatus(trip.status);
+    if (status === "complete" || status === "cancelled") {
+      throw new Error("This trip is no longer available to resume.");
+    }
+
+    const timers = materializeWorkerTimers(trip, stamp);
+    const crew = trip.crewConfirmed || trip.crew || null;
+    const crewUids = getCrewUids(crew);
+
+    if (crewUids.length === 0) {
+      throw new Error("No assigned crew was found on this trip.");
+    }
+
+    let changed = false;
+    for (const uid of crewUids) {
+      const current = timers[uid];
+      if (!current || current.status !== "paused") continue;
+      timers[uid] = resumeTimer(current, stamp, actorUid);
+      changed = true;
+    }
+
+    const timerState = deriveTripTimerState(timers);
+
+    if (changed) {
+      tx.update(tripRef, {
+        status: "in_progress",
+        workerTimers: timers,
+        timerState,
+        actualEndAt: null,
+        active: true,
+        updatedAt: stamp,
+        updatedByUid: actorUid,
+      });
+    }
+
+    return {
+      workerTimers: timers,
+      timerState,
+      stamp,
+      affectedWorkerUids: crewUids.filter(
+        (uid) => timers[uid]?.status === "running",
+      ),
+    };
   });
 }
 
