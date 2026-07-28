@@ -108,6 +108,8 @@ type TicketSummary = {
   customerDisplayName: string;
   serviceAddressLine1: string;
   serviceCity: string;
+  status?: string;
+  outcome?: string;
 };
 
 type ProjectSummary = {
@@ -124,6 +126,9 @@ type PtoDay = {
   hours?: number | null;
   requestId: string;
   reason?: string | null;
+  timeWindow?: "am" | "pm" | "all_day" | "custom" | string | null;
+  startTime?: string | null;
+  endTime?: string | null;
 };
 
 function pad2(n: number) {
@@ -179,6 +184,12 @@ function formatTime12h(hhmm?: string) {
 
 function normalizeStatus(s?: string) {
   return String(s || "").trim().toLowerCase();
+}
+
+function firstNameOnly(name?: string) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return "";
+  return trimmed.split(/\s+/)[0] || trimmed;
 }
 
 function tripTimerStatusForRow(t: TripDoc, workerUid: string | null) {
@@ -315,6 +326,81 @@ function extractEmployeeName(d: any) {
   return String(d.employeeName ?? d.displayName ?? d.name ?? "").trim();
 }
 
+function extractPtoTimeWindow(d: any) {
+  const partialDayType = String(d.partialDayType ?? "")
+    .trim()
+    .toLowerCase();
+  const requestDayType = String(d.requestDayType ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    requestDayType === "partial_day" &&
+    (partialDayType === "am" ||
+      partialDayType === "pm" ||
+      partialDayType === "custom")
+  ) {
+    return partialDayType;
+  }
+
+  return String(
+    d.timeWindow ??
+      d.ptoTimeWindow ??
+      d.dayPart ??
+      d.period ??
+      partialDayType ??
+      ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function extractPtoStartTime(d: any) {
+  const value = String(
+    d.partialStartTime ??
+      d.startTime ??
+      d.ptoStartTime ??
+      d.startAtTime ??
+      d.fromTime ??
+      ""
+  ).trim();
+  return /^\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function extractPtoEndTime(d: any) {
+  const value = String(
+    d.partialEndTime ??
+      d.endTime ??
+      d.ptoEndTime ??
+      d.endAtTime ??
+      d.toTime ??
+      ""
+  ).trim();
+  return /^\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function ptoIsFullDay(pto: PtoDay) {
+  const window = normalizeStatus(pto.timeWindow || "");
+  if (window === "all_day" || window === "full_day") return true;
+  if (window === "am" || window === "pm" || window === "custom") return false;
+  if (pto.startTime || pto.endTime) return false;
+  return !pto.hours || pto.hours >= 8;
+}
+
+function ptoTimeText(pto: PtoDay) {
+  const window = normalizeStatus(pto.timeWindow || "");
+  if (window === "all_day" || window === "full_day") return "All day";
+  if (window === "am") return "8AM–12PM";
+  if (window === "pm") return "1PM–5PM";
+  if (pto.startTime && pto.endTime) {
+    return `${formatTime12h(pto.startTime)}–${formatTime12h(pto.endTime)}`;
+  }
+  if (pto.startTime) return `From ${formatTime12h(pto.startTime)}`;
+  if (pto.endTime) return `Until ${formatTime12h(pto.endTime)}`;
+  if (pto.hours) return `${pto.hours}h`;
+  return "All day";
+}
+
 function extractPtoDates(d: any): string[] {
   const single = String(d.date ?? d.ptoDate ?? d.day ?? d.requestDate ?? "").trim();
   if (single && /^\d{4}-\d{2}-\d{2}$/.test(single)) return [single];
@@ -411,7 +497,6 @@ export default function OfficeDisplayPage() {
   const [ticketMap, setTicketMap] = useState<Record<string, TicketSummary>>({});
   const [projectMap, setProjectMap] = useState<Record<string, ProjectSummary>>({});
   const [ptoByUidByDate, setPtoByUidByDate] = useState<Record<string, Record<string, PtoDay>>>({});
-  const [ptoNamesByDate, setPtoNamesByDate] = useState<Record<string, string[]>>({});
   const [lastUpdated, setLastUpdated] = useState<string>("");
 
   const anchor = useMemo(() => {
@@ -638,12 +723,85 @@ export default function OfficeDisplayPage() {
 
     async function loadPto() {
       try {
-        const snap = await getDocs(collection(db, "ptoRequests"));
+        const [unavailabilitySnap, requestSnap] = await Promise.all([
+          getDocs(collection(db, "employeeUnavailability")),
+          getDocs(collection(db, "ptoRequests")),
+        ]);
 
         const byUid: Record<string, Record<string, PtoDay>> = {};
-        const namesByDate: Record<string, Set<string>> = {};
 
-        for (const ds of snap.docs) {
+        const requestById = new Map<string, any>();
+        for (const requestDoc of requestSnap.docs) {
+          requestById.set(requestDoc.id, requestDoc.data() as any);
+        }
+
+        function storePtoDay(pto: PtoDay, overwrite: boolean) {
+          if (!byUid[pto.uid]) byUid[pto.uid] = {};
+          if (!overwrite && byUid[pto.uid][pto.date]) return;
+          byUid[pto.uid][pto.date] = pto;
+        }
+
+        // Approved PTO creates a date-specific employeeUnavailability document.
+        // This is the most accurate source because it carries the exact approved
+        // partial-day block for each individual date.
+        for (const ds of unavailabilitySnap.docs) {
+          const d = ds.data() as any;
+          const active = typeof d.active === "boolean" ? d.active : true;
+          const type = normalizeStatus(d.type);
+          if (!active || type !== "pto") continue;
+
+          const uid = String(d.uid ?? d.employeeId ?? "").trim();
+          const date = String(d.date ?? "").trim();
+          if (!uid || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          if (date < weekStartIso || date > weekEndIso) continue;
+
+          const source = normalizeStatus(d.source);
+          const linkedRequestId = String(d.ptoRequestId ?? "").trim();
+
+          // Approval creates employeeUnavailability as a separate document. If the
+          // PTO request is later deleted, that generated document can remain behind.
+          // Do not display an orphaned or no-longer-approved generated PTO block.
+          if (linkedRequestId) {
+            const linkedRequest = requestById.get(linkedRequestId);
+            if (!linkedRequest || !looksApprovedPto(linkedRequest)) continue;
+          } else if (source === "pto_request_approved") {
+            continue;
+          }
+
+          const employeeName = String(
+            d.displayName ?? d.employeeName ?? d.name ?? uid
+          ).trim();
+          const hours = d.hours ?? d.hoursPerDay ?? null;
+          const requestDayType = normalizeStatus(d.requestDayType);
+          const partialDayType = normalizeStatus(d.partialDayType);
+
+          const timeWindow =
+            requestDayType === "partial_day"
+              ? partialDayType || "custom"
+              : requestDayType === "full_day"
+                ? "all_day"
+                : extractPtoTimeWindow(d) || null;
+
+          storePtoDay(
+            {
+              uid,
+              employeeName,
+              date,
+              hours: Number.isFinite(Number(hours)) ? Number(hours) : null,
+              requestId: String(d.ptoRequestId ?? ds.id),
+              reason: d.reason ? String(d.reason) : null,
+              timeWindow,
+              startTime: extractPtoStartTime(d),
+              endTime: extractPtoEndTime(d),
+            },
+            true
+          );
+        }
+
+        // Backward-compatible fallback for approved requests that predate the
+        // employeeUnavailability records. Never overwrite the date-specific
+        // approved block loaded above.
+        for (const ds of requestSnap.docs) {
           const d = ds.data() as any;
           if (!looksApprovedPto(d)) continue;
 
@@ -654,37 +812,47 @@ export default function OfficeDisplayPage() {
           if (!dates.length) continue;
 
           const employeeName = extractEmployeeName(d) || uid;
-          const hours = d.hours ?? d.hoursPaid ?? d.requestedHours ?? null;
+          const hours =
+            d.hoursPerDay ??
+            d.hours ??
+            d.hoursPaid ??
+            d.requestedHours ??
+            null;
           const reason = d.reason ?? d.notes ?? d.note ?? null;
+          const requestDayType = normalizeStatus(d.requestDayType);
+          const partialDayType = normalizeStatus(d.partialDayType);
+
+          const timeWindow =
+            requestDayType === "partial_day"
+              ? partialDayType || "custom"
+              : requestDayType === "full_day"
+                ? "all_day"
+                : extractPtoTimeWindow(d) || null;
+          const startTime = extractPtoStartTime(d);
+          const endTime = extractPtoEndTime(d);
 
           for (const date of dates) {
             if (date < weekStartIso || date > weekEndIso) continue;
 
-            if (!byUid[uid]) byUid[uid] = {};
-            byUid[uid][date] = {
-              uid,
-              employeeName,
-              date,
-              hours: Number.isFinite(Number(hours)) ? Number(hours) : null,
-              requestId: ds.id,
-              reason: reason ? String(reason) : null,
-            };
-
-            if (!namesByDate[date]) namesByDate[date] = new Set<string>();
-            namesByDate[date].add(employeeName);
+            storePtoDay(
+              {
+                uid,
+                employeeName,
+                date,
+                hours: Number.isFinite(Number(hours)) ? Number(hours) : null,
+                requestId: ds.id,
+                reason: reason ? String(reason) : null,
+                timeWindow,
+                startTime,
+                endTime,
+              },
+              false
+            );
           }
-        }
-
-        const outNames: Record<string, string[]> = {};
-        for (const date of Object.keys(namesByDate)) {
-          outNames[date] = Array.from(namesByDate[date].values()).sort((a, b) =>
-            a.localeCompare(b)
-          );
         }
 
         if (!cancelled) {
           setPtoByUidByDate(byUid);
-          setPtoNamesByDate(outNames);
           setLastUpdated(new Date().toLocaleTimeString());
         }
       } catch (e: any) {
@@ -738,6 +906,8 @@ export default function OfficeDisplayPage() {
                   customerDisplayName: String(d.customerDisplayName ?? ""),
                   serviceAddressLine1: String(d.serviceAddressLine1 ?? ""),
                   serviceCity: String(d.serviceCity ?? ""),
+                  status: String(d.status ?? ""),
+                  outcome: String(d.outcome ?? d.closeoutOutcome ?? d.resolutionOutcome ?? ""),
                 };
               } catch {}
             })
@@ -854,8 +1024,23 @@ export default function OfficeDisplayPage() {
     const subtitle = tripDisplaySubtitle(t, ticket);
     const location = tripDisplayLocation(t, ticket, project);
     const timeText = tripTimeText(t);
-    const tone = statusTone(t.status);
     const tripType = normalizeStatus(t.type);
+    const ticketStatus = normalizeStatus(ticket?.status);
+    const ticketOutcome = normalizeStatus(ticket?.outcome);
+    const isFollowUp =
+      tripType === "service" &&
+      (ticketStatus === "follow_up" ||
+        ticketStatus === "follow-up" ||
+        ticketOutcome === "follow_up" ||
+        ticketOutcome === "follow-up");
+    const tone = isFollowUp
+      ? {
+          label: "Follow-Up",
+          bg: "rgba(168,85,247,0.12)",
+          border: "rgba(168,85,247,0.28)",
+          color: "#E9D5FF",
+        }
+      : statusTone(t.status);
     const isCompleted =
       normalizeStatus(t.status) === "complete" ||
       normalizeStatus(t.status) === "completed";
@@ -1348,7 +1533,9 @@ export default function OfficeDisplayPage() {
             </Box>
 
             {days.map(({ d, iso }) => {
-              const ptoNames = ptoNamesByDate[iso] || [];
+              const ptoEntries = Object.values(ptoByUidByDate)
+                .map((byDate) => byDate[iso])
+                .filter((pto): pto is PtoDay => Boolean(pto));
               const holidays = holidaysByDate[iso] || [];
               const meetings = eventsByDate[iso] || [];
 
@@ -1356,7 +1543,9 @@ export default function OfficeDisplayPage() {
                 holidays.length === 1 ? holidays[0].name : `${holidays.length} Holidays`;
 
               const ptoLabel =
-                ptoNames.length === 1 ? `PTO: ${ptoNames[0]}` : `PTO: ${ptoNames.length} employees`;
+                ptoEntries.length === 1
+                  ? `PTO: ${firstNameOnly(ptoEntries[0].employeeName)} • ${ptoTimeText(ptoEntries[0])}`
+                  : `PTO: ${ptoEntries.length} employees`;
 
               const visibleMeetings = meetings.slice(0, 1);
               const extraMeetings = Math.max(0, meetings.length - visibleMeetings.length);
@@ -1417,7 +1606,7 @@ export default function OfficeDisplayPage() {
                           />
                         ) : null}
 
-                        {ptoNames.length ? (
+                        {ptoEntries.length ? (
                           <Chip
                             size="small"
                             icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
@@ -1562,6 +1751,7 @@ export default function OfficeDisplayPage() {
                   const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
                   const cellTrips = grid.get(rowKey)?.get(iso) || [];
                   const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
+                  const isFullDayPto = pto ? ptoIsFullDay(pto) : false;
                   const holidays = holidaysByDate[iso] || [];
                   const isHoliday = holidays.length > 0;
 
@@ -1576,7 +1766,7 @@ export default function OfficeDisplayPage() {
                         display: "flex",
                         flexDirection: "column",
                         gap: 0.7,
-                        backgroundColor: pto
+                        backgroundColor: isFullDayPto
                           ? alpha(theme.palette.secondary.main, 0.08)
                           : isHoliday
                             ? "rgba(245,158,11,0.06)"
@@ -1587,7 +1777,7 @@ export default function OfficeDisplayPage() {
                         <Chip
                           size="small"
                           icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
-                          label={`PTO${pto.hours ? ` • ${pto.hours}h` : ""}`}
+                          label={`PTO • ${ptoTimeText(pto)}`}
                           color="secondary"
                           variant="outlined"
                           sx={{
@@ -1614,7 +1804,13 @@ export default function OfficeDisplayPage() {
                           }}
                         >
                           <Typography variant="caption">
-                            {pto ? "PTO" : isHoliday ? "Holiday" : "—"}
+                            {pto
+                              ? isFullDayPto
+                                ? "PTO"
+                                : `Available outside ${ptoTimeText(pto)}`
+                              : isHoliday
+                                ? "Holiday"
+                                : "—"}
                           </Typography>
                         </Paper>
                       ) : (
