@@ -22,18 +22,32 @@ export type PauseBlock = {
   endAt: string | null;
 };
 
+export type FieldWorkerRole =
+  | "manager"
+  | "technician"
+  | "helper"
+  | "apprentice";
+
 export type TripCrew = {
+  /**
+   * Legacy field names are retained for compatibility. The primary slot now
+   * represents the on-site lead and may contain any field-worker role.
+   */
   primaryTechUid: string;
   primaryTechName?: string;
+  primaryTechRole?: FieldWorkerRole;
 
   helperUid?: string;
   helperName?: string;
+  helperRole?: FieldWorkerRole;
 
   secondaryTechUid?: string;
   secondaryTechName?: string;
+  secondaryTechRole?: FieldWorkerRole;
 
   secondaryHelperUid?: string;
   secondaryHelperName?: string;
+  secondaryHelperRole?: FieldWorkerRole;
 };
 
 export type TripLink = {

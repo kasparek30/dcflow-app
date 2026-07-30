@@ -71,15 +71,21 @@ import {
   generatePurchaseOrderForTrip,
 } from "../../../src/lib/purchase-orders";
 
+type FieldWorkerRole = "manager" | "technician" | "helper" | "apprentice";
+
 type TripCrew = {
   primaryTechUid?: string | null;
   primaryTechName?: string | null;
+  primaryTechRole?: FieldWorkerRole | null;
   helperUid?: string | null;
   helperName?: string | null;
+  helperRole?: FieldWorkerRole | null;
   secondaryTechUid?: string | null;
   secondaryTechName?: string | null;
+  secondaryTechRole?: FieldWorkerRole | null;
   secondaryHelperUid?: string | null;
   secondaryHelperName?: string | null;
+  secondaryHelperRole?: FieldWorkerRole | null;
 };
 
 type TripLink = {
@@ -609,8 +615,8 @@ function getCrewEntriesForPtoGuard(crew?: TripCrew | null): CrewPtoGuardEntry[] 
     uid: crew?.primaryTechUid,
     name: crew?.primaryTechName,
     position: "primaryTech",
-    label: "lead tech",
-    fallbackName: "Lead Tech",
+    label: "scheduled lead",
+    fallbackName: "Lead Field Worker",
   });
 
   add({
@@ -773,8 +779,10 @@ async function resolveCrewPtoStartGuard(trip: Trip): Promise<CrewPtoStartGuardRe
     const dateRange = formatPtoDateRange(approvedPto.startDate, approvedPto.endDate);
 
     if (entry.position === "primaryTech") {
-      blockingMessages.push(
-        `${entry.name} is assigned as the lead tech but has approved PTO (${dateRange}). Assign an available lead tech before starting this trip.`
+      cleanedCrew = clearCrewPositionForPtoGuard(cleanedCrew, entry.position);
+      removedUids.push(entry.uid);
+      warnings.push(
+        `${entry.name} was removed as the scheduled lead because they have approved PTO (${dateRange}).`
       );
       continue;
     }
@@ -795,9 +803,37 @@ async function resolveCrewPtoStartGuard(trip: Trip): Promise<CrewPtoStartGuardRe
     );
   }
 
-  if (!hasLeadTechForPtoGuard(cleanedCrew)) {
+  if (!String(cleanedCrew.primaryTechUid || "").trim()) {
+    if (String(cleanedCrew.secondaryTechUid || "").trim()) {
+      cleanedCrew.primaryTechUid = cleanedCrew.secondaryTechUid;
+      cleanedCrew.primaryTechName = cleanedCrew.secondaryTechName || "Lead Field Worker";
+      cleanedCrew.primaryTechRole = cleanedCrew.secondaryTechRole || "technician";
+      cleanedCrew.secondaryTechUid = null;
+      cleanedCrew.secondaryTechName = null;
+      cleanedCrew.secondaryTechRole = null;
+      warnings.push(`${cleanedCrew.primaryTechName} is now the on-site lead.`);
+    } else if (String(cleanedCrew.helperUid || "").trim()) {
+      cleanedCrew.primaryTechUid = cleanedCrew.helperUid;
+      cleanedCrew.primaryTechName = cleanedCrew.helperName || "Lead Field Worker";
+      cleanedCrew.primaryTechRole = cleanedCrew.helperRole || "helper";
+      cleanedCrew.helperUid = null;
+      cleanedCrew.helperName = null;
+      cleanedCrew.helperRole = null;
+      warnings.push(`${cleanedCrew.primaryTechName} is now the on-site lead.`);
+    } else if (String(cleanedCrew.secondaryHelperUid || "").trim()) {
+      cleanedCrew.primaryTechUid = cleanedCrew.secondaryHelperUid;
+      cleanedCrew.primaryTechName = cleanedCrew.secondaryHelperName || "Lead Field Worker";
+      cleanedCrew.primaryTechRole = cleanedCrew.secondaryHelperRole || "helper";
+      cleanedCrew.secondaryHelperUid = null;
+      cleanedCrew.secondaryHelperName = null;
+      cleanedCrew.secondaryHelperRole = null;
+      warnings.push(`${cleanedCrew.primaryTechName} is now the on-site lead.`);
+    }
+  }
+
+  if (!String(cleanedCrew.primaryTechUid || "").trim()) {
     blockingMessages.push(
-      "This trip has no available lead tech assigned. Dispatch must assign a lead tech before work can start."
+      "This trip has no available field worker assigned. Dispatch must assign at least one worker before work can start."
     );
   }
 
@@ -1587,7 +1623,7 @@ return {
           headerText,
           titleMeta,
           subLine,
-          techText: `Tech: ${crew.primary}`,
+          techText: `Lead: ${crew.primary}`,
           helperText: crew.helper,
           secondaryTechText: crew.secondaryTech,
           secondaryHelperText: crew.secondaryHelper,

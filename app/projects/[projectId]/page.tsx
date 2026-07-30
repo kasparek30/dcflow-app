@@ -2107,7 +2107,7 @@ const canMarkTmReadyToBill =
     secondaryHelperName?: string | null;
   }) {
     const details: string[] = [];
-    details.push(`Primary Tech: ${input.primaryName}`);
+    details.push(`Lead Field Worker: ${input.primaryName}`);
     if (input.helperName) details.push(`Helper: ${input.helperName}`);
     if (input.secondaryName) details.push(`Secondary Tech: ${input.secondaryName}`);
     if (input.secondaryHelperName) details.push(`Secondary Helper: ${input.secondaryHelperName}`);
@@ -2475,12 +2475,18 @@ const canMarkTmReadyToBill =
             const data = docSnap.data() as any;
             return {
               uid: data.uid ?? docSnap.id,
-              displayName: data.displayName ?? "Unnamed Technician",
+              displayName: data.displayName ?? "Unnamed Field Worker",
               active: data.active ?? false,
               role: data.role ?? "technician",
             };
           })
-          .filter((user) => user.role === "technician" && user.active);
+          .filter(
+              (user) =>
+                user.active &&
+                ["manager", "technician", "helper", "apprentice"].includes(
+                  normalizeRole(user.role),
+                ),
+            );
 
         items.sort((a, b) => a.displayName.localeCompare(b.displayName));
         setTechnicians(items);
@@ -3766,7 +3772,7 @@ const canMarkTmReadyToBill =
 
     const savedProjectCrew = getSavedProjectCrew();
     const primaryUid = safeTrim(values.primaryTechUid || savedProjectCrew.primaryUid);
-    if (!primaryUid) throw new Error("Primary Tech is required.");
+    if (!primaryUid) throw new Error("Lead field worker is required.");
 
     const helperUid = safeTrim(values.helperUid || "");
     const secondaryUid = safeTrim(values.secondaryTechUid || "");
@@ -3965,7 +3971,7 @@ const canMarkTmReadyToBill =
       if (et <= st) throw new Error("End time must be after start time.");
 
       const primaryUid = safeTrim(tripModal.primaryTechUid);
-      if (!primaryUid) throw new Error("Primary Tech is required.");
+      if (!primaryUid) throw new Error("Lead field worker is required.");
 
       const helperUid = safeTrim(tripModal.helperUid);
       const secondaryUid = safeTrim(tripModal.secondaryTechUid);
@@ -4299,7 +4305,7 @@ const canMarkTmReadyToBill =
       } else {
         details.push("Project Trip");
       }
-      details.push(`Primary Tech: ${t.crew?.primaryTechName || "Unassigned"}`);
+      details.push(`Lead Field Worker: ${t.crew?.primaryTechName || "Unassigned"}`);
 
       void recordProjectActivity({
         type: activityType,
@@ -6512,9 +6518,9 @@ if (nextStatus === "active_work") {
                     }}
                   >
                     <FormControl fullWidth>
-                      <InputLabel>Primary Tech</InputLabel>
+                      <InputLabel>Lead Field Worker</InputLabel>
                       <Select
-                        label="Primary Tech"
+                        label="Lead Field Worker"
                         value={tripModal.primaryTechUid}
                         onChange={(e) =>
                           setTripModal((m) => ({
@@ -6525,10 +6531,10 @@ if (nextStatus === "active_work") {
                         disabled={tripModalBusy}
                         {...selectMenuProps()}
                       >
-                        <MenuItem value="">Select a technician...</MenuItem>
+                        <MenuItem value="">Select a field worker...</MenuItem>
                         {technicians.map((t) => (
                           <MenuItem key={t.uid} value={t.uid}>
-                            {t.displayName}
+                            {t.displayName} ({normalizeRole(t.role) || "field worker"})
                           </MenuItem>
                         ))}
                       </Select>
@@ -6553,9 +6559,9 @@ if (nextStatus === "active_work") {
                     </FormControl>
 
                     <FormControl fullWidth>
-                      <InputLabel>Secondary Tech</InputLabel>
+                      <InputLabel>Additional Field Worker</InputLabel>
                       <Select
-                        label="Secondary Tech"
+                        label="Additional Field Worker"
                         value={tripModal.secondaryTechUid}
                         onChange={(e) =>
                           setTripModal((m) => ({
@@ -8236,7 +8242,7 @@ if (nextStatus === "active_work") {
                       }}
                     >
                       <InfoField
-                        label="Primary Tech"
+                        label="Lead Field Worker"
                         value={project.primaryTechnicianName || project.assignedTechnicianName || "Unassigned"}
                       />
                       <InfoField
@@ -8244,7 +8250,7 @@ if (nextStatus === "active_work") {
                         value={(Array.isArray(project.helperNames) ? project.helperNames[0] : "") || "—"}
                       />
                       <InfoField
-                        label="Secondary Tech"
+                        label="Additional Field Worker"
                         value={project.secondaryTechnicianName || "—"}
                       />
                       <InfoField
@@ -8931,9 +8937,9 @@ if (nextStatus === "active_work") {
                                       }}
                                     >
                                       <FormControl fullWidth>
-                                        <InputLabel>Primary Tech</InputLabel>
+                                        <InputLabel>Lead Field Worker</InputLabel>
                                         <Select
-                                          label="Primary Tech"
+                                          label="Lead Field Worker"
                                           value={st.assign.primaryUid}
                                           onChange={(e) =>
                                             st.setAssign((p: any) => ({
@@ -8978,9 +8984,9 @@ if (nextStatus === "active_work") {
                                       </FormControl>
 
                                       <FormControl fullWidth>
-                                        <InputLabel>Secondary Tech</InputLabel>
+                                        <InputLabel>Additional Field Worker</InputLabel>
                                         <Select
-                                          label="Secondary Tech"
+                                          label="Additional Field Worker"
                                           value={st.assign.secondaryUid}
                                           onChange={(e) =>
                                             st.setAssign((p: any) => ({
