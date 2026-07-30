@@ -124,15 +124,21 @@ type TicketStatus = ServiceTicketStatus;
 
 type TripTimeWindow = "am" | "pm" | "all_day" | "custom";
 
+type FieldWorkerRole = "manager" | "technician" | "helper" | "apprentice";
+
 type TripCrew = {
   primaryTechUid?: string | null;
   primaryTechName?: string | null;
+  primaryTechRole?: FieldWorkerRole | null;
   helperUid?: string | null;
   helperName?: string | null;
+  helperRole?: FieldWorkerRole | null;
   secondaryTechUid?: string | null;
   secondaryTechName?: string | null;
+  secondaryTechRole?: FieldWorkerRole | null;
   secondaryHelperUid?: string | null;
   secondaryHelperName?: string | null;
+  secondaryHelperRole?: FieldWorkerRole | null;
 };
 
 type PauseBlock = {
@@ -545,7 +551,7 @@ function roundToHalf(hours: number) {
   return Math.round(hours * 2) / 2;
 }
 
-function normalizeRole(role?: string) {
+function normalizeRole(role?: string | null) {
   return String(role || "")
     .trim()
     .toLowerCase();
@@ -1123,14 +1129,14 @@ function crewMembersFromTrip(trip: {
   const out: Array<{
     uid: string;
     name: string;
-    role: "technician" | "helper";
+    role: FieldWorkerRole;
   }> = [];
 
   if (crew.primaryTechUid) {
     out.push({
       uid: crew.primaryTechUid,
-      name: crew.primaryTechName || "Primary Tech",
-      role: "technician",
+      name: crew.primaryTechName || "Lead Field Worker",
+      role: crew.primaryTechRole || "technician",
     });
   }
 
@@ -1138,7 +1144,7 @@ function crewMembersFromTrip(trip: {
     out.push({
       uid: crew.helperUid,
       name: crew.helperName || "Helper",
-      role: "helper",
+      role: crew.helperRole || "helper",
     });
   }
 
@@ -1146,7 +1152,7 @@ function crewMembersFromTrip(trip: {
     out.push({
       uid: crew.secondaryTechUid,
       name: crew.secondaryTechName || "Secondary Tech",
-      role: "technician",
+      role: crew.secondaryTechRole || "technician",
     });
   }
 
@@ -1154,7 +1160,7 @@ function crewMembersFromTrip(trip: {
     out.push({
       uid: crew.secondaryHelperUid,
       name: crew.secondaryHelperName || "Secondary Helper",
-      role: "helper",
+      role: crew.secondaryHelperRole || "helper",
     });
   }
 
@@ -1697,7 +1703,7 @@ function getOptionAvailabilityLabel(args: {
   baseLabel: string;
   uid: string;
   name: string;
-  role: "technician" | "helper";
+  role: FieldWorkerRole;
   date: string;
   timeWindow: TripTimeWindow;
   startTime: string;
@@ -1966,7 +1972,7 @@ async function upsertWeeklyTimesheetHeader(args: {
 
 async function upsertTimeEntryFromTrip(args: {
   trip: TripDoc;
-  member: { uid: string; name: string; role: "technician" | "helper" };
+  member: { uid: string; name: string; role: FieldWorkerRole };
   entryDate: string;
   hoursGenerated: number;
   weekStartDate: string;
@@ -2300,7 +2306,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     appUser?.role === "admin" ||
     appUser?.role === "dispatcher" ||
     appUser?.role === "manager" ||
-    appUser?.role === "technician";
+    appUser?.role === "technician" ||
+    appUser?.role === "helper" ||
+    appUser?.role === "apprentice";
 
   const canBill =
     appUser?.role === "admin" ||
@@ -2799,7 +2807,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 role: user.role ?? "technician",
               };
             })
-            .filter((u) => u.active && u.role === "technician")
+            .filter(
+              (u) =>
+                u.active &&
+                ["manager", "technician", "helper", "apprentice"].includes(
+                  normalizeRole(u.role),
+                ),
+            )
             .sort((a, b) => a.displayName.localeCompare(b.displayName)),
         );
 
@@ -3202,6 +3216,22 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return technicians.find((t) => t.uid === uid)?.displayName || "";
   }
 
+  function findFieldWorkerRole(uid: string): FieldWorkerRole {
+    const role = normalizeRole(technicians.find((t) => t.uid === uid)?.role);
+    if (role === "manager" || role === "helper" || role === "apprentice") {
+      return role;
+    }
+    return "technician";
+  }
+
+  function formatFieldWorkerRole(role?: string | null) {
+    const normalized = normalizeRole(role);
+    if (normalized === "manager") return "Manager";
+    if (normalized === "helper") return "Helper";
+    if (normalized === "apprentice") return "Apprentice";
+    return "Technician";
+  }
+
   function findHelperName(uid: string) {
     return helperCandidates.find((h) => h.uid === uid)?.name || "";
   }
@@ -3267,8 +3297,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     if (args.primaryTechUid?.trim()) {
       addUnique({
         uid: args.primaryTechUid.trim(),
-        name: findTechName(args.primaryTechUid.trim()) || "Primary Technician",
-        role: "technician",
+        name: findTechName(args.primaryTechUid.trim()) || "Lead Field Worker",
+        role:
+          findFieldWorkerRole(args.primaryTechUid.trim()) === "helper" ||
+          findFieldWorkerRole(args.primaryTechUid.trim()) === "apprentice"
+            ? "helper"
+            : "technician",
       });
     }
 
@@ -3316,7 +3350,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   function availabilityForOption(args: {
     uid: string;
     name: string;
-    role: "technician" | "helper";
+    role: FieldWorkerRole;
     date: string;
     timeWindow: TripTimeWindow;
     startTime: string;
@@ -5072,7 +5106,7 @@ Supply line`}
     }
 
     if (!tripPrimaryTechUid.trim()) {
-      setTripSaveError("Primary technician is required.");
+      setTripSaveError("Lead field worker is required.");
       return;
     }
 
@@ -5132,7 +5166,8 @@ Supply line`}
       const secondaryHelperUid = tripSecondaryHelperUid.trim() || "";
 
       const primaryName =
-        findTechName(tripPrimaryTechUid) || "Unnamed Technician";
+        findTechName(tripPrimaryTechUid) || "Unnamed Field Worker";
+      const primaryRole = findFieldWorkerRole(tripPrimaryTechUid);
       const helperName = helperUid
         ? findHelperName(helperUid) || "Unnamed Helper"
         : null;
@@ -5170,12 +5205,24 @@ Supply line`}
         crew: {
           primaryTechUid: tripPrimaryTechUid,
           primaryTechName: primaryName,
+          primaryTechRole: primaryRole,
           helperUid: helperUid || null,
           helperName,
+          helperRole: helperUid
+            ? ((helperCandidates.find((h) => h.uid === helperUid)?.laborRole ||
+                "helper") as FieldWorkerRole)
+            : null,
           secondaryTechUid: secondaryTechUid || null,
           secondaryTechName,
+          secondaryTechRole: secondaryTechUid
+            ? findFieldWorkerRole(secondaryTechUid)
+            : null,
           secondaryHelperUid: secondaryHelperUid || null,
           secondaryHelperName,
+          secondaryHelperRole: secondaryHelperUid
+            ? ((helperCandidates.find((h) => h.uid === secondaryHelperUid)
+                ?.laborRole || "helper") as FieldWorkerRole)
+            : null,
         },
         crewConfirmed: null,
         link: {
@@ -6153,7 +6200,7 @@ async function handleStartTrip(trip: TripDoc) {
       }
 
       if (!editTripPrimaryTechUid.trim()) {
-        throw new Error("Primary technician is required.");
+        throw new Error("Lead field worker is required.");
       }
 
       if (
@@ -6207,7 +6254,8 @@ async function handleStartTrip(trip: TripDoc) {
       const secondaryHelperUid = editTripSecondaryHelperUid.trim() || "";
 
       const primaryName =
-        findTechName(editTripPrimaryTechUid) || "Unnamed Technician";
+        findTechName(editTripPrimaryTechUid) || "Unnamed Field Worker";
+      const primaryRole = findFieldWorkerRole(editTripPrimaryTechUid);
       const helperName = helperUid
         ? findHelperName(helperUid) || "Unnamed Helper"
         : null;
@@ -6221,12 +6269,24 @@ async function handleStartTrip(trip: TripDoc) {
       const nextCrew: TripCrew = {
         primaryTechUid: editTripPrimaryTechUid || null,
         primaryTechName: editTripPrimaryTechUid ? primaryName : null,
+        primaryTechRole: editTripPrimaryTechUid ? primaryRole : null,
         helperUid: helperUid || null,
         helperName,
+        helperRole: helperUid
+          ? ((helperCandidates.find((h) => h.uid === helperUid)?.laborRole ||
+              "helper") as FieldWorkerRole)
+          : null,
         secondaryTechUid: secondaryTechUid || null,
         secondaryTechName,
+        secondaryTechRole: secondaryTechUid
+          ? findFieldWorkerRole(secondaryTechUid)
+          : null,
         secondaryHelperUid: secondaryHelperUid || null,
         secondaryHelperName,
+        secondaryHelperRole: secondaryHelperUid
+          ? ((helperCandidates.find((h) => h.uid === secondaryHelperUid)
+              ?.laborRole || "helper") as FieldWorkerRole)
+          : null,
       };
 
       const dispatchOverride =
@@ -6350,7 +6410,7 @@ async function handleStartTrip(trip: TripDoc) {
         details: [
           `Old time: ${formatTripTimeRange(trip.startTime, trip.endTime)}`,
           `New time: ${formatTripTimeRange(editTripStartTime, editTripEndTime)}`,
-          `Lead: ${primaryName}`,
+          `Lead field worker: ${primaryName} (${formatFieldWorkerRole(primaryRole)})`,
           helperName ? `Helper: ${helperName}` : "",
           dispatchOverride?.enabled
             ? `Dispatch override: ${dispatchOverride.reason || "Enabled"}`
@@ -11170,16 +11230,20 @@ async function handleStartTrip(trip: TripDoc) {
 
                   <TextField
                     select
-                    label="Primary Technician"
+                    label="Lead Field Worker"
                     value={editTripPrimaryTechUid}
                     onChange={(e) => setEditTripPrimaryTechUid(e.target.value)}
                   >
-                    <MenuItem value="">Select a technician…</MenuItem>
+                    <MenuItem value="">Select a field worker…</MenuItem>
                     {technicians.map((tech) => {
                       const option = availabilityForOption({
                         uid: tech.uid,
                         name: tech.displayName,
-                        role: "technician",
+                        role:
+                          normalizeRole(tech.role) === "helper" ||
+                          normalizeRole(tech.role) === "apprentice"
+                            ? "helper"
+                            : "technician",
                         date: editTripDate,
                         timeWindow: editTripTimeWindow,
                         startTime: editTripStartTime,
@@ -11195,7 +11259,7 @@ async function handleStartTrip(trip: TripDoc) {
                           value={tech.uid}
                           disabled={option.disabled}
                         >
-                          {option.label}
+                          {option.label} ({formatFieldWorkerRole(tech.role)})
                         </MenuItem>
                       );
                     })}

@@ -432,110 +432,116 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                       gap: 1,
                     }}
                   >
-                    {slotDefs.map((slot) => {
-                      const status = statuses[slot.key] || defaultStatus;
-                      const selected =
-                        props.selectedPrimaryUid === tech.uid &&
-                        props.selectedWindow === slot.key;
-                      const isAllDay = slot.key === "all_day";
-                      const pickable =
-                        Boolean(props.date) && canPickSlot(status) && !status.disabled;
-                      const tooltipContent = renderTooltipContent(status);
+{slotDefs.map((slot) => {
+  const status = statuses[slot.key] || defaultStatus;
+  const selected =
+    props.selectedPrimaryUid === tech.uid &&
+    props.selectedWindow === slot.key;
+  const isAllDay = slot.key === "all_day";
+  const pickable =
+    Boolean(props.date) && canPickSlot(status) && !status.disabled;
+  const tooltipContent = renderTooltipContent(status);
 
-                      const buttonNode = (
-                        <Button
-                          variant="outlined"
-                          disabled={!pickable}
-                          onClick={() => props.onPickSlot(tech.uid, slot.key)}
-                          sx={{
-                            width: "100%",
-                            minWidth: 0,
-                            minHeight: isAllDay ? 72 : 58,
-                            gridColumn: isAllDay ? { xs: "1 / -1", sm: "1 / -1" } : "auto",
-                            borderRadius: isAllDay ? 4 : 999,
-                            textTransform: "none",
-                            alignItems: "stretch",
-                            justifyContent: "flex-start",
-                            px: isAllDay ? 2 : 1.5,
-                            py: isAllDay ? 1.35 : 1.1,
-                            ...slotButtonStyles({
-                              selected,
-                              status,
-                              palette: theme.palette,
-                              isAllDay,
-                            }),
-                          }}
-                        >
-                          <Stack
-                            spacing={0.2}
-                            alignItems="flex-start"
-                            sx={{ textAlign: "left", width: "100%" }}
-                          >
-                            <Typography
-                              variant={isAllDay ? "body2" : "caption"}
-                              fontWeight={800}
-                              sx={{ lineHeight: 1.1 }}
-                            >
-                              {slot.label} • {slot.timeLabel}
-                            </Typography>
+  const buttonNode = (
+    <Button
+      variant="outlined"
+      disabled={!pickable}
+      onClick={() => props.onPickSlot(tech.uid, slot.key)}
+      sx={{
+        width: "100%",
+        minWidth: 0,
+        minHeight: isAllDay ? 72 : 58,
+        borderRadius: isAllDay ? 4 : 999,
+        textTransform: "none",
+        alignItems: "stretch",
+        justifyContent: "flex-start",
+        px: isAllDay ? 2 : 1.5,
+        py: isAllDay ? 1.35 : 1.1,
+        ...slotButtonStyles({
+          selected,
+          status,
+          palette: theme.palette,
+          isAllDay,
+        }),
+      }}
+    >
+      <Stack
+        spacing={0.2}
+        alignItems="flex-start"
+        sx={{ textAlign: "left", width: "100%" }}
+      >
+        <Typography
+          variant={isAllDay ? "body2" : "caption"}
+          fontWeight={800}
+          sx={{ lineHeight: 1.1 }}
+        >
+          {slot.label} • {slot.timeLabel}
+        </Typography>
 
-                            <Stack direction="row" spacing={0.6} alignItems="center">
-                              {getInlineStatusIcon(status) ? (
-                                <Box
-                                  sx={{
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    lineHeight: 0,
-                                  }}
-                                >
-                                  {getInlineStatusIcon(status)}
-                                </Box>
-                              ) : null}
+        <Stack direction="row" spacing={0.6} alignItems="center">
+          {getInlineStatusIcon(status) ? (
+            <Box
+              sx={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                lineHeight: 0,
+              }}
+            >
+              {getInlineStatusIcon(status)}
+            </Box>
+          ) : null}
 
-                              <Typography
-                                variant="caption"
-                                fontWeight={700}
-                                sx={{ lineHeight: 1.1 }}
-                              >
-                                {slotButtonCopy(status)}
-                              </Typography>
-                            </Stack>
+          <Typography
+            variant="caption"
+            fontWeight={700}
+            sx={{ lineHeight: 1.1 }}
+          >
+            {slotButtonCopy(status)}
+          </Typography>
+        </Stack>
 
-                            {slotButtonSubcopy(status) ? (
-                              <Typography
-                                variant="caption"
-                                sx={{
-                                  lineHeight: 1.1,
-                                  opacity: selected ? 0.95 : 0.8,
-                                }}
-                              >
-                                {slotButtonSubcopy(status)}
-                              </Typography>
-                            ) : null}
-                          </Stack>
-                        </Button>
-                      );
+        {slotButtonSubcopy(status) ? (
+          <Typography
+            variant="caption"
+            sx={{
+              lineHeight: 1.1,
+              opacity: selected ? 0.95 : 0.8,
+            }}
+          >
+            {slotButtonSubcopy(status)}
+          </Typography>
+        ) : null}
+      </Stack>
+    </Button>
+  );
 
-                      return tooltipContent ? (
-                        <Tooltip
-                          key={`${tech.uid}_${slot.key}`}
-                          title={tooltipContent}
-                          arrow
-                          placement="top"
-                          enterDelay={120}
-                        >
-                          <Box sx={{ width: "100%", display: "block" }}>{buttonNode}</Box>
-                        </Tooltip>
-                      ) : (
-                        <Box
-                          key={`${tech.uid}_${slot.key}`}
-                          sx={{ width: "100%", display: "block" }}
-                        >
-                          {buttonNode}
-                        </Box>
-                      );
-                    })}
+  const gridItemStyles = {
+    width: "100%",
+    minWidth: 0,
+    display: "block",
+    gridColumn: isAllDay ? "1 / -1" : "auto",
+  };
+
+  return tooltipContent ? (
+    <Tooltip
+      key={`${tech.uid}_${slot.key}`}
+      title={tooltipContent}
+      arrow
+      placement="top"
+      enterDelay={120}
+    >
+      <Box sx={gridItemStyles}>{buttonNode}</Box>
+    </Tooltip>
+  ) : (
+    <Box
+      key={`${tech.uid}_${slot.key}`}
+      sx={gridItemStyles}
+    >
+      {buttonNode}
+    </Box>
+  );
+})}
                   </Box>
                 </Stack>
               </Paper>
