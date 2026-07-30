@@ -341,7 +341,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
       variant="outlined"
       sx={{
         p: { xs: 1.5, md: 2 },
-        borderRadius: 4,
+        borderRadius: 1,
         backgroundColor: alpha(theme.palette.primary.main, 0.03),
       }}
     >
@@ -408,7 +408,7 @@ export default function DispatchAvailabilityPlanner(props: Props) {
                 variant="outlined"
                 sx={{
                   p: 1.5,
-                  borderRadius: 3,
+                  borderRadius: 1,
                   borderColor:
                     props.selectedPrimaryUid === tech.uid
                       ? alpha(theme.palette.primary.main, 0.5)

@@ -4747,6 +4747,14 @@ function renderStaffCoverageCards(dateIso: string) {
         tripType={trip.type}
         cardBorderRadius={1}
         subtitle={timeText}
+        projectStageLabel={
+          isProject
+            ? projectStageLabel(
+                String(trip.link?.projectStageKey || "").trim() ||
+                  String((trip as any).projectStageKey || "").trim(),
+              )
+            : undefined
+        }
         customerLine={customerLine || undefined}
         titleMeta={showTechName && techName ? techName : undefined}
         crewChips={renderTripHelperChips(trip)}

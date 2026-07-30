@@ -28,6 +28,7 @@ type SharedTripCardProps = {
   subtitle?: React.ReactNode;
   customerLine?: React.ReactNode;
   progressText?: React.ReactNode;
+  projectStageLabel?: React.ReactNode;
   crewChips?: React.ReactNode;
   detailBlock?: React.ReactNode;
   followUpBlock?: React.ReactNode;
@@ -72,6 +73,7 @@ export default function SharedTripCard({
   subtitle,
   customerLine,
   progressText,
+  projectStageLabel,
   crewChips,
   detailBlock,
   followUpBlock,
@@ -96,7 +98,7 @@ export default function SharedTripCard({
   const showProjectTypeRow = isProject;
 
   const hasMetaRows = Boolean(
-    subtitle || hasCustomer || hasAddress || progressText || showProjectTypeRow,
+    subtitle || hasCustomer || hasAddress || progressText || showProjectTypeRow || projectStageLabel,
   );
   const hasInlineDetails = Boolean(detailBlock || followUpBlock);
   const hasFooter = Boolean(footer);
@@ -244,7 +246,7 @@ export default function SharedTripCard({
               <Stack direction="row" spacing={0.85} alignItems="center" sx={{ minWidth: 0 }}>
                 <WorkRoundedIcon sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }} />
                 <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }} noWrap>
-                  Project
+                  {projectStageLabel ? `Project • ${projectStageLabel}` : "Project"}
                 </Typography>
               </Stack>
             ) : null}

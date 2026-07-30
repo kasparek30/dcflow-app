@@ -71,21 +71,15 @@ import {
   generatePurchaseOrderForTrip,
 } from "../../../src/lib/purchase-orders";
 
-type FieldWorkerRole = "manager" | "technician" | "helper" | "apprentice";
-
 type TripCrew = {
   primaryTechUid?: string | null;
   primaryTechName?: string | null;
-  primaryTechRole?: FieldWorkerRole | null;
   helperUid?: string | null;
   helperName?: string | null;
-  helperRole?: FieldWorkerRole | null;
   secondaryTechUid?: string | null;
   secondaryTechName?: string | null;
-  secondaryTechRole?: FieldWorkerRole | null;
   secondaryHelperUid?: string | null;
   secondaryHelperName?: string | null;
-  secondaryHelperRole?: FieldWorkerRole | null;
 };
 
 type TripLink = {
@@ -310,6 +304,24 @@ function formatTripTimeLine(timeWindow?: string, startTime?: string, endTime?: s
   const range = formatTimeRange12h(startTime, endTime);
   if (range) return range;
   return formatWindow(timeWindow);
+}
+
+
+function projectStageLabel(stageKey?: string | null) {
+  const key = String(stageKey || "").trim();
+  if (key === "roughIn") return "Rough-In";
+  if (key === "topOutVent") return "Top-Out / Vent";
+  if (key === "trimFinish") return "Trim / Finish";
+  if (key === "tm_work") return "Current Billing Period";
+  if (!key) return "";
+
+  return key
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function formatType(type?: string) {
@@ -615,8 +627,8 @@ function getCrewEntriesForPtoGuard(crew?: TripCrew | null): CrewPtoGuardEntry[] 
     uid: crew?.primaryTechUid,
     name: crew?.primaryTechName,
     position: "primaryTech",
-    label: "scheduled lead",
-    fallbackName: "Lead Field Worker",
+    label: "lead tech",
+    fallbackName: "Lead Tech",
   });
 
   add({
@@ -779,10 +791,8 @@ async function resolveCrewPtoStartGuard(trip: Trip): Promise<CrewPtoStartGuardRe
     const dateRange = formatPtoDateRange(approvedPto.startDate, approvedPto.endDate);
 
     if (entry.position === "primaryTech") {
-      cleanedCrew = clearCrewPositionForPtoGuard(cleanedCrew, entry.position);
-      removedUids.push(entry.uid);
-      warnings.push(
-        `${entry.name} was removed as the scheduled lead because they have approved PTO (${dateRange}).`
+      blockingMessages.push(
+        `${entry.name} is assigned as the lead tech but has approved PTO (${dateRange}). Assign an available lead tech before starting this trip.`
       );
       continue;
     }
@@ -803,37 +813,9 @@ async function resolveCrewPtoStartGuard(trip: Trip): Promise<CrewPtoStartGuardRe
     );
   }
 
-  if (!String(cleanedCrew.primaryTechUid || "").trim()) {
-    if (String(cleanedCrew.secondaryTechUid || "").trim()) {
-      cleanedCrew.primaryTechUid = cleanedCrew.secondaryTechUid;
-      cleanedCrew.primaryTechName = cleanedCrew.secondaryTechName || "Lead Field Worker";
-      cleanedCrew.primaryTechRole = cleanedCrew.secondaryTechRole || "technician";
-      cleanedCrew.secondaryTechUid = null;
-      cleanedCrew.secondaryTechName = null;
-      cleanedCrew.secondaryTechRole = null;
-      warnings.push(`${cleanedCrew.primaryTechName} is now the on-site lead.`);
-    } else if (String(cleanedCrew.helperUid || "").trim()) {
-      cleanedCrew.primaryTechUid = cleanedCrew.helperUid;
-      cleanedCrew.primaryTechName = cleanedCrew.helperName || "Lead Field Worker";
-      cleanedCrew.primaryTechRole = cleanedCrew.helperRole || "helper";
-      cleanedCrew.helperUid = null;
-      cleanedCrew.helperName = null;
-      cleanedCrew.helperRole = null;
-      warnings.push(`${cleanedCrew.primaryTechName} is now the on-site lead.`);
-    } else if (String(cleanedCrew.secondaryHelperUid || "").trim()) {
-      cleanedCrew.primaryTechUid = cleanedCrew.secondaryHelperUid;
-      cleanedCrew.primaryTechName = cleanedCrew.secondaryHelperName || "Lead Field Worker";
-      cleanedCrew.primaryTechRole = cleanedCrew.secondaryHelperRole || "helper";
-      cleanedCrew.secondaryHelperUid = null;
-      cleanedCrew.secondaryHelperName = null;
-      cleanedCrew.secondaryHelperRole = null;
-      warnings.push(`${cleanedCrew.primaryTechName} is now the on-site lead.`);
-    }
-  }
-
-  if (!String(cleanedCrew.primaryTechUid || "").trim()) {
+  if (!hasLeadTechForPtoGuard(cleanedCrew)) {
     blockingMessages.push(
-      "This trip has no available field worker assigned. Dispatch must assign at least one worker before work can start."
+      "This trip has no available lead tech assigned. Dispatch must assign a lead tech before work can start."
     );
   }
 
@@ -1623,7 +1605,7 @@ return {
           headerText,
           titleMeta,
           subLine,
-          techText: `Lead: ${crew.primary}`,
+          techText: `Tech: ${crew.primary}`,
           helperText: crew.helper,
           secondaryTechText: crew.secondaryTech,
           secondaryHelperText: crew.secondaryHelper,
@@ -2477,6 +2459,9 @@ PTO coverage is active right now.
                             status={item.status}
                             tripType={item.tripType}
                             subtitle={item.subLine}
+                            projectStageLabel={
+                              isProject ? projectStageLabel(item.projectStageKey) : undefined
+                            }
                             crewChips={
                               <Stack
                                 direction="row"

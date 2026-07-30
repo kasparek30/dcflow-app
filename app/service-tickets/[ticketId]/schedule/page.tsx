@@ -1639,7 +1639,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
               elevation={0}
               sx={{
                 p: { xs: 2, md: 3 },
-                borderRadius: 4,
+                borderRadius: 1,
                 border: `1px solid ${theme.palette.divider}`,
                 backgroundColor: theme.palette.background.paper,
               }}
@@ -1747,7 +1747,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                   elevation={0}
                   sx={{
                     p: { xs: 2, md: 3 },
-                    borderRadius: 4,
+                    borderRadius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                     backgroundColor: theme.palette.background.paper,
                   }}
@@ -1789,7 +1789,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                             key={dayIso}
                             elevation={0}
                             sx={{
-                              borderRadius: 3,
+                              borderRadius: 1,
                               border: `1px solid ${
                                 isSelected
                                   ? alpha(theme.palette.primary.main, 0.5)
@@ -1889,7 +1889,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                   elevation={0}
                   sx={{
                     p: { xs: 2, md: 3 },
-                    borderRadius: 4,
+                    borderRadius: 1,
                     border: `1px solid ${theme.palette.divider}`,
                     backgroundColor: theme.palette.background.paper,
                   }}
@@ -1968,7 +1968,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                           variant="outlined"
                           sx={{
                             p: 2,
-                            borderRadius: 3,
+                            borderRadius: 1,
                             borderColor: alpha(theme.palette.primary.main, 0.18),
                             backgroundColor: alpha(theme.palette.primary.main, 0.04),
                           }}
@@ -2132,7 +2132,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                         variant="outlined"
                         sx={{
                           p: 1.5,
-                          borderRadius: 3,
+                          borderRadius: 1,
                           borderColor: alpha(theme.palette.warning.main, 0.4),
                           backgroundColor: alpha(theme.palette.warning.main, 0.06),
                         }}
@@ -2273,47 +2273,6 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       onChange={(e) => setNotes(e.target.value)}
                       placeholder="Optional scheduling or dispatch notes"
                     />
-
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        p: 1.5,
-                        borderRadius: 3,
-                        backgroundColor: alpha(theme.palette.primary.main, 0.03),
-                      }}
-                    >
-                      <Stack spacing={1}>
-                        <Typography variant="subtitle2" fontWeight={800}>
-                          Selected Schedule Summary
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {selectedDate} •{" "}
-                          {selectedWindow === "custom"
-                            ? `Custom (${formatTime12h(selectedStartTime)}–${formatTime12h(
-                                selectedEndTime
-                              )})`
-                            : selectedWindow === "all_day"
-                              ? "All Day"
-                              : selectedWindow === "pm"
-                                ? "PM"
-                                : "AM"}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Primary Tech: {findTechName(selectedPrimaryUid) || "—"}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Helper: {findHelperName(selectedHelperUid) || "—"}
-                        </Typography>
-                        {dispatchOverrideEnabled && selectedOverlapConflicts.length > 0 ? (
-                          <Typography variant="body2" color="warning.main">
-                            Dispatch Override: Enabled
-                            {hasInProgressOverlap
-                              ? " — this trip will remain Planned until the active trip is completed."
-                              : ""}
-                          </Typography>
-                        ) : null}
-                      </Stack>
-                    </Paper>
 
                     {availabilityLoading ? (
                       <Alert severity="info" variant="outlined" sx={{ borderRadius: 3 }}>

@@ -1631,7 +1631,6 @@ export default function ProjectDetailPage() {
   const [stageSaveSuccess, setStageSaveSuccess] = useState("");
 
   const [activeStageTab, setActiveStageTab] = useState<StageKey>("roughIn");
-  const [showCompletedStageTrips, setShowCompletedStageTrips] = useState(false);
   const [prefersAppleMapsClient, setPrefersAppleMapsClient] = useState(false);
 
   const myUid = String(appUser?.uid || "").trim();
@@ -2781,10 +2780,6 @@ const canMarkTmReadyToBill =
       if (defaultStageTab) setActiveStageTab(defaultStageTab);
     }
   }, [project, enabledStages, activeStageTab]);
-
-  useEffect(() => {
-    setShowCompletedStageTrips(false);
-  }, [activeStageTab]);
 
   useEffect(() => {
     setPrefersAppleMapsClient(prefersAppleMaps());
@@ -6661,7 +6656,7 @@ if (nextStatus === "active_work") {
           fullWidth
           maxWidth="md"
           PaperProps={{
-            sx: { borderRadius: 4 },
+            sx: { borderRadius: 1 },
           }}
         >
           <DialogTitle sx={{ pb: 1 }}>
@@ -6687,7 +6682,7 @@ if (nextStatus === "active_work") {
                       variant="outlined"
                       sx={{
                         p: 2,
-                        borderRadius: 4,
+                        borderRadius: 1,
                       }}
                     >
                       <Stack spacing={0.5}>
@@ -6741,7 +6736,7 @@ if (nextStatus === "active_work") {
                     variant="outlined"
                     sx={{
                       p: 2,
-                      borderRadius: 4,
+                      borderRadius: 1,
                     }}
                   >
                     <Stack spacing={1.5}>
@@ -6844,7 +6839,7 @@ if (nextStatus === "active_work") {
           maxWidth="md"
           PaperProps={{
             sx: {
-              borderRadius: 4,
+              borderRadius: 1,
             },
           }}
         >
@@ -8780,15 +8775,31 @@ if (nextStatus === "active_work") {
                     const activeStageBillingSummary = summarizeStageBillingTrips(activeStageTab);
                     const activeStageBillingAmount = Number(activeStage?.billedAmount || (previewStageAmounts as any)[activeStageTab] || 0);
                     const activeStageBillingFrozen = isFrozenStageBilling(activeStageTab);
-                    const visibleStageTrips = activeStageTrips.filter((trip) => canCurrentUserViewTrip(trip));
-                    const openStageTrips = visibleStageTrips.filter((trip) => {
+                    const visibleStageTrips = activeStageTrips
+                      .filter((trip) => {
+                        if (!canCurrentUserViewTrip(trip)) return false;
+
+                        const status = safeTrim(trip.status).toLowerCase();
+                        if (trip.active === false) return false;
+                        if (status === "cancelled" || status === "canceled") return false;
+
+                        return true;
+                      })
+                      .sort((a, b) =>
+                        `${a.date}_${a.startTime}_${a.id}`.localeCompare(
+                          `${b.date}_${b.startTime}_${b.id}`,
+                        ),
+                      );
+
+                    const openStageTripCount = visibleStageTrips.filter((trip) => {
                       const status = safeTrim(trip.status).toLowerCase();
-                      return status !== "complete" && status !== "cancelled" && trip.active !== false;
-                    });
-                    const completedStageTrips = visibleStageTrips.filter((trip) => {
+                      return status !== "complete" && status !== "completed";
+                    }).length;
+
+                    const completedStageTripCount = visibleStageTrips.filter((trip) => {
                       const status = safeTrim(trip.status).toLowerCase();
-                      return status === "complete" || status === "cancelled" || trip.active === false;
-                    });
+                      return status === "complete" || status === "completed";
+                    }).length;
 
                     return (
                       <Stack spacing={2}>
@@ -9221,21 +9232,22 @@ if (nextStatus === "active_work") {
                               justifyContent="space-between"
                               alignItems={{ xs: "flex-start", sm: "center" }}
                             >
-                              <Stack direction="row" spacing={1} alignItems="center">
+                              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                                 <RouteRoundedIcon color="primary" />
                                 <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
                                   Stage Trips
                                 </Typography>
                                 <Chip
-                                  label={`${openStageTrips.length} open`}
+                                  label={`${openStageTripCount} open`}
                                   size="small"
-                                  color={openStageTrips.length > 0 ? "primary" : "default"}
+                                  color={openStageTripCount > 0 ? "primary" : "default"}
                                   variant="outlined"
                                 />
-                                {completedStageTrips.length > 0 ? (
+                                {completedStageTripCount > 0 ? (
                                   <Chip
-                                    label={`${completedStageTrips.length} completed`}
+                                    label={`${completedStageTripCount} completed`}
                                     size="small"
+                                    color="success"
                                     variant="outlined"
                                   />
                                 ) : null}
@@ -9272,55 +9284,9 @@ if (nextStatus === "active_work") {
 
                             {!tripsLoading && !tripsError && visibleStageTrips.length > 0 ? (
                               <Stack spacing={1.5}>
-                                {openStageTrips.length > 0 ? (
-                                  <Stack spacing={1.5}>
-                                    {openStageTrips.map((t) => (
-                                      <TripRow key={t.id} t={t} />
-                                    ))}
-                                  </Stack>
-                                ) : (
-                                  <Alert severity="success" variant="outlined" sx={{ borderRadius: 1 }}>
-                                    No open trips for this stage right now.
-                                  </Alert>
-                                )}
-
-                                {completedStageTrips.length > 0 ? (
-                                  <Paper
-                                    variant="outlined"
-                                    sx={{
-                                      borderRadius: 1,
-                                      overflow: "hidden",
-                                      bgcolor: alpha(theme.palette.primary.main, 0.015),
-                                    }}
-                                  >
-                                    <Button
-                                      fullWidth
-                                      onClick={() => setShowCompletedStageTrips((prev) => !prev)}
-                                      sx={{
-                                        justifyContent: "space-between",
-                                        px: 2,
-                                        py: 1.25,
-                                        borderRadius: 0,
-                                        fontWeight: 800,
-                                      }}
-                                    >
-                                      <span>
-                                        Completed / Cancelled Trips ({completedStageTrips.length})
-                                      </span>
-                                      <span>{showCompletedStageTrips ? "Hide" : "Show"}</span>
-                                    </Button>
-
-                                    {showCompletedStageTrips ? (
-                                      <Box sx={{ p: 1.5, pt: 0 }}>
-                                        <Stack spacing={1.5}>
-                                          {completedStageTrips.map((t) => (
-                                            <TripRow key={t.id} t={t} />
-                                          ))}
-                                        </Stack>
-                                      </Box>
-                                    ) : null}
-                                  </Paper>
-                                ) : null}
+                                {visibleStageTrips.map((t) => (
+                                  <TripRow key={t.id} t={t} />
+                                ))}
                               </Stack>
                             ) : null}
                           </Stack>
