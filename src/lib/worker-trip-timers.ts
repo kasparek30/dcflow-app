@@ -357,12 +357,34 @@ async function queryTripsForWorker(db: Firestore, workerUid: string) {
     ),
   ).catch(() => null);
 
+  // Guaranteed fallback: load the relatively small set of in-progress trips
+  // and filter locally. This protects switching when a field-path query is
+  // unavailable because of an index/rules gap or when crew fields and
+  // workerTimers are temporarily out of sync.
+  const inProgressSnapshot = await getDocs(
+    query(base, where("status", "==", "in_progress")),
+  ).catch(() => null);
+
   const byId = new Map<string, TripTimerLike>();
 
-  for (const snapshot of [...crewSnapshots, timerSnapshot]) {
+  for (const snapshot of [
+    ...crewSnapshots,
+    timerSnapshot,
+    inProgressSnapshot,
+  ]) {
     if (!snapshot) continue;
+
     for (const row of snapshot.docs) {
-      byId.set(row.id, mapTrip(row.id, row.data()));
+      const trip = mapTrip(row.id, row.data());
+      if (trip.active === false) continue;
+
+      const belongsToWorker =
+        getTripCrewUids(trip).includes(workerUid) ||
+        Boolean(trip.workerTimers?.[workerUid]);
+
+      if (!belongsToWorker) continue;
+
+      byId.set(row.id, trip);
     }
   }
 
