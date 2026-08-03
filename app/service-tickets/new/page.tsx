@@ -3076,26 +3076,6 @@ export default function NewServiceTicketPage() {
                               helperText="Minimum 1 hour. Use 0.5 hour increments."
                             />
                           </Box>
-
-                          <Stack
-                            direction="row"
-                            spacing={1}
-                            flexWrap="wrap"
-                            useFlexGap
-                          >
-                            <Chip
-                              label={`Ticket Status: ${
-                                scheduleNowEnabled
-                                  ? "Scheduled"
-                                  : getStatusLabel(status)
-                              }`}
-                              variant="outlined"
-                            />
-                            <Chip
-                              label={`Est. ${estimatedDurationHours || "—"} hr`}
-                              variant="outlined"
-                            />
-                          </Stack>
                         </Stack>
                       </Box>
 

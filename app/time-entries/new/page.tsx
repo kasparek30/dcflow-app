@@ -331,7 +331,7 @@ function NewTimeEntryPageContent() {
           {!loadingUsers && !loadError ? (
             <Box component="form" onSubmit={handleSubmit}>
               <Stack spacing={2.25} sx={{ maxWidth: 960 }}>
-                <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <Card variant="outlined" sx={{ borderRadius: 1 }}>
                   <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                     <Stack spacing={2}>
                       <Typography variant="h6" sx={{ fontWeight: 800 }}>
@@ -421,7 +421,7 @@ function NewTimeEntryPageContent() {
                   </CardContent>
                 </Card>
 
-                <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <Card variant="outlined" sx={{ borderRadius: 1 }}>
                   <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                     <Stack spacing={1.5}>
                       <Stack direction="row" spacing={1} alignItems="center">
@@ -448,7 +448,7 @@ function NewTimeEntryPageContent() {
                 </Card>
 
                 {category === "service_ticket" ? (
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                  <Card variant="outlined" sx={{ borderRadius: 1 }}>
                     <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                       <Stack spacing={2}>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>
@@ -468,7 +468,7 @@ function NewTimeEntryPageContent() {
                 ) : null}
 
                 {category === "project_stage" ? (
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                  <Card variant="outlined" sx={{ borderRadius: 1 }}>
                     <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                       <Stack spacing={2}>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>
@@ -518,7 +518,7 @@ function NewTimeEntryPageContent() {
 
                 {selectedEmployee?.role === "helper" ||
                 selectedEmployee?.role === "apprentice" ? (
-                  <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                  <Card variant="outlined" sx={{ borderRadius: 1 }}>
                     <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                       <Stack spacing={2}>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>
@@ -559,7 +559,7 @@ function NewTimeEntryPageContent() {
                   </Card>
                 ) : null}
 
-                <Card variant="outlined" sx={{ borderRadius: 4 }}>
+                <Card variant="outlined" sx={{ borderRadius: 1 }}>
                   <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
                     <Stack spacing={2}>
                       <Typography variant="h6" sx={{ fontWeight: 800 }}>

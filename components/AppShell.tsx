@@ -6,6 +6,7 @@ import React, { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import LogoutButton from "./LogoutButton";
 import GlobalSearch from "./GlobalSearch";
+import MobileQuickCreate from "./MobileQuickCreate";
 import type { AppUser } from "../src/types/app-user";
 import { db } from "../src/lib/firebase";
 import {
@@ -737,36 +738,26 @@ function useRealtimeActiveTrip(uid: string) {
 
     const base = collection(db, "trips");
 
-    const qs = [
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.primaryTechUid", "==", u),
-        limit(10),
-      ),
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.helperUid", "==", u),
-        limit(10),
-      ),
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.secondaryTechUid", "==", u),
-        limit(10),
-      ),
-      query(
-        base,
-        where("active", "==", true),
-        where("status", "==", "in_progress"),
-        where("crew.secondaryHelperUid", "==", u),
-        limit(10),
-      ),
+    const workerFieldPaths = [
+      "crew.primaryTechUid",
+      "crew.helperUid",
+      "crew.secondaryTechUid",
+      "crew.secondaryHelperUid",
+      "crewConfirmed.primaryTechUid",
+      "crewConfirmed.helperUid",
+      "crewConfirmed.secondaryTechUid",
+      "crewConfirmed.secondaryHelperUid",
     ];
+
+    const qs = workerFieldPaths.map((fieldPath) =>
+      query(
+        base,
+        where("active", "==", true),
+        where("status", "==", "in_progress"),
+        where(fieldPath, "==", u),
+        limit(10),
+      ),
+    );
 
     const map = new Map<string, TripDoc>();
     const idsByQuery = qs.map(() => new Set<string>());
@@ -1859,6 +1850,7 @@ export default function AppShell({
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeTripSheetOpen, setActiveTripSheetOpen] = useState(false);
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
 
   useEffect(() => {
     setDrawerOpen(false);
@@ -1897,6 +1889,8 @@ export default function AppShell({
   }, [
     activeTrip?.id,
     activeTrip?.timerState,
+    activeTrip?.workerTimers?.[myUid]?.status,
+    activeTrip?.workerTimers?.[myUid]?.updatedAt,
     activeTrip?.link?.serviceTicketId,
     activeTrip?.link?.projectId,
     myUid,
@@ -2108,8 +2102,9 @@ export default function AppShell({
 
   const canQuickAct = useMemo(() => {
     if (!activeTrip) return false;
-    const c = activeTrip.crewConfirmed || activeTrip.crew || null;
-    const onCrew = userIsOnCrew(myUid, c);
+    const onCrew =
+      userIsOnCrew(myUid, activeTrip.crew) ||
+      userIsOnCrew(myUid, activeTrip.crewConfirmed);
     const elevated =
       role === "admin" || role === "manager" || role === "dispatcher";
     return Boolean(myUid) && (onCrew || elevated);
@@ -2117,8 +2112,10 @@ export default function AppShell({
 
   const canProjectCloseout = useMemo(() => {
     if (!activeTrip || !isProjectActiveTrip || !myUid) return false;
-    const c = activeTrip.crewConfirmed || activeTrip.crew || null;
-    return userIsOnCrew(myUid, c);
+    return (
+      userIsOnCrew(myUid, activeTrip.crew) ||
+      userIsOnCrew(myUid, activeTrip.crewConfirmed)
+    );
   }, [activeTrip, isProjectActiveTrip, myUid]);
 
   const [pillActionBusy, setPillActionBusy] = useState(false);
@@ -2149,14 +2146,26 @@ export default function AppShell({
 
   async function handleQuickPause() {
     if (!activeTrip || !canQuickAct || pillActionBusy) return;
+
     setPillActionBusy(true);
+    setProjectDockNotice("");
+
     try {
       await pauseWorkerOnTrip({
         db,
         tripId: activeTrip.id,
         workerUid: myUid,
         actorUid: myUid,
+        actorName: myDisplayName || null,
+        actorRole: role || null,
+        syncLinkedServiceTicket: true,
       });
+    } catch (error: unknown) {
+      setProjectDockNotice(
+        error instanceof Error
+          ? error.message
+          : "DCFlow could not pause this trip. Please try again.",
+      );
     } finally {
       setPillActionBusy(false);
     }
@@ -2164,14 +2173,26 @@ export default function AppShell({
 
   async function handleQuickResume() {
     if (!activeTrip || !canQuickAct || pillActionBusy) return;
+
     setPillActionBusy(true);
+    setProjectDockNotice("");
+
     try {
       await resumeWorkerOnTrip({
         db,
         tripId: activeTrip.id,
         workerUid: myUid,
         actorUid: myUid,
+        actorName: myDisplayName || null,
+        actorRole: role || null,
+        syncLinkedServiceTicket: true,
       });
+    } catch (error: unknown) {
+      setProjectDockNotice(
+        error instanceof Error
+          ? error.message
+          : "DCFlow could not resume this trip. Please try again.",
+      );
     } finally {
       setPillActionBusy(false);
     }
@@ -3410,11 +3431,17 @@ export default function AppShell({
   }, [pathname, mobilePrimaryNav]);
 
   const mobileBottomPadding =
-    (showMobileBottomNav ? MOBILE_BOTTOM_NAV_HEIGHT : 0) +
+  (showMobileBottomNav ? MOBILE_BOTTOM_NAV_HEIGHT : 0) +
+  (activeTripCard && isMobile && !suppressGlobalActiveTripSurface
+    ? MOBILE_ACTIVE_TRIP_HEIGHT
+    : 0) +
+  18;
+
+  const mobileQuickCreateBottomOffset =
+    (showMobileBottomNav ? MOBILE_BOTTOM_NAV_HEIGHT + 24 : 24) +
     (activeTripCard && isMobile && !suppressGlobalActiveTripSurface
       ? MOBILE_ACTIVE_TRIP_HEIGHT
-      : 0) +
-    18;
+      : 0);
 
   const mondayReminderBanner =
     showMondayReminder && showWeeklyTimesheet ? (
@@ -3569,6 +3596,7 @@ export default function AppShell({
     isMobile &&
     activeTripCard &&
     isProjectActiveTrip &&
+    !quickCreateOpen &&
     !activeTripSheetOpen &&
     !suppressGlobalActiveTripSurface ? (
       <Paper
@@ -3727,6 +3755,7 @@ export default function AppShell({
     isMobile &&
     activeTripCard &&
     !isProjectActiveTrip &&
+    !quickCreateOpen &&
     !activeTripSheetOpen &&
     !suppressGlobalActiveTripSurface ? (
       <Paper
@@ -5091,7 +5120,8 @@ export default function AppShell({
             isMobile &&
             !drawerOpen &&
             !activeTripSheetOpen &&
-            !projectCloseoutOpen
+            !projectCloseoutOpen &&
+            !quickCreateOpen
           }
           onRefresh={handleMobilePullToRefresh}
         >
@@ -5104,6 +5134,36 @@ export default function AppShell({
 
       {collapsedTripDock}
       {activeTripBottomSheet}
+
+      <MobileQuickCreate
+        role={role}
+        pathname={pathname}
+        bottomOffset={mobileQuickCreateBottomOffset}
+        hidden={
+          drawerOpen ||
+          activeTripSheetOpen ||
+          projectCloseoutOpen ||
+          suppressGlobalActiveTripSurface
+        }
+        onOpenChange={setQuickCreateOpen}
+        activeTrip={
+          activeTripCard
+            ? {
+                status: isPaused ? "paused" : "running",
+                elapsedMinutes: liveMinutes,
+                primaryLine:
+                  projectMeta?.projectName || activeTripCard.primaryLine,
+                secondaryLine:
+                  isProjectActiveTrip && supportsStageCloseout
+                    ? stageLabel(
+                        projectMeta?.stageKey ||
+                          activeTrip?.link?.projectStageKey,
+                      )
+                    : activeTripCard.secondaryLine,
+              }
+            : null
+        }
+      />
 
       {showMobileBottomNav ? (
         <Paper

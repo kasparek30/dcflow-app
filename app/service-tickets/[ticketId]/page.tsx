@@ -10,6 +10,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   orderBy,
   query,
   runTransaction,
@@ -3163,6 +3164,112 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }, [params]);
 
   useEffect(() => {
+    if (!ticketId) return;
+
+    const tripsQuery = query(
+      collection(db, "trips"),
+      where("link.serviceTicketId", "==", ticketId),
+      orderBy("date", "asc"),
+      orderBy("startTime", "asc"),
+    );
+
+    const unsubscribe = onSnapshot(
+      tripsQuery,
+      (snapshot) => {
+        const nextTrips = snapshot.docs.map((ds) => mapTripLikeFromDoc(ds));
+
+        setTrips(nextTrips);
+
+        setAvailabilityTripsByDate((prev) => {
+          const nextByDate = { ...prev };
+          const affectedDates = new Set(
+            nextTrips
+              .map((trip) => String(trip.date || "").trim())
+              .filter(Boolean),
+          );
+
+          for (const date of affectedDates) {
+            nextByDate[date] = nextTrips.filter((trip) => trip.date === date);
+          }
+
+          return nextByDate;
+        });
+
+        // Initialize editor state for newly observed trips without overwriting
+        // notes or closeout fields the current user is actively editing.
+        setTripWorkNotes((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) next[trip.id] = String(trip.workNotes || "");
+          }
+          return next;
+        });
+        setTripResolutionNotes((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) {
+              next[trip.id] = String(trip.resolutionNotes || "");
+            }
+          }
+          return next;
+        });
+        setTripFollowUpNotes((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) next[trip.id] = String(trip.followUpNotes || "");
+          }
+          return next;
+        });
+        setTripMaterials((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) {
+              next[trip.id] = Array.isArray(trip.materials) ? trip.materials : [];
+            }
+          }
+          return next;
+        });
+        setTripMaterialsText((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) {
+              next[trip.id] = materialLinesToText(trip.materials || []);
+            }
+          }
+          return next;
+        });
+        setTripNoMaterialsUsed((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) next[trip.id] = Boolean(trip.noMaterialsUsed);
+          }
+          return next;
+        });
+        setFinishModeByTrip((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) next[trip.id] = "none";
+          }
+          return next;
+        });
+        setHelperConfirmedByTrip((prev) => {
+          const next = { ...prev };
+          for (const trip of nextTrips) {
+            if (!(trip.id in next)) next[trip.id] = true;
+          }
+          return next;
+        });
+      },
+      (snapshotError) => {
+        console.error("Failed to subscribe to service-ticket trips", snapshotError);
+        setError((prev) => prev || snapshotError.message || "Failed to sync trip updates.");
+      },
+    );
+
+    return unsubscribe;
+  }, [ticketId]);
+
+  useEffect(() => {
     if (tripTimeWindow !== "custom") {
       const times = windowToTimes(tripTimeWindow);
       setTripStartTime(times.start);
@@ -3598,7 +3705,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   function canCurrentUserActOnTrip(trip: TripDoc) {
     if (!myUid) return false;
     if (appUser?.role === "admin") return true;
-    return isUidOnTripCrew(myUid, trip.crew || null);
+
+    return (
+      isUidOnTripCrew(myUid, trip.crew || null) ||
+      isUidOnTripCrew(myUid, trip.crewConfirmed || null)
+    );
   }
 
   function applyHelperConfirmation(
@@ -5442,7 +5553,8 @@ async function handleStartTrip(trip: TripDoc) {
       actorUid: myUid,
       actorName: appUser?.displayName || null,
       actorRole: appUser?.role || null,
-      startWholeCrewWhenTripNotStarted: true,
+      startWholeCrewWhenTripNotStarted:
+        canStartForCrew && !isAssignedWorker,
       syncLinkedServiceTicket: true,
     });
 
@@ -5564,12 +5676,18 @@ async function handleStartTrip(trip: TripDoc) {
             db,
             tripId: trip.id,
             actorUid: myUid,
+            actorName: appUser?.displayName || null,
+            actorRole: appUser?.role || null,
+            syncLinkedServiceTicket: true,
           })
         : await pauseWorkerOnTrip({
             db,
             tripId: trip.id,
             workerUid: myUid,
             actorUid: myUid,
+            actorName: appUser?.displayName || null,
+            actorRole: appUser?.role || null,
+            syncLinkedServiceTicket: true,
           });
 
       setTrips((prev) =>
@@ -5648,12 +5766,18 @@ async function handleStartTrip(trip: TripDoc) {
             db,
             tripId: trip.id,
             actorUid: myUid,
+            actorName: appUser?.displayName || null,
+            actorRole: appUser?.role || null,
+            syncLinkedServiceTicket: true,
           })
         : await resumeWorkerOnTrip({
             db,
             tripId: trip.id,
             workerUid: myUid,
             actorUid: myUid,
+            actorName: appUser?.displayName || null,
+            actorRole: appUser?.role || null,
+            syncLinkedServiceTicket: true,
           });
 
       setTrips((prev) =>

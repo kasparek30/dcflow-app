@@ -74,6 +74,7 @@ type TripDoc = {
   startTime?: string;
   endTime?: string;
   crew?: TripCrew | null;
+  crewConfirmed?: TripCrew | null;
   link?: TripLink | null;
   timerState?: string | null;
   workerTimers?: WorkerTimersByUid | null;
@@ -192,13 +193,12 @@ function firstNameOnly(name?: string) {
   return trimmed.split(/\s+/)[0] || trimmed;
 }
 
-function tripTimerStatusForRow(t: TripDoc, workerUid: string | null) {
-  if (workerUid) {
-    return getWorkerTimerStatus(t, workerUid);
-  }
-
+function tripTimerStatusForRow(t: TripDoc, _workerUid: string | null) {
+  // Office Display shows the overall trip state, not only the technician row's
+  // personal timer. This lets helper/apprentice actions appear correctly while
+  // still keeping the trip live when another crew member remains running.
   const workerStatuses = Object.values(t.workerTimers || {}).map((timer) =>
-    normalizeStatus(timer?.status)
+    normalizeStatus(timer?.status),
   );
 
   if (workerStatuses.includes("running")) return "running";
@@ -308,7 +308,10 @@ function tripRowUids(t: TripDoc): string[] {
   const uids = [
     String(t.crew?.primaryTechUid || "").trim(),
     String(t.crew?.secondaryTechUid || "").trim(),
+    String(t.crewConfirmed?.primaryTechUid || "").trim(),
+    String(t.crewConfirmed?.secondaryTechUid || "").trim(),
   ].filter(Boolean);
+
   return Array.from(new Set(uids));
 }
 
@@ -587,6 +590,7 @@ export default function OfficeDisplayPage() {
               startTime: d.startTime ?? undefined,
               endTime: d.endTime ?? undefined,
               crew: d.crew ?? null,
+              crewConfirmed: d.crewConfirmed ?? null,
               link: d.link ?? null,
               timerState: d.timerState ?? null,
               workerTimers:

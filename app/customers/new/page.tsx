@@ -225,7 +225,7 @@ export default function NewCustomerPage() {
             <Card
               elevation={0}
               sx={{
-                borderRadius: 5,
+                borderRadius: 1,
                 border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                 overflow: "hidden",
               }}
@@ -402,7 +402,7 @@ export default function NewCustomerPage() {
                     <Card
                       elevation={0}
                       sx={{
-                        borderRadius: 4,
+                        borderRadius: 1,
                         border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
                         bgcolor: alpha(theme.palette.primary.main, 0.04),
                       }}

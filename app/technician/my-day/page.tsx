@@ -884,7 +884,7 @@ async function startProjectTripFromMyDay(args: {
     tripId,
     workerUid,
     actorUid: startedByUid || workerUid,
-    startWholeCrewWhenTripNotStarted: true,
+    startWholeCrewWhenTripNotStarted: false,
   });
 
   const projectId = String(guardTrip.link?.projectId || "").trim() || null;
@@ -949,7 +949,7 @@ async function startServiceTripFromMyDay(args: {
     tripId,
     workerUid,
     actorUid: startedByUid || workerUid,
-    startWholeCrewWhenTripNotStarted: true,
+    startWholeCrewWhenTripNotStarted: false,
   });
 
   return {
@@ -1678,15 +1678,6 @@ return {
       if (res.crewWarnings?.length) {
         setStartWarning(res.crewWarnings.join(" "));
       }
-
-
-      if (res.alreadyStarted) {
-        window.location.href = isFieldCrewRole
-          ? `/technician/project-trips/${item.id}`
-          : item.projectId
-            ? `/projects/${item.projectId}`
-            : `/trips/${item.id}`;
-      }
     } catch (e: any) {
       setError(e?.message || "Failed to start project work.");
     } finally {
@@ -1713,11 +1704,6 @@ return {
 
       if (res.crewWarnings?.length) {
         setStartWarning(res.crewWarnings.join(" "));
-      }
-
-
-      if (res.alreadyStarted) {
-        window.location.href = item.href;
       }
     } catch (e: any) {
       setError(e?.message || "Failed to start service work.");
