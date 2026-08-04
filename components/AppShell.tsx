@@ -90,8 +90,8 @@ import {
   completeAllWorkerTimers,
   getWorkerTimerMinutesAt,
   getWorkerTimerStatus,
-  pauseWorkerOnTrip,
-  resumeWorkerOnTrip,
+  pauseAllWorkersOnTrip,
+  resumeAllWorkersOnTrip,
   type WorkerTimersByUid,
 } from "../src/lib/worker-trip-timers";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
@@ -2151,10 +2151,9 @@ export default function AppShell({
     setProjectDockNotice("");
 
     try {
-      await pauseWorkerOnTrip({
+      await pauseAllWorkersOnTrip({
         db,
         tripId: activeTrip.id,
-        workerUid: myUid,
         actorUid: myUid,
         actorName: myDisplayName || null,
         actorRole: role || null,
@@ -2178,10 +2177,9 @@ export default function AppShell({
     setProjectDockNotice("");
 
     try {
-      await resumeWorkerOnTrip({
+      await resumeAllWorkersOnTrip({
         db,
         tripId: activeTrip.id,
-        workerUid: myUid,
         actorUid: myUid,
         actorName: myDisplayName || null,
         actorRole: role || null,
