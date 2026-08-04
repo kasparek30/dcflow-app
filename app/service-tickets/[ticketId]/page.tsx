@@ -5710,21 +5710,21 @@ async function handleStartTrip(trip: TripDoc) {
         title: "Trip Paused",
         description: controlsWholeCrew
           ? "The assigned crew's trip timers were paused by an administrator."
-          : `${appUser?.displayName || "Employee"} paused the active crew timers for this trip.`,
+          : `${appUser?.displayName || "Employee"} paused their trip timer.`,
         details: [
-          `Paused by: ${appUser?.displayName || myUid}`,
-          `Crew: ${getTripCrewLabel(trip)}`,
-          `Timers paused: ${
-            Array.isArray(result.affectedWorkerUids)
-              ? result.affectedWorkerUids.length
-              : 0
-          }`,
+          controlsWholeCrew
+            ? `Paused by: ${appUser?.displayName || myUid}`
+            : "",
+          controlsWholeCrew ? `Crew: ${getTripCrewLabel(trip)}` : "",
           `Trip: ${trip.id}`,
         ].filter(Boolean),
         createdAt: result.stamp || nowIso(),
       });
 
-      setTripOk(trip.id, "Trip paused for active crew.");
+      setTripOk(
+        trip.id,
+        controlsWholeCrew ? "Trip paused for crew." : "Paused.",
+      );
     } catch (err: unknown) {
       setTripErr(
         trip.id,
@@ -5762,24 +5762,14 @@ async function handleStartTrip(trip: TripDoc) {
     setTripSavingFlag(trip.id, true);
 
     try {
-      const result = controlsWholeCrew
-        ? await resumeAllWorkersOnTrip({
-            db,
-            tripId: trip.id,
-            actorUid: myUid,
-            actorName: appUser?.displayName || null,
-            actorRole: appUser?.role || null,
-            syncLinkedServiceTicket: true,
-          })
-        : await resumeWorkerOnTrip({
-            db,
-            tripId: trip.id,
-            workerUid: myUid,
-            actorUid: myUid,
-            actorName: appUser?.displayName || null,
-            actorRole: appUser?.role || null,
-            syncLinkedServiceTicket: true,
-          });
+      const result = await resumeAllWorkersOnTrip({
+        db,
+        tripId: trip.id,
+        actorUid: myUid,
+        actorName: appUser?.displayName || null,
+        actorRole: appUser?.role || null,
+        syncLinkedServiceTicket: true,
+      });
 
       setTrips((prev) =>
         prev.map((t) =>
@@ -5799,23 +5789,21 @@ async function handleStartTrip(trip: TripDoc) {
       await logServiceTicketActivity({
         type: "service_trip_resumed",
         title: "Trip Resumed",
-        description: controlsWholeCrew
-          ? "The assigned crew's trip timers were resumed by an administrator."
-          : `${appUser?.displayName || "Employee"} resumed their trip timer.`,
+        description: `${appUser?.displayName || "Employee"} resumed the assigned crew's trip timers.`,
         details: [
-          controlsWholeCrew
-            ? `Resumed by: ${appUser?.displayName || myUid}`
-            : "",
-          controlsWholeCrew ? `Crew: ${getTripCrewLabel(trip)}` : "",
+          `Resumed by: ${appUser?.displayName || myUid}`,
+          `Crew: ${getTripCrewLabel(trip)}`,
+          `Timers started/resumed: ${
+            Array.isArray(result.startedCrewUids)
+              ? result.startedCrewUids.length
+              : 0
+          }`,
           `Trip: ${trip.id}`,
         ].filter(Boolean),
         createdAt: result.stamp,
       });
 
-      setTripOk(
-        trip.id,
-        controlsWholeCrew ? "Trip resumed for crew." : "Resumed.",
-      );
+      setTripOk(trip.id, "Trip resumed for assigned crew.");
     } catch (err: unknown) {
       setTripErr(
         trip.id,

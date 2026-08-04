@@ -489,12 +489,20 @@ export async function switchWorkerToTrip(args: {
   }
 
   const targetState = normalizeTimerState(target.timerState, target.status);
-  const shouldStartWholeCrew =
-    args.startWholeCrewWhenTripNotStarted !== false &&
-    targetStatus !== "in_progress" &&
-    targetState === "not_started";
 
-  const workersToStart = shouldStartWholeCrew ? targetCrewUids : [workerUid];
+  /*
+   * Trip timer controls are crew-level operations.
+   *
+   * When any assigned technician, helper, or apprentice starts or resumes a
+   * trip, every assigned crew timer starts/resumes together. Each crew member
+   * is also paused from any other running trip before this trip starts.
+   *
+   * This keeps Start, Pause, Resume, and Closeout symmetrical and prevents a
+   * technician from remaining paused while their apprentice resumes the job.
+   */
+  const shouldStartWholeCrew =
+    targetStatus !== "in_progress" && targetState === "not_started";
+  const workersToStart = targetCrewUids;
 
   const candidateTripsById = new Map<string, TripTimerLike>();
 
@@ -705,7 +713,7 @@ export async function switchWorkerToTrip(args: {
       tripId,
       workerUid,
       startedCrewUids: workersToStart,
-      startedWholeCrew: shouldStartWholeCrew,
+      startedWholeCrew: workersToStart.length > 1,
       stamp,
       workerTimers: targetTimers,
       timerState: targetPatch.timerState,
@@ -756,44 +764,28 @@ export async function pauseWorkerOnTrip(args: {
       : null;
 
     const timers = materializeWorkerTimers(trip, stamp);
-    const tripCrewUids = getTripCrewUids(trip);
-    const workerBelongsToTrip =
-      tripCrewUids.includes(workerUid) || Boolean(timers[workerUid]);
+    const current = timers[workerUid];
 
-    if (!workerBelongsToTrip) {
-      throw new Error("This employee is not assigned to the trip.");
+    if (!current) {
+      throw new Error("No timer exists for this employee on the trip.");
     }
 
-    /*
-     * Pause is a crew-level field action.
-     *
-     * A technician, helper, or apprentice may be the person holding the phone
-     * when the crew leaves the job, takes lunch, waits for parts, or switches
-     * work. Pausing only that employee would leave coworkers accumulating
-     * time incorrectly. Pause every currently running timer on this trip in
-     * the same transaction.
-     *
-     * This does not affect switchWorkerToTrip(), which still pauses only the
-     * employee who is switching away from another trip.
-     */
-    const affectedWorkerUids: string[] = [];
+    if (current.status !== "paused") {
+      if (current.status !== "running") {
+        throw new Error("This employee's timer is not running.");
+      }
 
-    for (const [uid, timer] of Object.entries(timers)) {
-      if (timer.status !== "running") continue;
-      timers[uid] = pauseTimer(timer, stamp, actorUid);
-      affectedWorkerUids.push(uid);
+      timers[workerUid] = pauseTimer(current, stamp, actorUid);
     }
 
     const timerState = deriveTripTimerState(timers);
 
-    if (affectedWorkerUids.length > 0) {
-      tx.update(tripRef, {
-        workerTimers: timers,
-        timerState,
-        updatedAt: stamp,
-        updatedByUid: actorUid,
-      });
-    }
+    tx.update(tripRef, {
+      workerTimers: timers,
+      timerState,
+      updatedAt: stamp,
+      updatedByUid: actorUid,
+    });
 
     if (linkedTicketRef && linkedTicketSnap?.exists()) {
       const liveTicket = linkedTicketSnap.data() as any;
@@ -814,12 +806,7 @@ export async function pauseWorkerOnTrip(args: {
       }
     }
 
-    return {
-      workerTimers: timers,
-      timerState,
-      stamp,
-      affectedWorkerUids,
-    };
+    return { workerTimers: timers, timerState, stamp };
   });
 }
 
@@ -963,41 +950,18 @@ export async function resumeAllWorkersOnTrip(args: {
     throw new Error("No assigned crew was found on this trip.");
   }
 
-  const affectedWorkerUids: string[] = [];
-
-  // Use the same switch path for every worker so resuming an entire crew
-  // cannot leave any worker running on two trips at once.
-  for (const workerUid of crewUids) {
-    const timer = getWorkerTimer(initialTrip, workerUid);
-    if (!timer || timer.status !== "paused") continue;
-
-    await switchWorkerToTrip({
-      db: args.db,
-      tripId,
-      workerUid,
-      actorUid,
-      actorName: args.actorName,
-      actorRole: args.actorRole,
-      startWholeCrewWhenTripNotStarted: false,
-      syncLinkedServiceTicket: args.syncLinkedServiceTicket,
-    });
-
-    affectedWorkerUids.push(workerUid);
-  }
-
-  const finalSnap = await getDoc(tripRef);
-  if (!finalSnap.exists()) throw new Error("Trip not found.");
-
-  const finalTrip = mapTrip(tripId, finalSnap.data());
-  const stamp = new Date().toISOString();
-  const workerTimers = materializeWorkerTimers(finalTrip, stamp);
-
-  return {
-    workerTimers,
-    timerState: deriveTripTimerState(workerTimers),
-    stamp,
-    affectedWorkerUids,
-  };
+  // switchWorkerToTrip now performs one atomic crew-wide start/resume and
+  // pauses every crew member from any other running trip.
+  return switchWorkerToTrip({
+    db: args.db,
+    tripId,
+    workerUid: crewUids[0],
+    actorUid,
+    actorName: args.actorName,
+    actorRole: args.actorRole,
+    startWholeCrewWhenTripNotStarted: true,
+    syncLinkedServiceTicket: args.syncLinkedServiceTicket,
+  });
 }
 
 export function completeAllWorkerTimers(
