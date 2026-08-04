@@ -224,6 +224,48 @@ export function getWorkerTimerMinutesAt(
   return Math.max(0, gross - paused);
 }
 
+export function getTripActiveMinutesAt(
+  trip: TripTimerLike,
+  referenceMs: number,
+) {
+  const explicitTimerUids =
+    trip.workerTimers && typeof trip.workerTimers === "object"
+      ? Object.keys(trip.workerTimers)
+      : [];
+
+  const workerUids =
+    explicitTimerUids.length > 0
+      ? explicitTimerUids
+      : getTripCrewUids(trip);
+
+  const activeMinutes = workerUids
+    .map((uid) => getWorkerTimerMinutesAt(trip, uid, referenceMs))
+    .filter(
+      (minutes): minutes is number =>
+        typeof minutes === "number" &&
+        Number.isFinite(minutes) &&
+        minutes >= 0,
+    );
+
+  if (activeMinutes.length > 0) {
+    // Customer billable trip duration is elapsed active trip time, not the
+    // sum of every crew member's payroll hours.
+    return Math.max(...activeMinutes);
+  }
+
+  // Backward-compatible fallback for legacy trips that predate workerTimers.
+  const startMs = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
+  const endMs = referenceMs;
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return 0;
+  }
+
+  const gross = minutesBetween(startMs, endMs);
+  const paused = sumWorkerPausedMinutes(trip.pauseBlocks, endMs);
+  return Math.max(0, gross - paused);
+}
+
 export function deriveTripTimerState(workerTimers: WorkerTimersByUid) {
   const timers = Object.values(workerTimers || {});
   if (timers.some((timer) => timer.status === "running")) return "running";

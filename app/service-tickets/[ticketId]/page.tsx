@@ -74,6 +74,7 @@ import {
   completeAllWorkerTimers,
   getWorkerTimer,
   getWorkerTimerMinutesAt,
+  getTripActiveMinutesAt,
   getWorkerTimerStatus,
   sumWorkerPausedMinutes,
   pauseWorkerOnTrip,
@@ -5930,11 +5931,16 @@ async function handleStartTrip(trip: TripDoc) {
       }
 
       const completedWorkerTimers = completeAllWorkerTimers(trip, now, myUid);
+      const completionMs = new Date(now).getTime();
 
-      const startAt = trip.actualStartAt || now;
-      const gross = minutesBetweenIso(startAt, now);
-      const paused = sumPausedMinutes(pauseBlocks, now);
-      const actualMinutes = Math.max(0, gross - paused);
+      const actualMinutes = getTripActiveMinutesAt(
+        {
+          ...trip,
+          workerTimers: completedWorkerTimers,
+          actualEndAt: now,
+        },
+        completionMs,
+      );
 
       if (!trip.date) {
         throw new Error("Trip is missing date; cannot create time entries.");
@@ -5969,7 +5975,6 @@ async function handleStartTrip(trip: TripDoc) {
       }
 
       const hoursToUse = getHoursToUse(trip.id, actualMinutes);
-      const completionMs = new Date(now).getTime();
       const payrollHoursByUid = Object.fromEntries(
         crewMembers.map((member) => {
           const memberMinutes = getWorkerTimerMinutesAt(
