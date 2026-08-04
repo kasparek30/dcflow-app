@@ -756,28 +756,44 @@ export async function pauseWorkerOnTrip(args: {
       : null;
 
     const timers = materializeWorkerTimers(trip, stamp);
-    const current = timers[workerUid];
+    const tripCrewUids = getTripCrewUids(trip);
+    const workerBelongsToTrip =
+      tripCrewUids.includes(workerUid) || Boolean(timers[workerUid]);
 
-    if (!current) {
-      throw new Error("No timer exists for this employee on the trip.");
+    if (!workerBelongsToTrip) {
+      throw new Error("This employee is not assigned to the trip.");
     }
 
-    if (current.status !== "paused") {
-      if (current.status !== "running") {
-        throw new Error("This employee's timer is not running.");
-      }
+    /*
+     * Pause is a crew-level field action.
+     *
+     * A technician, helper, or apprentice may be the person holding the phone
+     * when the crew leaves the job, takes lunch, waits for parts, or switches
+     * work. Pausing only that employee would leave coworkers accumulating
+     * time incorrectly. Pause every currently running timer on this trip in
+     * the same transaction.
+     *
+     * This does not affect switchWorkerToTrip(), which still pauses only the
+     * employee who is switching away from another trip.
+     */
+    const affectedWorkerUids: string[] = [];
 
-      timers[workerUid] = pauseTimer(current, stamp, actorUid);
+    for (const [uid, timer] of Object.entries(timers)) {
+      if (timer.status !== "running") continue;
+      timers[uid] = pauseTimer(timer, stamp, actorUid);
+      affectedWorkerUids.push(uid);
     }
 
     const timerState = deriveTripTimerState(timers);
 
-    tx.update(tripRef, {
-      workerTimers: timers,
-      timerState,
-      updatedAt: stamp,
-      updatedByUid: actorUid,
-    });
+    if (affectedWorkerUids.length > 0) {
+      tx.update(tripRef, {
+        workerTimers: timers,
+        timerState,
+        updatedAt: stamp,
+        updatedByUid: actorUid,
+      });
+    }
 
     if (linkedTicketRef && linkedTicketSnap?.exists()) {
       const liveTicket = linkedTicketSnap.data() as any;
@@ -798,7 +814,12 @@ export async function pauseWorkerOnTrip(args: {
       }
     }
 
-    return { workerTimers: timers, timerState, stamp };
+    return {
+      workerTimers: timers,
+      timerState,
+      stamp,
+      affectedWorkerUids,
+    };
   });
 }
 

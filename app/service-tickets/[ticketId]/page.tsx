@@ -5710,21 +5710,21 @@ async function handleStartTrip(trip: TripDoc) {
         title: "Trip Paused",
         description: controlsWholeCrew
           ? "The assigned crew's trip timers were paused by an administrator."
-          : `${appUser?.displayName || "Employee"} paused their trip timer.`,
+          : `${appUser?.displayName || "Employee"} paused the active crew timers for this trip.`,
         details: [
-          controlsWholeCrew
-            ? `Paused by: ${appUser?.displayName || myUid}`
-            : "",
-          controlsWholeCrew ? `Crew: ${getTripCrewLabel(trip)}` : "",
+          `Paused by: ${appUser?.displayName || myUid}`,
+          `Crew: ${getTripCrewLabel(trip)}`,
+          `Timers paused: ${
+            Array.isArray(result.affectedWorkerUids)
+              ? result.affectedWorkerUids.length
+              : 0
+          }`,
           `Trip: ${trip.id}`,
         ].filter(Boolean),
         createdAt: result.stamp || nowIso(),
       });
 
-      setTripOk(
-        trip.id,
-        controlsWholeCrew ? "Trip paused for crew." : "Paused.",
-      );
+      setTripOk(trip.id, "Trip paused for active crew.");
     } catch (err: unknown) {
       setTripErr(
         trip.id,
