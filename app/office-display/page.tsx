@@ -194,24 +194,38 @@ function firstNameOnly(name?: string) {
 }
 
 function tripTimerStatusForRow(t: TripDoc, _workerUid: string | null) {
-  // Office Display shows the overall trip state, not only the technician row's
-  // personal timer. This lets helper/apprentice actions appear correctly while
-  // still keeping the trip live when another crew member remains running.
+  // Office Display represents the shared trip state. A running signal from
+  // either the top-level timerState or any crew worker timer must win over an
+  // older/stale paused worker entry.
+  const tripTimerState = normalizeStatus(t.timerState || "");
   const workerStatuses = Object.values(t.workerTimers || {}).map((timer) =>
     normalizeStatus(timer?.status),
   );
 
-  if (workerStatuses.includes("running")) return "running";
-  if (workerStatuses.includes("paused")) return "paused";
   if (
-    workerStatuses.length > 0 &&
-    workerStatuses.every((status) => status === "complete")
+    tripTimerState === "running" ||
+    workerStatuses.includes("running")
+  ) {
+    return "running";
+  }
+
+  if (
+    tripTimerState === "paused" ||
+    workerStatuses.includes("paused")
+  ) {
+    return "paused";
+  }
+
+  if (
+    tripTimerState === "complete" ||
+    tripTimerState === "completed" ||
+    (workerStatuses.length > 0 &&
+      workerStatuses.every(
+        (status) => status === "complete" || status === "completed",
+      ))
   ) {
     return "complete";
   }
-
-  const legacyTimer = normalizeStatus(t.timerState || "");
-  if (legacyTimer) return legacyTimer;
 
   const status = normalizeStatus(t.status);
   if (status === "in_progress") return "running";
