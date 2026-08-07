@@ -150,6 +150,25 @@ type PauseBlock = {
   endAt?: string | null;
 };
 
+type StaffUnpaidTimeType = "lunch" | "personal" | "other";
+
+type StaffUnpaidTimeBlock = {
+  id?: string | null;
+  type: StaffUnpaidTimeType;
+  startAt: string;
+  endAt: string;
+  minutes: number;
+  note?: string | null;
+};
+
+type StaffUnpaidTimeBlockDraft = {
+  id: string;
+  type: StaffUnpaidTimeType;
+  startTime: string;
+  endTime: string;
+  note: string;
+};
+
 type TripDocLite = {
   id: string;
   active?: boolean | null;
@@ -362,6 +381,7 @@ type DashboardStaffCoverageItem = {
   unpaidBreakMinutes: number;
   lunchStartAt?: string | null;
   lunchEndAt?: string | null;
+  unpaidTimeBlocks?: StaffUnpaidTimeBlock[] | null;
   status: string;
   active: boolean;
   linkedTimeEntryId?: string | null;
@@ -503,51 +523,176 @@ function calculatePaidStaffHours(
   return Math.round((paidMinutes / 60) * 100) / 100;
 }
 
-function calculateLunchMinutes(lunchStartTime: string, lunchEndTime: string) {
-  const start = minutesFromHHMM(lunchStartTime);
-  const end = minutesFromHHMM(lunchEndTime);
+function calculateTimeBlockMinutes(startTime: string, endTime: string) {
+  const start = minutesFromHHMM(startTime);
+  const end = minutesFromHHMM(endTime);
   if (start == null || end == null || end <= start) return null;
   return end - start;
 }
 
-function isLunchInsideShift(
+function isTimeBlockInsideShift(
   shiftStartTime: string,
   shiftEndTime: string,
-  lunchStartTime: string,
-  lunchEndTime: string,
+  blockStartTime: string,
+  blockEndTime: string,
 ) {
   const shiftStart = minutesFromHHMM(shiftStartTime);
   const shiftEnd = minutesFromHHMM(shiftEndTime);
-  const lunchStart = minutesFromHHMM(lunchStartTime);
-  const lunchEnd = minutesFromHHMM(lunchEndTime);
+  const blockStart = minutesFromHHMM(blockStartTime);
+  const blockEnd = minutesFromHHMM(blockEndTime);
 
   if (
     shiftStart == null ||
     shiftEnd == null ||
-    lunchStart == null ||
-    lunchEnd == null
+    blockStart == null ||
+    blockEnd == null
   ) {
     return false;
   }
 
   return (
-    lunchStart >= shiftStart && lunchEnd <= shiftEnd && lunchEnd > lunchStart
+    blockStart >= shiftStart &&
+    blockEnd <= shiftEnd &&
+    blockEnd > blockStart
   );
 }
 
-function formatLunchSummary(
+function unpaidTimeTypeLabel(type?: StaffUnpaidTimeType | string | null) {
+  const normalized = safeTrim(type).toLowerCase();
+  if (normalized === "lunch") return "Lunch";
+  if (normalized === "personal") return "Personal / Out of Office";
+  return "Other Unpaid Time";
+}
+
+function formatMinutesDuration(minutes: number) {
+  const safeMinutes = Math.max(0, Math.round(Number(minutes || 0)));
+  const hours = Math.floor(safeMinutes / 60);
+  const mins = safeMinutes % 60;
+
+  if (hours > 0 && mins > 0) return `${hours} hr ${mins} min`;
+  if (hours > 0) return `${hours} hr`;
+  return `${mins} min`;
+}
+
+function coerceStaffUnpaidTimeBlocks(input: unknown): StaffUnpaidTimeBlock[] {
+  if (!Array.isArray(input)) return [];
+
+  return input
+    .map((entry: any) => {
+      const typeRaw = safeTrim(entry?.type).toLowerCase();
+      const type: StaffUnpaidTimeType =
+        typeRaw === "lunch"
+          ? "lunch"
+          : typeRaw === "personal" || typeRaw === "out_of_office"
+            ? "personal"
+            : "other";
+
+      return {
+        id: safeTrim(entry?.id) || null,
+        type,
+        startAt: safeTrim(entry?.startAt),
+        endAt: safeTrim(entry?.endAt),
+        minutes: Number(entry?.minutes || 0),
+        note: safeTrim(entry?.note) || null,
+      } satisfies StaffUnpaidTimeBlock;
+    })
+    .filter(
+      (entry) =>
+        Boolean(entry.startAt) &&
+        Boolean(entry.endAt) &&
+        Number.isFinite(entry.minutes) &&
+        entry.minutes > 0,
+    );
+}
+
+function buildLegacyUnpaidTimeBlocks(
+  item: DashboardStaffCoverageItem,
+): StaffUnpaidTimeBlockDraft[] {
+  const existing = coerceStaffUnpaidTimeBlocks(item.unpaidTimeBlocks);
+
+  if (existing.length > 0) {
+    return existing.map((block, index) => ({
+      id: safeTrim(block.id) || `existing_${index}_${Date.now()}`,
+      type: block.type,
+      startTime: new Date(block.startAt).toTimeString().slice(0, 5),
+      endTime: new Date(block.endAt).toTimeString().slice(0, 5),
+      note: safeTrim(block.note),
+    }));
+  }
+
+  if (item.lunchStartAt && item.lunchEndAt) {
+    return [
+      {
+        id: `legacy_lunch_${Date.now()}`,
+        type: "lunch",
+        startTime: new Date(item.lunchStartAt).toTimeString().slice(0, 5),
+        endTime: new Date(item.lunchEndAt).toTimeString().slice(0, 5),
+        note: "",
+      },
+    ];
+  }
+
+  const legacyMinutes = Number(item.unpaidBreakMinutes || 0);
+  if (legacyMinutes > 0) {
+    const fallbackStart = "12:00";
+    const startMinutes = minutesFromHHMM(fallbackStart) || 720;
+    const endMinutes = Math.min(23 * 60 + 59, startMinutes + legacyMinutes);
+    const fallbackEnd = `${String(Math.floor(endMinutes / 60)).padStart(
+      2,
+      "0",
+    )}:${String(endMinutes % 60).padStart(2, "0")}`;
+
+    return [
+      {
+        id: `legacy_unpaid_${Date.now()}`,
+        type: "lunch",
+        startTime: fallbackStart,
+        endTime: fallbackEnd,
+        note: "",
+      },
+    ];
+  }
+
+  return [];
+}
+
+function buildUnpaidTimeSummary(
   unpaidBreakMinutes: number,
+  unpaidTimeBlocks?: StaffUnpaidTimeBlock[] | null,
   lunchStartAt?: string | null,
   lunchEndAt?: string | null,
 ) {
-  if (unpaidBreakMinutes <= 0) return "No unpaid lunch";
+  const blocks = coerceStaffUnpaidTimeBlocks(unpaidTimeBlocks);
+
+  if (blocks.length > 0) {
+    const typeCounts = blocks.reduce(
+      (acc, block) => {
+        acc[block.type] = (acc[block.type] || 0) + 1;
+        return acc;
+      },
+      {} as Record<StaffUnpaidTimeType, number>,
+    );
+
+    const labels = (Object.keys(typeCounts) as StaffUnpaidTimeType[]).map(
+      (type) =>
+        `${typeCounts[type]} ${unpaidTimeTypeLabel(type).toLowerCase()}`,
+    );
+
+    return `${formatMinutesDuration(unpaidBreakMinutes)} unpaid • ${labels.join(
+      ", ",
+    )}`;
+  }
+
+  if (unpaidBreakMinutes <= 0) return "No unpaid time";
 
   const lunchStart = lunchStartAt ? formatIsoTime12h(lunchStartAt) : "";
   const lunchEnd = lunchEndAt ? formatIsoTime12h(lunchEndAt) : "";
 
   return lunchStart && lunchEnd
-    ? `${lunchStart}–${lunchEnd} • ${unpaidBreakMinutes} min unpaid lunch`
-    : `${unpaidBreakMinutes} min unpaid lunch`;
+    ? `${lunchStart}–${lunchEnd} • ${formatMinutesDuration(
+        unpaidBreakMinutes,
+      )} unpaid`
+    : `${formatMinutesDuration(unpaidBreakMinutes)} unpaid`;
 }
 
 function buildStaffAdjustmentNotes(
@@ -558,9 +703,22 @@ function buildStaffAdjustmentNotes(
   unpaidBreakMinutes: number,
   paidHours: number,
   adjustmentNote: string,
-  lunchStartTime?: string,
-  lunchEndTime?: string,
+  unpaidBlocks: StaffUnpaidTimeBlockDraft[],
 ) {
+  const unpaidLines =
+    unpaidBlocks.length > 0
+      ? unpaidBlocks.map((block) => {
+          const minutes =
+            calculateTimeBlockMinutes(block.startTime, block.endTime) || 0;
+          const note = safeTrim(block.note);
+          return `${unpaidTimeTypeLabel(block.type)}: ${formatTime12h(
+            block.startTime,
+          )}–${formatTime12h(block.endTime)} (${formatMinutesDuration(
+            minutes,
+          )})${note ? ` — ${note}` : ""}`;
+        })
+      : ["Unpaid time: none"];
+
   const adjustmentLines = [
     "Staff adjustment:",
     `Scheduled: ${formatTime12h(item.startTime)}–${formatTime12h(
@@ -570,12 +728,9 @@ function buildStaffAdjustmentNotes(
       actualEndTime,
     )} (${paidHours.toFixed(2)} paid hrs)`,
     unpaidBreakMinutes > 0
-      ? lunchStartTime && lunchEndTime
-        ? `Unpaid lunch: ${formatTime12h(lunchStartTime)}–${formatTime12h(
-            lunchEndTime,
-          )} (${unpaidBreakMinutes} min)`
-        : `Unpaid lunch: ${unpaidBreakMinutes} min`
-      : "Unpaid lunch: none",
+      ? `Total unpaid time: ${formatMinutesDuration(unpaidBreakMinutes)}`
+      : "Total unpaid time: none",
+    ...unpaidLines,
     adjustmentNote ? `Reason: ${adjustmentNote}` : "",
   ].filter(Boolean);
 
@@ -2691,8 +2846,9 @@ function MyStaffHoursSection({
                         {item.date} • {formatTime12h(item.startTime)}–
                         {formatTime12h(item.endTime)} •{" "}
                         {item.scheduledHours.toFixed(2)} paid hrs
-                        {` • ${formatLunchSummary(
+                        {` • ${buildUnpaidTimeSummary(
                           item.unpaidBreakMinutes,
+                          item.unpaidTimeBlocks,
                           item.lunchStartAt,
                           item.lunchEndAt,
                         )}`}
@@ -2817,14 +2973,9 @@ export default function DashboardPage() {
     useState<DashboardStaffCoverageItem | null>(null);
   const [staffEditStartTime, setStaffEditStartTime] = useState("08:00");
   const [staffEditEndTime, setStaffEditEndTime] = useState("17:00");
-  const [staffEditUnpaidBreakMinutes, setStaffEditUnpaidBreakMinutes] =
-    useState(0);
-  const [staffEditLunchMode, setStaffEditLunchMode] = useState<
-    "none" | "30" | "60" | "actual"
-  >("none");
-  const [staffEditLunchStartTime, setStaffEditLunchStartTime] =
-    useState("12:00");
-  const [staffEditLunchEndTime, setStaffEditLunchEndTime] = useState("13:00");
+  const [staffEditUnpaidTimeBlocks, setStaffEditUnpaidTimeBlocks] = useState<
+    StaffUnpaidTimeBlockDraft[]
+  >([]);
   const [staffEditNote, setStaffEditNote] = useState("");
   const [savingStaffEdit, setSavingStaffEdit] = useState(false);
 
@@ -3207,6 +3358,9 @@ export default function DashboardPage() {
                   : 0,
               lunchStartAt: safeTrim(data.lunchStartAt) || null,
               lunchEndAt: safeTrim(data.lunchEndAt) || null,
+              unpaidTimeBlocks: coerceStaffUnpaidTimeBlocks(
+                data.unpaidTimeBlocks,
+              ),
               status: safeTrim(data.status) || "scheduled",
               active: data.active !== false,
               linkedTimeEntryId: safeTrim(data.linkedTimeEntryId) || null,
@@ -3232,28 +3386,30 @@ export default function DashboardPage() {
     return () => unsubStaffCoverage();
   }, [appUser?.uid]);
 
-  const staffEditCalculatedLunchMinutes = useMemo(() => {
-    if (staffEditLunchMode !== "actual") return staffEditUnpaidBreakMinutes;
-    return calculateLunchMinutes(
-      staffEditLunchStartTime,
-      staffEditLunchEndTime,
-    );
-  }, [
-    staffEditLunchEndTime,
-    staffEditLunchMode,
-    staffEditLunchStartTime,
-    staffEditUnpaidBreakMinutes,
-  ]);
+  const staffEditCalculatedUnpaidMinutes = useMemo(() => {
+    let total = 0;
+
+    for (const block of staffEditUnpaidTimeBlocks) {
+      const minutes = calculateTimeBlockMinutes(
+        block.startTime,
+        block.endTime,
+      );
+      if (minutes == null) return null;
+      total += minutes;
+    }
+
+    return total;
+  }, [staffEditUnpaidTimeBlocks]);
 
   const staffEditPaidHours = useMemo(() => {
-    if (!staffEditItem || staffEditCalculatedLunchMinutes == null) return null;
+    if (!staffEditItem || staffEditCalculatedUnpaidMinutes == null) return null;
     return calculatePaidStaffHours(
       staffEditStartTime,
       staffEditEndTime,
-      staffEditCalculatedLunchMinutes,
+      staffEditCalculatedUnpaidMinutes,
     );
   }, [
-    staffEditCalculatedLunchMinutes,
+    staffEditCalculatedUnpaidMinutes,
     staffEditEndTime,
     staffEditItem,
     staffEditStartTime,
@@ -3277,26 +3433,7 @@ export default function DashboardPage() {
     setStaffEditEndTime(
       shouldDefaultEndToNow ? currentTimeHHMM() : item.endTime || "17:00",
     );
-    const existingLunchMinutes = item.unpaidBreakMinutes || 0;
-    const existingLunchStart = item.lunchStartAt
-      ? new Date(item.lunchStartAt).toTimeString().slice(0, 5)
-      : "12:00";
-    const existingLunchEnd = item.lunchEndAt
-      ? new Date(item.lunchEndAt).toTimeString().slice(0, 5)
-      : "13:00";
-
-    setStaffEditUnpaidBreakMinutes(existingLunchMinutes);
-    setStaffEditLunchMode(
-      item.lunchStartAt && item.lunchEndAt
-        ? "actual"
-        : existingLunchMinutes === 30
-          ? "30"
-          : existingLunchMinutes === 60
-            ? "60"
-            : "none",
-    );
-    setStaffEditLunchStartTime(existingLunchStart);
-    setStaffEditLunchEndTime(existingLunchEnd);
+    setStaffEditUnpaidTimeBlocks(buildLegacyUnpaidTimeBlocks(item));
     setStaffEditNote("");
   }
 
@@ -3304,7 +3441,37 @@ export default function DashboardPage() {
     if (savingStaffEdit) return;
     setStaffEditItem(null);
     setStaffEditNote("");
-    setStaffEditLunchMode("none");
+    setStaffEditUnpaidTimeBlocks([]);
+  }
+
+  function handleAddStaffUnpaidTimeBlock() {
+    setStaffEditUnpaidTimeBlocks((current) => [
+      ...current,
+      {
+        id: `unpaid_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        type: "personal",
+        startTime: "08:45",
+        endTime: "09:00",
+        note: "",
+      },
+    ]);
+  }
+
+  function handleUpdateStaffUnpaidTimeBlock(
+    id: string,
+    patch: Partial<StaffUnpaidTimeBlockDraft>,
+  ) {
+    setStaffEditUnpaidTimeBlocks((current) =>
+      current.map((block) =>
+        block.id === id ? { ...block, ...patch } : block,
+      ),
+    );
+  }
+
+  function handleRemoveStaffUnpaidTimeBlock(id: string) {
+    setStaffEditUnpaidTimeBlocks((current) =>
+      current.filter((block) => block.id !== id),
+    );
   }
 
   async function handleSaveStaffActualEdit() {
@@ -3322,28 +3489,48 @@ export default function DashboardPage() {
       return;
     }
 
-    const unpaidBreakMinutes = staffEditCalculatedLunchMinutes;
+    const unpaidBreakMinutes = staffEditCalculatedUnpaidMinutes;
 
     if (unpaidBreakMinutes == null) {
       setStaffCoverageError(
-        "Lunch clock-in time must be after the lunch clock-out time.",
+        "Each unpaid time block must have a back-in time after its out time.",
       );
       return;
     }
 
-    if (
-      staffEditLunchMode === "actual" &&
-      !isLunchInsideShift(
-        staffEditStartTime,
-        staffEditEndTime,
-        staffEditLunchStartTime,
-        staffEditLunchEndTime,
-      )
-    ) {
+    const invalidBlock = staffEditUnpaidTimeBlocks.find(
+      (block) =>
+        !isTimeBlockInsideShift(
+          staffEditStartTime,
+          staffEditEndTime,
+          block.startTime,
+          block.endTime,
+        ),
+    );
+
+    if (invalidBlock) {
       setStaffCoverageError(
-        "Actual lunch times must fall inside the actual work shift.",
+        `${unpaidTimeTypeLabel(
+          invalidBlock.type,
+        )} must fall inside the actual work shift.`,
       );
       return;
+    }
+
+    const sortedBlocks = [...staffEditUnpaidTimeBlocks].sort((a, b) =>
+      a.startTime.localeCompare(b.startTime),
+    );
+    for (let index = 1; index < sortedBlocks.length; index += 1) {
+      const previousEnd = minutesFromHHMM(sortedBlocks[index - 1].endTime);
+      const currentStart = minutesFromHHMM(sortedBlocks[index].startTime);
+      if (
+        previousEnd != null &&
+        currentStart != null &&
+        currentStart < previousEnd
+      ) {
+        setStaffCoverageError("Unpaid time blocks cannot overlap.");
+        return;
+      }
     }
 
     const paidHours = calculatePaidStaffHours(
@@ -3371,20 +3558,37 @@ export default function DashboardPage() {
       return;
     }
 
-    const lunchStartAt =
-      staffEditLunchMode === "actual"
-        ? buildLocalIsoFromDateAndTime(
-            staffEditItem.date,
-            staffEditLunchStartTime,
-          )
-        : null;
-    const lunchEndAt =
-      staffEditLunchMode === "actual"
-        ? buildLocalIsoFromDateAndTime(
-            staffEditItem.date,
-            staffEditLunchEndTime,
-          )
-        : null;
+    const unpaidTimeBlocks: StaffUnpaidTimeBlock[] =
+      staffEditUnpaidTimeBlocks.map((block) => {
+        const startAt = buildLocalIsoFromDateAndTime(
+          staffEditItem.date,
+          block.startTime,
+        );
+        const endAt = buildLocalIsoFromDateAndTime(
+          staffEditItem.date,
+          block.endTime,
+        );
+        const minutes =
+          calculateTimeBlockMinutes(block.startTime, block.endTime) || 0;
+
+        if (!startAt || !endAt) {
+          throw new Error("Enter valid times for every unpaid time block.");
+        }
+
+        return {
+          id: block.id,
+          type: block.type,
+          startAt,
+          endAt,
+          minutes,
+          note: safeTrim(block.note) || null,
+        };
+      });
+
+    const lunchBlock =
+      unpaidTimeBlocks.find((block) => block.type === "lunch") || null;
+    const lunchStartAt = lunchBlock?.startAt || null;
+    const lunchEndAt = lunchBlock?.endAt || null;
 
     setSavingStaffEdit(true);
     setStaffCoverageError("");
@@ -3424,8 +3628,7 @@ export default function DashboardPage() {
         unpaidBreakMinutes,
         paidHours,
         staffEditNote.trim(),
-        staffEditLunchMode === "actual" ? staffEditLunchStartTime : undefined,
-        staffEditLunchMode === "actual" ? staffEditLunchEndTime : undefined,
+        staffEditUnpaidTimeBlocks,
       );
 
       const batch = writeBatch(db);
@@ -3439,6 +3642,7 @@ export default function DashboardPage() {
         unpaidBreakMinutes,
         lunchStartAt,
         lunchEndAt,
+        unpaidTimeBlocks,
         confirmedAt: now,
         confirmedByUid: appUser.uid,
         adjustedAt: now,
@@ -3473,6 +3677,7 @@ export default function DashboardPage() {
           unpaidBreakMinutes,
           lunchStartAt,
           lunchEndAt,
+          unpaidTimeBlocks,
           confirmedAt: now,
           confirmedByUid: appUser.uid,
           adjustedAt: now,
@@ -3490,6 +3695,7 @@ export default function DashboardPage() {
       setStaffCoverageMessage("Actual staff hours saved and confirmed.");
       setStaffEditItem(null);
       setStaffEditNote("");
+      setStaffEditUnpaidTimeBlocks([]);
     } catch (err: unknown) {
       setStaffCoverageError(
         err instanceof Error
@@ -3561,6 +3767,7 @@ export default function DashboardPage() {
         unpaidBreakMinutes: item.unpaidBreakMinutes,
         lunchStartAt: item.lunchStartAt || null,
         lunchEndAt: item.lunchEndAt || null,
+        unpaidTimeBlocks: coerceStaffUnpaidTimeBlocks(item.unpaidTimeBlocks),
         confirmedAt: now,
         confirmedByUid: appUser.uid,
         updatedAt: now,
@@ -3591,6 +3798,9 @@ export default function DashboardPage() {
           unpaidBreakMinutes: item.unpaidBreakMinutes,
           lunchStartAt: item.lunchStartAt || null,
           lunchEndAt: item.lunchEndAt || null,
+          unpaidTimeBlocks: coerceStaffUnpaidTimeBlocks(
+            item.unpaidTimeBlocks,
+          ),
           confirmedAt: now,
           confirmedByUid: appUser.uid,
           createdAt: safeTrim(existingTimeEntry.createdAt) || now,
@@ -4134,63 +4344,219 @@ export default function DashboardPage() {
                     />
                   </Box>
 
-                  <FormControl fullWidth>
-                    <InputLabel>Unpaid Lunch</InputLabel>
-                    <Select
-                      label="Unpaid Lunch"
-                      value={staffEditLunchMode}
-                      onChange={(event) => {
-                        const mode = event.target.value as
-                          "none" | "30" | "60" | "actual";
-                        setStaffEditLunchMode(mode);
-                        if (mode === "none") setStaffEditUnpaidBreakMinutes(0);
-                        if (mode === "30") setStaffEditUnpaidBreakMinutes(30);
-                        if (mode === "60") setStaffEditUnpaidBreakMinutes(60);
-                      }}
-                      disabled={savingStaffEdit}
-                    >
-                      <MenuItem value="none">No lunch</MenuItem>
-                      <MenuItem value="30">30 minutes</MenuItem>
-                      <MenuItem value="60">1 hour</MenuItem>
-                      <MenuItem value="actual">
-                        Enter actual lunch times
-                      </MenuItem>
-                    </Select>
-                  </FormControl>
+                  <Box
+                    sx={{
+                      borderRadius: 1.2,
+                      border: (theme) =>
+                        `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                      backgroundColor: (theme) =>
+                        alpha(theme.palette.common.white, 0.02),
+                      p: 1.5,
+                    }}
+                  >
+                    <Stack spacing={1.5}>
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                        alignItems={{ xs: "stretch", sm: "center" }}
+                        justifyContent="space-between"
+                      >
+                        <Box>
+                          <Typography variant="subtitle2" fontWeight={900}>
+                            Unpaid Time
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Add lunch, personal/out-of-office time, or another
+                            unpaid occurrence during the shift.
+                          </Typography>
+                        </Box>
 
-                  {staffEditLunchMode === "actual" ? (
-                    <Box
-                      sx={{
-                        display: "grid",
-                        gap: 2,
-                        gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
-                      }}
-                    >
-                      <TextField
-                        label="Clocked Out for Lunch"
-                        type="time"
-                        value={staffEditLunchStartTime}
-                        onChange={(event) =>
-                          setStaffEditLunchStartTime(event.target.value)
-                        }
-                        disabled={savingStaffEdit}
-                        InputLabelProps={{ shrink: true }}
-                        fullWidth
-                      />
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={handleAddStaffUnpaidTimeBlock}
+                          disabled={savingStaffEdit}
+                          sx={{ borderRadius: 999, flexShrink: 0 }}
+                        >
+                          + Add Unpaid Time
+                        </Button>
+                      </Stack>
 
-                      <TextField
-                        label="Clocked Back In"
-                        type="time"
-                        value={staffEditLunchEndTime}
-                        onChange={(event) =>
-                          setStaffEditLunchEndTime(event.target.value)
-                        }
-                        disabled={savingStaffEdit}
-                        InputLabelProps={{ shrink: true }}
-                        fullWidth
-                      />
-                    </Box>
-                  ) : null}
+                      {staffEditUnpaidTimeBlocks.length === 0 ? (
+                        <Alert
+                          severity="success"
+                          variant="outlined"
+                          sx={{ borderRadius: 3 }}
+                        >
+                          No unpaid time will be deducted from this shift.
+                        </Alert>
+                      ) : (
+                        <Stack spacing={1.25}>
+                          {staffEditUnpaidTimeBlocks.map((block, index) => {
+                            const blockMinutes = calculateTimeBlockMinutes(
+                              block.startTime,
+                              block.endTime,
+                            );
+
+                            return (
+                              <Box
+                                key={block.id}
+                                sx={{
+                                  borderRadius: 1.2,
+                                  border: (theme) =>
+                                    `1px solid ${alpha(
+                                      theme.palette.common.white,
+                                      0.08,
+                                    )}`,
+                                  p: 1.25,
+                                }}
+                              >
+                                <Stack spacing={1.25}>
+                                  <Stack
+                                    direction="row"
+                                    spacing={1}
+                                    alignItems="center"
+                                    justifyContent="space-between"
+                                  >
+                                    <Typography
+                                      variant="subtitle2"
+                                      fontWeight={800}
+                                    >
+                                      Unpaid Time #{index + 1}
+                                    </Typography>
+
+                                    <Stack
+                                      direction="row"
+                                      spacing={0.75}
+                                      alignItems="center"
+                                    >
+                                      <Chip
+                                        size="small"
+                                        label={
+                                          blockMinutes == null
+                                            ? "Invalid time"
+                                            : formatMinutesDuration(blockMinutes)
+                                        }
+                                        color={
+                                          blockMinutes == null
+                                            ? "warning"
+                                            : "default"
+                                        }
+                                        variant="outlined"
+                                        sx={{ fontWeight: 800 }}
+                                      />
+                                      <Button
+                                        color="error"
+                                        size="small"
+                                        onClick={() =>
+                                          handleRemoveStaffUnpaidTimeBlock(
+                                            block.id,
+                                          )
+                                        }
+                                        disabled={savingStaffEdit}
+                                        sx={{ borderRadius: 999 }}
+                                      >
+                                        Remove
+                                      </Button>
+                                    </Stack>
+                                  </Stack>
+
+                                  <FormControl fullWidth>
+                                    <InputLabel>Type</InputLabel>
+                                    <Select
+                                      label="Type"
+                                      value={block.type}
+                                      onChange={(event) =>
+                                        handleUpdateStaffUnpaidTimeBlock(
+                                          block.id,
+                                          {
+                                            type: event.target
+                                              .value as StaffUnpaidTimeType,
+                                          },
+                                        )
+                                      }
+                                      disabled={savingStaffEdit}
+                                    >
+                                      <MenuItem value="lunch">Lunch</MenuItem>
+                                      <MenuItem value="personal">
+                                        Personal / Out of Office
+                                      </MenuItem>
+                                      <MenuItem value="other">
+                                        Other Unpaid Time
+                                      </MenuItem>
+                                    </Select>
+                                  </FormControl>
+
+                                  <Box
+                                    sx={{
+                                      display: "grid",
+                                      gap: 1.5,
+                                      gridTemplateColumns: {
+                                        xs: "1fr",
+                                        sm: "1fr 1fr",
+                                      },
+                                    }}
+                                  >
+                                    <TextField
+                                      label="Out"
+                                      type="time"
+                                      value={block.startTime}
+                                      onChange={(event) =>
+                                        handleUpdateStaffUnpaidTimeBlock(
+                                          block.id,
+                                          {
+                                            startTime: event.target.value,
+                                          },
+                                        )
+                                      }
+                                      disabled={savingStaffEdit}
+                                      InputLabelProps={{ shrink: true }}
+                                      fullWidth
+                                    />
+
+                                    <TextField
+                                      label="Back In"
+                                      type="time"
+                                      value={block.endTime}
+                                      onChange={(event) =>
+                                        handleUpdateStaffUnpaidTimeBlock(
+                                          block.id,
+                                          {
+                                            endTime: event.target.value,
+                                          },
+                                        )
+                                      }
+                                      disabled={savingStaffEdit}
+                                      InputLabelProps={{ shrink: true }}
+                                      fullWidth
+                                    />
+                                  </Box>
+
+                                  <TextField
+                                    label="Block Note (optional)"
+                                    value={block.note}
+                                    onChange={(event) =>
+                                      handleUpdateStaffUnpaidTimeBlock(
+                                        block.id,
+                                        { note: event.target.value },
+                                      )
+                                    }
+                                    disabled={savingStaffEdit}
+                                    placeholder={
+                                      block.type === "personal"
+                                        ? "Example: personal appointment"
+                                        : "Optional detail"
+                                    }
+                                    fullWidth
+                                  />
+                                </Stack>
+                              </Box>
+                            );
+                          })}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Box>
 
                   <TextField
                     label="Reason / Note"
@@ -4199,7 +4565,7 @@ export default function DashboardPage() {
                     disabled={savingStaffEdit}
                     multiline
                     minRows={3}
-                    placeholder="Example: left early, came in late, worked through lunch, stayed late, etc."
+                    placeholder="Optional overall note about why the actual shift differed from schedule."
                     fullWidth
                   />
 
@@ -4209,9 +4575,11 @@ export default function DashboardPage() {
                       staffEditPaidHours == null
                         ? "Enter a valid actual time range"
                         : `${staffEditPaidHours.toFixed(2)} paid hours${
-                            Number(staffEditCalculatedLunchMinutes || 0) > 0
-                              ? ` • ${staffEditCalculatedLunchMinutes} min lunch`
-                              : ""
+                            Number(staffEditCalculatedUnpaidMinutes || 0) > 0
+                              ? ` • ${formatMinutesDuration(
+                                  Number(staffEditCalculatedUnpaidMinutes || 0),
+                                )} unpaid`
+                              : " • no unpaid time"
                           }`
                     }
                     color={staffEditPaidHours ? "primary" : "default"}
