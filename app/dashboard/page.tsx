@@ -234,6 +234,14 @@ type ProjectBillingPeriodLite = {
   invoiceDate?: string | null;
 };
 
+type ProjectStageBillingLite = {
+  billingStatus?: "not_ready" | "ready_to_bill" | "invoiced" | string | null;
+  readyToBillAt?: string | null;
+  readyToBillByName?: string | null;
+  invoicedAt?: string | null;
+  invoiceNumber?: string | null;
+};
+
 type DashboardProjectDoc = {
   id: string;
   active?: boolean | null;
@@ -250,6 +258,9 @@ type DashboardProjectDoc = {
   readyToInvoiceByName?: string | null;
   currentBillingPeriodId?: string | null;
   billingPeriods?: ProjectBillingPeriodLite[] | null;
+  roughIn?: ProjectStageBillingLite | null;
+  topOutVent?: ProjectStageBillingLite | null;
+  trimFinish?: ProjectStageBillingLite | null;
   invoiceNumber?: string | null;
 };
 
@@ -948,6 +959,27 @@ function getReadyBillingPeriod(project: DashboardProjectDoc) {
   );
 }
 
+function getReadyStageBilling(project: DashboardProjectDoc) {
+  const candidates = [
+    { key: "roughIn", label: "Rough-In", stage: project.roughIn },
+    { key: "topOutVent", label: "Top-Out / Vent", stage: project.topOutVent },
+    { key: "trimFinish", label: "Trim / Finish", stage: project.trimFinish },
+  ] as const;
+
+  return (
+    candidates
+      .filter(
+        (candidate) =>
+          normalizeStatus(candidate.stage?.billingStatus) === "ready_to_bill",
+      )
+      .sort((a, b) => {
+        const aMs = parseFlexibleDateMs(a.stage?.readyToBillAt) || 0;
+        const bMs = parseFlexibleDateMs(b.stage?.readyToBillAt) || 0;
+        return aMs - bMs;
+      })[0] || null
+  );
+}
+
 function compareTripSequence(
   a: Pick<ProjectTripDocLite, "id" | "date" | "startTime">,
   b: Pick<ProjectTripDocLite, "id" | "date" | "startTime">,
@@ -1186,57 +1218,44 @@ function buildReadyInvoiceItems(
       const officeStatus = normalizeOfficeStatus(project.projectOfficeStatus);
       if (officeStatus === "closed" || officeStatus === "invoiced") return null;
 
-      const readyPeriod = getReadyBillingPeriod(project);
+      const projectType = safeTrim(project.projectType).toLowerCase();
+      const isTmProject =
+        projectType === "time_materials" ||
+        projectType === "time+materials" ||
+        projectType === "time_and_materials";
+      const isStageBilledProject =
+        projectType === "new_construction" || projectType === "remodel";
+
+      const readyPeriod = isTmProject ? getReadyBillingPeriod(project) : null;
+      const readyStage = isStageBilledProject
+        ? getReadyStageBilling(project)
+        : null;
+
+      // Current billing records are the source of truth. Historical trip
+      // readyToBillAt timestamps and completed closeouts remain on the trip for
+      // audit/history, but must not put an already-invoiced project back into
+      // the dashboard queue.
+      const isReadyToInvoice = isTmProject
+        ? Boolean(readyPeriod)
+        : isStageBilledProject
+          ? Boolean(readyStage)
+          : officeStatus === "ready_to_invoice";
+
+      if (!isReadyToInvoice) return null;
+
       const relatedTrips = projectTrips.filter(
         (trip) => safeTrim(trip.link?.projectId) === safeTrim(project.id),
       );
-
-      const readyTrip =
-        relatedTrips
-          .filter((trip) => {
-            const tripBillingStatus = normalizeStatus(trip.billingPeriodStatus);
-            const tripStatus = normalizeStatus(trip.status);
-            return (
-              tripBillingStatus === "ready_to_bill" ||
-              Boolean(safeTrim(trip.readyToBillAt)) ||
-              (tripStatus === "complete" &&
-                safeTrim(trip.closeout?.outcome).toLowerCase() ===
-                  "complete_stage" &&
-                safeTrim(trip.closeout?.needsMoreWork).toLowerCase() !== "yes")
-            );
-          })
-          .sort((a, b) => {
-            const aMs =
-              parseFlexibleDateMs(a.readyToBillAt) ||
-              parseFlexibleDateMs(a.completedAt) ||
-              parseFlexibleDateMs(a.updatedAt) ||
-              parseFlexibleDateMs(a.date) ||
-              0;
-            const bMs =
-              parseFlexibleDateMs(b.readyToBillAt) ||
-              parseFlexibleDateMs(b.completedAt) ||
-              parseFlexibleDateMs(b.updatedAt) ||
-              parseFlexibleDateMs(b.date) ||
-              0;
-            return bMs - aMs;
-          })[0] || null;
-
-      const isReadyToInvoice =
-        officeStatus === "ready_to_invoice" ||
-        Boolean(readyPeriod) ||
-        Boolean(readyTrip);
-      if (!isReadyToInvoice) return null;
 
       const periodTrips = readyPeriod
         ? relatedTrips.filter(
             (trip) =>
               safeTrim(trip.billingPeriodId) === safeTrim(readyPeriod.id),
           )
-        : readyTrip?.billingPeriodId
+        : readyStage
           ? relatedTrips.filter(
               (trip) =>
-                safeTrim(trip.billingPeriodId) ===
-                safeTrim(readyTrip.billingPeriodId),
+                safeTrim(trip.link?.projectStageKey) === readyStage.key,
             )
           : relatedTrips.filter(
               (trip) => normalizeStatus(trip.status) === "complete",
@@ -1262,12 +1281,9 @@ function buildReadyInvoiceItems(
 
       const billingLabel = readyPeriod
         ? safeTrim(readyPeriod.label) || `Billing ${readyPeriod.sequence || 1}`
-        : safeTrim(readyTrip?.billingPeriodLabel) ||
-          (safeTrim(readyTrip?.link?.projectStageKey)
-            ? stageLabel(readyTrip?.link?.projectStageKey)
-            : safeTrim(project.projectType).toLowerCase() === "time_materials"
-              ? "Current Billing"
-              : "Project Billing");
+        : readyStage
+          ? readyStage.label
+          : "Project Billing";
 
       return {
         projectId: project.id,
@@ -1280,15 +1296,13 @@ function buildReadyInvoiceItems(
         billingLabel,
         readyAt:
           safeTrim(readyPeriod?.readyToBillAt) ||
+          safeTrim(readyStage?.stage?.readyToBillAt) ||
           safeTrim(project.readyToInvoiceAt) ||
-          safeTrim(readyTrip?.readyToBillAt) ||
-          safeTrim(readyTrip?.completedAt) ||
-          safeTrim(readyTrip?.updatedAt) ||
           undefined,
         readyByName:
           safeTrim(readyPeriod?.readyToBillByName) ||
+          safeTrim(readyStage?.stage?.readyToBillByName) ||
           safeTrim(project.readyToInvoiceByName) ||
-          safeTrim(readyTrip?.closeout?.savedByName) ||
           undefined,
         totalHours,
         materialsCount,
@@ -2953,6 +2967,9 @@ export default function DashboardPage() {
             currentBillingPeriodId:
               safeTrim(data.currentBillingPeriodId) || undefined,
             billingPeriods: coerceBillingPeriods(data.billingPeriods),
+            roughIn: data.roughIn ?? null,
+            topOutVent: data.topOutVent ?? null,
+            trimFinish: data.trimFinish ?? null,
             invoiceNumber: safeTrim(data.invoiceNumber) || undefined,
           } satisfies DashboardProjectDoc;
         });
