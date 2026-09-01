@@ -34,7 +34,6 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
-  FormLabel,
   Grow,
   IconButton,
   InputLabel,
@@ -43,8 +42,6 @@ import {
   MenuList,
   Paper,
   Popper,
-  Radio,
-  RadioGroup,
   Select,
   Stack,
   Switch,
@@ -357,15 +354,9 @@ type TripModalState = {
   secondaryHelperUid: string;
 };
 
-type CloseoutOutcome = "done_today" | "complete_stage" | "complete_project";
-
-type CloseoutNeedsWork = "no" | "yes";
-
 type TripCloseoutModalState = {
   open: boolean;
   tripId: string | null;
-  outcome: CloseoutOutcome;
-  needsMoreWork: CloseoutNeedsWork;
   hoursWorkedToday: string;
   workNotes: string;
   materialsUsedToday: string;
@@ -502,8 +493,6 @@ function emptyCloseoutModal(): TripCloseoutModalState {
   return {
     open: false,
     tripId: null,
-    outcome: "done_today",
-    needsMoreWork: "no",
     hoursWorkedToday: "",
     workNotes: "",
     materialsUsedToday: "",
@@ -660,16 +649,100 @@ function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null, referenceEndMs?: nu
   }, 0);
 }
 
-function getTimerDrivenHoursForTrip(t?: TripDoc | null) {
-  if (!t) return null;
+function getTimerElapsedMinutesForTrip(t?: TripDoc | null, referenceEndMs?: number) {
+  if (!t) return 0;
+
   const startMs = parseIsoMs(t.actualStartAt || t.startedAt || null);
-  const endMs = parseIsoMs(t.actualEndAt || t.completedAt || null);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  if (!Number.isFinite(startMs)) return 0;
+
+  const savedEndMs = parseIsoMs(t.actualEndAt || t.completedAt || null);
+  const pausedEndMs =
+    safeTrim(t.timerState).toLowerCase() === "paused" ? parseIsoMs(t.pausedAt || null) : NaN;
+  const endMs = Number.isFinite(savedEndMs)
+    ? savedEndMs
+    : Number.isFinite(pausedEndMs)
+      ? pausedEndMs
+      : Number.isFinite(referenceEndMs)
+        ? Number(referenceEndMs)
+        : Date.now();
+
+  if (!Number.isFinite(endMs) || endMs <= startMs) return 0;
+
   const grossMinutes = minutesBetweenMs(startMs, endMs);
   const pausedMinutes = sumPausedMinutes(t.pauseBlocks || null, endMs);
-  const liveMinutes = Math.max(0, grossMinutes - pausedMinutes);
+  return Math.max(0, grossMinutes - pausedMinutes);
+}
+
+function getTimerDrivenHoursForTrip(t?: TripDoc | null) {
+  const liveMinutes = getTimerElapsedMinutesForTrip(t);
   if (liveMinutes <= 0) return null;
   return (Math.round((liveMinutes / 60) * 4) / 4).toFixed(2);
+}
+
+function getScheduledTripHours(t?: TripDoc | null) {
+  if (!t) return "1.00";
+
+  const start = safeTrim(t.startTime);
+  const end = safeTrim(t.endTime);
+
+  if (start && end && end > start) {
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    const scheduledMinutes = eh * 60 + em - (sh * 60 + sm);
+
+    if (scheduledMinutes > 0) {
+      const lunchMinutes =
+        safeTrim(t.timeWindow).toLowerCase() === "all_day" && scheduledMinutes >= 360 ? 60 : 0;
+      const paidMinutes = Math.max(15, scheduledMinutes - lunchMinutes);
+      return (Math.round((paidMinutes / 60) * 4) / 4).toFixed(2);
+    }
+  }
+
+  return "1.00";
+}
+
+function getCloseoutTimerReview(t?: TripDoc | null) {
+  if (!t) {
+    return {
+      rawMinutes: 0,
+      rawHours: null as number | null,
+      isLongTimer: false,
+      isOvernight: false,
+      needsReview: false,
+    };
+  }
+
+  const startMs = parseIsoMs(t.actualStartAt || t.startedAt || null);
+  const savedEndMs = parseIsoMs(t.actualEndAt || t.completedAt || null);
+  const pausedEndMs =
+    safeTrim(t.timerState).toLowerCase() === "paused" ? parseIsoMs(t.pausedAt || null) : NaN;
+  const endMs = Number.isFinite(savedEndMs)
+    ? savedEndMs
+    : Number.isFinite(pausedEndMs)
+      ? pausedEndMs
+      : Date.now();
+  const rawMinutes = getTimerElapsedMinutesForTrip(t, endMs);
+  const rawHours = rawMinutes > 0 ? Number((rawMinutes / 60).toFixed(2)) : null;
+  const isLongTimer = rawHours != null && rawHours > 12;
+  const isOvernight =
+    Number.isFinite(startMs) &&
+    Number.isFinite(endMs) &&
+    toIsoDate(new Date(startMs)) !== toIsoDate(new Date(endMs));
+
+  return {
+    rawMinutes,
+    rawHours,
+    isLongTimer,
+    isOvernight,
+    needsReview: isLongTimer || isOvernight,
+  };
+}
+
+function formatElapsedMinutes(totalMinutes: number) {
+  const safeMinutes = Math.max(0, Math.round(totalMinutes));
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+  return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
 }
 
 function normalizeRole(role?: string) {
@@ -4316,31 +4389,18 @@ const canMarkTmReadyToBill =
   }
 
   function estimateTripHours(t: TripDoc) {
+    const timerReview = getCloseoutTimerReview(t);
+    if (timerReview.needsReview) return getScheduledTripHours(t);
+
     const timerHours = getTimerDrivenHoursForTrip(t);
     if (timerHours) return timerHours;
-
-    const start = safeTrim(t.startTime);
-    const end = safeTrim(t.endTime);
-
-    if (start && end && end > start) {
-      const [sh, sm] = start.split(":").map(Number);
-      const [eh, em] = end.split(":").map(Number);
-      const diff = eh * 60 + em - (sh * 60 + sm);
-      if (diff > 0) {
-        return (Math.round((diff / 60) * 4) / 4).toFixed(2);
-      }
-    }
-
-    return "1.00";
+    return getScheduledTripHours(t);
   }
 
   function openCloseoutModal(t: TripDoc) {
-    const hasStage = Boolean(safeTrim(t.link?.projectStageKey || ""));
     setCloseoutModal({
       open: true,
       tripId: t.id,
-      outcome: hasStage ? "done_today" : isTmProject ? "done_today" : "complete_project",
-      needsMoreWork: "no",
       hoursWorkedToday: estimateTripHours(t),
       workNotes: safeTrim(tripNoteDrafts[t.id] ?? getTripWorkNotesSummary(t) ?? t.notes ?? ""),
       materialsUsedToday: safeTrim(
@@ -4392,6 +4452,9 @@ const canMarkTmReadyToBill =
       const now = nowIso();
       const workNotes = safeTrim(closeoutModal.workNotes);
       const materials = safeTrim(closeoutModal.materialsUsedToday);
+      const timerReview = getCloseoutTimerReview(t);
+      const timerHoursWereAdjusted =
+        timerReview.rawHours != null && Math.abs(timerReview.rawHours - hoursWorked) >= 0.13;
 
       const nextWorkNotes = workNotes ? buildNextTripWorkNotes(t, workNotes, now) : [];
 
@@ -4399,6 +4462,8 @@ const canMarkTmReadyToBill =
         status: "complete",
         timerState: "stopped",
         completedAt: now,
+        actualEndAt:
+          safeTrim(t.timerState).toLowerCase() === "paused" && t.pausedAt ? t.pausedAt : now,
         pausedAt: null,
         active: true,
         notes: workNotes || null,
@@ -4409,9 +4474,19 @@ const canMarkTmReadyToBill =
         materialsSummary: materials || null,
         closeoutHours: hoursWorked,
         closeout: {
-          outcome: closeoutModal.outcome,
-          needsMoreWork: closeoutModal.needsMoreWork,
+          outcome: "done_today",
+          closeoutKind: "daily_project_work",
           hoursWorkedToday: hoursWorked,
+          hoursSource: "submitted_closeout",
+          submittedHoursAuthoritative: true,
+          rawTimerHours: timerReview.rawHours,
+          rawTimerMinutes: timerReview.rawMinutes || null,
+          hoursAdjusted: timerHoursWereAdjusted,
+          timerReviewReason: timerReview.needsReview
+            ? timerReview.isOvernight
+              ? "overnight_timer"
+              : "timer_over_12_hours"
+            : null,
           workNotes: workNotes || null,
           materialsUsedToday: materials || null,
           materialNotes: materials || null,
@@ -4424,7 +4499,6 @@ const canMarkTmReadyToBill =
       };
 
       const stageKey = safeTrim(t.link?.projectStageKey || "") as StageKey | "";
-      const enabled = getEnabledStages(project.projectType);
       const projectPatch: Record<string, any> = {
         updatedAt: now,
       };
@@ -4437,86 +4511,20 @@ const canMarkTmReadyToBill =
               ? project.topOutVent
               : project.trimFinish;
 
-        if (closeoutModal.outcome === "done_today") {
-          if (currentStage.status === "not_started" || currentStage.status === "scheduled") {
-            const nextStage = {
-              ...(currentStage as any),
-              status: "in_progress",
-            };
-            projectPatch[stageKey] = nextStage;
-
-            if (stageKey === "roughIn") setRoughInStatus("in_progress");
-            if (stageKey === "topOutVent") setTopOutVentStatus("in_progress");
-            if (stageKey === "trimFinish") setTrimFinishStatus("in_progress");
-          }
-        }
-
-        if (closeoutModal.outcome === "complete_stage") {
-          const completeDate = t.date || toIsoDate(new Date());
+        if (currentStage.status === "not_started" || currentStage.status === "scheduled") {
           const nextStage = {
             ...(currentStage as any),
-            status: "complete",
-            completedDate: completeDate,
+            status: "in_progress",
           };
           projectPatch[stageKey] = nextStage;
 
-          if (stageKey === "roughIn") {
-            setRoughInStatus("complete");
-            setRoughInCompletedDate(completeDate);
-          }
-          if (stageKey === "topOutVent") {
-            setTopOutVentStatus("complete");
-            setTopOutVentCompletedDate(completeDate);
-          }
-          if (stageKey === "trimFinish") {
-            setTrimFinishStatus("complete");
-            setTrimFinishCompletedDate(completeDate);
-          }
+          if (stageKey === "roughIn") setRoughInStatus("in_progress");
+          if (stageKey === "topOutVent") setTopOutVentStatus("in_progress");
+          if (stageKey === "trimFinish") setTrimFinishStatus("in_progress");
         }
       }
 
-      if (closeoutModal.outcome === "complete_project") {
-        const completeDate = t.date || toIsoDate(new Date());
-
-        if (isTmProject) {
-          projectPatch.projectOfficeStatus = "field_complete";
-          projectPatch.fieldCompletedAt = now;
-          projectPatch.fieldCompletedByUid = myUid || null;
-          projectPatch.fieldCompletedByName = actorDisplayName || null;
-          projectPatch.active = true;
-        } else {
-          for (const key of enabled) {
-            const baseStage =
-              key === "roughIn"
-                ? projectPatch.roughIn || project.roughIn
-                : key === "topOutVent"
-                  ? projectPatch.topOutVent || project.topOutVent
-                  : projectPatch.trimFinish || project.trimFinish;
-
-            projectPatch[key] = {
-              ...(baseStage as any),
-              status: "complete",
-              completedDate: completeDate,
-            };
-          }
-
-          projectPatch.projectOfficeStatus = "field_complete";
-          projectPatch.fieldCompletedAt = now;
-          projectPatch.fieldCompletedByUid = myUid || null;
-          projectPatch.fieldCompletedByName = actorDisplayName || null;
-          projectPatch.active = true;
-
-          setRoughInStatus(enabled.includes("roughIn") ? "complete" : roughInStatus);
-          setTopOutVentStatus(enabled.includes("topOutVent") ? "complete" : topOutVentStatus);
-          setTrimFinishStatus(enabled.includes("trimFinish") ? "complete" : trimFinishStatus);
-
-          if (enabled.includes("roughIn")) setRoughInCompletedDate(completeDate);
-          if (enabled.includes("topOutVent")) setTopOutVentCompletedDate(completeDate);
-          if (enabled.includes("trimFinish")) setTrimFinishCompletedDate(completeDate);
-        }
-      }
-
-      if (isTmProject && closeoutModal.outcome === "done_today") {
+      if (isTmProject) {
         if (projectOfficeStatus === "field_complete") {
           projectPatch.projectOfficeStatus = "field_complete";
         } else if (projectOfficeStatus === "ready_to_invoice") {
@@ -4581,13 +4589,12 @@ if (Object.keys(cleanProjectPatch).length > 1) {
 }
 
       const details: string[] = [];
-      details.push(`Outcome: ${closeoutModal.outcome.replaceAll("_", " ")}`);
-      details.push(
-        `More work needed after today: ${
-          closeoutModal.needsMoreWork === "yes" ? "Yes" : "No"
-        }`,
-      );
+      details.push("Closeout: Today's project trip finished");
       details.push(`Hours worked today: ${hoursWorked}`);
+      if (timerHoursWereAdjusted && timerReview.rawHours != null) {
+        details.push(`Raw timer: ${timerReview.rawHours.toFixed(2)} hours`);
+        details.push("Labor hours adjusted to the submitted closeout hours");
+      }
       details.push(`Time entries synced: ${synced.memberCount}`);
       if (stageKey) details.push(`Stage: ${stageLabel(stageKey)}`);
       if (workNotes) details.push(`Work notes: ${workNotes}`);
@@ -5432,16 +5439,33 @@ if (Object.keys(cleanProjectPatch).length > 1) {
   }
 
   function getCloseoutHours(t?: TripDoc | null) {
+    const submittedHours = Number(
+      (t?.closeout as any)?.hoursWorkedToday ?? t?.closeoutHours ?? 0,
+    );
+    if (Number.isFinite(submittedHours) && submittedHours > 0) return submittedHours;
+
     const n = Number(getTripCloseoutHoursFromBilling(t || null));
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   function getCloseoutSavedSummary(t: TripDoc) {
     const hours = getCloseoutHours(t);
-    const outcome = safeTrim((t.closeout as any)?.outcome).replaceAll("_", " ");
-    if (outcome && hours != null) return `${outcome} • ${hours.toFixed(2)}h`;
-    if (hours != null) return `${hours.toFixed(2)}h`;
+    const closeoutDate = /^\d{4}-\d{2}-\d{2}$/.test(safeTrim(t.date))
+      ? fromIsoDate(t.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      : "Trip";
+    const adjustedLabel =
+      canEditProject && Boolean((t.closeout as any)?.hoursAdjusted) ? " • Adjusted" : "";
+    if (hours != null) return `${closeoutDate} closeout • ${hours.toFixed(2)} hrs${adjustedLabel}`;
     return "Closeout saved";
+  }
+
+  function getCloseoutRawTimerHours(t?: TripDoc | null) {
+    const rawHours = Number((t?.closeout as any)?.rawTimerHours);
+    return Number.isFinite(rawHours) && rawHours > 0 ? rawHours : null;
+  }
+
+  function closeoutHoursWereAdjusted(t?: TripDoc | null) {
+    return Boolean((t?.closeout as any)?.hoursAdjusted);
   }
 
   function getCloseoutSubmittedBy(t?: TripDoc | null) {
@@ -6176,6 +6200,7 @@ if (nextStatus === "active_work") {
       String(t.status || "").toLowerCase() === "in_progress" ||
       String(t.timerState || "").toLowerCase() === "running" ||
       String(t.timerState || "").toLowerCase() === "paused";
+    const timerReview = isActiveTrip ? getCloseoutTimerReview(t) : null;
 
     return (
       <Card
@@ -6235,6 +6260,14 @@ if (nextStatus === "active_work") {
                 ) : null}
               </Stack>
             </Stack>
+
+            {timerReview?.needsReview ? (
+              <Alert severity="warning" variant="outlined">
+                <strong>This project trip is still running.</strong> The timer shows{" "}
+                {formatElapsedMinutes(timerReview.rawMinutes)}. Use Finish Day and enter the hours
+                actually worked before starting another trip.
+              </Alert>
+            ) : null}
 
             <TripActionRow t={t} />
 
@@ -6322,7 +6355,7 @@ if (nextStatus === "active_work") {
                 icon={<InfoRoundedIcon fontSize="inherit" />}
                 sx={{ borderRadius: 1 }}
               >
-                Last closeout saved: {getCloseoutSavedSummary(t)}
+                {getCloseoutSavedSummary(t)}
               </Alert>
             ) : null}
 
@@ -6669,12 +6702,12 @@ if (nextStatus === "active_work") {
             {(() => {
               const t = projectTrips.find((trip) => trip.id === closeoutModal.tripId) || null;
               const stageKey = safeTrim(t?.link?.projectStageKey || "") as StageKey | "";
-              const hasStageOption = Boolean(stageKey);
+              const timerReview = getCloseoutTimerReview(t);
 
               return (
                 <Stack spacing={2.25}>
                   <Alert severity="info" variant="outlined">
-                    This saves the project closeout and automatically creates/updates time entries for all assigned crew.
+                    Finish today&apos;s project trip by confirming the hours worked and recording what the crew completed. Stage and project completion stay with management.
                   </Alert>
 
                   {t ? (
@@ -6699,67 +6732,19 @@ if (nextStatus === "active_work") {
                     </Paper>
                   ) : null}
 
-                  <Box>
-                    <FormLabel sx={{ mb: 1, display: "block", fontWeight: 700 }}>
-                      What are you saving for today?
-                    </FormLabel>
-                    <RadioGroup
-                      value={closeoutModal.outcome}
-                      onChange={(e) =>
-                        setCloseoutModal((prev) => ({
-                          ...prev,
-                          outcome: e.target.value as CloseoutOutcome,
-                        }))
-                      }
-                    >
-                      <FormControlLabel
-                        value="done_today"
-                        control={<Radio />}
-                        label="Done for today"
-                      />
-                      {hasStageOption ? (
-                        <FormControlLabel
-                          value="complete_stage"
-                          control={<Radio />}
-                          label={`Complete ${stageKey ? stageLabel(stageKey) : "Stage"}`}
-                        />
-                      ) : null}
-                      <FormControlLabel
-                        value="complete_project"
-                        control={<Radio />}
-                        label={isTmProject ? "No more field work expected" : "Complete entire project"}
-                      />
-                    </RadioGroup>
-                  </Box>
-
-                  <Paper
-                    variant="outlined"
-                    sx={{
-                      p: 2,
-                      borderRadius: 1,
-                    }}
-                  >
-                    <Stack spacing={1.5}>
-                      <FormLabel sx={{ fontWeight: 700 }}>
-                        Is more work still needed after today?
-                      </FormLabel>
-                      <RadioGroup
-                        value={closeoutModal.needsMoreWork}
-                        onChange={(e) =>
-                          setCloseoutModal((prev) => ({
-                            ...prev,
-                            needsMoreWork: e.target.value as CloseoutNeedsWork,
-                          }))
-                        }
-                      >
-                        <FormControlLabel value="no" control={<Radio />} label="No" />
-                        <FormControlLabel value="yes" control={<Radio />} label="Yes" />
-                      </RadioGroup>
-                    </Stack>
-                  </Paper>
+                  {timerReview.needsReview ? (
+                    <Alert severity="warning" variant="outlined">
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                        Timer has been running for {formatElapsedMinutes(timerReview.rawMinutes)}
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.5 }}>
+                        It looks like this timer may have been left running. Enter the hours actually worked below. The scheduled workday has been used as the starting value.
+                      </Typography>
+                    </Alert>
+                  ) : null}
 
                   <TextField
-                    label="Hours Worked Today"
+                    label="Hours worked today"
                     type="number"
                     inputProps={{ min: 0.25, step: "0.25" }}
                     value={closeoutModal.hoursWorkedToday}
@@ -6769,15 +6754,12 @@ if (nextStatus === "active_work") {
                         hoursWorkedToday: e.target.value,
                       }))
                     }
+                    helperText="Enter the hours actually worked on this project today. These submitted hours control the trip labor total and every assigned crew member's time entry."
                     fullWidth
                   />
 
-                  <Typography variant="body2" color="text.secondary">
-                    These hours start from the trip timer when available, but the tech can adjust them before saving. They are then saved for all assigned project-trip crew.
-                  </Typography>
-
                   <TextField
-                    label="Work Notes for This Trip"
+                    label="Work completed today"
                     value={closeoutModal.workNotes}
                     onChange={(e) =>
                       setCloseoutModal((prev) => ({
@@ -6785,6 +6767,7 @@ if (nextStatus === "active_work") {
                         workNotes: e.target.value,
                       }))
                     }
+                    placeholder="Describe what you worked on, what was completed, and anything the next crew should know."
                     multiline
                     minRows={4}
                     fullWidth
@@ -6827,7 +6810,7 @@ if (nextStatus === "active_work") {
               disabled={closeoutModal.saving}
               sx={{ borderRadius: 99, boxShadow: "none" }}
             >
-              {closeoutModal.saving ? "Saving..." : "Save Closeout"}
+              {closeoutModal.saving ? "Saving..." : "Save & Finish Today's Trip"}
             </Button>
           </DialogActions>
         </Dialog>
@@ -6931,11 +6914,19 @@ if (nextStatus === "active_work") {
                   >
                     <Stack spacing={0.75}>
                       <Typography variant="body2" color="text.secondary">
-                        <strong>Total labor:</strong>{" "}
+                        <strong>Submitted labor:</strong>{" "}
                         {getCloseoutHours(closeoutDetailsTrip) != null
                           ? `${getCloseoutHours(closeoutDetailsTrip)?.toFixed(2)}h`
                           : "—"}
                       </Typography>
+                      {canEditProject &&
+                      closeoutHoursWereAdjusted(closeoutDetailsTrip) &&
+                      getCloseoutRawTimerHours(closeoutDetailsTrip) != null ? (
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Raw timer:</strong>{" "}
+                          {getCloseoutRawTimerHours(closeoutDetailsTrip)?.toFixed(2)}h • Adjusted
+                        </Typography>
+                      ) : null}
                       <Typography variant="body2" color="text.secondary">
                         <strong>Time entries:</strong> {getCloseoutTimeEntryStatus(closeoutDetailsTrip)}
                       </Typography>
@@ -6949,16 +6940,7 @@ if (nextStatus === "active_work") {
                   <CloseoutDetailBlock icon={<InfoRoundedIcon fontSize="small" />} title="Notes">
                     <Stack spacing={1}>
                       <Typography variant="body2" color="text.secondary">
-                        <strong>Outcome:</strong>{" "}
-                        {safeTrim((closeoutDetailsTrip.closeout as any)?.outcome)
-                          ? safeTrim((closeoutDetailsTrip.closeout as any)?.outcome).replaceAll("_", " ")
-                          : "—"}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        <strong>More work needed:</strong>{" "}
-                        {safeTrim((closeoutDetailsTrip.closeout as any)?.needsMoreWork) === "yes"
-                          ? "Yes"
-                          : "No"}
+                        <strong>Closeout:</strong> Today&apos;s project trip finished
                       </Typography>
                       <Divider />
                       <Typography variant="body2" color="text.secondary">
