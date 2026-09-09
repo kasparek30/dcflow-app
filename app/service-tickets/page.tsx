@@ -3,7 +3,12 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs, orderBy, query } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  orderBy,
+  query,
+} from "firebase/firestore";
 import {
   Alert,
   Box,
@@ -26,6 +31,7 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import { alpha, useTheme } from "@mui/material/styles";
+
 import ConfirmationNumberRoundedIcon from "@mui/icons-material/ConfirmationNumberRounded";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
@@ -38,6 +44,8 @@ import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import AssignmentIndRoundedIcon from "@mui/icons-material/AssignmentIndRounded";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import AccessTimeRoundedIcon from "@mui/icons-material/AccessTimeRounded";
+import StarRoundedIcon from "@mui/icons-material/StarRounded";
+
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
@@ -55,10 +63,16 @@ type StatusFilter =
   | "invoiced"
   | "cancelled";
 
-type AgingTone = "default" | "warning" | "critical" | "success" | "muted";
+type AgingTone =
+  | "default"
+  | "warning"
+  | "critical"
+  | "success"
+  | "muted";
 
 type ServiceTicketListItem = ServiceTicket & {
   status?: string;
+  preferredCustomer?: boolean;
   openedAt?: unknown;
   firstDispatchedAt?: unknown;
   firstStartedAt?: unknown;
@@ -73,6 +87,8 @@ type ServiceTicketListItem = ServiceTicket & {
     qboInvoiceStatus?: string | null;
   } | null;
 };
+
+type CustomerPreferenceLookup = Record<string, boolean>;
 
 function SectionHeader({
   title,
@@ -127,6 +143,14 @@ function SectionSurface({ children }: { children: React.ReactNode }) {
   );
 }
 
+function normalize(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function safeStr(value: unknown) {
+  return String(value ?? "");
+}
+
 function getStatusLabel(status?: string) {
   switch (normalize(status)) {
     case "new":
@@ -175,16 +199,16 @@ function formatEstimatedDurationHours(minutes?: number | null) {
   return `${display} hrs`;
 }
 
-function normalize(s: unknown) {
-  return String(s || "").trim().toLowerCase();
-}
-
 function isAssigned(ticket: ServiceTicketListItem) {
-  return Boolean(ticket.assignedTechnicianId || ticket.assignedTechnicianName);
+  return Boolean(
+    ticket.assignedTechnicianId ||
+      ticket.assignedTechnicianName
+  );
 }
 
 function statusRankForSort(status: string) {
   const s = normalize(status);
+
   if (s === "new") return 0;
   if (s === "follow_up") return 1;
   if (s === "scheduled") return 2;
@@ -192,11 +216,8 @@ function statusRankForSort(status: string) {
   if (s === "completed") return 4;
   if (s === "invoiced") return 5;
   if (s === "cancelled") return 6;
-  return 99;
-}
 
-function safeStr(x: unknown) {
-  return String(x ?? "");
+  return 99;
 }
 
 function dateFromUnknown(value: unknown): Date | null {
@@ -221,8 +242,6 @@ function dateFromUnknown(value: unknown): Date | null {
       toDate?: () => Date;
       seconds?: number;
       _seconds?: number;
-      nanoseconds?: number;
-      _nanoseconds?: number;
     };
 
     if (typeof maybeTimestamp.toDate === "function") {
@@ -254,6 +273,7 @@ function daysBetweenLocal(start: Date, end: Date) {
   const startMs = startOfLocalDay(start).getTime();
   const endMs = startOfLocalDay(end).getTime();
   const oneDayMs = 24 * 60 * 60 * 1000;
+
   return Math.max(0, Math.floor((endMs - startMs) / oneDayMs));
 }
 
@@ -291,8 +311,11 @@ function getTicketLifecycleEndDate(ticket: ServiceTicketListItem) {
 
 function isNewUntouchedTicket(ticket: ServiceTicketListItem) {
   const status = normalize(ticket.status);
+
   const scheduled = Boolean(
-    ticket.scheduledDate || ticket.scheduledStartTime || ticket.scheduledEndTime
+    ticket.scheduledDate ||
+      ticket.scheduledStartTime ||
+      ticket.scheduledEndTime
   );
 
   return status === "new" && !isAssigned(ticket) && !scheduled;
@@ -325,17 +348,22 @@ function formatLifecycleDaysLabel(prefix: string, days: number) {
 
   if (days === 0) return `${prefix} today`;
   if (days === 1) return `${prefix} 1 day`;
+
   return `${prefix} ${days} days`;
 }
 
 function getTicketAgeInfo(ticket: ServiceTicketListItem) {
   const openedDate = getTicketOpenedDate(ticket);
+
   if (!openedDate) return null;
 
   const status = normalize(ticket.status);
   const endDate = getTicketLifecycleEndDate(ticket);
+
   const isClosedLike =
-    status === "completed" || status === "invoiced" || status === "cancelled";
+    status === "completed" ||
+    status === "invoiced" ||
+    status === "cancelled";
 
   const days = daysBetweenLocal(openedDate, endDate || new Date());
 
@@ -363,7 +391,7 @@ function getTicketAgeInfo(ticket: ServiceTicketListItem) {
         border: "1px solid rgba(255,42,54,0.24)",
       },
       cardSx: {
-        border: "1.5px solid rgba(255,42,54,0.40)",
+        border: "1.5px solid rgba(255,42,54,0.46)",
         backgroundColor: "rgba(255,42,54,0.035)",
       },
     };
@@ -531,7 +559,11 @@ export default function ServiceTicketsPage() {
   const { appUser } = useAuthContext();
 
   const role = String(appUser?.role || "");
-  const isFieldUser = role === "technician" || role === "helper" || role === "apprentice";
+
+  const isFieldUser =
+    role === "technician" ||
+    role === "helper" ||
+    role === "apprentice";
 
   const defaultStatus: StatusFilter = isFieldUser ? "new" : "all";
   const defaultHideCompleted = isFieldUser ? true : false;
@@ -541,60 +573,103 @@ export default function ServiceTicketsPage() {
   const [error, setError] = useState("");
 
   const [searchText, setSearchText] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(defaultStatus);
-  const [assignedFilter, setAssignedFilter] = useState<"all" | "assigned" | "unassigned">("all");
-  const [scheduleFilter, setScheduleFilter] = useState<"all" | "scheduled" | "unscheduled">("all");
-  const [hideCompleted, setHideCompleted] = useState<boolean>(defaultHideCompleted);
-  const [availableOnly, setAvailableOnly] = useState<boolean>(true);
+  const [statusFilter, setStatusFilter] =
+    useState<StatusFilter>(defaultStatus);
+
+  const [assignedFilter, setAssignedFilter] =
+    useState<"all" | "assigned" | "unassigned">("all");
+
+  const [scheduleFilter, setScheduleFilter] =
+    useState<"all" | "scheduled" | "unscheduled">("all");
+
+  const [hideCompleted, setHideCompleted] =
+    useState<boolean>(defaultHideCompleted);
+
+  const [availableOnly, setAvailableOnly] =
+    useState<boolean>(true);
+
+  const [preferredOnly, setPreferredOnly] =
+    useState<boolean>(false);
 
   useEffect(() => {
     async function loadTickets() {
       try {
-        const q = query(collection(db, "serviceTickets"), orderBy("createdAt", "desc"));
-        const snap = await getDocs(q);
+        setLoading(true);
+        setError("");
 
-        const items: ServiceTicketListItem[] = snap.docs.map((docSnap) => {
-          const data = docSnap.data() as any;
+        const ticketQuery = query(
+          collection(db, "serviceTickets"),
+          orderBy("createdAt", "desc")
+        );
 
-          return {
-            id: docSnap.id,
-            customerId: data.customerId ?? "",
-            customerDisplayName: data.customerDisplayName ?? "",
-            serviceAddressId: data.serviceAddressId ?? undefined,
-            serviceAddressLabel: data.serviceAddressLabel ?? undefined,
-            serviceAddressLine1: data.serviceAddressLine1 ?? "",
-            serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
-            serviceCity: data.serviceCity ?? "",
-            serviceState: data.serviceState ?? "",
-            servicePostalCode: data.servicePostalCode ?? "",
-            issueSummary: data.issueSummary ?? "",
-            issueDetails: data.issueDetails ?? undefined,
-            status: data.status ?? "new",
-            estimatedDurationMinutes: data.estimatedDurationMinutes ?? 0,
-            scheduledDate: data.scheduledDate ?? undefined,
-            scheduledStartTime: data.scheduledStartTime ?? undefined,
-            scheduledEndTime: data.scheduledEndTime ?? undefined,
-            assignedTechnicianId: data.assignedTechnicianId ?? undefined,
-            assignedTechnicianName: data.assignedTechnicianName ?? undefined,
-            internalNotes: data.internalNotes ?? undefined,
-            active: data.active ?? true,
-            createdAt: data.createdAt ?? undefined,
-            updatedAt: data.updatedAt ?? undefined,
+        const [ticketSnap, customerSnap] = await Promise.all([
+          getDocs(ticketQuery),
+          getDocs(collection(db, "customers")),
+        ]);
 
-            openedAt: data.openedAt ?? undefined,
-            firstDispatchedAt: data.firstDispatchedAt ?? undefined,
-            firstStartedAt: data.firstStartedAt ?? undefined,
-            firstCompletedAt: data.firstCompletedAt ?? undefined,
-            firstReadyToBillAt: data.firstReadyToBillAt ?? undefined,
-            firstInvoicedAt: data.firstInvoicedAt ?? undefined,
-            closedAt: data.closedAt ?? undefined,
-            billing: data.billing ?? null,
-          };
+        const preferredLookup: CustomerPreferenceLookup = {};
+
+        customerSnap.docs.forEach((customerDoc) => {
+          const customerData = customerDoc.data() as any;
+
+          preferredLookup[customerDoc.id] = Boolean(
+            customerData.preferredCustomer
+          );
         });
+
+        const items: ServiceTicketListItem[] =
+          ticketSnap.docs.map((docSnap) => {
+            const data = docSnap.data() as any;
+            const customerId = data.customerId ?? "";
+
+            return {
+              id: docSnap.id,
+              customerId,
+              customerDisplayName: data.customerDisplayName ?? "",
+              preferredCustomer: Boolean(
+                preferredLookup[customerId]
+              ),
+              serviceAddressId: data.serviceAddressId ?? undefined,
+              serviceAddressLabel: data.serviceAddressLabel ?? undefined,
+              serviceAddressLine1: data.serviceAddressLine1 ?? "",
+              serviceAddressLine2: data.serviceAddressLine2 ?? undefined,
+              serviceCity: data.serviceCity ?? "",
+              serviceState: data.serviceState ?? "",
+              servicePostalCode: data.servicePostalCode ?? "",
+              issueSummary: data.issueSummary ?? "",
+              issueDetails: data.issueDetails ?? undefined,
+              status: data.status ?? "new",
+              estimatedDurationMinutes:
+                data.estimatedDurationMinutes ?? 0,
+              scheduledDate: data.scheduledDate ?? undefined,
+              scheduledStartTime: data.scheduledStartTime ?? undefined,
+              scheduledEndTime: data.scheduledEndTime ?? undefined,
+              assignedTechnicianId:
+                data.assignedTechnicianId ?? undefined,
+              assignedTechnicianName:
+                data.assignedTechnicianName ?? undefined,
+              internalNotes: data.internalNotes ?? undefined,
+              active: data.active ?? true,
+              createdAt: data.createdAt ?? undefined,
+              updatedAt: data.updatedAt ?? undefined,
+              openedAt: data.openedAt ?? undefined,
+              firstDispatchedAt: data.firstDispatchedAt ?? undefined,
+              firstStartedAt: data.firstStartedAt ?? undefined,
+              firstCompletedAt: data.firstCompletedAt ?? undefined,
+              firstReadyToBillAt: data.firstReadyToBillAt ?? undefined,
+              firstInvoicedAt: data.firstInvoicedAt ?? undefined,
+              closedAt: data.closedAt ?? undefined,
+              billing: data.billing ?? null,
+            };
+          });
 
         setTickets(items);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load service tickets.");
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load service tickets."
+        );
       } finally {
         setLoading(false);
       }
@@ -603,37 +678,81 @@ export default function ServiceTicketsPage() {
     loadTickets();
   }, []);
 
+  const preferredTicketCount = useMemo(() => {
+    return tickets.filter((ticket) => ticket.preferredCustomer).length;
+  }, [tickets]);
+
   const filteredTickets = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase();
 
     const base = tickets.filter((ticket) => {
-      const s = normalize(ticket.status);
+      const status = normalize(ticket.status);
 
-      if (hideCompleted && (s === "completed" || s === "invoiced" || s === "cancelled")) {
+      if (
+        hideCompleted &&
+        (
+          status === "completed" ||
+          status === "invoiced" ||
+          status === "cancelled"
+        )
+      ) {
+        return false;
+      }
+
+      if (preferredOnly && !ticket.preferredCustomer) {
         return false;
       }
 
       if (availableOnly) {
         const assigned = isAssigned(ticket);
+
         if (assigned) return false;
-        if (!(s === "new" || s === "scheduled")) return false;
+
+        if (!(status === "new" || status === "scheduled")) {
+          return false;
+        }
       }
 
-      if (statusFilter !== "all" && normalize(ticket.status) !== statusFilter) return false;
+      if (
+        statusFilter !== "all" &&
+        normalize(ticket.status) !== statusFilter
+      ) {
+        return false;
+      }
 
       const assigned = isAssigned(ticket);
-      if (assignedFilter === "assigned" && !assigned) return false;
-      if (assignedFilter === "unassigned" && assigned) return false;
+
+      if (assignedFilter === "assigned" && !assigned) {
+        return false;
+      }
+
+      if (assignedFilter === "unassigned" && assigned) {
+        return false;
+      }
 
       const scheduled = Boolean(
-        ticket.scheduledDate || ticket.scheduledStartTime || ticket.scheduledEndTime
+        ticket.scheduledDate ||
+          ticket.scheduledStartTime ||
+          ticket.scheduledEndTime
       );
-      if (scheduleFilter === "scheduled" && !scheduled) return false;
-      if (scheduleFilter === "unscheduled" && scheduled) return false;
 
-      if (!normalizedSearch) return true;
+      if (scheduleFilter === "scheduled" && !scheduled) {
+        return false;
+      }
+
+      if (scheduleFilter === "unscheduled" && scheduled) {
+        return false;
+      }
+
+      if (!normalizedSearch) {
+        return true;
+      }
 
       const ageInfo = getTicketAgeInfo(ticket);
+
+      const preferredSearchText = ticket.preferredCustomer
+        ? "preferred preferred customer priority customer"
+        : "";
 
       const haystack = [
         ticket.issueSummary,
@@ -653,6 +772,7 @@ export default function ServiceTicketsPage() {
         ticket.internalNotes,
         ticket.status,
         ageInfo?.label,
+        preferredSearchText,
       ]
         .filter(Boolean)
         .join(" ")
@@ -661,29 +781,36 @@ export default function ServiceTicketsPage() {
       return haystack.includes(normalizedSearch);
     });
 
-    const sorted = [...base].sort((a, b) => {
+    return [...base].sort((a, b) => {
       const aAssigned = isAssigned(a);
       const bAssigned = isAssigned(b);
 
-      if (aAssigned !== bAssigned) return aAssigned ? 1 : -1;
+      if (aAssigned !== bAssigned) {
+        return aAssigned ? 1 : -1;
+      }
 
       const aStatus = normalize(a.status);
       const bStatus = normalize(b.status);
 
       const aIsNew = aStatus === "new";
       const bIsNew = bStatus === "new";
-      if (aIsNew !== bIsNew) return aIsNew ? -1 : 1;
+
+      if (aIsNew !== bIsNew) {
+        return aIsNew ? -1 : 1;
+      }
 
       const ra = statusRankForSort(aStatus);
       const rb = statusRankForSort(bStatus);
-      if (ra !== rb) return ra - rb;
+
+      if (ra !== rb) {
+        return ra - rb;
+      }
 
       const ac = safeStr(a.createdAt);
       const bc = safeStr(b.createdAt);
+
       return bc.localeCompare(ac);
     });
-
-    return sorted;
   }, [
     tickets,
     searchText,
@@ -692,6 +819,7 @@ export default function ServiceTicketsPage() {
     scheduleFilter,
     hideCompleted,
     availableOnly,
+    preferredOnly,
   ]);
 
   function clearFilters() {
@@ -701,6 +829,7 @@ export default function ServiceTicketsPage() {
     setStatusFilter(defaultStatus);
     setHideCompleted(defaultHideCompleted);
     setAvailableOnly(false);
+    setPreferredOnly(false);
   }
 
   return (
@@ -715,16 +844,31 @@ export default function ServiceTicketsPage() {
               justifyContent="space-between"
             >
               <Box sx={{ minWidth: 0 }}>
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  sx={{ mb: 1 }}
+                >
                   <Chip
                     size="small"
-                    icon={<ConfirmationNumberRoundedIcon sx={{ fontSize: 16 }} />}
+                    icon={
+                      <ConfirmationNumberRoundedIcon
+                        sx={{ fontSize: 16 }}
+                      />
+                    }
                     label="Service Tickets"
                     sx={{
                       borderRadius: 1.5,
                       fontWeight: 600,
-                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
-                      border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                      backgroundColor: alpha(
+                        theme.palette.primary.main,
+                        0.12
+                      ),
+                      border: `1px solid ${alpha(
+                        theme.palette.primary.main,
+                        0.22
+                      )}`,
                     }}
                   />
                 </Stack>
@@ -750,8 +894,9 @@ export default function ServiceTicketsPage() {
                     maxWidth: 960,
                   }}
                 >
-                  Search by customer, issue, address, technician, status, schedule, and
-                  open age to manage the service work queue.
+                  Search by customer, issue, address, technician, status,
+                  schedule, open age, and preferred customer status to
+                  manage the service work queue.
                 </Typography>
               </Box>
 
@@ -760,7 +905,10 @@ export default function ServiceTicketsPage() {
                 href="/service-tickets/new"
                 variant="contained"
                 startIcon={<AddRoundedIcon />}
-                sx={{ minHeight: 40, borderRadius: 2 }}
+                sx={{
+                  minHeight: 40,
+                  borderRadius: 2,
+                }}
               >
                 New Service Ticket
               </Button>
@@ -771,7 +919,7 @@ export default function ServiceTicketsPage() {
                 <Stack spacing={2.25}>
                   <SectionHeader
                     title="Filters"
-                    subtitle="Refine the work queue by search text, status, assignment state, scheduling state, and customer waiting age."
+                    subtitle="Refine the work queue by search text, status, assignment state, scheduling state, preferred customer designation, and customer waiting age."
                   />
 
                   <Box
@@ -789,7 +937,7 @@ export default function ServiceTicketsPage() {
                       label="Search"
                       value={searchText}
                       onChange={(e) => setSearchText(e.target.value)}
-                      placeholder="Issue, customer, address, tech, date, waiting..."
+                      placeholder="Issue, customer, address, tech, preferred, waiting..."
                       size="small"
                       fullWidth
                       InputProps={{
@@ -807,7 +955,9 @@ export default function ServiceTicketsPage() {
                         label="Status"
                         value={statusFilter}
                         onChange={(e: SelectChangeEvent) =>
-                          setStatusFilter(e.target.value as StatusFilter)
+                          setStatusFilter(
+                            e.target.value as StatusFilter
+                          )
                         }
                       >
                         <MenuItem value="all">All Statuses</MenuItem>
@@ -828,7 +978,10 @@ export default function ServiceTicketsPage() {
                         value={assignedFilter}
                         onChange={(e: SelectChangeEvent) =>
                           setAssignedFilter(
-                            e.target.value as "all" | "assigned" | "unassigned"
+                            e.target.value as
+                              | "all"
+                              | "assigned"
+                              | "unassigned"
                           )
                         }
                       >
@@ -845,7 +998,10 @@ export default function ServiceTicketsPage() {
                         value={scheduleFilter}
                         onChange={(e: SelectChangeEvent) =>
                           setScheduleFilter(
-                            e.target.value as "all" | "scheduled" | "unscheduled"
+                            e.target.value as
+                              | "all"
+                              | "scheduled"
+                              | "unscheduled"
                           )
                         }
                       >
@@ -868,6 +1024,8 @@ export default function ServiceTicketsPage() {
                       direction={{ xs: "column", sm: "row" }}
                       spacing={1}
                       alignItems={{ xs: "stretch", sm: "center" }}
+                      flexWrap="wrap"
+                      useFlexGap
                     >
                       <Box
                         sx={{
@@ -879,14 +1037,26 @@ export default function ServiceTicketsPage() {
                         }}
                       >
                         <Stack direction="row" spacing={1} alignItems="center">
-                          <TuneRoundedIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          <TuneRoundedIcon
+                            sx={{
+                              fontSize: 18,
+                              color: "text.secondary",
+                            }}
+                          />
+
+                          <Typography
+                            variant="body2"
+                            sx={{ fontWeight: 600 }}
+                          >
                             Available Tickets
                           </Typography>
+
                           <Switch
                             size="small"
                             checked={availableOnly}
-                            onChange={(e) => setAvailableOnly(e.target.checked)}
+                            onChange={(e) =>
+                              setAvailableOnly(e.target.checked)
+                            }
                           />
                         </Stack>
                       </Box>
@@ -902,15 +1072,69 @@ export default function ServiceTicketsPage() {
                       >
                         <Stack direction="row" spacing={1} alignItems="center">
                           <CheckCircleRoundedIcon
-                            sx={{ fontSize: 18, color: "text.secondary" }}
+                            sx={{
+                              fontSize: 18,
+                              color: "text.secondary",
+                            }}
                           />
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+
+                          <Typography
+                            variant="body2"
+                            sx={{ fontWeight: 600 }}
+                          >
                             Hide Completed
                           </Typography>
+
                           <Switch
                             size="small"
                             checked={hideCompleted}
-                            onChange={(e) => setHideCompleted(e.target.checked)}
+                            onChange={(e) =>
+                              setHideCompleted(e.target.checked)
+                            }
+                          />
+                        </Stack>
+                      </Box>
+
+                      <Box
+                        sx={{
+                          px: 1.25,
+                          py: 0.85,
+                          borderRadius: 4,
+                          border: preferredOnly
+                            ? `1px solid ${alpha(
+                                theme.palette.success.main,
+                                0.45
+                              )}`
+                            : `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                          backgroundColor: preferredOnly
+                            ? alpha(theme.palette.success.main, 0.08)
+                            : alpha("#FFFFFF", 0.02),
+                        }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <StarRoundedIcon
+                            sx={{
+                              fontSize: 18,
+                              color: preferredOnly
+                                ? "#2CF27A"
+                                : "text.secondary",
+                            }}
+                          />
+
+                          <Typography
+                            variant="body2"
+                            sx={{ fontWeight: 600 }}
+                          >
+                            Preferred Customers Only
+                          </Typography>
+
+                          <Switch
+                            size="small"
+                            color="success"
+                            checked={preferredOnly}
+                            onChange={(e) =>
+                              setPreferredOnly(e.target.checked)
+                            }
                           />
                         </Stack>
                       </Box>
@@ -921,18 +1145,46 @@ export default function ServiceTicketsPage() {
                       spacing={1}
                       alignItems={{ xs: "stretch", sm: "center" }}
                     >
+                      {preferredTicketCount > 0 ? (
+                        <Chip
+                          size="small"
+                          icon={
+                            <StarRoundedIcon
+                              sx={{ fontSize: 15 }}
+                            />
+                          }
+                          label={`${preferredTicketCount} preferred`}
+                          sx={{
+                            borderRadius: 1.5,
+                            fontWeight: 800,
+                            color: "#E8FFF1",
+                            backgroundColor: "rgba(0,200,95,0.12)",
+                            border: "1px solid rgba(0,255,120,0.38)",
+                            "& .MuiChip-icon": {
+                              color: "#39FF88",
+                            },
+                          }}
+                        />
+                      ) : null}
+
                       <Chip
                         size="small"
                         label={`Showing ${filteredTickets.length} of ${tickets.length}`}
                         variant="outlined"
-                        sx={{ borderRadius: 1.5, fontWeight: 700 }}
+                        sx={{
+                          borderRadius: 1.5,
+                          fontWeight: 700,
+                        }}
                       />
 
                       <Button
                         type="button"
                         onClick={clearFilters}
                         variant="outlined"
-                        sx={{ borderRadius: 2, minHeight: 36 }}
+                        sx={{
+                          borderRadius: 2,
+                          minHeight: 36,
+                        }}
                       >
                         Clear Filters
                       </Button>
@@ -943,7 +1195,11 @@ export default function ServiceTicketsPage() {
             </SectionSurface>
 
             {error ? (
-              <Alert severity="error" variant="outlined" icon={<ErrorOutlineRoundedIcon />}>
+              <Alert
+                severity="error"
+                variant="outlined"
+                icon={<ErrorOutlineRoundedIcon />}
+              >
                 {error}
               </Alert>
             ) : null}
@@ -951,9 +1207,17 @@ export default function ServiceTicketsPage() {
             {loading ? (
               <SectionSurface>
                 <Box sx={{ p: 3 }}>
-                  <Stack direction="row" spacing={1.25} alignItems="center">
+                  <Stack
+                    direction="row"
+                    spacing={1.25}
+                    alignItems="center"
+                  >
                     <CircularProgress size={20} thickness={5} />
-                    <Typography variant="body2" color="text.secondary">
+
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                    >
                       Loading service tickets...
                     </Typography>
                   </Stack>
@@ -964,7 +1228,10 @@ export default function ServiceTicketsPage() {
             {!loading && !error && filteredTickets.length === 0 ? (
               <SectionSurface>
                 <Box sx={{ p: 3 }}>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                  >
                     No matching service tickets found.
                   </Typography>
                 </Box>
@@ -988,6 +1255,31 @@ export default function ServiceTicketsPage() {
                   const tone = statusTone(ticket.status);
                   const ageInfo = getTicketAgeInfo(ticket);
 
+                  const preferred = Boolean(ticket.preferredCustomer);
+
+                  const agingOverridesPreferred =
+                    ageInfo?.tone === "critical" ||
+                    ageInfo?.tone === "warning";
+
+                  const cardBorder = agingOverridesPreferred
+                    ? ageInfo?.cardSx.border
+                    : preferred
+                      ? "1.5px solid rgba(0,255,120,0.58)"
+                      : ageInfo?.cardSx.border ||
+                        `1px solid ${alpha("#FFFFFF", 0.08)}`;
+
+                  const cardBackground = agingOverridesPreferred
+                    ? ageInfo?.cardSx.backgroundColor
+                    : preferred
+                      ? `linear-gradient(
+                          145deg,
+                          rgba(0,110,50,0.22) 0%,
+                          rgba(0,180,85,0.09) 52%,
+                          ${theme.palette.background.paper} 100%
+                        )`
+                      : ageInfo?.cardSx.backgroundColor ||
+                        "background.paper";
+
                   return (
                     <Card
                       key={ticket.id}
@@ -996,35 +1288,65 @@ export default function ServiceTicketsPage() {
                         height: "100%",
                         borderRadius: 1,
                         overflow: "hidden",
-                        border:
-                          ageInfo?.cardSx.border ||
-                          `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                        backgroundColor:
-                          ageInfo?.cardSx.backgroundColor || "background.paper",
+                        position: "relative",
+                        border: cardBorder,
+                        background: cardBackground,
+                        boxShadow:
+                          preferred && !agingOverridesPreferred
+                            ? "0 0 20px rgba(0,255,120,0.08)"
+                            : "none",
                         transition:
                           "border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease",
+
                         "&:hover": {
+                          transform: "translateY(-1px)",
+
                           boxShadow:
                             ageInfo?.tone === "critical"
                               ? "0 0 0 1px rgba(255,42,54,0.18)"
                               : ageInfo?.tone === "warning"
-                                ? "0 0 0 1px rgba(245,158,11,0.16)"
-                                : "0 0 0 1px rgba(255,255,255,0.06)",
+                                ? "0 0 0 1px rgba(245,158,11,0.18)"
+                                : preferred
+                                  ? "0 0 0 1px rgba(0,255,120,0.26), 0 0 24px rgba(0,255,120,0.10)"
+                                  : "0 0 0 1px rgba(255,255,255,0.06)",
                         },
+
+                        ...(preferred
+                          ? {
+                              "&::before": {
+                                content: '""',
+                                position: "absolute",
+                                top: 0,
+                                left: 0,
+                                width: 4,
+                                height: "100%",
+                                backgroundColor: "#18E86E",
+                                zIndex: 2,
+                              },
+                            }
+                          : {}),
                       }}
                     >
                       <CardActionArea
                         component={Link}
                         href={`/service-tickets/${ticket.id}`}
-                        sx={{ height: "100%", display: "block" }}
+                        sx={{
+                          height: "100%",
+                          display: "block",
+                        }}
                       >
                         <CardContent
                           sx={{
                             p: { xs: 2, md: 2.25 },
+                            pl: preferred
+                              ? { xs: 2.25, md: 2.5 }
+                              : undefined,
                             height: "100%",
                             display: "flex",
                             flexDirection: "column",
-                            "&:last-child": { pb: { xs: 2, md: 2.25 } },
+                            "&:last-child": {
+                              pb: { xs: 2, md: 2.25 },
+                            },
                           }}
                         >
                           <Stack spacing={1.5} sx={{ height: "100%" }}>
@@ -1034,7 +1356,14 @@ export default function ServiceTicketsPage() {
                               justifyContent="space-between"
                               alignItems="flex-start"
                             >
-                              <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, flex: 1 }}>
+                              <Stack
+                                direction="row"
+                                spacing={1.25}
+                                sx={{
+                                  minWidth: 0,
+                                  flex: 1,
+                                }}
+                              >
                                 <Box
                                   sx={{
                                     width: 42,
@@ -1043,11 +1372,26 @@ export default function ServiceTicketsPage() {
                                     display: "grid",
                                     placeItems: "center",
                                     flexShrink: 0,
-                                    backgroundColor: alpha(theme.palette.primary.main, 0.12),
-                                    color: theme.palette.primary.light,
+                                    backgroundColor: preferred
+                                      ? "rgba(0,180,85,0.18)"
+                                      : alpha(
+                                          theme.palette.primary.main,
+                                          0.12
+                                        ),
+                                    color: preferred
+                                      ? "#2CF27A"
+                                      : theme.palette.primary.light,
                                   }}
                                 >
-                                  <BuildCircleRoundedIcon sx={{ fontSize: 22 }} />
+                                  {preferred ? (
+                                    <StarRoundedIcon
+                                      sx={{ fontSize: 22 }}
+                                    />
+                                  ) : (
+                                    <BuildCircleRoundedIcon
+                                      sx={{ fontSize: 22 }}
+                                    />
+                                  )}
                                 </Box>
 
                                 <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -1087,7 +1431,11 @@ export default function ServiceTicketsPage() {
                                 {ageInfo ? (
                                   <Chip
                                     size="small"
-                                    icon={<AccessTimeRoundedIcon sx={{ fontSize: 15 }} />}
+                                    icon={
+                                      <AccessTimeRoundedIcon
+                                        sx={{ fontSize: 15 }}
+                                      />
+                                    }
                                     label={ageInfo.label}
                                     sx={{
                                       borderRadius: 1.5,
@@ -1115,10 +1463,19 @@ export default function ServiceTicketsPage() {
                             <Divider />
 
                             <Stack spacing={1.1}>
-                              <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                alignItems="center"
+                              >
                                 <PlaceRoundedIcon
-                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                  sx={{
+                                    fontSize: 16,
+                                    color: "text.secondary",
+                                    flexShrink: 0,
+                                  }}
                                 />
+
                                 <Typography
                                   variant="body2"
                                   sx={{
@@ -1142,39 +1499,78 @@ export default function ServiceTicketsPage() {
                                   whiteSpace: "nowrap",
                                 }}
                               >
-                                {ticket.serviceCity || "—"}, {ticket.serviceState || "—"}{" "}
+                                {ticket.serviceCity || "—"},{" "}
+                                {ticket.serviceState || "—"}{" "}
                                 {ticket.servicePostalCode || ""}
                               </Typography>
 
-                              <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                alignItems="center"
+                              >
                                 <ScheduleRoundedIcon
-                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                  sx={{
+                                    fontSize: 16,
+                                    color: "text.secondary",
+                                    flexShrink: 0,
+                                  }}
                                 />
-                                <Typography variant="body2" color="text.secondary">
+
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                >
                                   {getScheduleText(ticket)}
                                 </Typography>
                               </Stack>
 
-                              <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                alignItems="center"
+                              >
                                 <BuildCircleRoundedIcon
-                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                  sx={{
+                                    fontSize: 16,
+                                    color: "text.secondary",
+                                    flexShrink: 0,
+                                  }}
                                 />
-                                <Typography variant="body2" color="text.secondary">
+
+                                <Typography
+                                  variant="body2"
+                                  color="text.secondary"
+                                >
                                   Estimated Duration:{" "}
                                   <Typography
                                     component="span"
                                     variant="body2"
-                                    sx={{ color: "text.primary", fontWeight: 700 }}
+                                    sx={{
+                                      color: "text.primary",
+                                      fontWeight: 700,
+                                    }}
                                   >
-                                    {formatEstimatedDurationHours(ticket.estimatedDurationMinutes)}
+                                    {formatEstimatedDurationHours(
+                                      ticket.estimatedDurationMinutes
+                                    )}
                                   </Typography>
                                 </Typography>
                               </Stack>
 
-                              <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Stack
+                                direction="row"
+                                spacing={0.75}
+                                alignItems="center"
+                              >
                                 <AssignmentIndRoundedIcon
-                                  sx={{ fontSize: 16, color: "text.secondary", flexShrink: 0 }}
+                                  sx={{
+                                    fontSize: 16,
+                                    color: "text.secondary",
+                                    flexShrink: 0,
+                                  }}
                                 />
+
                                 <Typography
                                   variant="body2"
                                   color="text.secondary"
@@ -1188,9 +1584,13 @@ export default function ServiceTicketsPage() {
                                   <Typography
                                     component="span"
                                     variant="body2"
-                                    sx={{ color: "text.primary", fontWeight: 700 }}
+                                    sx={{
+                                      color: "text.primary",
+                                      fontWeight: 700,
+                                    }}
                                   >
-                                    {ticket.assignedTechnicianName || (assigned ? "Assigned" : "—")}
+                                    {ticket.assignedTechnicianName ||
+                                      (assigned ? "Assigned" : "—")}
                                   </Typography>
                                 </Typography>
                               </Stack>
@@ -1204,7 +1604,12 @@ export default function ServiceTicketsPage() {
                               direction="row"
                               spacing={0.75}
                               alignItems="center"
-                              sx={{ color: "primary.light", pt: 0.25 }}
+                              sx={{
+                                color: preferred
+                                  ? "#70F7A4"
+                                  : "primary.light",
+                                pt: 0.25,
+                              }}
                             >
                               <Typography
                                 variant="caption"
@@ -1215,7 +1620,10 @@ export default function ServiceTicketsPage() {
                               >
                                 Open ticket
                               </Typography>
-                              <ArrowForwardRoundedIcon sx={{ fontSize: 14 }} />
+
+                              <ArrowForwardRoundedIcon
+                                sx={{ fontSize: 14 }}
+                              />
                             </Stack>
                           </Stack>
                         </CardContent>

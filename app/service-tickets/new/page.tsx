@@ -1039,6 +1039,7 @@ export default function NewServiceTicketPage() {
   const [customersLoading, setCustomersLoading] = useState(true);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [customersError, setCustomersError] = useState("");
+  const [requestedCustomerId, setRequestedCustomerId] = useState("");
 
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerSearchFocused, setCustomerSearchFocused] = useState(false);
@@ -1170,6 +1171,43 @@ export default function NewServiceTicketPage() {
 
     loadCustomers();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const customerId = params.get("customerId")?.trim() || "";
+
+    setRequestedCustomerId(customerId);
+  }, []);
+
+    useEffect(() => {
+    if (customersLoading) return;
+    if (!requestedCustomerId) return;
+    if (selectedCustomerId) return;
+
+    const requestedCustomer = customers.find(
+      (customer) => customer.id === requestedCustomerId,
+    );
+
+    if (!requestedCustomer) {
+      setCustomersError(
+        "The customer linked from the customer page could not be found.",
+      );
+      return;
+    }
+
+    setSelectedCustomerId(requestedCustomer.id);
+    setCustomerSearch(requestedCustomer.displayName);
+    setCustomerSearchFocused(false);
+    setQuickAddServiceLocationOpen(false);
+    setError("");
+  }, [
+    customersLoading,
+    customers,
+    requestedCustomerId,
+    selectedCustomerId,
+  ]);
 
   useEffect(() => {
     async function loadStaffAndAvailabilityInputs() {
