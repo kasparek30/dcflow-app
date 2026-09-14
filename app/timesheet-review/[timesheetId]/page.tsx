@@ -157,6 +157,10 @@ type ProjectMini = {
   projectName: string;
 };
 
+type ReviewTimeEntry = TimeEntry & {
+  syntheticHoliday?: boolean;
+};
+
 export default function TimesheetReviewDetailPage({ params }: Props) {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -171,7 +175,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
 
   const [timesheetId, setTimesheetId] = useState("");
   const [timesheet, setTimesheet] = useState<WeeklyTimesheet | null>(null);
-  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [entries, setEntries] = useState<ReviewTimeEntry[]>([]);
 
   const [error, setError] = useState("");
   const [ok, setOk] = useState("");
@@ -298,7 +302,7 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
           }
         }
 
-        let items: TimeEntry[] = byIds;
+        let items: ReviewTimeEntry[] = byIds;
 
         if (items.length === 0) {
           const qEntries = query(
@@ -338,6 +342,89 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
               updatedAt: x.updatedAt ?? undefined,
             };
           });
+        }
+
+
+        const hasHolidayEntry = items.some((entry) => {
+          const category = safeTrim(entry.category).toLowerCase();
+          const payType = safeTrim(entry.payType).toLowerCase();
+          return category === "holiday" || payType === "holiday";
+        });
+
+        // Backward compatibility for timesheets submitted before holidays were
+        // persisted as real timeEntries. The weeklyTimesheet already contains
+        // the submitted holiday total, so reconstruct a locked display row from
+        // the company holiday calendar instead of silently dropping those hours.
+        if (!hasHolidayEntry && numOr0(ts.holidayHours) > 0) {
+          try {
+            const holidaySnap = await getDocs(collection(db, "companyHolidays"));
+            const holidays = holidaySnap.docs
+              .map((holidayDoc) => {
+                const h: any = holidayDoc.data();
+                const active =
+                  typeof h.active === "boolean" ? h.active : true;
+                const date = safeTrim(
+                  h.date ?? h.holidayDate ?? h.holiday_date,
+                );
+
+                return {
+                  id: holidayDoc.id,
+                  active,
+                  date,
+                  name: safeTrim(h.name ?? h.title) || "Company Holiday",
+                };
+              })
+              .filter(
+                (holiday) =>
+                  holiday.active &&
+                  /^\d{4}-\d{2}-\d{2}$/.test(holiday.date) &&
+                  holiday.date >= ts.weekStartDate &&
+                  holiday.date <= ts.weekEndDate,
+              )
+              .sort((a, b) => a.date.localeCompare(b.date));
+
+            if (holidays.length > 0) {
+              let remainingHolidayHours = numOr0(ts.holidayHours);
+
+              holidays.forEach((holiday, index) => {
+                const holidaysRemaining = holidays.length - index;
+                const hours =
+                  holidaysRemaining === 1
+                    ? remainingHolidayHours
+                    : Math.min(
+                        8,
+                        remainingHolidayHours / holidaysRemaining,
+                      );
+
+                remainingHolidayHours = Math.max(
+                  0,
+                  remainingHolidayHours - hours,
+                );
+
+                items.push({
+                  id: `legacy_holiday_${ts.employeeId}_${holiday.date}`,
+                  employeeId: ts.employeeId,
+                  employeeName: ts.employeeName,
+                  employeeRole: ts.employeeRole,
+                  entryDate: holiday.date,
+                  weekStartDate: ts.weekStartDate,
+                  weekEndDate: ts.weekEndDate,
+                  category: "holiday" as TimeEntry["category"],
+                  hours,
+                  payType: "holiday",
+                  billable: false,
+                  source: "system_generated_holiday",
+                  notes: holiday.name,
+                  timesheetId: ts.id,
+                  entryStatus: ts.status === "approved" ? "approved" : "submitted",
+                  syntheticHoliday: true,
+                } as ReviewTimeEntry);
+              });
+            }
+          } catch {
+            // Keep the submitted timesheet usable even if the holiday calendar
+            // cannot be loaded. Its header totals still retain holidayHours.
+          }
         }
 
         items.sort(
@@ -443,8 +530,12 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
 
-  function formatEntryPrimary(e: TimeEntry) {
+  function formatEntryPrimary(e: ReviewTimeEntry) {
     const cat = safeTrim((e as any).category).toLowerCase();
+
+    if (cat === "holiday") {
+      return "Company Holiday";
+    }
 
     if (cat === "service" || cat === "service_ticket") {
       const tid = safeTrim((e as any).serviceTicketId);
@@ -461,8 +552,12 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
     return safeTrim((e as any).category) || "Entry";
   }
 
-  function formatEntrySecondary(e: TimeEntry) {
+  function formatEntrySecondary(e: ReviewTimeEntry) {
     const cat = safeTrim((e as any).category).toLowerCase();
+
+    if (cat === "holiday") {
+      return safeTrim((e as any).notes) || "Paid holiday time";
+    }
 
     if (cat === "service" || cat === "service_ticket") {
       const tid = safeTrim((e as any).serviceTicketId);
@@ -536,6 +631,8 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
       const now = nowIso();
 
       for (const e of entries) {
+        if (e.syntheticHoliday) continue;
+
         const nextHours = numOr0(editedHoursByEntryId[e.id] ?? e.hours);
         const locked = Boolean(lockByEntryId[e.id]);
 
@@ -584,11 +681,15 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
       );
 
       setEntries((prev) =>
-        prev.map((x) => ({
-          ...x,
-          hours: numOr0(editedHoursByEntryId[x.id] ?? x.hours),
-          updatedAt: now,
-        }))
+        prev.map((x) =>
+          x.syntheticHoliday
+            ? x
+            : {
+                ...x,
+                hours: numOr0(editedHoursByEntryId[x.id] ?? x.hours),
+                updatedAt: now,
+              },
+        )
       );
 
       setOk("Admin adjustments saved.");
@@ -995,7 +1096,10 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                             const hours = numOr0(
                               editedHoursByEntryId[e.id] ?? e.hours ?? 0
                             );
-                            const locked = Boolean(lockByEntryId[e.id]);
+                            const syntheticHoliday = Boolean(e.syntheticHoliday);
+                            const locked = syntheticHoliday
+                              ? true
+                              : Boolean(lockByEntryId[e.id]);
                             const primary = formatEntryPrimary(e);
                             const secondary = formatEntrySecondary(e);
 
@@ -1056,6 +1160,14 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                                             }`}
                                             variant="outlined"
                                           />
+                                          {syntheticHoliday ? (
+                                            <Chip
+                                              size="small"
+                                              label="Submitted holiday"
+                                              color="success"
+                                              variant="outlined"
+                                            />
+                                          ) : null}
                                           {e.linkedTechnicianName ? (
                                             <Chip
                                               size="small"
@@ -1083,7 +1195,11 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                                               [e.id]: numOr0(evt.target.value),
                                             }))
                                           }
-                                          disabled={!canAdminAdjust || saving}
+                                          disabled={
+                                            syntheticHoliday ||
+                                            !canAdminAdjust ||
+                                            saving
+                                          }
                                           sx={{ minWidth: { xs: "100%", sm: 120 } }}
                                         />
 
@@ -1097,7 +1213,11 @@ export default function TimesheetReviewDetailPage({ params }: Props) {
                                                   [e.id]: evt.target.checked,
                                                 }))
                                               }
-                                              disabled={!canAdminAdjust || saving}
+                                              disabled={
+                                                syntheticHoliday ||
+                                                !canAdminAdjust ||
+                                                saving
+                                              }
                                             />
                                           }
                                           label={

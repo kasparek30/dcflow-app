@@ -306,6 +306,10 @@ function buildWeeklyTimesheetId(employeeId: string, weekStartDate: string) {
   return `ws_${employeeId}_${weekStartDate}`;
 }
 
+function buildHolidayTimeEntryId(employeeId: string, entryDate: string) {
+  return `holiday_${employeeId}_${entryDate}`;
+}
+
 function safeTrim(x: unknown) {
   return String(x ?? "").trim();
 }
@@ -795,6 +799,14 @@ export default function WeeklyTimesheetPage() {
       .map((entry) => entry.id);
   }, [weekEntries]);
 
+  const submittedTimeEntryIds = useMemo(() => {
+    return weekEntries.map((entry) =>
+      entry.synthetic
+        ? buildHolidayTimeEntryId(entry.employeeId, entry.entryDate)
+        : entry.id,
+    );
+  }, [weekEntries]);
+
   useEffect(() => {
     async function hydrate() {
       const needTicketIds = new Set<string>();
@@ -1105,7 +1117,7 @@ export default function WeeklyTimesheetPage() {
         employeeRole: selectedEmployee.role,
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
-        timeEntryIds: persistedTimeEntryIds,
+        timeEntryIds: submittedTimeEntryIds,
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
@@ -1136,7 +1148,41 @@ export default function WeeklyTimesheetPage() {
       );
 
       for (const entry of weekEntries) {
-        if (entry.synthetic) continue;
+        if (entry.synthetic) {
+          const holidayEntryId = buildHolidayTimeEntryId(
+            entry.employeeId,
+            entry.entryDate,
+          );
+
+          batch.set(
+            doc(db, "timeEntries", holidayEntryId),
+            {
+              employeeId: entry.employeeId,
+              employeeName: entry.employeeName,
+              employeeRole: entry.employeeRole,
+              laborRoleType: entry.laborRoleType ?? null,
+              entryDate: entry.entryDate,
+              weekStartDate: weekStart,
+              weekEndDate: weekEnd,
+              category: "holiday",
+              hours: Number(entry.hours || 0),
+              payType: "holiday",
+              billable: false,
+              source: "system_generated_holiday",
+              notes: safeTrim(entry.notes) || "Company Holiday",
+              timesheetId: docId,
+              entryStatus: "submitted",
+              hoursLocked: true,
+              createdAt: now,
+              updatedAt: now,
+              updatedByUid: appUser.uid,
+            },
+            { merge: true },
+          );
+
+          continue;
+        }
+
         batch.update(doc(db, "timeEntries", entry.id), {
           timesheetId: docId,
           entryStatus: "submitted",
@@ -1155,7 +1201,7 @@ export default function WeeklyTimesheetPage() {
         employeeRole: selectedEmployee.role,
         weekStartDate: weekStart,
         weekEndDate: weekEnd,
-        timeEntryIds: persistedTimeEntryIds,
+        timeEntryIds: submittedTimeEntryIds,
         totalHours: computedTotals.totalHours,
         regularHours: computedTotals.regularHours,
         overtimeHours: computedTotals.overtimeHours,
