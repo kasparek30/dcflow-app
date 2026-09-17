@@ -1826,6 +1826,7 @@ export default function SchedulePage() {
   const [techFilter, setTechFilter] = useState<TechFilterValue>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [hideCompleted, setHideCompleted] = useState<boolean>(true);
+  const [showPastWeekDays, setShowPastWeekDays] = useState<boolean>(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [monthAvailabilityMode, setMonthAvailabilityMode] = useState<MonthAvailabilityMode>("leads");
 
@@ -4117,6 +4118,9 @@ closeAddModal();
     const hide = url.searchParams.get("hideCompleted");
     if (hide === "0") setHideCompleted(false);
 
+    const showPast = url.searchParams.get("showPastWeekDays");
+    if (showPast === "1") setShowPastWeekDays(true);
+
     const tf = url.searchParams.get("tech");
     if (tf) setTechFilter(tf);
 
@@ -4148,13 +4152,14 @@ closeAddModal();
       url.searchParams.set("view", view);
       url.searchParams.set("date", anchorIso);
       url.searchParams.set("hideCompleted", hideCompleted ? "1" : "0");
+      url.searchParams.set("showPastWeekDays", showPastWeekDays ? "1" : "0");
       url.searchParams.set("tech", techFilter);
       url.searchParams.set("status", statusFilter);
       window.history.replaceState({}, "", url.toString());
     } catch {
       // ignore history update issues
     }
-  }, [schedulePrefsReady, view, anchorIso, hideCompleted, techFilter, statusFilter]);
+  }, [schedulePrefsReady, view, anchorIso, hideCompleted, showPastWeekDays, techFilter, statusFilter]);
 
   const anchorDate = useMemo(() => fromIsoDate(anchorIso), [anchorIso]);
 
@@ -4837,10 +4842,57 @@ useEffect(() => {
     return workWeekDays(startOfWorkWeek(anchorDate));
   }, [view, anchorIso, anchorDate]);
 
-  useEffect(() => {
-    if (view !== "week" || !isMobile || daysForWeekOrDay.length === 0) return;
+  const visibleWeekDays = useMemo(() => {
+    if (view !== "week") return daysForWeekOrDay;
+    if (showPastWeekDays || !hideCompleted) return daysForWeekOrDay;
+    if (daysForWeekOrDay.length === 0) return daysForWeekOrDay;
 
-    const weekIsos = daysForWeekOrDay.map((day) => toIsoDate(day));
+    const viewedWeekStartIso = toIsoDate(daysForWeekOrDay[0]);
+    const currentWeekStartIso = toIsoDate(startOfWorkWeek(fromIsoDate(todayIso)));
+
+    // Only auto-collapse days in the current work week. Past/future weeks should
+    // always remain complete Monday-Friday when dispatch intentionally navigates there.
+    if (viewedWeekStartIso !== currentWeekStartIso) return daysForWeekOrDay;
+
+    const remaining = daysForWeekOrDay.filter((day) => {
+      const iso = toIsoDate(day);
+
+      // Today and future days always remain visible.
+      if (iso >= todayIso) return true;
+
+      // A past day stays visible when it still contains unfinished operational work.
+      // Completed/cancelled trips do not keep the column open by themselves.
+      const hasUnfinishedTrip = trips.some((trip) => {
+        if (trip.active === false) return false;
+        if (String(trip.date || "").trim() !== iso) return false;
+
+        const status = normalizeStatus(trip.status);
+        return ![
+          "complete",
+          "completed",
+          "cancelled",
+          "canceled",
+        ].includes(status);
+      });
+
+      return hasUnfinishedTrip;
+    });
+
+    // Weekend safety: never render a zero-column board.
+    return remaining.length ? remaining : [daysForWeekOrDay[daysForWeekOrDay.length - 1]];
+  }, [
+    view,
+    daysForWeekOrDay,
+    showPastWeekDays,
+    hideCompleted,
+    todayIso,
+    trips,
+  ]);
+
+  useEffect(() => {
+    if (view !== "week" || !isMobile || visibleWeekDays.length === 0) return;
+
+    const weekIsos = visibleWeekDays.map((day) => toIsoDate(day));
     if (weekIsos.includes(mobileWeekDateIso)) return;
 
     const today = todayIsoLocal();
@@ -4850,7 +4902,7 @@ useEffect(() => {
     isMobile,
     anchorIso,
     mobileWeekDateIso,
-    daysForWeekOrDay.map((day) => toIsoDate(day)).join("|"),
+    visibleWeekDays.map((day) => toIsoDate(day)).join("|"),
   ]);
 
   const monthWeeks = useMemo(() => {
@@ -4883,7 +4935,10 @@ useEffect(() => {
   }, [view, anchorIso, daysForWeekOrDay]);
 
   const hasActiveScheduleFilters =
-    techFilter !== "ALL" || statusFilter !== "ALL" || hideCompleted !== true;
+    techFilter !== "ALL" ||
+    statusFilter !== "ALL" ||
+    hideCompleted !== true ||
+    showPastWeekDays;
 
   function renderHolidayBadge(iso: string) {
     const holiday = holidayByDate[iso];
@@ -5872,7 +5927,7 @@ function renderStaffCoverageCards(dateIso: string) {
   function weekScheduledSlotCount(rowKey: string) {
     let count = 0;
 
-    for (const day of daysForWeekOrDay) {
+    for (const day of visibleWeekDays) {
       const iso = toIsoDate(day);
       const dayTrips = fullGrid.get(rowKey)?.get(iso) || [];
       if (dayTrips.some((trip) => tripBlocksSlot(trip, "am"))) count += 1;
@@ -6263,7 +6318,7 @@ function renderStaffCoverageCards(dateIso: string) {
   }
 
   function renderDesktopWeekSchedule() {
-    const dayCount = Math.max(daysForWeekOrDay.length, 1);
+    const dayCount = Math.max(visibleWeekDays.length, 1);
     const minWidth = 220 + dayCount * 198;
 
     return (
@@ -6306,7 +6361,7 @@ function renderStaffCoverageCards(dateIso: string) {
                   </Typography>
                 </Box>
 
-                {daysForWeekOrDay.map((day, index) => {
+                {visibleWeekDays.map((day, index) => {
                   const iso = toIsoDate(day);
                   const isTodayCell = iso === todayIso;
                   const holiday = holidayByDate[iso];
@@ -6319,7 +6374,7 @@ function renderStaffCoverageCards(dateIso: string) {
                         py: 0.8,
                         minWidth: 0,
                         borderRight:
-                          index < daysForWeekOrDay.length - 1
+                          index < visibleWeekDays.length - 1
                             ? `1px solid ${alpha("#FFFFFF", 0.075)}`
                             : "none",
                         bgcolor: isTodayCell
@@ -6453,7 +6508,7 @@ function renderStaffCoverageCards(dateIso: string) {
                       </Stack>
                     </Box>
 
-                    {daysForWeekOrDay.map((day, dayIndex) => {
+                    {visibleWeekDays.map((day, dayIndex) => {
                       const iso = toIsoDate(day);
                       const isTodayCell = iso === todayIso;
                       const cellTrips = grid.get(rowKey)?.get(iso) || [];
@@ -6477,7 +6532,7 @@ function renderStaffCoverageCards(dateIso: string) {
                             p: 0.65,
                             minWidth: 0,
                             borderRight:
-                              dayIndex < daysForWeekOrDay.length - 1
+                              dayIndex < visibleWeekDays.length - 1
                                 ? `1px solid ${alpha("#FFFFFF", 0.065)}`
                                 : "none",
                             bgcolor: isTodayCell
@@ -6590,13 +6645,13 @@ function renderStaffCoverageCards(dateIso: string) {
   }
 
   function renderMobileWeekSchedule() {
-    const weekIsos = daysForWeekOrDay.map((day) => toIsoDate(day));
+    const weekIsos = visibleWeekDays.map((day) => toIsoDate(day));
     const selectedIso = weekIsos.includes(mobileWeekDateIso)
       ? mobileWeekDateIso
       : weekIsos.includes(todayIso)
         ? todayIso
         : weekIsos[0];
-    const selectedDay = daysForWeekOrDay.find((day) => toIsoDate(day) === selectedIso) || daysForWeekOrDay[0];
+    const selectedDay = visibleWeekDays.find((day) => toIsoDate(day) === selectedIso) || visibleWeekDays[0];
 
     if (!selectedDay || !selectedIso) return null;
 
@@ -6626,8 +6681,8 @@ function renderStaffCoverageCards(dateIso: string) {
               </Box>
             </Stack>
 
-            <Box sx={{ display: "grid", gridTemplateColumns: `repeat(${daysForWeekOrDay.length}, minmax(0, 1fr))`, gap: 0.45 }}>
-              {daysForWeekOrDay.map((day) => {
+            <Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(visibleWeekDays.length, 1)}, minmax(0, 1fr))`, gap: 0.45 }}>
+              {visibleWeekDays.map((day) => {
                 const iso = toIsoDate(day);
                 const selected = iso === selectedIso;
                 const today = iso === todayIso;
@@ -6721,7 +6776,7 @@ function renderStaffCoverageCards(dateIso: string) {
           const crewHelpers = defaultCrewHelpersForLead(row.uid);
           const defaultHelperUids = crewHelpers.map((helper) => helper.uid);
           const scheduledSlots = weekScheduledSlotCount(rowKey);
-          const totalSlots = Math.max(daysForWeekOrDay.length * 2, 1);
+          const totalSlots = Math.max(visibleWeekDays.length * 2, 1);
 
           return (
             <Paper
@@ -7968,7 +8023,7 @@ function renderStaffCoverageCards(dateIso: string) {
               >
                 <SectionHeader
                   title="Filters"
-                  subtitle="Refine the schedule by technician, status, and completion state."
+                  subtitle="Refine the schedule by technician, status, completion state, and past-day visibility."
                 />
 
                 <Box sx={{ mt: 1.5 }}>
@@ -8020,6 +8075,18 @@ function renderStaffCoverageCards(dateIso: string) {
                         label="Hide completed"
                       />
 
+                      {view === "week" ? (
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={showPastWeekDays}
+                              onChange={(e) => setShowPastWeekDays(e.target.checked)}
+                            />
+                          }
+                          label="Show past days"
+                        />
+                      ) : null}
+
                       <Box sx={{ flex: 1 }} />
 
                       <Chip
@@ -8028,6 +8095,12 @@ function renderStaffCoverageCards(dateIso: string) {
                         sx={{ borderRadius: 1.5 }}
                       />
                     </Stack>
+
+                    {view === "week" && !showPastWeekDays && hideCompleted ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 650 }}>
+                        Past days in the current week collapse automatically once no unfinished trips remain. Use “Show past days” to restore the full Monday-Friday board.
+                      </Typography>
+                    ) : null}
                   </Stack>
                 </Box>
               </Paper>
