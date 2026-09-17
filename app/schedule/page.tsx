@@ -16,6 +16,7 @@ import {
   where,
   writeBatch,
   arrayUnion,
+  arrayRemove,
 } from "firebase/firestore";
 import {
   Alert,
@@ -79,6 +80,10 @@ import ProtectedPage from "../../components/ProtectedPage";
 import { useAuthContext } from "../../src/context/auth-context";
 import { db } from "../../src/lib/firebase";
 import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
+import BuildRoundedIcon from "@mui/icons-material/BuildRounded";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import LocationOnRoundedIcon from "@mui/icons-material/LocationOnRounded";
+import MoreVertRoundedIcon from "@mui/icons-material/MoreVertRounded";
 
 type ViewMode = "week" | "month" | "day";
 
@@ -164,6 +169,9 @@ type TicketSummary = {
 type ProjectSummary = {
   id: string;
   name: string;
+  customerDisplayName: string;
+  serviceAddressLine1: string;
+  serviceCity: string;
 };
 
 type ProjectStageOption = {
@@ -862,6 +870,65 @@ function projectStageStatusLabel(status: string) {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function projectWorkForDisplayName(projectData: any) {
+  const candidates = [
+    projectData?.customerDisplayName,
+    projectData?.customerName,
+    projectData?.contractorDisplayName,
+    projectData?.contractorName,
+    projectData?.builderDisplayName,
+    projectData?.builderName,
+    projectData?.generalContractorDisplayName,
+    projectData?.generalContractorName,
+    projectData?.generalContractor?.displayName,
+    projectData?.generalContractor?.name,
+    projectData?.customer?.displayName,
+    projectData?.customer?.name,
+    projectData?.clientDisplayName,
+    projectData?.clientName,
+  ];
+
+  return (
+    candidates
+      .map((value) => String(value || "").trim())
+      .find(Boolean) || ""
+  );
+}
+
+function projectAddressLine1(projectData: any) {
+  const candidates = [
+    projectData?.serviceAddressLine1,
+    projectData?.projectAddressLine1,
+    projectData?.jobAddressLine1,
+    projectData?.addressLine1,
+    projectData?.address?.line1,
+    projectData?.serviceAddress?.line1,
+  ];
+
+  return (
+    candidates
+      .map((value) => String(value || "").trim())
+      .find(Boolean) || ""
+  );
+}
+
+function projectCityName(projectData: any) {
+  const candidates = [
+    projectData?.serviceCity,
+    projectData?.projectCity,
+    projectData?.jobCity,
+    projectData?.city,
+    projectData?.address?.city,
+    projectData?.serviceAddress?.city,
+  ];
+
+  return (
+    candidates
+      .map((value) => String(value || "").trim())
+      .find(Boolean) || ""
+  );
+}
+
 function isCompletedStatus(status?: string) {
   const s = normalizeStatus(status);
   return s === "complete" || s === "completed";
@@ -1273,6 +1340,31 @@ function splitTripsBySlot(cellTrips: TripDoc[]) {
   return { amTrips: am, pmTrips: pm.filter((x) => !amIds.has(x.id)) };
 }
 
+function splitTripsForDayBoard(cellTrips: TripDoc[]) {
+  const amTrips: TripDoc[] = [];
+  const pmTrips: TripDoc[] = [];
+  const allDayTrips: TripDoc[] = [];
+
+  for (const trip of cellTrips) {
+    const windowValue = String(trip.timeWindow || "").toLowerCase();
+    const slots = selectedSlotsForWindow(windowValue, trip.startTime, trip.endTime);
+
+    if (windowValue === "all_day" || slots.length > 1) {
+      allDayTrips.push(trip);
+      continue;
+    }
+
+    if (slots[0] === "pm") pmTrips.push(trip);
+    else amTrips.push(trip);
+  }
+
+  amTrips.sort(compareTripTime);
+  pmTrips.sort(compareTripTime);
+  allDayTrips.sort(compareTripTime);
+
+  return { amTrips, pmTrips, allDayTrips };
+}
+
 function computeCellAvailability(args: {
   rowKey: string;
   iso: string;
@@ -1609,10 +1701,11 @@ function ScheduleSlotButton({
       onClick={onClick}
       sx={{
         alignSelf: "flex-start",
-        minHeight: 36,
-        px: 1.5,
+        minHeight: 32,
+        px: 1.25,
         borderRadius: 5,
-        fontWeight: 500,
+        fontSize: 12.5,
+        fontWeight: 750,
         textTransform: "none",
         borderColor: alpha("#47B8FF", 0.28),
         color: "text.primary",
@@ -1724,6 +1817,7 @@ export default function SchedulePage() {
 
   const [view, setView] = useState<ViewMode>("week");
   const [anchorIso, setAnchorIso] = useState<string>(() => todayIsoLocal());
+  const [mobileWeekDateIso, setMobileWeekDateIso] = useState<string>(() => todayIsoLocal());
 
   const [isMobile, setIsMobile] = useState(false);
   const [schedulePrefsReady, setSchedulePrefsReady] = useState(false);
@@ -1839,7 +1933,15 @@ export default function SchedulePage() {
   const [helperEditSaving, setHelperEditSaving] = useState(false);
   const [helperEditErr, setHelperEditErr] = useState("");
 
+  const [tripActionAnchorEl, setTripActionAnchorEl] = useState<HTMLElement | null>(null);
+  const [tripActionTripId, setTripActionTripId] = useState("");
+  const [removeTripOpen, setRemoveTripOpen] = useState(false);
+  const [removeTripId, setRemoveTripId] = useState("");
+  const [removeTripSaving, setRemoveTripSaving] = useState(false);
+  const [removeTripErr, setRemoveTripErr] = useState("");
+
   const addScheduleMenuOpen = Boolean(addScheduleAnchorEl);
+  const tripActionMenuOpen = Boolean(tripActionAnchorEl);
 
   const allMeetingEmployeeUids = useMemo(
     () => meetingEmployees.map((employee) => employee.uid),
@@ -1879,6 +1981,18 @@ export default function SchedulePage() {
     if (!helperEditTrip || helperEditSlot === "add") return null;
     return helperEditEntries.find((entry) => entry.slot === helperEditSlot) || null;
   }, [helperEditTrip, helperEditSlot, helperEditEntries]);
+
+  const tripActionTrip = useMemo(() => {
+    const id = String(tripActionTripId || "").trim();
+    if (!id) return null;
+    return trips.find((trip) => trip.id === id) || null;
+  }, [tripActionTripId, trips]);
+
+  const removeTripTarget = useMemo(() => {
+    const id = String(removeTripId || "").trim();
+    if (!id) return null;
+    return trips.find((trip) => trip.id === id) || null;
+  }, [removeTripId, trips]);
 
   const selectedBlockEmployees = useMemo(() => {
     const selected = new Set(blockAppliesToUids);
@@ -2307,9 +2421,9 @@ const estHours =
         if (stageOptions.length === 0) return null;
 
         const name = String(d.projectName ?? d.name ?? d.title ?? "Project").trim();
-        const customer = String(d.customerDisplayName ?? "").trim();
-        const line1 = String(d.serviceAddressLine1 ?? "").trim();
-        const city = String(d.serviceCity ?? "").trim();
+        const customer = projectWorkForDisplayName(d);
+        const line1 = projectAddressLine1(d);
+        const city = projectCityName(d);
 
         return {
           id,
@@ -2707,6 +2821,231 @@ closeAddModal();
     setHelperEditSaving(false);
   }
 
+  function openTripActionMenu(event: React.MouseEvent<HTMLElement>, trip: TripDoc) {
+    event.preventDefault();
+    event.stopPropagation();
+    setTripActionTripId(trip.id);
+    setTripActionAnchorEl(event.currentTarget);
+  }
+
+  function closeTripActionMenu() {
+    setTripActionAnchorEl(null);
+  }
+
+  function manageTripHelpersFromMenu() {
+    const tripId = String(tripActionTripId || "").trim();
+    closeTripActionMenu();
+    if (!tripId) return;
+    openHelperEditDialog({ tripId, slot: "add" });
+  }
+
+  function openRemoveTripDialogFromMenu() {
+    const trip = tripActionTrip;
+    closeTripActionMenu();
+    if (!trip) return;
+    setRemoveTripId(trip.id);
+    setRemoveTripErr("");
+    setRemoveTripOpen(true);
+  }
+
+  function closeRemoveTripDialog() {
+    if (removeTripSaving) return;
+    setRemoveTripOpen(false);
+    setRemoveTripId("");
+    setRemoveTripErr("");
+  }
+
+  async function loadOtherTripsForLinkedRecord(args: {
+    fieldPath: "link.serviceTicketId" | "link.projectId";
+    linkedId: string;
+    excludeTripId: string;
+  }) {
+    const snap = await getDocs(
+      query(collection(db, "trips"), where(args.fieldPath, "==", args.linkedId), limit(100))
+    );
+
+    return snap.docs
+      .filter((tripSnap) => tripSnap.id !== args.excludeTripId)
+      .map((tripSnap) => ({ id: tripSnap.id, ...(tripSnap.data() as any) } as TripDoc))
+      .filter((trip) => {
+        const status = normalizeStatus(trip.status);
+        return (
+          trip.active !== false &&
+          status !== "cancelled" &&
+          status !== "canceled" &&
+          status !== "complete" &&
+          status !== "completed"
+        );
+      });
+  }
+
+  async function unwindServiceTicketAfterTripRemoval(trip: TripDoc, now: string) {
+    const serviceTicketId = String(trip.link?.serviceTicketId || "").trim();
+    if (!serviceTicketId) return;
+
+    const otherTrips = await loadOtherTripsForLinkedRecord({
+      fieldPath: "link.serviceTicketId",
+      linkedId: serviceTicketId,
+      excludeTripId: trip.id,
+    });
+
+    if (otherTrips.length > 0) return;
+
+    const ticketRef = doc(db, "serviceTickets", serviceTicketId);
+    const ticketSnap = await getDoc(ticketRef);
+    if (!ticketSnap.exists()) return;
+
+    const ticketData = ticketSnap.data() as any;
+    const currentStatus = normalizeTicketStatus(ticketData?.status);
+    const updatePayload: any = {
+      assignedTechnicianId: null,
+      assignedTechnicianName: null,
+      primaryTechnicianId: null,
+      secondaryTechnicianId: null,
+      secondaryTechnicianName: null,
+      helperIds: null,
+      helperNames: null,
+      assignedTechnicianIds: [],
+      updatedAt: now,
+    };
+
+    if (currentStatus === "scheduled") {
+      updatePayload.status = "new";
+    } else if (currentStatus === "followup" || currentStatus === "follow_up") {
+      updatePayload.status = "follow_up";
+    }
+
+    await updateDoc(ticketRef, updatePayload);
+  }
+
+  async function unwindProjectAfterTripRemoval(trip: TripDoc, now: string) {
+    const projectId = String(trip.link?.projectId || "").trim();
+    if (!projectId) return;
+
+    const stageKey =
+      String(trip.link?.projectStageKey || "").trim() ||
+      String((trip.link as any)?.stageKey || "").trim() ||
+      String((trip as any).projectStageKey || "").trim();
+
+    const projectRef = doc(db, "projects", projectId);
+    const projectSnap = await getDoc(projectRef);
+    if (!projectSnap.exists()) return;
+
+    const otherTrips = await loadOtherTripsForLinkedRecord({
+      fieldPath: "link.projectId",
+      linkedId: projectId,
+      excludeTripId: trip.id,
+    });
+
+    const projectUpdate: any = { updatedAt: now };
+
+    if (stageKey) {
+      const sameStageTrips = otherTrips
+        .filter((otherTrip) => {
+          const otherStageKey =
+            String(otherTrip.link?.projectStageKey || "").trim() ||
+            String((otherTrip.link as any)?.stageKey || "").trim() ||
+            String((otherTrip as any).projectStageKey || "").trim();
+          return otherStageKey === stageKey;
+        })
+        .sort((a, b) => {
+          const aKey = `${a.date || ""}_${a.startTime || ""}_${a.id}`;
+          const bKey = `${b.date || ""}_${b.startTime || ""}_${b.id}`;
+          return aKey.localeCompare(bKey);
+        });
+
+      projectUpdate[`${stageKey}.scheduledTripIds`] = arrayRemove(trip.id);
+      projectUpdate[`${stageKey}.lastScheduledTripId`] =
+        sameStageTrips.length > 0 ? sameStageTrips[sameStageTrips.length - 1].id : null;
+
+      const projectData = projectSnap.data() as any;
+      const { stage } = getStageScopedData(projectData, stageKey);
+      if (sameStageTrips.length === 0 && normalizeStageStatus(stage?.status) === "scheduled") {
+        projectUpdate[`${stageKey}.status`] = "not_started";
+      }
+    }
+
+    await updateDoc(projectRef, projectUpdate);
+  }
+
+  async function removeTripFromSchedule() {
+    const trip = removeTripTarget;
+    if (!trip) return;
+
+    if (!canEditSchedule) {
+      setRemoveTripErr("Only Admin/Dispatcher/Manager can remove scheduled trips.");
+      return;
+    }
+
+    if (!isPlannedStatus(trip.status)) {
+      setRemoveTripErr("Only planned trips can be removed here. Trips that have started must be handled from the work record.");
+      return;
+    }
+
+    const now = nowIso();
+    setRemoveTripSaving(true);
+    setRemoveTripErr("");
+
+    try {
+      await updateDoc(doc(db, "trips", trip.id), {
+        active: false,
+        status: "cancelled",
+        cancelledFromStatus: trip.status || "planned",
+        cancelReason: "Removed from schedule",
+        cancelledAt: now,
+        cancelledByUid: appUser?.uid || null,
+        cancelledByName: appUser?.displayName || null,
+        updatedAt: now,
+        updatedByUid: appUser?.uid || null,
+      });
+
+      if (trip.link?.serviceTicketId) {
+        await unwindServiceTicketAfterTripRemoval(trip, now);
+      } else if (trip.link?.projectId) {
+        await unwindProjectAfterTripRemoval(trip, now);
+      }
+
+      setTrips((prev) => prev.filter((item) => item.id !== trip.id));
+      setRemoveTripOpen(false);
+      setRemoveTripId("");
+      setRemoveTripErr("");
+    } catch (e: any) {
+      setRemoveTripErr(e?.message || "Failed to remove this trip from the schedule.");
+    } finally {
+      setRemoveTripSaving(false);
+    }
+  }
+
+  function renderTripQuickActionButton(trip: TripDoc, size: "compact" | "week" | "mobile" = "compact") {
+    if (!canEditSchedule) return null;
+
+    const dimension = size === "week" ? 24 : size === "mobile" ? 30 : 28;
+
+    return (
+      <IconButton
+        size="small"
+        aria-label="Trip actions"
+        title="Trip actions"
+        onClick={(event) => openTripActionMenu(event, trip)}
+        sx={{
+          width: dimension,
+          height: dimension,
+          flexShrink: 0,
+          color: "text.secondary",
+          bgcolor: alpha("#FFFFFF", 0.025),
+          border: `1px solid ${alpha("#FFFFFF", 0.06)}`,
+          "&:hover": {
+            color: "text.primary",
+            bgcolor: alpha("#FFFFFF", 0.07),
+            borderColor: alpha("#FFFFFF", 0.12),
+          },
+        }}
+      >
+        <MoreVertRoundedIcon sx={{ fontSize: size === "week" ? 16 : 18 }} />
+      </IconButton>
+    );
+  }
+
   function helperConflictMessagesForTrip(trip: TripDoc, helperUid: string) {
     const dateIso = String(trip.date || "").trim();
     if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) {
@@ -2831,8 +3170,9 @@ closeAddModal();
     await updateDoc(doc(db, "serviceTickets", serviceTicketId), serviceTicketCrewUpdatePayload(nextCrew));
   }
 
-  async function assignHelperToTrip(helper: HelperOption) {
+  async function assignHelperToTrip(helper: HelperOption, slotOverride?: TripHelperSlot) {
     if (!helperEditTrip) return;
+    const targetSlot = slotOverride || helperEditSlot;
     if (!canEditSchedule) {
       setHelperEditErr("Only Admin/Dispatcher/Manager can update scheduled helpers.");
       return;
@@ -2844,7 +3184,7 @@ closeAddModal();
     }
 
     const existingEntries = tripHelperEntries(helperEditTrip);
-    if (helperEditSlot === "add" && existingEntries.length >= 2) {
+    if (targetSlot === "add" && existingEntries.length >= 2) {
       setHelperEditErr("This trip already has two helpers assigned.");
       return;
     }
@@ -2865,7 +3205,7 @@ closeAddModal();
       return;
     }
 
-    const nextCrew = crewWithHelperAssigned(helperEditTrip.crew, helperEditSlot, helper);
+    const nextCrew = crewWithHelperAssigned(helperEditTrip.crew, targetSlot, helper);
     const now = nowIso();
 
     setHelperEditSaving(true);
@@ -2892,7 +3232,7 @@ closeAddModal();
         )
       );
 
-      closeHelperEditDialog();
+      setHelperEditSlot("add");
     } catch (e: any) {
       setHelperEditErr(e?.message || "Failed to update helper assignment.");
     } finally {
@@ -2900,8 +3240,8 @@ closeAddModal();
     }
   }
 
-  async function removeHelperFromTrip() {
-    if (!helperEditTrip || helperEditSlot === "add") return;
+  async function removeHelperSlotFromTrip(slot: Exclude<TripHelperSlot, "add">) {
+    if (!helperEditTrip) return;
 
     if (!canEditSchedule) {
       setHelperEditErr("Only Admin/Dispatcher/Manager can update scheduled helpers.");
@@ -2913,7 +3253,7 @@ closeAddModal();
       return;
     }
 
-    const nextCrew = crewWithHelperRemoved(helperEditTrip.crew, helperEditSlot);
+    const nextCrew = crewWithHelperRemoved(helperEditTrip.crew, slot);
     const now = nowIso();
 
     setHelperEditSaving(true);
@@ -2940,12 +3280,17 @@ closeAddModal();
         )
       );
 
-      closeHelperEditDialog();
+      setHelperEditSlot("add");
     } catch (e: any) {
       setHelperEditErr(e?.message || "Failed to remove helper.");
     } finally {
       setHelperEditSaving(false);
     }
+  }
+
+  async function removeHelperFromTrip() {
+    if (helperEditSlot === "add") return;
+    await removeHelperSlotFromTrip(helperEditSlot);
   }
 
   function renderTripHelperChips(trip: TripDoc) {
@@ -4236,7 +4581,13 @@ useEffect(() => {
             const snap = await getDoc(doc(db, "projects", id));
             if (!snap.exists()) return;
             const d = snap.data() as any;
-            next[id] = { id, name: String(d.name ?? d.projectName ?? d.title ?? "Project") };
+            next[id] = {
+              id,
+              name: String(d.name ?? d.projectName ?? d.title ?? "Project"),
+              customerDisplayName: projectWorkForDisplayName(d),
+              serviceAddressLine1: projectAddressLine1(d),
+              serviceCity: projectCityName(d),
+            };
           })
         );
       } catch {
@@ -4486,6 +4837,22 @@ useEffect(() => {
     return workWeekDays(startOfWorkWeek(anchorDate));
   }, [view, anchorIso, anchorDate]);
 
+  useEffect(() => {
+    if (view !== "week" || !isMobile || daysForWeekOrDay.length === 0) return;
+
+    const weekIsos = daysForWeekOrDay.map((day) => toIsoDate(day));
+    if (weekIsos.includes(mobileWeekDateIso)) return;
+
+    const today = todayIsoLocal();
+    setMobileWeekDateIso(weekIsos.includes(today) ? today : weekIsos[0]);
+  }, [
+    view,
+    isMobile,
+    anchorIso,
+    mobileWeekDateIso,
+    daysForWeekOrDay.map((day) => toIsoDate(day)).join("|"),
+  ]);
+
   const monthWeeks = useMemo(() => {
     if (view !== "month") return [];
     return monthCalendarWorkWeeks(anchorDate);
@@ -4728,8 +5095,22 @@ function renderStaffCoverageCards(dateIso: string) {
 
     const customerLine =
       isService && ticket
-        ? `${ticket.customerDisplayName || "Customer"} — ${ticket.serviceAddressLine1 || ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
-        : "";
+        ? `${ticket.customerDisplayName || "Customer"}${
+            ticket.serviceAddressLine1
+              ? ` — ${ticket.serviceAddressLine1}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
+              : ticket.serviceCity
+                ? ` — ${ticket.serviceCity}`
+                : ""
+          }`
+        : isProject && project
+          ? `${project.customerDisplayName || ""}${
+              project.serviceAddressLine1
+                ? `${project.customerDisplayName ? " — " : ""}${project.serviceAddressLine1}${project.serviceCity ? `, ${project.serviceCity}` : ""}`
+                : project.serviceCity
+                  ? `${project.customerDisplayName ? " — " : ""}${project.serviceCity}`
+                  : ""
+            }`
+          : "";
 
     const showTechName = Boolean(opts?.showTechName);
     const techName = trip.crew?.primaryTechName || "";
@@ -4803,15 +5184,26 @@ function renderStaffCoverageCards(dateIso: string) {
         ? project?.name || "Project"
         : "Trip";
 
-    const customerLine =
+    const partyName =
       isService && ticket
-        ? `${ticket.customerDisplayName || "Customer"}${ticket.serviceAddressLine1 ? ` • ${ticket.serviceAddressLine1}` : ""}${ticket.serviceCity ? `, ${ticket.serviceCity}` : ""}`
-        : isProject
-          ? "Project"
+        ? String(ticket.customerDisplayName || "").trim()
+        : isProject && project
+          ? String(project.customerDisplayName || "").trim()
           : "";
+
+    const addressLine =
+      isService && ticket
+        ? `${ticket.serviceAddressLine1 || ""}${ticket.serviceCity ? `${ticket.serviceAddressLine1 ? ", " : ""}${ticket.serviceCity}` : ""}`
+        : isProject && project
+          ? `${project.serviceAddressLine1 || ""}${project.serviceCity ? `${project.serviceAddressLine1 ? ", " : ""}${project.serviceCity}` : ""}`
+          : "";
+
+    const customerLine = [partyName, addressLine].filter(Boolean).join(" • ");
 
     return {
       title,
+      partyName,
+      addressLine,
       customerLine,
       timeText: formatTimeRangeForCard(trip),
     };
@@ -4894,9 +5286,90 @@ function renderStaffCoverageCards(dateIso: string) {
     );
   }
 
-  function renderCompactWeekTripBlock(trip: TripDoc, keyValue: string) {
+  function defaultCrewHelpersForLead(leadUid?: string | null) {
+    const uid = String(leadUid || "").trim();
+    if (!uid) return [] as HelperOption[];
+
+    return helpers
+      .filter((helper) => String(helper.defaultPairedTechUid || "").trim() === uid)
+      .slice(0, 2);
+  }
+
+  function helperSetsMatch(a: string[], b: string[]) {
+    const left = Array.from(new Set(a.map((value) => String(value || "").trim()).filter(Boolean))).sort();
+    const right = Array.from(new Set(b.map((value) => String(value || "").trim()).filter(Boolean))).sort();
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+
+  function renderCrewExceptionLine(trip: TripDoc, defaultHelperUids: string[] = []) {
+    const entries = tripHelperEntries(trip);
+    const tripHelperUids = entries.map((entry) => entry.uid);
+
+    if (helperSetsMatch(tripHelperUids, defaultHelperUids)) return null;
+    if (entries.length === 0 && defaultHelperUids.length === 0) return null;
+
+    return (
+      <Stack
+        direction="row"
+        spacing={0.55}
+        alignItems="center"
+        flexWrap="wrap"
+        useFlexGap
+        onClick={(event) => event.stopPropagation()}
+      >
+        <GroupsRoundedIcon sx={{ fontSize: 13.5, color: "warning.light", flexShrink: 0 }} />
+        <Typography variant="caption" sx={{ color: "warning.light", fontWeight: 800 }}>
+          Crew change
+        </Typography>
+        {entries.length ? (
+          entries.map((entry) => (
+            <Chip
+              key={`crew_exception_${trip.id}_${entry.slot}_${entry.uid}`}
+              size="small"
+              label={entry.name}
+              variant="outlined"
+              clickable={canEditSchedule && isPlannedStatus(trip.status)}
+              onClick={
+                canEditSchedule && isPlannedStatus(trip.status)
+                  ? (event) => {
+                      event.stopPropagation();
+                      openHelperEditDialog({ tripId: trip.id, slot: entry.slot });
+                    }
+                  : undefined
+              }
+              sx={{
+                height: 20,
+                borderRadius: 999,
+                fontSize: 9.75,
+                fontWeight: 800,
+                borderColor: alpha(theme.palette.warning.main, 0.35),
+                "& .MuiChip-label": { px: 0.65 },
+              }}
+            />
+          ))
+        ) : (
+          <Typography variant="caption" color="text.secondary">
+            No helpers
+          </Typography>
+        )}
+      </Stack>
+    );
+  }
+
+  function renderCompactScheduleTripCard(
+    trip: TripDoc,
+    keyValue: string,
+    opts?: { defaultHelperUids?: string[] }
+  ) {
     const info = tripDisplayInfo(trip);
-    const cardStatus = isPlannedStatus(trip.status) ? "" : String(trip.status || "");
+    const type = String(trip.type || "").toLowerCase();
+    const isProject = type === "project";
+    const accent = isProject ? theme.palette.warning.main : theme.palette.primary.main;
+    const cardStatus = isPlannedStatus(trip.status) ? "" : String(trip.status || "").trim();
+    const projectStageKey =
+      String(trip.link?.projectStageKey || "").trim() ||
+      String((trip as any).projectStageKey || "").trim();
+    const stageLabel = isProject && projectStageKey ? projectStageLabel(projectStageKey) : "";
 
     return (
       <Paper
@@ -4904,76 +5377,216 @@ function renderStaffCoverageCards(dateIso: string) {
         elevation={0}
         onClick={() => openTripFromSchedule(trip)}
         sx={{
-          p: 0.9,
-          borderRadius: 1,
-          border: `1px solid ${alpha("#FFFFFF", 0.09)}`,
-          bgcolor: alpha("#FFFFFF", 0.025),
+          px: 1.05,
+          py: 0.9,
+          borderRadius: 1.5,
+          border: `1px solid ${alpha(accent, 0.28)}`,
+          borderLeft: `3px solid ${alpha(accent, 0.95)}`,
+          bgcolor: alpha(accent, isProject ? 0.06 : 0.05),
           cursor: "pointer",
-          transition: "border-color 160ms ease, background-color 160ms ease",
+          minWidth: 0,
+          transition: "background-color 150ms ease, border-color 150ms ease",
           "&:hover": {
-            borderColor: alpha(theme.palette.primary.main, 0.32),
-            bgcolor: alpha(theme.palette.primary.main, 0.055),
+            borderColor: alpha(accent, 0.5),
+            bgcolor: alpha(accent, isProject ? 0.095 : 0.08),
           },
         }}
       >
-        <Stack spacing={0.6}>
-          <Stack direction="row" spacing={0.6} alignItems="flex-start" justifyContent="space-between" sx={{ minWidth: 0 }}>
-            <Typography
-              variant="body2"
+        <Stack spacing={0.55}>
+          <Stack direction="row" spacing={0.8} alignItems="flex-start" sx={{ minWidth: 0 }}>
+            <Box
               sx={{
-                fontWeight: 900,
-                lineHeight: 1.15,
-                minWidth: 0,
-                display: "-webkit-box",
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
+                width: 27,
+                height: 27,
+                borderRadius: 1.25,
+                display: "grid",
+                placeItems: "center",
+                flexShrink: 0,
+                bgcolor: alpha(accent, 0.16),
+                color: accent,
               }}
             >
-              {info.title}
-            </Typography>
+              {isProject ? <EventNoteRoundedIcon sx={{ fontSize: 16 }} /> : <BuildRoundedIcon sx={{ fontSize: 16 }} />}
+            </Box>
 
-            {cardStatus ? (
-              <Chip
-                size="small"
-                label={cardStatus}
-                variant="outlined"
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography
+                variant="body2"
                 sx={{
-                  height: 20,
-                  borderRadius: 999,
-                  fontSize: 10,
-                  fontWeight: 850,
-                  flexShrink: 0,
-                  maxWidth: 76,
-                  "& .MuiChip-label": { px: 0.65, overflow: "hidden", textOverflow: "ellipsis" },
+                  fontWeight: 900,
+                  fontSize: 13.75,
+                  lineHeight: 1.2,
+                  letterSpacing: "-0.01em",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
                 }}
-              />
-            ) : null}
+              >
+                {info.title}
+              </Typography>
+            </Box>
+
+            {renderTripQuickActionButton(trip, "compact")}
           </Stack>
 
-          <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0 }}>
-            <ScheduleRoundedIcon sx={{ fontSize: 14, color: "text.secondary", flexShrink: 0 }} />
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }} noWrap>
+          <Stack direction="row" spacing={0.55} alignItems="center" flexWrap="wrap" useFlexGap sx={{ pl: 4.35 }}>
+            <Typography variant="caption" sx={{ fontWeight: 900, color: accent }}>
               {info.timeText}
             </Typography>
+
+            {stageLabel ? (
+              <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 750 }}>
+                • {stageLabel}
+              </Typography>
+            ) : null}
+
+            {cardStatus ? (
+              <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 750 }}>
+                • {cardStatus}
+              </Typography>
+            ) : null}
+
             {trip.dispatchOverride?.enabled ? (
               <Chip
                 size="small"
                 color="warning"
                 variant="outlined"
                 label="Override"
-                sx={{ height: 19, borderRadius: 999, fontSize: 9.5, fontWeight: 850 }}
+                sx={{ height: 18, borderRadius: 999, fontSize: 9, fontWeight: 850 }}
               />
             ) : null}
           </Stack>
 
-          {info.customerLine ? (
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 650 }} noWrap>
-              {info.customerLine}
-            </Typography>
+          {info.partyName ? (
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ pl: 4.35, minWidth: 0 }}>
+              <PersonRoundedIcon sx={{ fontSize: 13.5, color: "text.secondary", flexShrink: 0 }} />
+              <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 750, minWidth: 0 }} noWrap>
+                {info.partyName}
+              </Typography>
+            </Stack>
           ) : null}
 
-          {renderCompactTripHelperChips(trip)}
+          {info.addressLine ? (
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ pl: 4.35, minWidth: 0 }}>
+              <LocationOnRoundedIcon sx={{ fontSize: 13.5, color: "text.secondary", flexShrink: 0 }} />
+              <Typography variant="caption" sx={{ color: "text.secondary", minWidth: 0 }} noWrap>
+                {info.addressLine}
+              </Typography>
+            </Stack>
+          ) : null}
+
+          <Box sx={{ pl: 4.35 }}>
+            {renderCrewExceptionLine(trip, opts?.defaultHelperUids || [])}
+          </Box>
+        </Stack>
+      </Paper>
+    );
+  }
+
+  function renderMobileScheduleTripRow(
+    trip: TripDoc,
+    keyValue: string,
+    defaultHelperUids: string[] = []
+  ) {
+    const info = tripDisplayInfo(trip);
+    const type = String(trip.type || "").toLowerCase();
+    const isProject = type === "project";
+    const accent = isProject ? theme.palette.warning.main : theme.palette.primary.main;
+    const projectStageKey =
+      String(trip.link?.projectStageKey || "").trim() ||
+      String((trip as any).projectStageKey || "").trim();
+    const stageLabel = isProject && projectStageKey ? projectStageLabel(projectStageKey) : "";
+
+    return (
+      <Paper
+        key={keyValue}
+        elevation={0}
+        onClick={() => openTripFromSchedule(trip)}
+        sx={{
+          borderRadius: 1.5,
+          border: `1px solid ${alpha("#FFFFFF", 0.07)}`,
+          borderLeft: `3px solid ${alpha(accent, 0.95)}`,
+          bgcolor: alpha(accent, isProject ? 0.055 : 0.045),
+          overflow: "hidden",
+          cursor: "pointer",
+        }}
+      >
+        <Stack direction="row" alignItems="stretch" sx={{ minWidth: 0 }}>
+          <Box
+            sx={{
+              width: 52,
+              flexShrink: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 0.35,
+              py: 0.8,
+              borderRight: `1px solid ${alpha(accent, 0.16)}`,
+              bgcolor: alpha(accent, 0.045),
+            }}
+          >
+            {isProject ? <EventNoteRoundedIcon sx={{ fontSize: 17, color: accent }} /> : <BuildRoundedIcon sx={{ fontSize: 17, color: accent }} />}
+            <Typography
+              variant="caption"
+              sx={{
+                fontWeight: 950,
+                fontSize: 10.5,
+                lineHeight: 1,
+                color: accent,
+                textTransform: "uppercase",
+              }}
+            >
+              {info.timeText}
+            </Typography>
+          </Box>
+
+          <Box sx={{ flex: 1, minWidth: 0, px: 0.95, py: 0.75 }}>
+            <Stack spacing={0.35}>
+              <Stack direction="row" spacing={0.6} alignItems="flex-start" sx={{ minWidth: 0 }}>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontWeight: 900,
+                    fontSize: 14,
+                    lineHeight: 1.18,
+                    letterSpacing: "-0.01em",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }}
+                >
+                  {info.title}
+                </Typography>
+                {renderTripQuickActionButton(trip, "mobile")}
+              </Stack>
+
+              {info.partyName ? (
+                <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 800 }} noWrap>
+                  {info.partyName}
+                </Typography>
+              ) : null}
+
+              {info.addressLine ? (
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  {info.addressLine}
+                </Typography>
+              ) : null}
+
+              <Stack direction="row" spacing={0.55} alignItems="center" flexWrap="wrap" useFlexGap>
+                {stageLabel ? (
+                  <Typography variant="caption" sx={{ color: accent, fontWeight: 800 }}>
+                    {stageLabel}
+                  </Typography>
+                ) : null}
+                {renderCrewExceptionLine(trip, defaultHelperUids)}
+              </Stack>
+            </Stack>
+          </Box>
         </Stack>
       </Paper>
     );
@@ -4988,56 +5601,92 @@ function renderStaffCoverageCards(dateIso: string) {
 
     return (
       <Box>
-        <SectionHeader
-          title="Day schedule"
-          subtitle="Clean row view for dispatch. Use Schedule to add or override a time window."
-        />
+        <Paper
+          elevation={0}
+          sx={{
+            mb: 1.25,
+            px: 1.5,
+            py: 1.1,
+            borderRadius: 2,
+            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            bgcolor: isTodayCell ? alpha(theme.palette.primary.main, 0.055) : alpha("#FFFFFF", 0.02),
+          }}
+        >
+          <Stack direction="row" spacing={0.85} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="subtitle1" sx={{ fontWeight: 900, letterSpacing: "-0.02em" }}>
+              {formatDow(d)} • {iso}
+            </Typography>
 
-        <Stack spacing={1.15} sx={{ mt: 1.5 }}>
-          <Paper
-            elevation={0}
+            {isTodayCell ? (
+              <Chip
+                size="small"
+                label="Today"
+                color="primary"
+                sx={{ height: 22, borderRadius: 999, fontWeight: 850 }}
+              />
+            ) : null}
+
+            {renderHolidayBadge(iso)}
+            {renderPtoBadgeSmall(iso)}
+            {renderMeetingsBadgeSmall(iso)}
+            {renderStaffCoverageBadgeSmall(iso)}
+          </Stack>
+        </Paper>
+
+        {renderStaffCoverageCards(iso)}
+
+        <Paper
+          elevation={0}
+          sx={{
+            borderRadius: 2.25,
+            overflow: "hidden",
+            border: `1px solid ${alpha("#FFFFFF", 0.09)}`,
+            bgcolor: alpha("#FFFFFF", 0.018),
+          }}
+        >
+          <Box
             sx={{
-              px: 1.75,
-              py: 1.25,
-              borderRadius: 2.25,
-              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-              backgroundColor: isTodayCell
-                ? alpha(theme.palette.primary.main, 0.06)
-                : "background.paper",
+              display: "grid",
+              gridTemplateColumns: "240px minmax(0, 1fr)",
+              borderBottom: `1px solid ${alpha("#FFFFFF", 0.09)}`,
+              bgcolor: alpha("#FFFFFF", 0.03),
             }}
           >
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>
-                {formatDow(d)} • {formatDateLong(iso)}
+            <Box sx={{ px: 1.5, py: 1.05, borderRight: `1px solid ${alpha("#FFFFFF", 0.09)}` }}>
+              <Typography variant="caption" sx={{ fontWeight: 950, color: "text.secondary", letterSpacing: "0.05em" }}>
+                CREW
               </Typography>
+            </Box>
 
-              {isTodayCell ? (
-                <Chip
-                  size="small"
-                  label="Today"
-                  color="primary"
-                  sx={{ height: 22, borderRadius: 999, fontWeight: 800 }}
-                />
-              ) : null}
-
-              {renderHolidayBadge(iso)}
-              {renderPtoBadgeSmall(iso)}
-              {renderMeetingsBadgeSmall(iso)}
-              {renderStaffCoverageBadgeSmall(iso)}
-            </Stack>
-          </Paper>
-
-          {renderStaffCoverageCards(iso)}
+            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+              <Box sx={{ px: 1.5, py: 1.05, borderRight: `1px solid ${alpha("#FFFFFF", 0.09)}` }}>
+                <Stack direction="row" spacing={0.7} alignItems="center">
+                  <ScheduleRoundedIcon sx={{ fontSize: 16, color: "primary.light" }} />
+                  <Typography variant="caption" sx={{ fontWeight: 950, letterSpacing: "0.05em" }}>
+                    AM
+                  </Typography>
+                </Stack>
+              </Box>
+              <Box sx={{ px: 1.5, py: 1.05 }}>
+                <Stack direction="row" spacing={0.7} alignItems="center">
+                  <ScheduleRoundedIcon sx={{ fontSize: 16, color: "warning.light" }} />
+                  <Typography variant="caption" sx={{ fontWeight: 950, letterSpacing: "0.05em" }}>
+                    PM
+                  </Typography>
+                </Stack>
+              </Box>
+            </Box>
+          </Box>
 
           {rows.length === 0 ? (
-            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Box sx={{ p: 2 }}>
               <Typography variant="body2" color="text.secondary">
                 No matching technicians or trips.
               </Typography>
-            </Paper>
+            </Box>
           ) : null}
 
-          {rows.map((r) => {
+          {rows.map((r, rowIndex) => {
             const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
             const cellTrips = grid.get(rowKey)?.get(iso) || [];
             const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
@@ -5050,8 +5699,8 @@ function renderStaffCoverageCards(dateIso: string) {
               holidayByDate,
               ptoByUidByDate,
             });
-            const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
-            const orderedTrips = [...amTrips, ...pmTrips.filter((trip) => !amTrips.some((amTrip) => amTrip.id === trip.id))];
+            const { amTrips, pmTrips, allDayTrips } = splitTripsForDayBoard(cellTrips);
+            const crewHelpers = defaultCrewHelpersForLead(r.uid);
             const canShowScheduleAction =
               canEditSchedule &&
               rowKey !== "UNASSIGNED" &&
@@ -5059,104 +5708,1114 @@ function renderStaffCoverageCards(dateIso: string) {
               !pto &&
               !holiday;
 
+            const emptyLabel = holiday
+              ? "Holiday"
+              : pto
+                ? "PTO"
+                : availability.meetings.length
+                  ? "Meeting block"
+                  : "Open";
+
             return (
-              <Paper
-                key={`desktop_day_${rowKey}_${iso}`}
-                elevation={0}
+              <Box
+                key={`desktop_board_${rowKey}_${iso}`}
                 sx={{
-                  borderRadius: 2.25,
-                  overflow: "hidden",
-                  border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
-                  backgroundColor: isTodayCell
-                    ? alpha(theme.palette.primary.main, 0.045)
-                    : holiday
-                      ? alpha(theme.palette.warning.main, 0.06)
-                      : pto
-                        ? alpha(theme.palette.secondary.main, 0.06)
-                        : availability.meetings.length
-                          ? alpha(theme.palette.success.main, 0.035)
-                          : "background.paper",
+                  display: "grid",
+                  gridTemplateColumns: "240px minmax(0, 1fr)",
+                  borderBottom: rowIndex < rows.length - 1 ? `1px solid ${alpha("#FFFFFF", 0.08)}` : "none",
+                  bgcolor: pto
+                    ? alpha(theme.palette.secondary.main, 0.045)
+                    : availability.meetings.length
+                      ? alpha(theme.palette.success.main, 0.025)
+                      : "transparent",
                 }}
               >
-                <Stack
-                  direction="row"
-                  spacing={2}
-                  alignItems="stretch"
-                  sx={{ px: 1.75, py: 1.25 }}
+                <Box
+                  sx={{
+                    p: 1.35,
+                    borderRight: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                    minWidth: 0,
+                  }}
                 >
-                  <Stack
-                    direction="row"
-                    spacing={1.25}
-                    alignItems="center"
-                    sx={{ width: 260, minWidth: 260 }}
-                  >
-                    <Box
-                      sx={{
-                        width: 48,
-                        height: 48,
-                        borderRadius: 999,
-                        display: "grid",
-                        placeItems: "center",
-                        flexShrink: 0,
-                        bgcolor: alpha(theme.palette.primary.main, 0.18),
-                        color: "primary.light",
-                        border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
-                        fontSize: 14,
-                        fontWeight: 900,
-                        letterSpacing: "0.02em",
-                      }}
-                    >
-                      {initialsForName(r.label)}
-                    </Box>
-
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 850 }} noWrap>
+                  <Stack spacing={0.8}>
+                    <Stack direction="row" spacing={0.85} alignItems="center" sx={{ minWidth: 0 }}>
+                      <GroupsRoundedIcon sx={{ fontSize: 18, color: "primary.light", flexShrink: 0 }} />
+                      <Typography variant="subtitle2" sx={{ fontWeight: 900, minWidth: 0 }} noWrap>
                         {r.label}
                       </Typography>
-                      {pto ? (
-                        <Typography variant="caption" color="secondary.main" noWrap>
-                          PTO approved{pto.hours ? ` • ${pto.hours}h` : ""}
-                        </Typography>
-                      ) : availability.meetings.length ? (
-                        <Typography variant="caption" color="success.main" noWrap>
-                          Meeting block
-                        </Typography>
-                      ) : null}
-                    </Box>
-                  </Stack>
+                    </Stack>
 
-                  <Box sx={{ minWidth: 0, flex: 1 }}>
-                    {holiday ? <Alert severity="warning" variant="outlined" sx={{ mb: 1 }}>{holiday.name}</Alert> : null}
-
-                    {orderedTrips.length ? (
-                      <Stack spacing={1}>
-                        {orderedTrips.map((trip) =>
-                          renderTripCard(trip, {
-                            keyValue: `desktop_day_${iso}_${rowKey}_${trip.id}`,
-                          })
-                        )}
-                      </Stack>
-                    ) : (
-                      <Typography variant="body2" color="text.secondary" sx={{ py: 1.4 }}>
-                        {holiday ? "Holiday" : pto ? "PTO" : availability.meetings.length ? "Meeting(s)" : "Open"}
+                    {crewHelpers.length ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 650 }} noWrap>
+                        {crewHelpers.map((helper) => helper.name).join(" • ")}
                       </Typography>
-                    )}
-                  </Box>
+                    ) : null}
 
-                  <Box sx={{ width: 160, flexShrink: 0, display: "flex", justifyContent: "flex-end", alignItems: "flex-start" }}>
+                    {pto ? (
+                      <Chip
+                        size="small"
+                        icon={<BeachAccessRoundedIcon sx={{ fontSize: 15 }} />}
+                        label={`PTO${pto.hours ? ` • ${pto.hours}h` : ""}`}
+                        color="secondary"
+                        variant="outlined"
+                        sx={{ height: 22, width: "fit-content", borderRadius: 999, fontWeight: 800 }}
+                      />
+                    ) : null}
+
                     {canShowScheduleAction ? (
                       <ScheduleSlotButton
                         label="Schedule"
                         onClick={() => openQuickScheduleModal({ techUid: rowKey, dateIso: iso })}
                       />
                     ) : null}
+                  </Stack>
+                </Box>
+
+                <Box sx={{ p: 1, minWidth: 0 }}>
+                  {holiday ? (
+                    <Alert severity="warning" variant="outlined" sx={{ mb: 0.9 }}>
+                      {holiday.name}
+                    </Alert>
+                  ) : null}
+
+                  {allDayTrips.length ? (
+                    <Stack spacing={0.75} sx={{ mb: 0.9 }}>
+                      {allDayTrips.map((trip) =>
+                        renderCompactScheduleTripCard(
+                          trip,
+                          `desktop_all_day_${iso}_${rowKey}_${trip.id}`,
+                          { defaultHelperUids: crewHelpers.map((helper) => helper.uid) }
+                        )
+                      )}
+                    </Stack>
+                  ) : null}
+
+                  <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 1 }}>
+                    <Stack spacing={0.75} sx={{ minWidth: 0 }}>
+                      {amTrips.length ? (
+                        amTrips.map((trip) =>
+                          renderCompactScheduleTripCard(
+                            trip,
+                            `desktop_am_${iso}_${rowKey}_${trip.id}`,
+                            { defaultHelperUids: crewHelpers.map((helper) => helper.uid) }
+                          )
+                        )
+                      ) : (
+                        <Paper
+                          elevation={0}
+                          onClick={
+                            canShowScheduleAction
+                              ? () => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })
+                              : undefined
+                          }
+                          sx={{
+                            minHeight: 64,
+                            display: "grid",
+                            placeItems: "center",
+                            borderRadius: 1.75,
+                            border: `1px dashed ${alpha("#FFFFFF", 0.12)}`,
+                            bgcolor: alpha("#FFFFFF", 0.015),
+                            cursor: canShowScheduleAction ? "pointer" : "default",
+                          }}
+                        >
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                            {emptyLabel}{canShowScheduleAction && emptyLabel === "Open" ? " • + Add" : ""}
+                          </Typography>
+                        </Paper>
+                      )}
+                    </Stack>
+
+                    <Stack spacing={0.75} sx={{ minWidth: 0 }}>
+                      {pmTrips.length ? (
+                        pmTrips.map((trip) =>
+                          renderCompactScheduleTripCard(
+                            trip,
+                            `desktop_pm_${iso}_${rowKey}_${trip.id}`,
+                            { defaultHelperUids: crewHelpers.map((helper) => helper.uid) }
+                          )
+                        )
+                      ) : (
+                        <Paper
+                          elevation={0}
+                          onClick={
+                            canShowScheduleAction
+                              ? () => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })
+                              : undefined
+                          }
+                          sx={{
+                            minHeight: 64,
+                            display: "grid",
+                            placeItems: "center",
+                            borderRadius: 1.75,
+                            border: `1px dashed ${alpha("#FFFFFF", 0.12)}`,
+                            bgcolor: alpha("#FFFFFF", 0.015),
+                            cursor: canShowScheduleAction ? "pointer" : "default",
+                          }}
+                        >
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                            {emptyLabel}{canShowScheduleAction && emptyLabel === "Open" ? " • + Add" : ""}
+                          </Typography>
+                        </Paper>
+                      )}
+                    </Stack>
                   </Box>
-                </Stack>
-              </Paper>
+                </Box>
+              </Box>
             );
           })}
+        </Paper>
+      </Box>
+    );
+  }
+
+
+  function weekScheduledSlotCount(rowKey: string) {
+    let count = 0;
+
+    for (const day of daysForWeekOrDay) {
+      const iso = toIsoDate(day);
+      const dayTrips = fullGrid.get(rowKey)?.get(iso) || [];
+      if (dayTrips.some((trip) => tripBlocksSlot(trip, "am"))) count += 1;
+      if (dayTrips.some((trip) => tripBlocksSlot(trip, "pm"))) count += 1;
+    }
+
+    return count;
+  }
+
+  function renderWeekTripMiniCard(
+    trip: TripDoc,
+    keyValue: string,
+    defaultHelperUids: string[] = []
+  ) {
+    const info = tripDisplayInfo(trip);
+    const type = String(trip.type || "").toLowerCase();
+    const isProject = type === "project";
+    const accent = isProject ? theme.palette.warning.main : theme.palette.primary.main;
+    const status = String(trip.status || "").trim();
+    const statusLabel = status
+      ? status.replaceAll("_", " ").replace(/\b\w/g, (match) => match.toUpperCase())
+      : "";
+    const projectStageKey =
+      String(trip.link?.projectStageKey || "").trim() ||
+      String((trip as any).projectStageKey || "").trim();
+    const stageLabel = isProject && projectStageKey ? projectStageLabel(projectStageKey) : "";
+    const helperEntries = tripHelperEntries(trip);
+    const helperUids = helperEntries.map((entry) => entry.uid);
+    const hasCrewChange = !helperSetsMatch(helperUids, defaultHelperUids);
+    const showExactTime = !["AM", "PM", "All Day"].includes(info.timeText);
+
+    return (
+      <Paper
+        key={keyValue}
+        elevation={0}
+        onClick={() => openTripFromSchedule(trip)}
+        sx={{
+          px: 0.9,
+          py: 0.8,
+          borderRadius: 1.55,
+          border: `1px solid ${alpha(accent, 0.28)}`,
+          borderLeft: `3px solid ${alpha(accent, 0.98)}`,
+          bgcolor: alpha(accent, isProject ? 0.065 : 0.055),
+          minWidth: 0,
+          cursor: "pointer",
+          transition: "border-color 140ms ease, background-color 140ms ease, transform 140ms ease",
+          "&:hover": {
+            borderColor: alpha(accent, 0.52),
+            bgcolor: alpha(accent, isProject ? 0.1 : 0.09),
+            transform: "translateY(-1px)",
+          },
+        }}
+      >
+        <Stack spacing={0.5}>
+          <Stack direction="row" spacing={0.7} alignItems="flex-start" sx={{ minWidth: 0 }}>
+            <Box
+              sx={{
+                width: 25,
+                height: 25,
+                borderRadius: 1.1,
+                flexShrink: 0,
+                display: "grid",
+                placeItems: "center",
+                bgcolor: alpha(accent, 0.17),
+                color: accent,
+              }}
+            >
+              {isProject ? (
+                <EventNoteRoundedIcon sx={{ fontSize: 15.5 }} />
+              ) : (
+                <BuildRoundedIcon sx={{ fontSize: 15.5 }} />
+              )}
+            </Box>
+
+            <Typography
+              variant="body2"
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                fontWeight: 950,
+                fontSize: 12.6,
+                lineHeight: 1.18,
+                letterSpacing: "-0.01em",
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {info.title}
+            </Typography>
+
+            {renderTripQuickActionButton(trip, "week")}
+          </Stack>
+
+          {info.partyName ? (
+            <Stack direction="row" spacing={0.45} alignItems="center" sx={{ pl: 4, minWidth: 0 }}>
+              <PersonRoundedIcon sx={{ fontSize: 12.5, color: "text.secondary", flexShrink: 0 }} />
+              <Typography
+                variant="caption"
+                sx={{ color: "text.secondary", fontWeight: 760, minWidth: 0, fontSize: 10.7 }}
+                noWrap
+              >
+                {info.partyName}
+              </Typography>
+            </Stack>
+          ) : null}
+
+          {info.addressLine ? (
+            <Stack direction="row" spacing={0.45} alignItems="center" sx={{ pl: 4, minWidth: 0 }}>
+              <LocationOnRoundedIcon sx={{ fontSize: 12.5, color: "text.secondary", flexShrink: 0 }} />
+              <Typography
+                variant="caption"
+                sx={{ color: "text.secondary", minWidth: 0, fontSize: 10.4 }}
+                noWrap
+              >
+                {info.addressLine}
+              </Typography>
+            </Stack>
+          ) : null}
+
+          {(showExactTime || stageLabel || (!isPlannedStatus(trip.status) && statusLabel) || trip.dispatchOverride?.enabled || hasCrewChange) ? (
+            <Stack
+              direction="row"
+              spacing={0.45}
+              alignItems="center"
+              flexWrap="wrap"
+              useFlexGap
+              sx={{ pl: 4, pt: 0.05 }}
+            >
+              {showExactTime ? (
+                <Chip
+                  size="small"
+                  label={info.timeText}
+                  variant="outlined"
+                  sx={{ height: 18, borderRadius: 999, fontSize: 9, fontWeight: 850 }}
+                />
+              ) : null}
+
+              {stageLabel ? (
+                <Chip
+                  size="small"
+                  label={stageLabel}
+                  variant="outlined"
+                  sx={{
+                    height: 18,
+                    borderRadius: 999,
+                    fontSize: 9,
+                    fontWeight: 850,
+                    borderColor: alpha(accent, 0.35),
+                  }}
+                />
+              ) : null}
+
+              {!isPlannedStatus(trip.status) && statusLabel ? (
+                <Chip
+                  size="small"
+                  label={statusLabel}
+                  variant="outlined"
+                  sx={{ height: 18, borderRadius: 999, fontSize: 9, fontWeight: 800 }}
+                />
+              ) : null}
+
+              {trip.dispatchOverride?.enabled ? (
+                <Chip
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  label="Override"
+                  title={
+                    trip.dispatchOverride?.reason
+                      ? `Dispatch Override: ${trip.dispatchOverride.reason}`
+                      : "Dispatch Override"
+                  }
+                  sx={{ height: 18, borderRadius: 999, fontSize: 8.8, fontWeight: 900 }}
+                />
+              ) : null}
+
+              {hasCrewChange ? (
+                <Chip
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  label={helperEntries.length ? `Crew: ${helperEntries.map((entry) => entry.name).join(" + ")}` : "Crew change"}
+                  sx={{
+                    height: 18,
+                    borderRadius: 999,
+                    fontSize: 8.7,
+                    fontWeight: 850,
+                    maxWidth: "100%",
+                    "& .MuiChip-label": {
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    },
+                  }}
+                />
+              ) : null}
+            </Stack>
+          ) : null}
+        </Stack>
+      </Paper>
+    );
+  }
+
+  function renderWeekSlot(args: {
+    rowKey: string;
+    iso: string;
+    slot: HalfDaySlotKey;
+    trips: TripDoc[];
+    availability: ReturnType<typeof computeCellAvailability>;
+    pto: PtoDay | null;
+    holiday: CompanyHoliday | undefined;
+    defaultHelperUids: string[];
+    compact?: boolean;
+  }) {
+    const {
+      rowKey,
+      iso,
+      slot,
+      trips: slotTrips,
+      availability,
+      pto,
+      holiday,
+      defaultHelperUids,
+      compact = false,
+    } = args;
+
+    const isPast = iso < todayIso;
+    const hardBusy = slot === "am" ? availability.amHardBusy : availability.pmHardBusy;
+    const softBusy = slot === "am" ? availability.amSoftBusy : availability.pmSoftBusy;
+    const canAdd =
+      canEditSchedule &&
+      rowKey !== "UNASSIGNED" &&
+      !isPast &&
+      !pto &&
+      !holiday &&
+      !hardBusy;
+    const isOverrideAction = canAdd && softBusy;
+    const slotLabel = slot.toUpperCase();
+
+    const blockedText = holiday
+      ? "Holiday"
+      : pto
+        ? "PTO"
+        : availability.meetings.some((event) => eventBlocksSlot(event, slot))
+          ? "Meeting"
+          : hardBusy
+            ? `Busy ${slotLabel}`
+            : softBusy
+              ? `Busy ${slotLabel}`
+              : `Open ${slotLabel}`;
+
+    return (
+      <Box
+        sx={{
+          minWidth: 0,
+          p: compact ? 0.7 : 0.75,
+          borderRadius: 1.35,
+          bgcolor: alpha("#FFFFFF", 0.012),
+          border: `1px solid ${alpha("#FFFFFF", 0.045)}`,
+        }}
+      >
+        <Stack spacing={0.55}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.5}>
+            <Typography
+              variant="caption"
+              sx={{
+                color: slot === "am" ? "primary.light" : "warning.light",
+                fontWeight: 950,
+                fontSize: compact ? 9.7 : 10.2,
+                letterSpacing: "0.035em",
+              }}
+            >
+              {slotLabel}
+            </Typography>
+
+            {canAdd && slotTrips.length > 0 ? (
+              <Button
+                size="small"
+                variant="text"
+                color={isOverrideAction ? "warning" : "primary"}
+                startIcon={<AddRoundedIcon sx={{ fontSize: 13 }} />}
+                onClick={() => openAddModal({ techUid: rowKey, dateIso: iso, slot })}
+                sx={{
+                  minWidth: 0,
+                  px: 0.45,
+                  py: 0.05,
+                  borderRadius: 999,
+                  textTransform: "none",
+                  fontSize: 9.4,
+                  fontWeight: 900,
+                  lineHeight: 1.1,
+                }}
+              >
+                {isOverrideAction ? "Override" : "Add"}
+              </Button>
+            ) : null}
+          </Stack>
+
+          {slotTrips.length ? (
+            <Stack spacing={0.5}>
+              {slotTrips.map((trip) =>
+                renderWeekTripMiniCard(
+                  trip,
+                  `week_${iso}_${rowKey}_${slot}_${trip.id}`,
+                  defaultHelperUids
+                )
+              )}
+            </Stack>
+          ) : (
+            <Paper
+              elevation={0}
+              onClick={canAdd ? () => openAddModal({ techUid: rowKey, dateIso: iso, slot }) : undefined}
+              sx={{
+                minHeight: compact ? 48 : 54,
+                px: 0.75,
+                py: 0.65,
+                display: "grid",
+                placeItems: "center",
+                borderRadius: 1.25,
+                border: `1px dashed ${alpha(
+                  isOverrideAction ? theme.palette.warning.main : "#FFFFFF",
+                  isOverrideAction ? 0.42 : 0.13
+                )}`,
+                bgcolor: isOverrideAction
+                  ? alpha(theme.palette.warning.main, 0.035)
+                  : alpha("#FFFFFF", 0.01),
+                cursor: canAdd ? "pointer" : "default",
+                transition: "background-color 140ms ease, border-color 140ms ease",
+                "&:hover": canAdd
+                  ? {
+                      bgcolor: isOverrideAction
+                        ? alpha(theme.palette.warning.main, 0.075)
+                        : alpha(theme.palette.primary.main, 0.045),
+                      borderColor: isOverrideAction
+                        ? alpha(theme.palette.warning.main, 0.62)
+                        : alpha(theme.palette.primary.main, 0.3),
+                    }
+                  : undefined,
+              }}
+            >
+              <Stack direction="row" spacing={0.45} alignItems="center" justifyContent="center">
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: isOverrideAction ? "warning.light" : "text.secondary",
+                    fontWeight: 800,
+                    fontSize: compact ? 9.7 : 10.2,
+                  }}
+                >
+                  {blockedText}
+                </Typography>
+                {canAdd ? (
+                  <>
+                    <Typography variant="caption" color="text.disabled">•</Typography>
+                    <AddRoundedIcon
+                      sx={{
+                        fontSize: 14,
+                        color: isOverrideAction ? "warning.light" : "primary.light",
+                      }}
+                    />
+                    {isOverrideAction ? (
+                      <Typography
+                        variant="caption"
+                        sx={{ color: "warning.light", fontWeight: 900, fontSize: compact ? 9.7 : 10.2 }}
+                      >
+                        Override
+                      </Typography>
+                    ) : null}
+                  </>
+                ) : null}
+              </Stack>
+            </Paper>
+          )}
+
+          {canAdd && slotTrips.length === 0 && isOverrideAction ? (
+            <Typography
+              variant="caption"
+              sx={{ color: "warning.light", fontSize: 8.8, fontWeight: 700, textAlign: "center" }}
+            >
+              Schedules into an occupied slot using Dispatch Override.
+            </Typography>
+          ) : null}
         </Stack>
       </Box>
+    );
+  }
+
+  function renderDesktopWeekSchedule() {
+    const dayCount = Math.max(daysForWeekOrDay.length, 1);
+    const minWidth = 220 + dayCount * 198;
+
+    return (
+      <Box>
+        <Paper
+          elevation={0}
+          sx={{
+            borderRadius: 2.25,
+            overflow: "hidden",
+            border: `1px solid ${alpha("#FFFFFF", 0.085)}`,
+            bgcolor: alpha("#FFFFFF", 0.012),
+          }}
+        >
+          <Box sx={{ overflowX: "auto", maxWidth: "100%" }}>
+            <Box sx={{ minWidth }}>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: `220px repeat(${dayCount}, minmax(198px, 1fr))`,
+                  borderBottom: `1px solid ${alpha("#FFFFFF", 0.085)}`,
+                  bgcolor: alpha("#FFFFFF", 0.03),
+                }}
+              >
+                <Box
+                  sx={{
+                    px: 1.35,
+                    py: 1.05,
+                    position: "sticky",
+                    left: 0,
+                    zIndex: 4,
+                    bgcolor: "background.paper",
+                    borderRight: `1px solid ${alpha("#FFFFFF", 0.085)}`,
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{ fontWeight: 950, color: "text.secondary", letterSpacing: "0.055em" }}
+                  >
+                    CREW
+                  </Typography>
+                </Box>
+
+                {daysForWeekOrDay.map((day, index) => {
+                  const iso = toIsoDate(day);
+                  const isTodayCell = iso === todayIso;
+                  const holiday = holidayByDate[iso];
+
+                  return (
+                    <Box
+                      key={`week_head_${iso}`}
+                      sx={{
+                        px: 1,
+                        py: 0.8,
+                        minWidth: 0,
+                        borderRight:
+                          index < daysForWeekOrDay.length - 1
+                            ? `1px solid ${alpha("#FFFFFF", 0.075)}`
+                            : "none",
+                        bgcolor: isTodayCell
+                          ? alpha(theme.palette.primary.main, 0.105)
+                          : holiday
+                            ? alpha(theme.palette.warning.main, 0.055)
+                            : "transparent",
+                        boxShadow: isTodayCell
+                          ? `inset 0 -2px 0 ${alpha(theme.palette.primary.main, 0.72)}`
+                          : undefined,
+                      }}
+                    >
+                      <Stack spacing={0.35} alignItems="center">
+                        <Stack direction="row" spacing={0.55} alignItems="center" justifyContent="center">
+                          <Typography variant="subtitle2" sx={{ fontWeight: 950, lineHeight: 1 }}>
+                            {formatDow(day)}
+                          </Typography>
+                          {isTodayCell ? (
+                            <Chip
+                              size="small"
+                              label="Today"
+                              color="primary"
+                              sx={{ height: 18, borderRadius: 999, fontSize: 9, fontWeight: 900 }}
+                            />
+                          ) : null}
+                        </Stack>
+
+                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                          {formatShort(day)}
+                        </Typography>
+
+                        <Stack direction="row" spacing={0.35} justifyContent="center" flexWrap="wrap" useFlexGap>
+                          {holiday ? (
+                            <Chip
+                              size="small"
+                              label={holiday.name}
+                              color="warning"
+                              variant="outlined"
+                              sx={{ height: 17, borderRadius: 999, fontSize: 8.5, fontWeight: 800 }}
+                            />
+                          ) : null}
+                          {(eventsByDate[iso] || []).length ? (
+                            <Chip
+                              size="small"
+                              label={`${(eventsByDate[iso] || []).length} event${(eventsByDate[iso] || []).length === 1 ? "" : "s"}`}
+                              color="success"
+                              variant="outlined"
+                              sx={{ height: 17, borderRadius: 999, fontSize: 8.5, fontWeight: 800 }}
+                            />
+                          ) : null}
+                        </Stack>
+                      </Stack>
+                    </Box>
+                  );
+                })}
+              </Box>
+
+              {rows.length === 0 ? (
+                <Box sx={{ p: 2 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    No matching technicians or trips.
+                  </Typography>
+                </Box>
+              ) : null}
+
+              {rows.map((row, rowIndex) => {
+                const rowKey = row.key === "UNASSIGNED" ? "UNASSIGNED" : row.key;
+                const crewHelpers = defaultCrewHelpersForLead(row.uid);
+                const defaultHelperUids = crewHelpers.map((helper) => helper.uid);
+                const scheduledSlots = weekScheduledSlotCount(rowKey);
+                const totalSlots = dayCount * 2;
+                const capacityColor =
+                  scheduledSlots >= totalSlots
+                    ? "success"
+                    : scheduledSlots > 0
+                      ? "warning"
+                      : "default";
+
+                return (
+                  <Box
+                    key={`week_row_${rowKey}`}
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: `220px repeat(${dayCount}, minmax(198px, 1fr))`,
+                      borderBottom:
+                        rowIndex < rows.length - 1
+                          ? `1px solid ${alpha("#FFFFFF", 0.072)}`
+                          : "none",
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        p: 1.15,
+                        minWidth: 0,
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 3,
+                        bgcolor: "background.paper",
+                        borderRight: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                      }}
+                    >
+                      <Stack spacing={0.6}>
+                        <Stack direction="row" spacing={0.65} alignItems="center" sx={{ minWidth: 0 }}>
+                          <GroupsRoundedIcon sx={{ fontSize: 17, color: "primary.light", flexShrink: 0 }} />
+                          <Typography variant="subtitle2" sx={{ fontWeight: 950, minWidth: 0 }} noWrap>
+                            {row.label}
+                          </Typography>
+                        </Stack>
+
+                        {crewHelpers.length ? (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }} noWrap>
+                            {crewHelpers.map((helper) => helper.name).join(" • ")}
+                          </Typography>
+                        ) : null}
+
+                        {rowKey !== "UNASSIGNED" ? (
+                          <Chip
+                            size="small"
+                            label={`${scheduledSlots}/${totalSlots} slots scheduled`}
+                            color={capacityColor as "default" | "success" | "warning"}
+                            variant="outlined"
+                            sx={{
+                              height: 21,
+                              width: "fit-content",
+                              borderRadius: 999,
+                              fontSize: 9.5,
+                              fontWeight: 850,
+                            }}
+                          />
+                        ) : null}
+                      </Stack>
+                    </Box>
+
+                    {daysForWeekOrDay.map((day, dayIndex) => {
+                      const iso = toIsoDate(day);
+                      const isTodayCell = iso === todayIso;
+                      const cellTrips = grid.get(rowKey)?.get(iso) || [];
+                      const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
+                      const holiday = holidayByDate[iso];
+                      const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] || null : null;
+                      const availability = computeCellAvailability({
+                        rowKey,
+                        iso,
+                        cellTrips: availabilityTrips,
+                        eventsByDate,
+                        holidayByDate,
+                        ptoByUidByDate,
+                      });
+                      const { amTrips, pmTrips, allDayTrips } = splitTripsForDayBoard(cellTrips);
+
+                      return (
+                        <Box
+                          key={`week_cell_${rowKey}_${iso}`}
+                          sx={{
+                            p: 0.65,
+                            minWidth: 0,
+                            borderRight:
+                              dayIndex < daysForWeekOrDay.length - 1
+                                ? `1px solid ${alpha("#FFFFFF", 0.065)}`
+                                : "none",
+                            bgcolor: isTodayCell
+                              ? alpha(theme.palette.primary.main, 0.035)
+                              : pto
+                                ? alpha(theme.palette.secondary.main, 0.025)
+                                : availability.meetings.length
+                                  ? alpha(theme.palette.success.main, 0.018)
+                                  : "transparent",
+                          }}
+                        >
+                          <Stack spacing={0.55}>
+                            {pto ? (
+                              <Chip
+                                size="small"
+                                label={`PTO${pto.hours ? ` • ${pto.hours}h` : ""}`}
+                                color="secondary"
+                                variant="outlined"
+                                sx={{ height: 19, width: "fit-content", borderRadius: 999, fontSize: 9, fontWeight: 850 }}
+                              />
+                            ) : null}
+
+                            {allDayTrips.length ? (
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    display: "block",
+                                    mb: 0.35,
+                                    color: "text.secondary",
+                                    fontSize: 9.3,
+                                    fontWeight: 950,
+                                    letterSpacing: "0.035em",
+                                  }}
+                                >
+                                  ALL DAY
+                                </Typography>
+                                <Stack spacing={0.45}>
+                                  {allDayTrips.map((trip) =>
+                                    renderWeekTripMiniCard(
+                                      trip,
+                                      `week_all_day_${rowKey}_${iso}_${trip.id}`,
+                                      defaultHelperUids
+                                    )
+                                  )}
+                                </Stack>
+                              </Box>
+                            ) : null}
+
+                            {renderWeekSlot({
+                              rowKey,
+                              iso,
+                              slot: "am",
+                              trips: amTrips,
+                              availability,
+                              pto,
+                              holiday,
+                              defaultHelperUids,
+                              compact: true,
+                            })}
+
+                            {renderWeekSlot({
+                              rowKey,
+                              iso,
+                              slot: "pm",
+                              trips: pmTrips,
+                              availability,
+                              pto,
+                              holiday,
+                              defaultHelperUids,
+                              compact: true,
+                            })}
+                          </Stack>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                );
+              })}
+            </Box>
+          </Box>
+        </Paper>
+
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ mt: 0.8, px: 0.25 }}
+        >
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 750 }}>
+            Blue = service
+          </Typography>
+          <Typography variant="caption" color="text.disabled">•</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 750 }}>
+            Amber = project
+          </Typography>
+          <Typography variant="caption" color="text.disabled">•</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 750 }}>
+            Open slots can be scheduled directly
+          </Typography>
+          <Typography variant="caption" color="text.disabled">•</Typography>
+          <Typography variant="caption" sx={{ color: "warning.light", fontWeight: 850 }}>
+            + Override appears when a planned trip already occupies the slot
+          </Typography>
+        </Stack>
+      </Box>
+    );
+  }
+
+  function renderMobileWeekSchedule() {
+    const weekIsos = daysForWeekOrDay.map((day) => toIsoDate(day));
+    const selectedIso = weekIsos.includes(mobileWeekDateIso)
+      ? mobileWeekDateIso
+      : weekIsos.includes(todayIso)
+        ? todayIso
+        : weekIsos[0];
+    const selectedDay = daysForWeekOrDay.find((day) => toIsoDate(day) === selectedIso) || daysForWeekOrDay[0];
+
+    if (!selectedDay || !selectedIso) return null;
+
+    const holiday = holidayByDate[selectedIso];
+    const isTodayCell = selectedIso === todayIso;
+
+    return (
+      <Stack spacing={0.85}>
+        <Paper
+          elevation={0}
+          sx={{
+            p: 0.75,
+            borderRadius: 1.8,
+            border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+            bgcolor: alpha("#FFFFFF", 0.02),
+          }}
+        >
+          <Stack spacing={0.7}>
+            <Stack direction="row" spacing={0.65} alignItems="center" justifyContent="space-between">
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 950, lineHeight: 1.1 }}>
+                  Week of {formatShort(daysForWeekOrDay[0])} – {formatShort(daysForWeekOrDay[daysForWeekOrDay.length - 1])}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Tap a day to scan the crews.
+                </Typography>
+              </Box>
+            </Stack>
+
+            <Box sx={{ display: "grid", gridTemplateColumns: `repeat(${daysForWeekOrDay.length}, minmax(0, 1fr))`, gap: 0.45 }}>
+              {daysForWeekOrDay.map((day) => {
+                const iso = toIsoDate(day);
+                const selected = iso === selectedIso;
+                const today = iso === todayIso;
+
+                return (
+                  <Button
+                    key={`mobile_week_day_${iso}`}
+                    size="small"
+                    variant={selected ? "contained" : "outlined"}
+                    onClick={() => setMobileWeekDateIso(iso)}
+                    sx={{
+                      minWidth: 0,
+                      px: 0.25,
+                      py: 0.55,
+                      borderRadius: 1.35,
+                      textTransform: "none",
+                      borderColor: selected
+                        ? alpha(theme.palette.primary.main, 0.8)
+                        : alpha("#FFFFFF", 0.09),
+                    }}
+                  >
+                    <Stack spacing={0.05} alignItems="center">
+                      <Typography variant="caption" sx={{ fontSize: 9.5, fontWeight: 800, lineHeight: 1.1 }}>
+                        {formatDow(day)}
+                      </Typography>
+                      <Typography sx={{ fontSize: 15, fontWeight: 950, lineHeight: 1.05 }}>
+                        {day.getDate()}
+                      </Typography>
+                      {today ? (
+                        <Box
+                          sx={{
+                            width: 4,
+                            height: 4,
+                            borderRadius: 999,
+                            bgcolor: selected ? "common.white" : "primary.main",
+                          }}
+                        />
+                      ) : (
+                        <Box sx={{ height: 4 }} />
+                      )}
+                    </Stack>
+                  </Button>
+                );
+              })}
+            </Box>
+          </Stack>
+        </Paper>
+
+        <Paper
+          elevation={0}
+          sx={{
+            px: 0.95,
+            py: 0.75,
+            borderRadius: 1.65,
+            border: `1px solid ${isTodayCell ? alpha(theme.palette.primary.main, 0.38) : alpha("#FFFFFF", 0.065)}`,
+            bgcolor: isTodayCell ? alpha(theme.palette.primary.main, 0.04) : alpha("#FFFFFF", 0.012),
+          }}
+        >
+          <Stack spacing={0.45}>
+            <Stack direction="row" spacing={0.55} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="subtitle1" sx={{ fontWeight: 950, lineHeight: 1.1 }}>
+                {formatDow(selectedDay)} • {selectedIso}
+              </Typography>
+              {isTodayCell ? (
+                <Chip size="small" color="primary" label="Today" sx={{ height: 20, borderRadius: 999, fontWeight: 850 }} />
+              ) : null}
+              {renderHolidayBadge(selectedIso)}
+            </Stack>
+            <Stack direction="row" spacing={0.45} flexWrap="wrap" useFlexGap>
+              {renderStaffCoverageBadgeSmall(selectedIso)}
+              {renderPtoBadgeSmall(selectedIso)}
+              {renderMeetingsBadgeSmall(selectedIso)}
+            </Stack>
+          </Stack>
+        </Paper>
+
+        {rows.map((row) => {
+          const rowKey = row.key === "UNASSIGNED" ? "UNASSIGNED" : row.key;
+          const cellTrips = grid.get(rowKey)?.get(selectedIso) || [];
+          const availabilityTrips = fullGrid.get(rowKey)?.get(selectedIso) || [];
+          const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[selectedIso] || null : null;
+          const availability = computeCellAvailability({
+            rowKey,
+            iso: selectedIso,
+            cellTrips: availabilityTrips,
+            eventsByDate,
+            holidayByDate,
+            ptoByUidByDate,
+          });
+          const { amTrips, pmTrips, allDayTrips } = splitTripsForDayBoard(cellTrips);
+          const crewHelpers = defaultCrewHelpersForLead(row.uid);
+          const defaultHelperUids = crewHelpers.map((helper) => helper.uid);
+          const scheduledSlots = weekScheduledSlotCount(rowKey);
+          const totalSlots = Math.max(daysForWeekOrDay.length * 2, 1);
+
+          return (
+            <Paper
+              key={`mobile_week_crew_${rowKey}_${selectedIso}`}
+              elevation={0}
+              sx={{
+                borderRadius: 1.85,
+                overflow: "hidden",
+                border: `1px solid ${alpha("#FFFFFF", 0.075)}`,
+                bgcolor: alpha("#FFFFFF", 0.016),
+              }}
+            >
+              <Box sx={{ px: 0.95, py: 0.8, bgcolor: alpha("#FFFFFF", 0.018) }}>
+                <Stack direction="row" spacing={0.7} alignItems="center" justifyContent="space-between">
+                  <Box sx={{ minWidth: 0 }}>
+                    <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0 }}>
+                      <GroupsRoundedIcon sx={{ fontSize: 16.5, color: "primary.light", flexShrink: 0 }} />
+                      <Typography variant="subtitle2" sx={{ fontWeight: 950, minWidth: 0 }} noWrap>
+                        {row.label}
+                      </Typography>
+                    </Stack>
+                    {crewHelpers.length ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.15, pl: 2.75, fontWeight: 700 }} noWrap>
+                        {crewHelpers.map((helper) => helper.name).join(" • ")}
+                      </Typography>
+                    ) : null}
+                  </Box>
+
+                  {rowKey !== "UNASSIGNED" ? (
+                    <Chip
+                      size="small"
+                      label={`${scheduledSlots}/${totalSlots}`}
+                      color={scheduledSlots >= totalSlots ? "success" : scheduledSlots > 0 ? "warning" : "default"}
+                      variant="outlined"
+                      sx={{ height: 20, borderRadius: 999, fontSize: 9.5, fontWeight: 850, flexShrink: 0 }}
+                    />
+                  ) : null}
+                </Stack>
+              </Box>
+
+              <Stack spacing={0.6} sx={{ p: 0.65 }}>
+                {pto ? (
+                  <Chip
+                    size="small"
+                    label={`PTO${pto.hours ? ` • ${pto.hours}h` : ""}`}
+                    color="secondary"
+                    variant="outlined"
+                    sx={{ height: 20, width: "fit-content", borderRadius: 999, fontSize: 9.5, fontWeight: 850 }}
+                  />
+                ) : null}
+
+                {allDayTrips.length ? (
+                  <Box>
+                    <Typography variant="caption" sx={{ display: "block", mb: 0.35, color: "text.secondary", fontWeight: 950, fontSize: 9.4 }}>
+                      ALL DAY
+                    </Typography>
+                    <Stack spacing={0.45}>
+                      {allDayTrips.map((trip) =>
+                        renderWeekTripMiniCard(
+                          trip,
+                          `mobile_week_all_day_${rowKey}_${selectedIso}_${trip.id}`,
+                          defaultHelperUids
+                        )
+                      )}
+                    </Stack>
+                  </Box>
+                ) : null}
+
+                {renderWeekSlot({
+                  rowKey,
+                  iso: selectedIso,
+                  slot: "am",
+                  trips: amTrips,
+                  availability,
+                  pto,
+                  holiday,
+                  defaultHelperUids,
+                })}
+
+                {renderWeekSlot({
+                  rowKey,
+                  iso: selectedIso,
+                  slot: "pm",
+                  trips: pmTrips,
+                  availability,
+                  pto,
+                  holiday,
+                  defaultHelperUids,
+                })}
+              </Stack>
+            </Paper>
+          );
+        })}
+      </Stack>
     );
   }
 
@@ -6182,23 +7841,23 @@ function renderStaffCoverageCards(dateIso: string) {
     <ProtectedPage fallbackTitle="Schedule">
       <AppShell appUser={appUser}>
         <Box sx={{ width: "100%", maxWidth: 1600, mx: "auto" }}>
-          <Stack spacing={3}>
+          <Stack spacing={{ xs: 1.5, md: 2.25 }}>
             <Paper
               elevation={0}
               sx={{
-                p: { xs: 1.5, md: 1.75 },
-                borderRadius: 2.5,
+                p: { xs: 0.75, md: 1.5 },
+                borderRadius: { xs: 1.75, md: 2.5 },
                 border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
                 bgcolor: alpha("#FFFFFF", 0.025),
               }}
             >
               <Stack
                 direction={{ xs: "column", lg: "row" }}
-                spacing={1.5}
+                spacing={{ xs: 0.75, lg: 1.5 }}
                 alignItems={{ xs: "stretch", lg: "center" }}
                 justifyContent="space-between"
               >
-                <Box sx={{ minWidth: 0 }}>
+                <Box sx={{ minWidth: 0, display: { xs: "none", md: "block" } }}>
                   <Stack direction="row" spacing={1} alignItems="center">
                     <CalendarMonthRoundedIcon sx={{ color: "primary.light" }} />
                     <Box sx={{ minWidth: 0 }}>
@@ -6228,10 +7887,12 @@ function renderStaffCoverageCards(dateIso: string) {
                 </Box>
 
                 <Stack
-                  direction={{ xs: "column", sm: "row" }}
+                  direction="row"
                   spacing={1}
-                  alignItems={{ xs: "stretch", sm: "center" }}
-                  justifyContent="flex-end"
+                  alignItems="center"
+                  justifyContent={{ xs: "space-between", lg: "flex-end" }}
+                  flexWrap="wrap"
+                  useFlexGap
                   sx={{ width: { xs: "100%", lg: "auto" } }}
                 >
                   <Stack direction="row" spacing={1} sx={{ justifyContent: { xs: "space-between", sm: "flex-start" } }}>
@@ -6400,33 +8061,39 @@ function renderStaffCoverageCards(dateIso: string) {
 
             {!loading && view !== "month" ? (
               <>
-                {isMobile ? (
-                  <Stack spacing={1.5}>
+                {isMobile && view === "week" ? (
+                  renderMobileWeekSchedule()
+                ) : isMobile ? (
+                  <Stack spacing={0.85}>
                     {daysForWeekOrDay.map((d) => {
                       const iso = toIsoDate(d);
                       const isTodayCell = iso === todayIso;
                       const holiday = holidayByDate[iso];
 
                       return (
-                        <Card
-                          key={iso}
-                          elevation={0}
-                          sx={{
-                            borderRadius: 1,
-                            border: isTodayCell ? `2px solid ${alpha(theme.palette.primary.main, 0.72)}` : undefined,
-                            bgcolor: isTodayCell ? alpha(theme.palette.primary.main, 0.08) : undefined,
-                          }}
-                        >
-                          <Box sx={{ px: { xs: 2, md: 2.5 }, pt: { xs: 2, md: 2.5 }, pb: 1.5 }}>
-                            <Stack spacing={1}>
-                              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <Box key={iso}>
+                          <Paper
+                            elevation={0}
+                            sx={{
+                              mb: 0.8,
+                              px: 1.05,
+                              py: 0.85,
+                              borderRadius: 1.75,
+                              border: `1px solid ${
+                                isTodayCell
+                                  ? alpha(theme.palette.primary.main, 0.42)
+                                  : alpha("#FFFFFF", 0.075)
+                              }`,
+                              bgcolor: isTodayCell
+                                ? alpha(theme.palette.primary.main, 0.045)
+                                : alpha("#FFFFFF", 0.018),
+                            }}
+                          >
+                            <Stack spacing={0.45}>
+                              <Stack direction="row" spacing={0.7} alignItems="center" flexWrap="wrap" useFlexGap>
                                 <Typography
-                                  variant="h6"
-                                  sx={{
-                                    fontSize: { xs: "1rem", md: "1.05rem" },
-                                    fontWeight: 800,
-                                    letterSpacing: "-0.02em",
-                                  }}
+                                  variant="subtitle1"
+                                  sx={{ fontWeight: 950, lineHeight: 1.1, letterSpacing: "-0.025em" }}
                                 >
                                   {formatDow(d)} • {iso}
                                 </Typography>
@@ -6436,344 +8103,174 @@ function renderStaffCoverageCards(dateIso: string) {
                                     size="small"
                                     label="Today"
                                     color="primary"
-                                    variant="filled"
-                                    sx={{ height: 22, borderRadius: 1.5, fontWeight: 700 }}
+                                    sx={{ height: 21, borderRadius: 999, fontWeight: 850 }}
                                   />
                                 ) : null}
+
+                                {renderHolidayBadge(iso)}
                               </Stack>
 
-                              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                                {renderHolidayBadge(iso)}
+                              <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap" useFlexGap>
+                                {renderStaffCoverageBadgeSmall(iso)}
                                 {renderPtoBadgeSmall(iso)}
                                 {renderMeetingsBadgeSmall(iso)}
-                                {renderStaffCoverageBadgeSmall(iso)}
                               </Stack>
                             </Stack>
-                          </Box>
+                          </Paper>
 
-                          <Box sx={{ p: { xs: 2, md: 2.5 }, pt: 0 }}>
-                            <Stack spacing={1.5}>
-                              {renderStaffCoverageCards(iso)}
+                          {renderStaffCoverageCards(iso)}
 
-                              {rows.map((r) => {
-                                const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
-                                const cellTrips = grid.get(rowKey)?.get(iso) || [];
-                                const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
-                                const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
-                                const availability = computeCellAvailability({
-                                  rowKey,
-                                  iso,
-                                  cellTrips: availabilityTrips,
-                                  eventsByDate,
-                                  holidayByDate,
-                                  ptoByUidByDate,
-                                });
-                                const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
-                                const isPast = iso < todayIso;
+                          <Stack spacing={0}>
+                            {rows.map((r, rowIndex) => {
+                              const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
+                              const cellTrips = grid.get(rowKey)?.get(iso) || [];
+                              const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
+                              const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
+                              const availability = computeCellAvailability({
+                                rowKey,
+                                iso,
+                                cellTrips: availabilityTrips,
+                                eventsByDate,
+                                holidayByDate,
+                                ptoByUidByDate,
+                              });
+                              const { amTrips, pmTrips, allDayTrips } = splitTripsForDayBoard(cellTrips);
+                              const crewHelpers = defaultCrewHelpersForLead(r.uid);
+                              const defaultHelperUids = crewHelpers.map((helper) => helper.uid);
+                              const isPast = iso < todayIso;
 
-                                const canShowScheduleAction =
-                                  canEditSchedule &&
-                                  rowKey !== "UNASSIGNED" &&
-                                  !isPast &&
-                                  !pto &&
-                                  !holiday;
+                              const canShowScheduleAction =
+                                canEditSchedule &&
+                                rowKey !== "UNASSIGNED" &&
+                                !isPast &&
+                                !pto &&
+                                !holiday;
 
-                                return (
-                                  <Card
-                                    key={`${rowKey}_${iso}`}
-                                    variant="outlined"
-                                    sx={{
-                                      borderRadius: 1,
-                                      boxShadow: "none",
-                                      bgcolor: isTodayCell
-                                        ? alpha(theme.palette.primary.main, 0.08)
-                                        : holiday
-                                          ? alpha(theme.palette.warning.main, 0.08)
-                                          : pto
-                                            ? alpha(theme.palette.secondary.main, 0.08)
-                                            : availability.meetings.length
-                                              ? alpha(theme.palette.success.main, 0.05)
-                                              : "background.paper",
-                                      borderColor: isTodayCell ? alpha(theme.palette.primary.main, 0.72) : undefined,
-                                    }}
-                                  >
-                                    <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
-                                      <Stack spacing={1.25}>
-                                        <Stack direction="row" spacing={1} alignItems="center">
-                                          <GroupsRoundedIcon sx={{ fontSize: 18, color: "primary.light" }} />
-                                          <Typography variant="subtitle1">{r.label}</Typography>
+                              return (
+                                <Box
+                                  key={`${rowKey}_${iso}`}
+                                  sx={{
+                                    py: 1,
+                                    borderTop:
+                                      rowIndex === 0
+                                        ? `1px solid ${alpha("#FFFFFF", 0.065)}`
+                                        : `1px solid ${alpha("#FFFFFF", 0.055)}`,
+                                  }}
+                                >
+                                  <Stack spacing={0.65}>
+                                    <Stack direction="row" spacing={0.75} alignItems="center" justifyContent="space-between">
+                                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                                        <Stack direction="row" spacing={0.65} alignItems="center" sx={{ minWidth: 0 }}>
+                                          <GroupsRoundedIcon sx={{ fontSize: 17, color: "primary.light", flexShrink: 0 }} />
+                                          <Typography
+                                            variant="subtitle1"
+                                            sx={{ fontWeight: 950, lineHeight: 1.08, minWidth: 0 }}
+                                            noWrap
+                                          >
+                                            {r.label}
+                                          </Typography>
                                         </Stack>
 
-                                        {holiday ? <Alert severity="warning" variant="outlined">{holiday.name}</Alert> : null}
-
-                                        {pto ? (
-                                          <Chip
-                                            size="small"
-                                            icon={<BeachAccessRoundedIcon sx={{ fontSize: 16 }} />}
-                                            label={`PTO approved${pto.hours ? ` • ${pto.hours}h` : ""}`}
-                                            color="secondary"
-                                            variant="outlined"
-                                            sx={{
-                                              borderRadius: 1.5,
-                                              width: "fit-content",
-                                              fontWeight: 500,
-                                            }}
-                                          />
-                                        ) : null}
-
-                                        {canShowScheduleAction ? (
-                                          <ScheduleSlotButton
-                                            label="Schedule"
-                                            onClick={() =>
-                                              openQuickScheduleModal({ techUid: rowKey, dateIso: iso })
-                                            }
-                                          />
-                                        ) : null}
-
-                                        {amTrips.length ? (
-                                          <Stack spacing={1}>
-                                            {amTrips.map((trip) =>
-                                              renderTripCard(trip, {
-                                                keyValue: `mobile_am_${iso}_${rowKey}_${trip.id}`,
-                                              })
-                                            )}
-                                          </Stack>
-                                        ) : null}
-
-                                        {pmTrips.length ? (
-                                          <Stack spacing={1}>
-                                            {pmTrips.map((trip) =>
-                                              renderTripCard(trip, {
-                                                keyValue: `mobile_pm_${iso}_${rowKey}_${trip.id}`,
-                                              })
-                                            )}
-                                          </Stack>
-                                        ) : null}
-
-                                        {amTrips.length === 0 && pmTrips.length === 0 ? (
-                                          <Typography variant="caption" color="text.secondary">
-                                            {holiday ? "Holiday" : pto ? "PTO" : availability.meetings.length ? "Meeting(s)" : "—"}
+                                        {crewHelpers.length ? (
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                            sx={{ display: "block", mt: 0.25, pl: 2.95, fontWeight: 700 }}
+                                            noWrap
+                                          >
+                                            {crewHelpers.map((helper) => helper.name).join(" • ")}
                                           </Typography>
                                         ) : null}
-                                      </Stack>
-                                    </CardContent>
-                                  </Card>
-                                );
-                              })}
-                            </Stack>
-                          </Box>
-                        </Card>
+                                      </Box>
+
+                                      {canShowScheduleAction ? (
+                                        <Button
+                                          size="small"
+                                          variant="text"
+                                          startIcon={<AddRoundedIcon sx={{ fontSize: 17 }} />}
+                                          onClick={() => openQuickScheduleModal({ techUid: rowKey, dateIso: iso })}
+                                          sx={{
+                                            minWidth: 0,
+                                            px: 0.75,
+                                            py: 0.35,
+                                            borderRadius: 999,
+                                            textTransform: "none",
+                                            fontSize: 11.5,
+                                            fontWeight: 850,
+                                            flexShrink: 0,
+                                          }}
+                                        >
+                                          Schedule
+                                        </Button>
+                                      ) : null}
+                                    </Stack>
+
+                                    {holiday ? (
+                                      <Alert severity="warning" variant="outlined" sx={{ py: 0, fontSize: 12 }}>
+                                        {holiday.name}
+                                      </Alert>
+                                    ) : null}
+
+                                    {pto ? (
+                                      <Typography variant="caption" color="secondary.main" sx={{ fontWeight: 800, pl: 2.95 }}>
+                                        PTO approved{pto.hours ? ` • ${pto.hours}h` : ""}
+                                      </Typography>
+                                    ) : null}
+
+                                    <Stack spacing={0.55}>
+                                      {allDayTrips.map((trip) =>
+                                        renderMobileScheduleTripRow(
+                                          trip,
+                                          `mobile_all_day_${iso}_${rowKey}_${trip.id}`,
+                                          defaultHelperUids
+                                        )
+                                      )}
+
+                                      {amTrips.map((trip) =>
+                                        renderMobileScheduleTripRow(
+                                          trip,
+                                          `mobile_am_${iso}_${rowKey}_${trip.id}`,
+                                          defaultHelperUids
+                                        )
+                                      )}
+
+                                      {pmTrips.map((trip) =>
+                                        renderMobileScheduleTripRow(
+                                          trip,
+                                          `mobile_pm_${iso}_${rowKey}_${trip.id}`,
+                                          defaultHelperUids
+                                        )
+                                      )}
+                                    </Stack>
+
+                                    {allDayTrips.length === 0 && amTrips.length === 0 && pmTrips.length === 0 ? (
+                                      <Typography
+                                        variant="caption"
+                                        color="text.secondary"
+                                        sx={{ pl: 2.95, py: 0.15, fontWeight: 700 }}
+                                      >
+                                        {holiday
+                                          ? "Holiday"
+                                          : pto
+                                            ? "PTO"
+                                            : availability.meetings.length
+                                              ? "Meeting(s)"
+                                              : "Open"}
+                                      </Typography>
+                                    ) : null}
+                                  </Stack>
+                                </Box>
+                              );
+                            })}
+                          </Stack>
+                        </Box>
                       );
                     })}
                   </Stack>
                 ) : view === "day" ? (
                   renderDesktopDaySchedule()
                 ) : (
-                  <Box>
-                    <SectionHeader
-                      title="Week route board"
-                      subtitle="Compact desktop board for route visibility. Click a trip for full details."
-                    />
-
-                    <Box sx={{ mt: 1.5 }}>
-                      <TableContainer
-                        component={Paper}
-                        variant="outlined"
-                        sx={{
-                          borderRadius: 1,
-                          boxShadow: "none",
-                          maxWidth: "100%",
-                          overflowX: "auto",
-                        }}
-                      >
-                        <Table sx={{ minWidth: Math.max(920, 200 + daysForWeekOrDay.length * 235), tableLayout: "fixed" }}>
-                          <TableHead>
-                            <TableRow>
-                              <TableCell sx={{ width: 200, fontWeight: 600 }}>Technician</TableCell>
-
-                              {daysForWeekOrDay.map((d) => {
-                                const iso = toIsoDate(d);
-                                const isTodayCell = iso === todayIso;
-                                const holiday = holidayByDate[iso];
-                                return (
-                                  <TableCell
-                                    key={iso}
-                                    sx={{
-                                      minWidth: 235,
-                                      width: 235,
-                                      fontWeight: 600,
-                                      bgcolor: isTodayCell
-                                        ? alpha(theme.palette.primary.main, 0.12)
-                                        : holiday
-                                          ? alpha(theme.palette.warning.main, 0.08)
-                                          : alpha("#FFFFFF", 0.02),
-                                      boxShadow: isTodayCell
-                                        ? `inset 0 0 0 2px ${alpha(theme.palette.primary.main, 0.72)}`
-                                        : undefined,
-                                    }}
-                                  >
-                                    <Stack spacing={0.75}>
-                                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                                        <Typography variant="subtitle2">{formatDow(d)}</Typography>
-                                        {isTodayCell ? (
-                                          <Chip
-                                            size="small"
-                                            label="Today"
-                                            color="primary"
-                                            variant="filled"
-                                            sx={{ height: 22, borderRadius: 1.5, fontWeight: 700 }}
-                                          />
-                                        ) : null}
-                                      </Stack>
-                                      <Typography variant="caption" color="text.secondary">
-                                        {iso}
-                                      </Typography>
-                                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                                        {renderHolidayBadge(iso)}
-                                        {renderPtoBadgeSmall(iso)}
-                                        {renderMeetingsBadgeSmall(iso)}
-                                        {renderStaffCoverageBadgeSmall(iso)}
-                                      </Stack>
-                                    </Stack>
-                                  </TableCell>
-                                );
-                              })}
-                            </TableRow>
-                          </TableHead>
-
-                          <TableBody>
-                            {rows.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={1 + daysForWeekOrDay.length}>
-                                  <Typography variant="body2" color="text.secondary">
-                                    No matching technicians or trips.
-                                  </Typography>
-                                </TableCell>
-                              </TableRow>
-                            ) : (
-                              rows.map((r) => {
-                                const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
-
-                                return (
-                                  <TableRow key={r.key}>
-                                    <TableCell sx={{ verticalAlign: "top", width: 200 }}>
-                                      <Stack direction="row" spacing={1} alignItems="center">
-                                        <GroupsRoundedIcon sx={{ fontSize: 18, color: "primary.light" }} />
-                                        <Typography variant="subtitle2">{r.label}</Typography>
-                                      </Stack>
-                                    </TableCell>
-
-                                    {daysForWeekOrDay.map((d) => {
-                                      const iso = toIsoDate(d);
-                                      const isTodayCell = iso === todayIso;
-                                      const cellTrips = grid.get(rowKey)?.get(iso) || [];
-                                      const availabilityTrips = fullGrid.get(rowKey)?.get(iso) || [];
-                                      const holiday = holidayByDate[iso];
-                                      const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
-                                      const availability = computeCellAvailability({
-                                        rowKey,
-                                        iso,
-                                        cellTrips: availabilityTrips,
-                                        eventsByDate,
-                                        holidayByDate,
-                                        ptoByUidByDate,
-                                      });
-                                      const { amTrips, pmTrips } = splitTripsBySlot(cellTrips);
-                                      const isPast = iso < todayIso;
-
-                                      const canShowScheduleAction =
-                                        canEditSchedule &&
-                                        rowKey !== "UNASSIGNED" &&
-                                        !isPast &&
-                                        !pto &&
-                                        !holiday;
-
-                                      return (
-                                        <TableCell
-                                          key={`${r.key}_${iso}`}
-                                          sx={{
-                                            verticalAlign: "top",
-                                            bgcolor: isTodayCell
-                                              ? alpha(theme.palette.primary.main, 0.08)
-                                              : holiday
-                                                ? alpha(theme.palette.warning.main, 0.08)
-                                                : pto
-                                                  ? alpha(theme.palette.secondary.main, 0.08)
-                                                  : availability.meetings.length
-                                                    ? alpha(theme.palette.success.main, 0.05)
-                                                    : "transparent",
-                                            boxShadow: isTodayCell
-                                              ? `inset 0 0 0 2px ${alpha(theme.palette.primary.main, 0.72)}`
-                                              : undefined,
-                                          }}
-                                        >
-                                          <Stack spacing={1}>
-                                            {holiday ? <Alert severity="warning" variant="outlined">{holiday.name}</Alert> : null}
-
-                                            {pto ? (
-                                              <Chip
-                                                size="small"
-                                                icon={<BeachAccessRoundedIcon sx={{ fontSize: 16 }} />}
-                                                label={`PTO approved${pto.hours ? ` • ${pto.hours}h` : ""}`}
-                                                color="secondary"
-                                                variant="outlined"
-                                                sx={{
-                                                  borderRadius: 1.5,
-                                                  width: "fit-content",
-                                                  fontWeight: 500,
-                                                }}
-                                              />
-                                            ) : null}
-
-                                            {canShowScheduleAction ? (
-                                              <ScheduleSlotButton
-                                                label="Schedule"
-                                                onClick={() =>
-                                                  openQuickScheduleModal({ techUid: rowKey, dateIso: iso })
-                                                }
-                                              />
-                                            ) : null}
-
-                                            {amTrips.length ? (
-                                              <Stack spacing={0.85}>
-                                                {amTrips.map((trip) =>
-                                                  renderCompactWeekTripBlock(
-                                                    trip,
-                                                    `desk_am_${iso}_${rowKey}_${trip.id}`
-                                                  )
-                                                )}
-                                              </Stack>
-                                            ) : null}
-
-                                            {pmTrips.length ? (
-                                              <Stack spacing={0.85}>
-                                                {pmTrips.map((trip) =>
-                                                  renderCompactWeekTripBlock(
-                                                    trip,
-                                                    `desk_pm_${iso}_${rowKey}_${trip.id}`
-                                                  )
-                                                )}
-                                              </Stack>
-                                            ) : null}
-
-                                            {amTrips.length === 0 && pmTrips.length === 0 ? (
-                                              <Typography variant="caption" color="text.secondary">
-                                                {holiday ? "Holiday" : pto ? "PTO" : availability.meetings.length ? "Meeting(s)" : "—"}
-                                              </Typography>
-                                            ) : null}
-                                          </Stack>
-                                        </TableCell>
-                                      );
-                                    })}
-                                  </TableRow>
-                                );
-                              })
-                            )}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
-                    </Box>
-                  </Box>
+                  renderDesktopWeekSchedule()
                 )}
               </>
             ) : null}
@@ -6822,6 +8319,59 @@ function renderStaffCoverageCards(dateIso: string) {
               <BlockRoundedIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText primary="Manual Block" secondary="Block time without payroll entries" />
+          </MenuItem>
+        </Menu>
+
+        <Menu
+          anchorEl={tripActionAnchorEl}
+          open={tripActionMenuOpen}
+          onClose={closeTripActionMenu}
+          anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+          transformOrigin={{ vertical: "top", horizontal: "right" }}
+          PaperProps={{
+            sx: {
+              mt: 0.5,
+              minWidth: 245,
+              borderRadius: 2,
+              border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+              bgcolor: "background.paper",
+              backgroundImage: "none",
+            },
+          }}
+        >
+          <MenuItem
+            disabled={!tripActionTrip || !isPlannedStatus(tripActionTrip.status)}
+            onClick={manageTripHelpersFromMenu}
+          >
+            <ListItemIcon>
+              <GroupsRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText
+              primary="Manage Helpers"
+              secondary={
+                tripActionTrip && !isPlannedStatus(tripActionTrip.status)
+                  ? "Locked after the trip starts"
+                  : "Add, remove, or reassign helpers"
+              }
+            />
+          </MenuItem>
+
+          <MenuItem
+            disabled={!tripActionTrip || !isPlannedStatus(tripActionTrip.status)}
+            onClick={openRemoveTripDialogFromMenu}
+            sx={{ color: tripActionTrip && isPlannedStatus(tripActionTrip.status) ? "error.light" : undefined }}
+          >
+            <ListItemIcon>
+              <DeleteRoundedIcon fontSize="small" color={tripActionTrip && isPlannedStatus(tripActionTrip.status) ? "error" : "disabled"} />
+            </ListItemIcon>
+            <ListItemText
+              primary="Remove from Schedule"
+              secondary={
+                tripActionTrip && !isPlannedStatus(tripActionTrip.status)
+                  ? "Started trips cannot be quick-removed"
+                  : "Keeps the ticket/project; removes this trip"
+              }
+            />
           </MenuItem>
         </Menu>
 
@@ -7342,9 +8892,7 @@ function renderStaffCoverageCards(dateIso: string) {
             },
           }}
         >
-          <DialogTitle>
-            {helperEditSlot === "add" ? "Add Helper" : "Edit Helper"}
-          </DialogTitle>
+          <DialogTitle>Manage Helpers</DialogTitle>
 
           <DialogContent dividers>
             <Stack spacing={2}>
@@ -7374,11 +8922,6 @@ function renderStaffCoverageCards(dateIso: string) {
                       Lead: <strong>{helperEditTrip.crew?.primaryTechName || "—"}</strong>
                     </Typography>
 
-                    {helperEditExistingEntry ? (
-                      <Typography variant="body2" color="text.secondary">
-                        Current helper: <strong>{helperEditExistingEntry.name}</strong>
-                      </Typography>
-                    ) : null}
                   </Stack>
                 </Paper>
               ) : null}
@@ -7391,21 +8934,56 @@ function renderStaffCoverageCards(dateIso: string) {
                 </Alert>
               ) : null}
 
-              {helperEditExistingEntry ? (
-                <Button
-                  color="error"
-                  variant="outlined"
-                  disabled={helperEditSaving || !helperEditTrip || !isPlannedStatus(helperEditTrip.status)}
-                  onClick={removeHelperFromTrip}
-                  sx={{ borderRadius: 2, minHeight: 44, textTransform: "none", fontWeight: 850 }}
-                >
-                  Remove {helperEditExistingEntry.name}
-                </Button>
-              ) : null}
+              <Box>
+                <Typography variant="subtitle2" sx={{ fontWeight: 900, mb: 1 }}>
+                  Assigned helpers
+                </Typography>
+
+                {helperEditEntries.length ? (
+                  <Stack spacing={1}>
+                    {helperEditEntries.map((entry) => (
+                      <Paper
+                        key={`manage_helper_${entry.slot}_${entry.uid}`}
+                        variant="outlined"
+                        sx={{
+                          px: 1.25,
+                          py: 1,
+                          borderRadius: 2,
+                          bgcolor: alpha(theme.palette.primary.main, 0.035),
+                        }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Stack direction="row" spacing={0.8} alignItems="center" sx={{ minWidth: 0 }}>
+                            <GroupsRoundedIcon sx={{ fontSize: 18, color: "primary.light", flexShrink: 0 }} />
+                            <Typography variant="body2" sx={{ fontWeight: 850 }} noWrap>
+                              {entry.name}
+                            </Typography>
+                          </Stack>
+
+                          <Button
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                            disabled={helperEditSaving || !helperEditTrip || !isPlannedStatus(helperEditTrip.status)}
+                            onClick={() => removeHelperSlotFromTrip(entry.slot)}
+                            sx={{ borderRadius: 999, textTransform: "none", fontWeight: 850, flexShrink: 0 }}
+                          >
+                            Remove
+                          </Button>
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    No helpers are assigned to this trip.
+                  </Typography>
+                )}
+              </Box>
 
               <Box>
                 <Typography variant="subtitle2" sx={{ fontWeight: 900, mb: 1 }}>
-                  {helperEditExistingEntry ? "Reassign to" : "Choose helper"}
+                  {helperEditEntries.length >= 2 ? "Helper limit reached" : "Add helper"}
                 </Typography>
 
                 <Stack spacing={1}>
@@ -7414,7 +8992,9 @@ function renderStaffCoverageCards(dateIso: string) {
                       No active helpers or apprentices found.
                     </Typography>
                   ) : (
-                    helpers.map((helper) => {
+                    helpers
+                      .filter((helper) => !helperEditTrip || !helperIsAlreadyOnTrip(helperEditTrip, helper.uid))
+                      .map((helper) => {
                       const unavailableReason = helperEditTrip
                         ? helperUnavailableReasonForTrip(helperEditTrip, helper)
                         : "";
@@ -7423,6 +9003,7 @@ function renderStaffCoverageCards(dateIso: string) {
                         helperEditSaving ||
                         !helperEditTrip ||
                         !isPlannedStatus(helperEditTrip.status) ||
+                        helperEditEntries.length >= 2 ||
                         Boolean(unavailableReason);
 
                       return (
@@ -7430,7 +9011,7 @@ function renderStaffCoverageCards(dateIso: string) {
                           key={helper.uid}
                           variant="outlined"
                           disabled={disabled}
-                          onClick={() => assignHelperToTrip(helper)}
+                          onClick={() => assignHelperToTrip(helper, "add")}
                           sx={{
                             justifyContent: "space-between",
                             minHeight: 48,
@@ -7471,6 +9052,71 @@ function renderStaffCoverageCards(dateIso: string) {
           <DialogActions>
             <Button onClick={closeHelperEditDialog} disabled={helperEditSaving}>
               Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={removeTripOpen}
+          onClose={closeRemoveTripDialog}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{ sx: { borderRadius: 2, backgroundImage: "none" } }}
+        >
+          <DialogTitle>Remove from Schedule?</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={1.5}>
+              {removeTripTarget ? (
+                <Paper
+                  variant="outlined"
+                  sx={{ p: 1.5, borderRadius: 2, bgcolor: alpha(theme.palette.error.main, 0.035) }}
+                >
+                  <Stack spacing={0.5}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>
+                      {tripDisplayInfo(removeTripTarget).title}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {formatDateLong(String(removeTripTarget.date || ""))} • {formatTimeRangeForCard(removeTripTarget)}
+                    </Typography>
+                    {tripDisplayInfo(removeTripTarget).partyName ? (
+                      <Typography variant="body2" color="text.secondary">
+                        {tripDisplayInfo(removeTripTarget).partyName}
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                </Paper>
+              ) : null}
+
+              <Alert severity="warning" variant="outlined">
+                This removes only the scheduled trip. The service ticket or project remains in DCFlow.
+              </Alert>
+
+              {removeTripTarget?.link?.serviceTicketId ? (
+                <Typography variant="body2" color="text.secondary">
+                  If this is the ticket&apos;s only active scheduled trip, DCFlow will clear its crew assignment and move a Scheduled ticket back to New. Follow-Up stays Follow-Up.
+                </Typography>
+              ) : removeTripTarget?.link?.projectId ? (
+                <Typography variant="body2" color="text.secondary">
+                  The trip will also be removed from the linked project stage scheduling data.
+                </Typography>
+              ) : null}
+
+              {removeTripErr ? <Alert severity="error" variant="outlined">{removeTripErr}</Alert> : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={closeRemoveTripDialog} disabled={removeTripSaving}>
+              Cancel
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              startIcon={<DeleteRoundedIcon />}
+              disabled={removeTripSaving || !removeTripTarget || !isPlannedStatus(removeTripTarget.status)}
+              onClick={removeTripFromSchedule}
+              sx={{ fontWeight: 850 }}
+            >
+              {removeTripSaving ? "Removing…" : "Remove Trip"}
             </Button>
           </DialogActions>
         </Dialog>
