@@ -142,6 +142,7 @@ type TripDoc = {
 type TechRow = {
   uid: string;
   name: string;
+  role: string;
 };
 
 type EmployeeOption = {
@@ -2018,7 +2019,7 @@ const employeeRolesByUid = useMemo(() => {
   const out: Record<string, string> = {};
 
   for (const tech of techs) {
-    out[tech.uid] = "technician";
+    out[tech.uid] = meetingEmployees.find((employee) => employee.uid === tech.uid)?.role || "technician";
   }
 
   for (const helper of helpers) {
@@ -2026,7 +2027,7 @@ const employeeRolesByUid = useMemo(() => {
   }
 
   return out;
-}, [techs, helpers]);
+}, [techs, helpers, meetingEmployees]);
 
 const defaultHelpersForAddTech = useMemo(() => {
   if (!addTechUid) return [] as HelperOption[];
@@ -2512,8 +2513,8 @@ function slotDefaults(slot: SlotKey) {
     openAddModal({ techUid, dateIso, slot });
   }
 
-  function closeAddModal() {
-    if (addSaving) return;
+  function closeAddModal(force = false) {
+    if (addSaving && !force) return;
     setAddOpen(false);
     setAddErr("");
     setAddSaving(false);
@@ -2796,7 +2797,7 @@ if (addTripType === "project") {
 const newTrip: TripDoc = { id: created.id, ...(payload as any) };
 setTrips((prev) => [...prev, newTrip].sort(compareTripTime));
 
-closeAddModal();
+closeAddModal(true);
     } catch (e: any) {
       setAddErr(e?.message || "Failed to add trip.");
     } finally {
@@ -4210,8 +4211,8 @@ useEffect(() => {
         .filter((item) => item.active);
 
       const techItems: TechRow[] = allUsers
-        .filter((item) => normalizeRole(item.role) === "technician")
-        .map((item) => ({ uid: item.uid, name: item.displayName }))
+        .filter((item) => ["technician", "manager"].includes(normalizeRole(item.role)))
+        .map((item) => ({ uid: item.uid, name: item.displayName, role: normalizeRole(item.role) }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
       const legacyPairingByUserUid = new Map(
@@ -4705,9 +4706,24 @@ useEffect(() => {
       return out;
     }
 
-    for (const tech of techs) out.push({ key: tech.uid, label: tech.name, uid: tech.uid });
+    for (const tech of techs) {
+      // Daniel is an occasional field lead: retain scheduling eligibility, but
+      // only display his row when assigned a trip in the currently viewed range.
+      const isDaniel =
+        tech.role === "manager" &&
+        /^daniel(?:\s+cernoch)?$/i.test(tech.name.trim());
+      const hasTripInView = trips.some(
+        (trip) =>
+          trip.active !== false &&
+          normalizeStatus(trip.status) !== "cancelled" &&
+          normalizeStatus(trip.status) !== "canceled" &&
+          isTechOnTrip(trip, tech.uid)
+      );
+      if (isDaniel && !hasTripInView) continue;
+      out.push({ key: tech.uid, label: tech.name, uid: tech.uid });
+    }
     return out;
-  }, [techs, filteredTrips, techFilter]);
+  }, [techs, filteredTrips, techFilter, trips]);
 
   const grid = useMemo(() => {
     const out = new Map<string, Map<string, TripDoc[]>>();
@@ -5522,15 +5538,6 @@ function renderStaffCoverageCards(dateIso: string) {
             </Stack>
           ) : null}
 
-          {info.addressLine ? (
-            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ pl: 4.35, minWidth: 0 }}>
-              <LocationOnRoundedIcon sx={{ fontSize: 13.5, color: "text.secondary", flexShrink: 0 }} />
-              <Typography variant="caption" sx={{ color: "text.secondary", minWidth: 0 }} noWrap>
-                {info.addressLine}
-              </Typography>
-            </Stack>
-          ) : null}
-
           <Box sx={{ pl: 4.35 }}>
             {renderCrewExceptionLine(trip, opts?.defaultHelperUids || [])}
           </Box>
@@ -5874,7 +5881,7 @@ function renderStaffCoverageCards(dateIso: string) {
                           }}
                         >
                           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                            {emptyLabel}{canShowScheduleAction && emptyLabel === "Open" ? " • + Add" : ""}
+                            {emptyLabel === "Open" && canShowScheduleAction ? "+" : emptyLabel}
                           </Typography>
                         </Paper>
                       )}
@@ -5908,7 +5915,7 @@ function renderStaffCoverageCards(dateIso: string) {
                           }}
                         >
                           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                            {emptyLabel}{canShowScheduleAction && emptyLabel === "Open" ? " • + Add" : ""}
+                            {emptyLabel === "Open" && canShowScheduleAction ? "+" : emptyLabel}
                           </Typography>
                         </Paper>
                       )}
@@ -5923,19 +5930,6 @@ function renderStaffCoverageCards(dateIso: string) {
     );
   }
 
-
-  function weekScheduledSlotCount(rowKey: string) {
-    let count = 0;
-
-    for (const day of visibleWeekDays) {
-      const iso = toIsoDate(day);
-      const dayTrips = fullGrid.get(rowKey)?.get(iso) || [];
-      if (dayTrips.some((trip) => tripBlocksSlot(trip, "am"))) count += 1;
-      if (dayTrips.some((trip) => tripBlocksSlot(trip, "pm"))) count += 1;
-    }
-
-    return count;
-  }
 
   function renderWeekTripMiniCard(
     trip: TripDoc,
@@ -6176,10 +6170,10 @@ function renderStaffCoverageCards(dateIso: string) {
         : availability.meetings.some((event) => eventBlocksSlot(event, slot))
           ? "Meeting"
           : hardBusy
-            ? `Busy ${slotLabel}`
+            ? "Busy"
             : softBusy
-              ? `Busy ${slotLabel}`
-              : `Open ${slotLabel}`;
+              ? "Booked"
+              : "Open";
 
     return (
       <Box
@@ -6223,7 +6217,7 @@ function renderStaffCoverageCards(dateIso: string) {
                   lineHeight: 1.1,
                 }}
               >
-                {isOverrideAction ? "Override" : "Add"}
+                {isOverrideAction ? "Override" : "+"}
               </Button>
             ) : null}
           </Stack>
@@ -6444,15 +6438,6 @@ function renderStaffCoverageCards(dateIso: string) {
                 const rowKey = row.key === "UNASSIGNED" ? "UNASSIGNED" : row.key;
                 const crewHelpers = defaultCrewHelpersForLead(row.uid);
                 const defaultHelperUids = crewHelpers.map((helper) => helper.uid);
-                const scheduledSlots = weekScheduledSlotCount(rowKey);
-                const totalSlots = dayCount * 2;
-                const capacityColor =
-                  scheduledSlots >= totalSlots
-                    ? "success"
-                    : scheduledSlots > 0
-                      ? "warning"
-                      : "default";
-
                 return (
                   <Box
                     key={`week_row_${rowKey}`}
@@ -6490,21 +6475,6 @@ function renderStaffCoverageCards(dateIso: string) {
                           </Typography>
                         ) : null}
 
-                        {rowKey !== "UNASSIGNED" ? (
-                          <Chip
-                            size="small"
-                            label={`${scheduledSlots}/${totalSlots} slots scheduled`}
-                            color={capacityColor as "default" | "success" | "warning"}
-                            variant="outlined"
-                            sx={{
-                              height: 21,
-                              width: "fit-content",
-                              borderRadius: 999,
-                              fontSize: 9.5,
-                              fontWeight: 850,
-                            }}
-                          />
-                        ) : null}
                       </Stack>
                     </Box>
 
@@ -6775,8 +6745,6 @@ function renderStaffCoverageCards(dateIso: string) {
           const { amTrips, pmTrips, allDayTrips } = splitTripsForDayBoard(cellTrips);
           const crewHelpers = defaultCrewHelpersForLead(row.uid);
           const defaultHelperUids = crewHelpers.map((helper) => helper.uid);
-          const scheduledSlots = weekScheduledSlotCount(rowKey);
-          const totalSlots = Math.max(visibleWeekDays.length * 2, 1);
 
           return (
             <Paper
@@ -6805,15 +6773,6 @@ function renderStaffCoverageCards(dateIso: string) {
                     ) : null}
                   </Box>
 
-                  {rowKey !== "UNASSIGNED" ? (
-                    <Chip
-                      size="small"
-                      label={`${scheduledSlots}/${totalSlots}`}
-                      color={scheduledSlots >= totalSlots ? "success" : scheduledSlots > 0 ? "warning" : "default"}
-                      variant="outlined"
-                      sx={{ height: 20, borderRadius: 999, fontSize: 9.5, fontWeight: 850, flexShrink: 0 }}
-                    />
-                  ) : null}
                 </Stack>
               </Box>
 
@@ -7002,6 +6961,44 @@ function renderStaffCoverageCards(dateIso: string) {
     );
   }
 
+
+  function renderTripWindowPicker() {
+    return (
+      <Box>
+        <Typography variant="subtitle2" sx={{ mb: 0.65, fontWeight: 800 }}>
+          Time window
+        </Typography>
+        <ToggleButtonGroup
+          exclusive
+          fullWidth
+          size="medium"
+          value={addSlot}
+          onChange={(_, next: SlotKey | null) => {
+            if (next && !addSaving) {
+              setAddSlot(next);
+              setAddErr("");
+              setAddDispatchOverrideEnabled(false);
+              setAddDispatchOverrideReason("");
+            }
+          }}
+          sx={{
+            "& .MuiToggleButton-root": {
+              flex: 1,
+              minWidth: 0,
+              textTransform: "none",
+              fontWeight: 800,
+              py: 1,
+            },
+          }}
+        >
+          <ToggleButton value="am" disabled={addSaving}>AM</ToggleButton>
+          <ToggleButton value="pm" disabled={addSaving}>PM</ToggleButton>
+          <ToggleButton value="all_day" disabled={addSaving}>All Day</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+    );
+  }
+
   function renderMobileAddTripContent() {
     const pickerItems = currentPickerItems();
     const ticketCount = addTripType === "service" ? openTicketItems.length : openProjectItems.length;
@@ -7044,12 +7041,13 @@ function renderStaffCoverageCards(dateIso: string) {
               variant="outlined"
               sx={{ borderRadius: 999, fontWeight: 800 }}
             />
-            <Chip
-              label={addPrimaryHelper?.name ? `Helper: ${addPrimaryHelper.name}` : "No helper"}
-              color={addPrimaryHelper?.name ? "success" : "warning"}
-              variant="outlined"
-              sx={{ borderRadius: 999, fontWeight: 800 }}
-            />
+            {addPrimaryHelper?.name ? (
+              <Chip
+                label={addPrimaryHelper.name}
+                variant="outlined"
+                sx={{ borderRadius: 999, fontWeight: 700 }}
+              />
+            ) : null}
             <Chip
               label={`${addDateIso || "Date"} • ${formatSlotLabel(addSlot)}`}
               variant="outlined"
@@ -7075,6 +7073,7 @@ function renderStaffCoverageCards(dateIso: string) {
           }}
         >
           <Stack spacing={1.5}>
+            {renderTripWindowPicker()}
             <Box
               sx={{
                 display: "grid",
@@ -7151,7 +7150,7 @@ function renderStaffCoverageCards(dateIso: string) {
                   </Button>
                 }
               >
-                Estimated at {addEstimateHours} hours. All Day is recommended.
+                Est. {addEstimateHours}h — consider All Day.
               </Alert>
             ) : null}
 
@@ -7980,7 +7979,7 @@ function renderStaffCoverageCards(dateIso: string) {
                       endIcon={<KeyboardArrowDownRoundedIcon />}
                       onClick={openAddScheduleMenu}
                     >
-                      Add Schedule
+                      Add
                     </Button>
                   ) : null}
 
@@ -8023,7 +8022,7 @@ function renderStaffCoverageCards(dateIso: string) {
               >
                 <SectionHeader
                   title="Filters"
-                  subtitle="Refine the schedule by technician, status, completion state, and past-day visibility."
+
                 />
 
                 <Box sx={{ mt: 1.5 }}>
@@ -8350,7 +8349,7 @@ function renderStaffCoverageCards(dateIso: string) {
 
             {!canSeeAll ? (
               <Alert severity="info" variant="outlined">
-                Role-based schedule visibility can be tightened later if you want more restricted access.
+                Your role has limited schedule visibility.
               </Alert>
             ) : null}
           </Stack>
@@ -8479,13 +8478,13 @@ function renderStaffCoverageCards(dateIso: string) {
             <Stack spacing={1.35}>
               <Box>
                 <Typography variant="h6" sx={{ fontWeight: 850, letterSpacing: "-0.02em" }}>
-                  Schedule for
+                  Schedule
                 </Typography>
                 <Typography variant="h6" sx={{ fontWeight: 850, letterSpacing: "-0.02em" }}>
                   {findTechName(quickScheduleTechUid) || "Technician"}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  {quickScheduleDateIso ? formatDateLong(quickScheduleDateIso) : "Choose a time window."}
+                  {quickScheduleDateIso ? formatDateLong(quickScheduleDateIso) : ""}
                 </Typography>
               </Box>
 
@@ -8493,23 +8492,23 @@ function renderStaffCoverageCards(dateIso: string) {
                 {
                   slot: "am" as SlotKey,
                   title: "AM",
-                  subtitle: "Morning",
+                  subtitle: "8–12",
                   disabled: quickScheduleIsPast || Boolean(quickScheduleAvailability?.amHardBusy),
-                  action: quickScheduleAvailability?.amSoftBusy ? "Override AM" : "Add AM",
+                  action: quickScheduleAvailability?.amSoftBusy ? "Override" : "Select",
                 },
                 {
                   slot: "pm" as SlotKey,
                   title: "PM",
-                  subtitle: "Afternoon",
+                  subtitle: "1–5",
                   disabled: quickScheduleIsPast || Boolean(quickScheduleAvailability?.pmHardBusy),
-                  action: quickScheduleAvailability?.pmSoftBusy ? "Override PM" : "Add PM",
+                  action: quickScheduleAvailability?.pmSoftBusy ? "Override" : "Select",
                 },
                 {
                   slot: "all_day" as SlotKey,
                   title: "All Day",
-                  subtitle: "Full day",
+                  subtitle: "8–5",
                   disabled: quickScheduleIsPast || Boolean(quickScheduleAvailability?.allDayHardBusy),
-                  action: quickScheduleAvailability?.allDaySoftBusy ? "Override All Day" : "Add All Day",
+                  action: quickScheduleAvailability?.allDaySoftBusy ? "Override" : "Select",
                 },
               ].map((option) => (
                 <Button
@@ -8520,7 +8519,7 @@ function renderStaffCoverageCards(dateIso: string) {
                   onClick={() => chooseQuickScheduleSlot(option.slot)}
                   sx={{
                     justifyContent: "space-between",
-                    minHeight: 68,
+                    minHeight: 52,
                     borderRadius: 2,
                     px: 1.5,
                     textTransform: "none",
@@ -8544,7 +8543,7 @@ function renderStaffCoverageCards(dateIso: string) {
                   <Typography
                     variant="body2"
                     sx={{
-                      color: option.action.startsWith("Override")
+                      color: option.action === "Override"
                         ? "warning.main"
                         : "primary.light",
                       fontWeight: 850,
@@ -8602,7 +8601,7 @@ function renderStaffCoverageCards(dateIso: string) {
 
         <Dialog
           open={addOpen}
-          onClose={closeAddModal}
+          onClose={() => closeAddModal()}
           fullScreen={isMobile}
           fullWidth
           maxWidth="md"
@@ -8623,6 +8622,7 @@ function renderStaffCoverageCards(dateIso: string) {
           <DialogTitle>Schedule Trip</DialogTitle>
           <DialogContent dividers>
             <Stack spacing={2}>
+              {renderTripWindowPicker()}
 <Paper
   variant="outlined"
   sx={{
@@ -8632,12 +8632,10 @@ function renderStaffCoverageCards(dateIso: string) {
   }}
 >
   <Stack spacing={0.75}>
-    <Typography variant="body2" color="text.secondary">
-      Tech: <strong>{findTechName(addTechUid) || addTechUid}</strong>
-    </Typography>
-
-    <Typography variant="body2" color="text.secondary">
-      Helper: <strong>{addPrimaryHelper?.name || "—"}</strong>
+    <Typography variant="body2" sx={{ fontWeight: 800 }}>
+      {findTechName(addTechUid) || addTechUid}
+      {addPrimaryHelper?.name ? ` + ${addPrimaryHelper.name}` : ""}
+      {addSecondaryHelper?.name ? ` + ${addSecondaryHelper.name}` : ""}
     </Typography>
 
     {unavailableDefaultHelperMessage ? (
@@ -8646,14 +8644,8 @@ function renderStaffCoverageCards(dateIso: string) {
       </Alert>
     ) : null}
 
-    {addSecondaryHelper ? (
-      <Typography variant="body2" color="text.secondary">
-        Additional Helper: <strong>{addSecondaryHelper.name}</strong>
-      </Typography>
-    ) : null}
-
     <Typography variant="body2" color="text.secondary">
-      Date: <strong>{addDateIso}</strong> • Window: <strong>{formatSlotLabel(addSlot)}</strong>
+      {addDateIso} • {formatSlotLabel(addSlot)}
     </Typography>
 
     {addTripType === "project" && selectedProjectStage ? (
@@ -8822,9 +8814,6 @@ function renderStaffCoverageCards(dateIso: string) {
                       </MenuItem>
                     ))}
                   </Select>
-                  <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, px: 0.25 }}>
-                    Completed project stages are hidden and cannot be scheduled.
-                  </Typography>
                 </FormControl>
               ) : null}
 
@@ -8839,11 +8828,11 @@ function renderStaffCoverageCards(dateIso: string) {
                       onClick={() => setAddSlot("all_day")}
                       disabled={addSaving}
                     >
-                      Switch to All Day
+                      All Day
                     </Button>
                   }
                 >
-                  This ticket is estimated at {addEstimateHours} hours. All Day is recommended so it blocks both AM and PM for the crew.
+                  Est. {addEstimateHours}h — consider All Day.
                 </Alert>
               ) : null}
 
@@ -8856,7 +8845,7 @@ function renderStaffCoverageCards(dateIso: string) {
                   setAddProjectStageKey("");
                 }}
                 disabled={addSaving}
-                helperText="Only use if you need to schedule something not in the list."
+
               />
 
               <TextField
@@ -8925,7 +8914,7 @@ function renderStaffCoverageCards(dateIso: string) {
             }}
           >
             <Button
-              onClick={closeAddModal}
+              onClick={() => closeAddModal()}
               disabled={addSaving}
               fullWidth={isMobile}
               sx={{ borderRadius: isMobile ? 2 : undefined, minHeight: isMobile ? 48 : undefined }}
