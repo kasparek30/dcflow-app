@@ -2163,6 +2163,34 @@ function deriveTicketStatusFromTrips(args: {
   if (currentStatus === "invoiced") return "invoiced";
   if (currentStatus === "cancelled") return "cancelled";
 
+  /*
+   * Follow Up is intentionally sticky.
+   *
+   * A ticket can be corrected by the office from Completed -> Follow Up after
+   * a technician accidentally closes the trip as Resolved. Routine page loads,
+   * note edits, attachment updates, etc. must not silently undo that correction
+   * just because the historical trip previously said "resolved".
+   *
+   * Real lifecycle actions (for example finishTrip) pass lastCompletedOutcome,
+   * which gives them permission to move the ticket out of Follow Up.
+   */
+  const hasExplicitCompletedOutcome =
+    args.lastCompletedOutcome !== undefined &&
+    args.lastCompletedOutcome !== null &&
+    String(args.lastCompletedOutcome).trim() !== "";
+
+  if (currentStatus === "follow_up" && !hasExplicitCompletedOutcome) {
+    const activeTrips = args.trips.filter((trip) => trip.active !== false);
+    const hasInProgressTrip = activeTrips.some(
+      (trip) => normalizeTripStatus(trip.status) === "in_progress",
+    );
+
+    // Starting a return visit is an explicit lifecycle progression.
+    if (hasInProgressTrip) return "in_progress";
+
+    return "follow_up";
+  }
+
   const activeTrips = args.trips.filter((trip) => trip.active !== false);
 
   if (activeTrips.length === 0) {
@@ -4735,6 +4763,129 @@ Supply line`}
       ].filter(Boolean);
 
       const ticketRef = doc(db, "serviceTickets", ticket.id);
+
+      /*
+       * Office lifecycle correction: Completed -> Follow Up.
+       *
+       * Do not only change the ticket status here. If the latest completed trip
+       * still says outcome=resolved, the lifecycle reconciler can later decide
+       * the ticket is Completed again. Keep the ticket and source trip aligned
+       * in one batch so Follow Up remains authoritative until a real lifecycle
+       * action resolves/closes it.
+       */
+      if (ticket.status === "completed" && nextStatus === "follow_up") {
+        const latestCompletedTrip = getLatestCompletedTripForLifecycle(trips);
+
+        if (!latestCompletedTrip) {
+          setTicketEditErr(
+            "This completed ticket does not have a completed trip to reopen as Follow Up.",
+          );
+          return;
+        }
+
+        if (hasOpenTrips(trips)) {
+          setTicketEditErr(
+            "This ticket already has an open trip. Finish or cancel that trip before correcting the completed ticket to Follow Up.",
+          );
+          return;
+        }
+
+        const batch = writeBatch(db);
+        const activityRef = doc(
+          collection(db, "serviceTickets", ticket.id, "activity"),
+        );
+
+        batch.update(doc(db, "trips", latestCompletedTrip.id), {
+          outcome: "follow_up",
+          readyToBillAt: null,
+          updatedAt: now,
+          updatedByUid: myUid || null,
+        });
+
+        batch.update(
+          ticketRef,
+          stripUndefined({
+            status: "follow_up",
+            issueSummary: summary,
+            estimatedDurationMinutes,
+            issueDetails: ticketIssueDetailsEdit.trim() || null,
+            billing: null,
+            followUpClosure: null,
+            lifecycleReconciledAt: null,
+            ...getTicketAuditFields(now),
+          }),
+        );
+
+        const correctionActivityEntry: ServiceTicketActivityEntry = {
+          id: activityRef.id,
+          type: "service_ticket_reopened_follow_up",
+          title: "Ticket Corrected to Follow Up",
+          description:
+            "Office corrected a completed service ticket to Follow Up. The latest completed trip outcome was updated to match so the ticket remains in Follow Up until explicitly resolved or closed.",
+          details: [
+            `Source trip: ${latestCompletedTrip.id}`,
+            `Previous trip outcome: ${
+              String(latestCompletedTrip.outcome || "resolved").trim() ||
+              "resolved"
+            }`,
+            ...overviewActivityDetails.filter(
+              (detail) => !String(detail).startsWith("Status:"),
+            ),
+          ],
+          createdAt: now,
+          createdByUid: myUid || null,
+          createdByName: appUser?.displayName || "System",
+          createdByRole: appUser?.role || null,
+        };
+
+        batch.set(activityRef, {
+          type: correctionActivityEntry.type,
+          title: correctionActivityEntry.title,
+          description: correctionActivityEntry.description,
+          details: correctionActivityEntry.details,
+          createdAt: now,
+          createdByUid: correctionActivityEntry.createdByUid,
+          createdByName: correctionActivityEntry.createdByName,
+          createdByRole: correctionActivityEntry.createdByRole,
+        });
+
+        await batch.commit();
+
+        const nextTrips = trips.map((trip) =>
+          trip.id === latestCompletedTrip.id
+            ? {
+                ...trip,
+                outcome: "follow_up",
+                readyToBillAt: null,
+                updatedAt: now,
+                updatedByUid: myUid || null,
+              }
+            : trip,
+        );
+
+        setTrips(nextTrips);
+        setTicket((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "follow_up",
+                issueSummary: summary,
+                estimatedDurationMinutes,
+                issueDetails: ticketIssueDetailsEdit.trim() || undefined,
+                billing: null,
+                followUpClosure: null,
+                ...getTicketAuditFields(now),
+              }
+            : prev,
+        );
+        setTicketStatusEdit("follow_up");
+        setTicketEstimatedHoursEdit(String(hours));
+        setActivityEntries((prev) => [correctionActivityEntry, ...prev]);
+        setTicketEditOk(
+          "Ticket corrected to Follow Up. It will stay in Follow Up until the follow-up is explicitly resolved or closed.",
+        );
+        return;
+      }
 
       if (nextStatus === "cancelled") {
         const today = isoTodayLocal();
