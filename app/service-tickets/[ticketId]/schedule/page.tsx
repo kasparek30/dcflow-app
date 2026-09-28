@@ -120,6 +120,24 @@ type PtoRequestLite = {
   partialEndTime?: string | null;
 };
 
+type EmployeeUnavailabilityLite = {
+  id: string;
+  uid: string;
+  displayName: string;
+  date: string;
+  startDate: string;
+  endDate: string;
+  allDay: boolean;
+  startTime?: string | null;
+  endTime?: string | null;
+  requestDayType?: "full_day" | "partial_day";
+  partialDayType?: "am" | "pm" | "custom" | null;
+  type: string;
+  reason?: string | null;
+  source?: string | null;
+  active: boolean;
+};
+
 type CompanyHolidayLite = {
   id: string;
   date: string;
@@ -165,6 +183,14 @@ type SelectedOverlapConflict = {
   previewTitle: string;
   previewSubtitle?: string;
   estimatedDurationLabel: string;
+};
+
+type SelectedUnavailabilityConflict = {
+  memberUid: string;
+  memberName: string;
+  blockId: string;
+  type: string;
+  detail: string;
 };
 
 function nowIso() {
@@ -480,6 +506,105 @@ function ptoBlocksSelection(args: {
 
 function buildPtoDetailLabel(request: PtoRequestLite) {
   return getPtoRangeForRequest(request).label;
+}
+
+function normalizeUnavailabilityTypeLabel(value?: string | null) {
+  const normalized = normalizeStatus(value);
+  if (normalized === "pto") return "PTO";
+  if (normalized === "sick") return "Sick";
+  if (normalized === "unpaid") return "Unpaid";
+  if (normalized === "holiday") return "Holiday";
+  if (normalized === "other") return "Other";
+  return "Unavailable";
+}
+
+function getUnavailabilityDateRange(block: EmployeeUnavailabilityLite) {
+  const startDate = String(block.startDate || block.date || "").trim();
+  const endDate = String(block.endDate || block.startDate || block.date || "").trim();
+  return { startDate, endDate };
+}
+
+function getUnavailabilityTimeRange(block: EmployeeUnavailabilityLite) {
+  const requestDayType = normalizeRequestDayType(block.requestDayType);
+  const isAllDay = block.allDay !== false && requestDayType !== "partial_day";
+
+  if (isAllDay) {
+    return { start: "00:00", end: "23:59", label: "All Day" };
+  }
+
+  const partialDayType = normalizePartialDayType(block.partialDayType);
+
+  if (partialDayType === "am") {
+    const times = windowToTimes("am");
+    return {
+      start: times.start,
+      end: times.end,
+      label: `${formatTime12h(times.start)}–${formatTime12h(times.end)}`,
+    };
+  }
+
+  if (partialDayType === "pm") {
+    const times = windowToTimes("pm");
+    return {
+      start: times.start,
+      end: times.end,
+      label: `${formatTime12h(times.start)}–${formatTime12h(times.end)}`,
+    };
+  }
+
+  const start = String(block.startTime || "").trim();
+  const end = String(block.endTime || "").trim();
+
+  if (getMinutesBetween(start, end) > 0) {
+    return {
+      start,
+      end,
+      label: `${formatTime12h(start)}–${formatTime12h(end)}`,
+    };
+  }
+
+  return { start: "00:00", end: "23:59", label: "All Day" };
+}
+
+function unavailabilityBlocksSelection(args: {
+  block: EmployeeUnavailabilityLite;
+  date: string;
+  timeWindow: TripTimeWindow;
+  startTime: string;
+  endTime: string;
+}) {
+  if (args.block.active === false) return false;
+
+  const { startDate, endDate } = getUnavailabilityDateRange(args.block);
+  if (!startDate || !endDate) return false;
+  if (args.date < startDate || args.date > endDate) return false;
+
+  const requestDayType = normalizeRequestDayType(args.block.requestDayType);
+  const isAllDay = args.block.allDay !== false && requestDayType !== "partial_day";
+  if (isAllDay) return true;
+
+  const absenceRange = getUnavailabilityTimeRange(args.block);
+  const selectedRange = getRangeForWindow({
+    timeWindow: args.timeWindow,
+    startTime: args.startTime,
+    endTime: args.endTime,
+  });
+
+  return rangesOverlap(
+    selectedRange.start,
+    selectedRange.end,
+    absenceRange.start,
+    absenceRange.end
+  );
+}
+
+function buildUnavailabilityDetailLabel(block: EmployeeUnavailabilityLite) {
+  const typeLabel = normalizeUnavailabilityTypeLabel(block.type);
+  const timingLabel = getUnavailabilityTimeRange(block).label;
+  const reason = String(block.reason || "").trim();
+  return reason
+    ? `${typeLabel} • ${timingLabel} • ${reason}`
+    : `${typeLabel} • ${timingLabel}`;
 }
 
 function getTripEstimatedDurationMinutes(trip: TripDocLite) {
@@ -861,6 +986,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
   const [ticketTrips, setTicketTrips] = useState<TripDocLite[]>([]);
 
   const [allPtoRequests, setAllPtoRequests] = useState<PtoRequestLite[]>([]);
+  const [allUnavailability, setAllUnavailability] = useState<EmployeeUnavailabilityLite[]>([]);
   const [allHolidays, setAllHolidays] = useState<CompanyHolidayLite[]>([]);
   const [dayTrips, setDayTrips] = useState<TripDocLite[]>([]);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
@@ -909,7 +1035,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           issueSummary: String(data.issueSummary || ""),
         });
 
-        const [usersSnap, profilesSnap, tripsSnap, ptoSnap, holidaysSnap] =
+        const [usersSnap, profilesSnap, tripsSnap, ptoSnap, unavailabilitySnap, holidaysSnap] =
           await Promise.all([
             getDocs(collection(db, "users")),
             getDocs(collection(db, "employeeProfiles")),
@@ -922,6 +1048,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
               )
             ),
             getDocs(collection(db, "ptoRequests")),
+            getDocs(collection(db, "employeeUnavailability")),
             getDocs(collection(db, "companyHolidays")),
           ]);
 
@@ -1009,6 +1136,46 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
           } satisfies PtoRequestLite;
         });
 
+        const nextUnavailability = unavailabilitySnap.docs.map((ds) => {
+          const item: any = ds.data();
+          const uid = String(item.uid ?? item.employeeId ?? item.userUid ?? "").trim();
+          const date = String(item.date ?? item.startDate ?? "").trim();
+          const startDate = String(item.startDate ?? item.date ?? "").trim();
+          const endDate = String(item.endDate ?? item.startDate ?? item.date ?? "").trim();
+          const requestDayType = normalizeRequestDayType(
+            item.requestDayType ??
+              (item.allDay === false || item.partialDayType || item.startTime || item.endTime
+                ? "partial_day"
+                : "full_day")
+          );
+
+          return {
+            id: ds.id,
+            uid,
+            displayName: String(item.displayName ?? item.employeeName ?? "").trim(),
+            date,
+            startDate,
+            endDate,
+            allDay:
+              typeof item.allDay === "boolean"
+                ? item.allDay
+                : requestDayType !== "partial_day",
+            startTime: item.startTime ?? item.partialStartTime ?? null,
+            endTime: item.endTime ?? item.partialEndTime ?? null,
+            requestDayType,
+            partialDayType:
+              item.partialDayType != null
+                ? normalizePartialDayType(item.partialDayType)
+                : requestDayType === "partial_day"
+                  ? "custom"
+                  : null,
+            type: String(item.type || "other"),
+            reason: item.reason != null ? String(item.reason) : null,
+            source: item.source != null ? String(item.source) : null,
+            active: item.active !== false,
+          } satisfies EmployeeUnavailabilityLite;
+        });
+
         const nextHolidays = holidaysSnap.docs
           .map((ds) => normalizeCompanyHoliday(ds.data(), ds.id))
           .filter((holiday): holiday is CompanyHolidayLite => Boolean(holiday));
@@ -1017,6 +1184,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         setHelpers(nextHelpers);
         setTicketTrips(nextTicketTrips);
         setAllPtoRequests(nextPto);
+        setAllUnavailability(nextUnavailability);
         setAllHolidays(nextHolidays);
       } catch (err: unknown) {
         setError(
@@ -1042,37 +1210,12 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     return getNextBusinessDays(initialBusinessDate, visibleBusinessDayCount);
   }, [initialBusinessDate, visibleBusinessDayCount]);
 
-  const defaultHelpersForPrimary = useMemo(() => {
-    if (!selectedPrimaryUid) return [] as HelperOption[];
-
-    return helpers
-      .filter(
-        (helper) =>
-          String(helper.defaultPairedTechUid || "").trim() === selectedPrimaryUid
-      )
-      .slice(0, 2);
-  }, [helpers, selectedPrimaryUid]);
-
   const primaryTechnicianName = useMemo(
     () =>
       technicians.find((tech) => tech.uid === selectedPrimaryUid)?.displayName ||
       "Selected technician",
     [technicians, selectedPrimaryUid]
   );
-
-  useEffect(() => {
-    if (!useDefaultHelper) return;
-    if (!selectedPrimaryUid) {
-      setSelectedHelperUid("");
-      setSelectedSecondaryHelperUid("");
-      setSelectedSecondaryUid("");
-      setShowAdditionalTechnician(false);
-      return;
-    }
-
-    setSelectedHelperUid(defaultHelpersForPrimary[0]?.uid || "");
-    setSelectedSecondaryHelperUid(defaultHelpersForPrimary[1]?.uid || "");
-  }, [useDefaultHelper, selectedPrimaryUid, defaultHelpersForPrimary]);
 
   useEffect(() => {
     setHolidayOverrideEnabled(false);
@@ -1125,6 +1268,78 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     return allPtoRequests.filter((request) => dateFallsWithinPto(selectedDate, request));
   }, [allPtoRequests, selectedDate]);
 
+  const selectedDateUnavailability = useMemo(() => {
+    return allUnavailability.filter((block) => {
+      if (block.active === false) return false;
+      const { startDate, endDate } = getUnavailabilityDateRange(block);
+      return Boolean(startDate && endDate && selectedDate >= startDate && selectedDate <= endDate);
+    });
+  }, [allUnavailability, selectedDate]);
+
+  const selectedUnavailabilityByUid = useMemo(() => {
+    const map = new Map<string, EmployeeUnavailabilityLite>();
+
+    for (const block of selectedDateUnavailability) {
+      if (!block.uid || map.has(block.uid)) continue;
+      if (
+        unavailabilityBlocksSelection({
+          block,
+          date: selectedDate,
+          timeWindow: selectedWindow,
+          startTime: selectedStartTime,
+          endTime: selectedEndTime,
+        })
+      ) {
+        map.set(block.uid, block);
+      }
+    }
+
+    return map;
+  }, [
+    selectedDateUnavailability,
+    selectedDate,
+    selectedWindow,
+    selectedStartTime,
+    selectedEndTime,
+  ]);
+
+  const regularHelpersForPrimary = useMemo(() => {
+    if (!selectedPrimaryUid) return [] as HelperOption[];
+
+    return helpers
+      .filter(
+        (helper) =>
+          String(helper.defaultPairedTechUid || "").trim() === selectedPrimaryUid
+      )
+      .slice(0, 2);
+  }, [helpers, selectedPrimaryUid]);
+
+  const defaultHelpersForPrimary = useMemo(() => {
+    return regularHelpersForPrimary.filter(
+      (helper) => !selectedUnavailabilityByUid.has(helper.uid)
+    );
+  }, [regularHelpersForPrimary, selectedUnavailabilityByUid]);
+
+  const excludedDefaultHelpersForPrimary = useMemo(() => {
+    return regularHelpersForPrimary.filter((helper) =>
+      selectedUnavailabilityByUid.has(helper.uid)
+    );
+  }, [regularHelpersForPrimary, selectedUnavailabilityByUid]);
+
+  useEffect(() => {
+    if (!useDefaultHelper) return;
+    if (!selectedPrimaryUid) {
+      setSelectedHelperUid("");
+      setSelectedSecondaryHelperUid("");
+      setSelectedSecondaryUid("");
+      setShowAdditionalTechnician(false);
+      return;
+    }
+
+    setSelectedHelperUid(defaultHelpersForPrimary[0]?.uid || "");
+    setSelectedSecondaryHelperUid(defaultHelpersForPrimary[1]?.uid || "");
+  }, [useDefaultHelper, selectedPrimaryUid, defaultHelpersForPrimary]);
+
   const selectedMembers = useMemo(() => {
     const techMap = new Map(technicians.map((tech) => [tech.uid, tech.displayName]));
     const helperMap = new Map(helpers.map((helper) => [helper.uid, helper.name]));
@@ -1169,7 +1384,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     > = {};
 
     for (const tech of technicians) {
-      const am = analyzeMemberAvailability({
+      const amBase = analyzeMemberAvailability({
         uid: tech.uid,
         name: tech.displayName,
         date: selectedDate,
@@ -1182,7 +1397,28 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         holidayOverrideEnabled,
       }).status;
 
-      const pm = analyzeMemberAvailability({
+      const amBlock = selectedDateUnavailability.find(
+        (block) =>
+          block.uid === tech.uid &&
+          unavailabilityBlocksSelection({
+            block,
+            date: selectedDate,
+            timeWindow: "am",
+            startTime: windowToTimes("am").start,
+            endTime: windowToTimes("am").end,
+          })
+      );
+
+      const am: PlannerSlotStatus = amBlock
+        ? {
+            kind: "approved_pto",
+            label: "Unavailable",
+            detail: buildUnavailabilityDetailLabel(amBlock),
+            disabled: true,
+          }
+        : amBase;
+
+      const pmBase = analyzeMemberAvailability({
         uid: tech.uid,
         name: tech.displayName,
         date: selectedDate,
@@ -1195,7 +1431,28 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         holidayOverrideEnabled,
       }).status;
 
-      const allDay = analyzeMemberAvailability({
+      const pmBlock = selectedDateUnavailability.find(
+        (block) =>
+          block.uid === tech.uid &&
+          unavailabilityBlocksSelection({
+            block,
+            date: selectedDate,
+            timeWindow: "pm",
+            startTime: windowToTimes("pm").start,
+            endTime: windowToTimes("pm").end,
+          })
+      );
+
+      const pm: PlannerSlotStatus = pmBlock
+        ? {
+            kind: "approved_pto",
+            label: "Unavailable",
+            detail: buildUnavailabilityDetailLabel(pmBlock),
+            disabled: true,
+          }
+        : pmBase;
+
+      const allDayBase = analyzeMemberAvailability({
         uid: tech.uid,
         name: tech.displayName,
         date: selectedDate,
@@ -1207,6 +1464,27 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         dayTrips,
         holidayOverrideEnabled,
       }).status;
+
+      const allDayBlock = selectedDateUnavailability.find(
+        (block) =>
+          block.uid === tech.uid &&
+          unavailabilityBlocksSelection({
+            block,
+            date: selectedDate,
+            timeWindow: "all_day",
+            startTime: windowToTimes("all_day").start,
+            endTime: windowToTimes("all_day").end,
+          })
+      );
+
+      const allDay: PlannerSlotStatus = allDayBlock
+        ? {
+            kind: "approved_pto",
+            label: "Unavailable",
+            detail: buildUnavailabilityDetailLabel(allDayBlock),
+            disabled: true,
+          }
+        : allDayBase;
 
       out[tech.uid] = {
         am,
@@ -1221,6 +1499,7 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     selectedDate,
     selectedDateHolidays,
     selectedDatePto,
+    selectedDateUnavailability,
     dayTrips,
     holidayOverrideEnabled,
   ]);
@@ -1240,7 +1519,22 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         holidayOverrideEnabled,
       });
 
-      return analysis.summary;
+      const block = selectedUnavailabilityByUid.get(member.uid);
+      if (!block) return analysis.summary;
+
+      return {
+        ...analysis.summary,
+        reasons: [
+          buildReason(
+            "approved_pto",
+            "Unavailable",
+            buildUnavailabilityDetailLabel(block)
+          ),
+          ...analysis.summary.reasons.filter(
+            (reason) => reason.kind !== "approved_pto"
+          ),
+        ],
+      } satisfies PlannerCrewSummary;
     });
   }, [
     selectedMembers,
@@ -1250,9 +1544,29 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     selectedEndTime,
     selectedDateHolidays,
     selectedDatePto,
+    selectedUnavailabilityByUid,
     dayTrips,
     holidayOverrideEnabled,
   ]);
+
+  const selectedUnavailabilityConflicts = useMemo(() => {
+    const out: SelectedUnavailabilityConflict[] = [];
+
+    for (const member of selectedMembers) {
+      const block = selectedUnavailabilityByUid.get(member.uid);
+      if (!block) continue;
+
+      out.push({
+        memberUid: member.uid,
+        memberName: member.name,
+        blockId: block.id,
+        type: normalizeUnavailabilityTypeLabel(block.type),
+        detail: buildUnavailabilityDetailLabel(block),
+      });
+    }
+
+    return out;
+  }, [selectedMembers, selectedUnavailabilityByUid]);
 
   const selectedOverlapConflicts = useMemo(() => {
     const selectedRange = getRangeForWindow({
@@ -1345,11 +1659,14 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
   }, [existingActiveTicketTrips]);
 
   useEffect(() => {
-    if (selectedOverlapConflicts.length === 0) {
+    if (
+      selectedOverlapConflicts.length === 0 &&
+      selectedUnavailabilityConflicts.length === 0
+    ) {
       setDispatchOverrideEnabled(false);
       setDispatchOverrideReason("");
     }
-  }, [selectedOverlapConflicts]);
+  }, [selectedOverlapConflicts, selectedUnavailabilityConflicts]);
 
   function handlePickSlot(uid: string, window: Exclude<TripTimeWindow, "custom">) {
     setSelectedPrimaryUid(uid);
@@ -1429,6 +1746,13 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
       return;
     }
 
+    if (selectedUnavailabilityConflicts.length > 0 && !dispatchOverrideEnabled) {
+      setSaveError(
+        "One or more selected crew members are marked unavailable for this trip time. Remove them or enable Dispatch Override to continue."
+      );
+      return;
+    }
+
     if (selectedOverlapConflicts.length > 0 && !dispatchOverrideEnabled) {
       setSaveError(
         "One or more selected crew members already have an overlapping trip. Enable Dispatch Override to continue."
@@ -1444,7 +1768,8 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
     const blockingReasons = selectedCrewSummary.flatMap((member) =>
       member.reasons.filter(
         (reason) =>
-          reason.kind === "approved_pto" ||
+          (reason.kind === "approved_pto" &&
+            !(reason.label === "Unavailable" && dispatchOverrideEnabled)) ||
           reason.kind === "holiday" ||
           (reason.kind === "overlap" && !dispatchOverrideEnabled)
       )
@@ -1478,7 +1803,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
         : null;
 
       const dispatchOverridePayload =
-        dispatchOverrideEnabled && selectedOverlapConflicts.length > 0
+        dispatchOverrideEnabled &&
+        (selectedOverlapConflicts.length > 0 ||
+          selectedUnavailabilityConflicts.length > 0)
           ? {
               enabled: true,
               reason: dispatchOverrideReason.trim(),
@@ -1486,8 +1813,8 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
               createdByUid: appUser?.uid || null,
               createdByName: (appUser as any)?.displayName || null,
               conflictTypes: Array.from(
-                new Set(
-                  selectedOverlapConflicts.flatMap((conflict) => [
+                new Set([
+                  ...selectedOverlapConflicts.flatMap((conflict) => [
                     conflict.tripStatus === "in_progress"
                       ? "in_progress_overlap"
                       : "scheduled_overlap",
@@ -1496,8 +1823,12 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       : conflict.tripType === "service"
                         ? "service_overlap"
                         : "trip_overlap",
-                  ])
-                )
+                  ]),
+                  ...selectedUnavailabilityConflicts.flatMap((conflict) => [
+                    "employee_unavailable",
+                    `unavailability_${normalizeStatus(conflict.type) || "other"}`,
+                  ]),
+                ])
               ),
               conflictTripIds: overlapConflictTripIds,
             }
@@ -1918,6 +2249,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                         {technicians.map((tech) => (
                           <MenuItem key={tech.uid} value={tech.uid}>
                             {tech.displayName}
+                            {selectedUnavailabilityByUid.has(tech.uid)
+                              ? " — Unavailable"
+                              : ""}
                           </MenuItem>
                         ))}
                       </TextField>
@@ -2002,12 +2336,27 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                             </Stack>
 
                             {useDefaultHelper ? (
-                              defaultHelpersForPrimary.length > 0 ? (
-                                <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
-                                  Regular crew loaded: {defaultHelpersForPrimary
-                                    .map((helper) => helper.name)
-                                    .join(" and ")}. Adjust below only if this trip uses a different crew.
-                                </Alert>
+                              regularHelpersForPrimary.length > 0 ? (
+                                excludedDefaultHelpersForPrimary.length > 0 ? (
+                                  <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2 }}>
+                                    Regular crew adjusted: {defaultHelpersForPrimary.length > 0
+                                      ? `${defaultHelpersForPrimary
+                                          .map((helper) => helper.name)
+                                          .join(" and ")} loaded. `
+                                      : ""}
+                                    {excludedDefaultHelpersForPrimary
+                                      .map((helper) => helper.name)
+                                      .join(" and ")} {excludedDefaultHelpersForPrimary.length === 1
+                                      ? "was"
+                                      : "were"} not added because they are unavailable for this trip time.
+                                  </Alert>
+                                ) : (
+                                  <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
+                                    Regular crew loaded: {defaultHelpersForPrimary
+                                      .map((helper) => helper.name)
+                                      .join(" and ")}. Adjust below only if this trip uses a different crew.
+                                  </Alert>
+                                )
                               ) : (
                                 <Alert severity="info" variant="outlined" sx={{ borderRadius: 2 }}>
                                   No regular helper / apprentice pairing is saved for {primaryTechnicianName}.
@@ -2039,6 +2388,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                               .map((helper) => (
                                 <MenuItem key={helper.uid} value={helper.uid}>
                                   {helper.name} ({helper.laborRole})
+                                  {selectedUnavailabilityByUid.has(helper.uid)
+                                    ? " — Unavailable"
+                                    : ""}
                                 </MenuItem>
                               ))}
                           </TextField>
@@ -2058,6 +2410,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                               .map((helper) => (
                                 <MenuItem key={helper.uid} value={helper.uid}>
                                   {helper.name} ({helper.laborRole})
+                                  {selectedUnavailabilityByUid.has(helper.uid)
+                                    ? " — Unavailable"
+                                    : ""}
                                 </MenuItem>
                               ))}
                           </TextField>
@@ -2094,6 +2449,9 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                   .map((tech) => (
                                     <MenuItem key={tech.uid} value={tech.uid}>
                                       {tech.displayName}
+                                      {selectedUnavailabilityByUid.has(tech.uid)
+                                        ? " — Unavailable"
+                                        : ""}
                                     </MenuItem>
                                   ))}
                               </TextField>
@@ -2127,7 +2485,8 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                       </Alert>
                     )}
 
-                    {selectedOverlapConflicts.length > 0 ? (
+                    {selectedUnavailabilityConflicts.length > 0 ||
+                    selectedOverlapConflicts.length > 0 ? (
                       <Paper
                         variant="outlined"
                         sx={{
@@ -2138,96 +2497,133 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                         }}
                       >
                         <Stack spacing={1.25}>
-                          <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2 }}>
-                            {hasInProgressOverlap ? (
-                              <>
-                                One or more selected crew members are currently on an <strong>in-progress</strong>{" "}
-                                trip during this time slot. Use Dispatch Override only after confirming they
-                                are wrapping up or transitioning directly to this customer. This new trip will
-                                save as <strong>Planned</strong> only; it will not start or end an active trip.
-                              </>
-                            ) : (
-                              <>
-                                One or more selected crew members already have an overlapping planned trip in
-                                this time slot. You can still dispatch this service trip by using Dispatch
-                                Override.
-                              </>
-                            )}
-                          </Alert>
+                          {selectedUnavailabilityConflicts.length > 0 ? (
+                            <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2 }}>
+                              One or more selected crew members are marked <strong>unavailable</strong>{" "}
+                              during this trip time. They will not be scheduled unless you intentionally
+                              enable Dispatch Override.
+                            </Alert>
+                          ) : null}
 
-                          <Stack spacing={0.75}>
-                            {selectedOverlapConflicts.map((conflict) => (
-                              <Stack
-                                key={`${conflict.memberUid}_${conflict.tripId}`}
-                                direction="row"
-                                spacing={1}
-                                alignItems="flex-start"
-                              >
-                                {conflict.tripType === "service" ? (
-                                  <BuildRoundedIcon
+                          {selectedUnavailabilityConflicts.length > 0 ? (
+                            <Stack spacing={0.75}>
+                              {selectedUnavailabilityConflicts.map((conflict) => (
+                                <Stack
+                                  key={`${conflict.memberUid}_${conflict.blockId}`}
+                                  direction="row"
+                                  spacing={1}
+                                  alignItems="flex-start"
+                                >
+                                  <WarningAmberRoundedIcon
                                     fontSize="small"
-                                    sx={{ mt: "2px", color: "primary.main" }}
+                                    sx={{ mt: "2px", color: "warning.main" }}
                                   />
-                                ) : conflict.tripType === "project" ? (
-                                  <ConstructionRoundedIcon
-                                    fontSize="small"
-                                    sx={{ mt: "2px", color: "secondary.main" }}
-                                  />
-                                ) : (
-                                  <ScheduleRoundedIcon
-                                    fontSize="small"
-                                    sx={{ mt: "2px", color: "text.secondary" }}
-                                  />
-                                )}
 
-                                <Box>
-                                  <Stack
-                                    direction="row"
-                                    spacing={0.75}
-                                    alignItems="center"
-                                    flexWrap="wrap"
-                                    useFlexGap
-                                  >
+                                  <Box>
                                     <Typography variant="body2" color="text.secondary">
-                                      <strong>{conflict.memberName}</strong> already assigned to{" "}
-                                      <strong>{conflict.previewTitle}</strong>
+                                      <strong>{conflict.memberName}</strong> is unavailable —{" "}
+                                      <strong>{conflict.detail}</strong>
                                     </Typography>
+                                  </Box>
+                                </Stack>
+                              ))}
+                            </Stack>
+                          ) : null}
 
-                                    <Chip
-                                      size="small"
-                                      color={
-                                        conflict.tripStatus === "in_progress"
-                                          ? "info"
-                                          : "warning"
-                                      }
-                                      variant="outlined"
-                                      label={
-                                        conflict.tripStatus === "in_progress"
-                                          ? "In Progress"
-                                          : "Planned"
-                                      }
-                                      sx={{ borderRadius: 999, fontWeight: 700 }}
+                          {selectedOverlapConflicts.length > 0 ? (
+                            <Alert severity="warning" variant="outlined" sx={{ borderRadius: 2 }}>
+                              {hasInProgressOverlap ? (
+                                <>
+                                  One or more selected crew members are currently on an <strong>in-progress</strong>{" "}
+                                  trip during this time slot. Use Dispatch Override only after confirming they
+                                  are wrapping up or transitioning directly to this customer. This new trip will
+                                  save as <strong>Planned</strong> only; it will not start or end an active trip.
+                                </>
+                              ) : (
+                                <>
+                                  One or more selected crew members already have an overlapping planned trip in
+                                  this time slot. You can still dispatch this service trip by using Dispatch
+                                  Override.
+                                </>
+                              )}
+                            </Alert>
+                          ) : null}
+
+                          {selectedOverlapConflicts.length > 0 ? (
+                            <Stack spacing={0.75}>
+                              {selectedOverlapConflicts.map((conflict) => (
+                                <Stack
+                                  key={`${conflict.memberUid}_${conflict.tripId}`}
+                                  direction="row"
+                                  spacing={1}
+                                  alignItems="flex-start"
+                                >
+                                  {conflict.tripType === "service" ? (
+                                    <BuildRoundedIcon
+                                      fontSize="small"
+                                      sx={{ mt: "2px", color: "primary.main" }}
                                     />
-                                  </Stack>
+                                  ) : conflict.tripType === "project" ? (
+                                    <ConstructionRoundedIcon
+                                      fontSize="small"
+                                      sx={{ mt: "2px", color: "secondary.main" }}
+                                    />
+                                  ) : (
+                                    <ScheduleRoundedIcon
+                                      fontSize="small"
+                                      sx={{ mt: "2px", color: "text.secondary" }}
+                                    />
+                                  )}
 
-                                  {conflict.previewSubtitle ? (
-                                    <Typography variant="caption" color="text.secondary">
-                                      {conflict.previewSubtitle}
+                                  <Box>
+                                    <Stack
+                                      direction="row"
+                                      spacing={0.75}
+                                      alignItems="center"
+                                      flexWrap="wrap"
+                                      useFlexGap
+                                    >
+                                      <Typography variant="body2" color="text.secondary">
+                                        <strong>{conflict.memberName}</strong> already assigned to{" "}
+                                        <strong>{conflict.previewTitle}</strong>
+                                      </Typography>
+
+                                      <Chip
+                                        size="small"
+                                        color={
+                                          conflict.tripStatus === "in_progress"
+                                            ? "info"
+                                            : "warning"
+                                        }
+                                        variant="outlined"
+                                        label={
+                                          conflict.tripStatus === "in_progress"
+                                            ? "In Progress"
+                                            : "Planned"
+                                        }
+                                        sx={{ borderRadius: 999, fontWeight: 700 }}
+                                      />
+                                    </Stack>
+
+                                    {conflict.previewSubtitle ? (
+                                      <Typography variant="caption" color="text.secondary">
+                                        {conflict.previewSubtitle}
+                                      </Typography>
+                                    ) : null}
+
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      sx={{ display: "block" }}
+                                    >
+                                      Scheduled {conflict.scheduledTimeLabel} • Est.{" "}
+                                      {conflict.estimatedDurationLabel}
                                     </Typography>
-                                  ) : null}
-
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                    sx={{ display: "block" }}
-                                  >
-                                    Scheduled {conflict.scheduledTimeLabel} • Est.{" "}
-                                    {conflict.estimatedDurationLabel}
-                                  </Typography>
-                                </Box>
-                              </Stack>
-                            ))}
-                          </Stack>
+                                  </Box>
+                                </Stack>
+                              ))}
+                            </Stack>
+                          ) : null}
 
                           {canOverrideOverlap ? (
                             <>
@@ -2239,9 +2635,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                   />
                                 }
                                 label={
-                                  hasInProgressOverlap
-                                    ? "Enable Dispatch Override to schedule this as the next planned trip"
-                                    : "Enable Dispatch Override for this overlapping service dispatch"
+                                  selectedUnavailabilityConflicts.length > 0
+                                    ? "Enable Dispatch Override to intentionally include unavailable crew"
+                                    : hasInProgressOverlap
+                                      ? "Enable Dispatch Override to schedule this as the next planned trip"
+                                      : "Enable Dispatch Override for this overlapping service dispatch"
                                 }
                               />
 
@@ -2253,9 +2651,11 @@ export default function ServiceTicketSchedulePage({ params }: Props) {
                                   multiline
                                   minRows={3}
                                   placeholder={
-                                    hasInProgressOverlap
-                                      ? "Example: Confirmed Josh is wrapping up and proceeding directly to this customer."
-                                      : "Example: emergency no-water call, quick diagnostic, high-priority customer, etc."
+                                    selectedUnavailabilityConflicts.length > 0
+                                      ? "Example: Erik became available and confirmed he is working this trip."
+                                      : hasInProgressOverlap
+                                        ? "Example: Confirmed Josh is wrapping up and proceeding directly to this customer."
+                                        : "Example: emergency no-water call, quick diagnostic, high-priority customer, etc."
                                   }
                                 />
                               ) : null}
