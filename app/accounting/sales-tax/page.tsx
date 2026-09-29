@@ -22,6 +22,7 @@ import {
   CardContent,
   Checkbox,
   Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -29,6 +30,7 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
+  MenuItem,
   Stack,
   Table,
   TableBody,
@@ -55,7 +57,7 @@ import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
-import { db } from "../../../src/lib/firebase";
+import { auth, db } from "../../../src/lib/firebase";
 import {
   buildSalesTaxSummary,
   centsToInput,
@@ -79,6 +81,10 @@ type PaymentForm = {
   paymentDate: string;
   customerName: string;
   reference: string;
+  invoiceNumber: string;
+  qboInvoiceId: string;
+  qboPaymentId: string;
+  source: "manual" | "qbo_invoice_prefill";
   paymentAmount: string;
   nonTaxableLabor: string;
   nonTaxableParts: string;
@@ -105,6 +111,56 @@ type PurchaseForm = {
   notes: string;
 };
 
+type QboLookupPayment = {
+  paymentId: string;
+  paymentDate: string;
+  reference: string;
+  totalPaymentCents: number;
+  appliedToInvoiceCents: number;
+};
+
+type QboInvoiceLineBreakdown = {
+  lineId: string;
+  lineNumber: number | null;
+  itemName: string;
+  description: string;
+  amountCents: number;
+  kind: "labor" | "parts" | "permit" | "unknown";
+  taxState: "taxable" | "non_taxable" | "unknown";
+  taxCode: string;
+};
+
+type QboInvoiceLookupResult = {
+  ok: true;
+  invoice: {
+    invoiceId: string;
+    docNumber: string;
+    invoiceDate: string;
+    customerId: string;
+    customerName: string;
+    totalAmountCents: number;
+    balanceCents: number;
+    totalTaxCents: number;
+  };
+  invoiceLines: QboInvoiceLineBreakdown[];
+  payments: QboLookupPayment[];
+  suggestedAllocation: {
+    nonTaxableLaborCents: number;
+    nonTaxablePartsCents: number;
+    taxableLabor825Cents: number;
+    taxableParts825Cents: number;
+    cityTax825Cents: number;
+    cityPermitsCents: number;
+    taxableLabor675Cents: number;
+    taxableParts675Cents: number;
+    countyTax675Cents: number;
+    safeToAutofill: boolean;
+    effectiveRateBps: number | null;
+    supportedRateBps: number | null;
+  };
+  warnings: string[];
+};
+
 const PAYMENT_FIELDS: Array<{
   key: keyof PaymentForm;
   label: string;
@@ -126,6 +182,10 @@ function emptyPaymentForm(): PaymentForm {
     paymentDate: todayIsoDateLocal(),
     customerName: "",
     reference: "",
+    invoiceNumber: "",
+    qboInvoiceId: "",
+    qboPaymentId: "",
+    source: "manual",
     paymentAmount: "0.00",
     nonTaxableLabor: "0.00",
     nonTaxableParts: "0.00",
@@ -189,6 +249,10 @@ function paymentFormToRecord(
     customerName: form.customerName.trim(),
     customerId: null,
     reference: form.reference.trim() || null,
+    invoiceNumber: form.invoiceNumber.trim() || null,
+    qboInvoiceId: form.qboInvoiceId.trim() || null,
+    qboPaymentId: form.qboPaymentId.trim() || null,
+    source: form.source,
 
     paymentAmountCents: dollarsToCents(form.paymentAmount),
 
@@ -222,6 +286,10 @@ function paymentToForm(payment: SalesTaxPayment): PaymentForm {
     paymentDate: payment.paymentDate || todayIsoDateLocal(),
     customerName: payment.customerName || "",
     reference: payment.reference || "",
+    invoiceNumber: payment.invoiceNumber || "",
+    qboInvoiceId: payment.qboInvoiceId || "",
+    qboPaymentId: payment.qboPaymentId || "",
+    source: payment.source || "manual",
     paymentAmount: centsToInput(payment.paymentAmountCents),
     nonTaxableLabor: centsToInput(payment.nonTaxableLaborCents),
     nonTaxableParts: centsToInput(payment.nonTaxablePartsCents),
@@ -293,7 +361,7 @@ function KpiCard({
     <Card
       elevation={0}
       sx={{
-        borderRadius: 1,
+        borderRadius: 2,
         border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
         backgroundColor: "background.paper",
         height: "100%",
@@ -305,7 +373,7 @@ function KpiCard({
             sx={{
               width: 42,
               height: 42,
-              borderRadius: 1,
+              borderRadius: 2,
               display: "grid",
               placeItems: "center",
               color: "primary.light",
@@ -349,7 +417,7 @@ function SectionCard({ children }: { children: React.ReactNode }) {
     <Card
       elevation={0}
       sx={{
-        borderRadius: 1,
+        borderRadius: 2,
         border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
         backgroundColor: "background.paper",
       }}
@@ -360,6 +428,7 @@ function SectionCard({ children }: { children: React.ReactNode }) {
 }
 
 export default function SalesTaxPage() {
+  const theme = useTheme();
   const { appUser } = useAuthContext();
 
   const [periodKey, setPeriodKey] = useState(currentPeriodKeyLocal());
@@ -372,6 +441,12 @@ export default function SalesTaxPage() {
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState<PaymentForm>(emptyPaymentForm());
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [qboLookupLoading, setQboLookupLoading] = useState(false);
+  const [qboLookupResult, setQboLookupResult] =
+    useState<QboInvoiceLookupResult | null>(null);
+  const [qboLookupMessage, setQboLookupMessage] = useState("");
+  const [qboLookupSeverity, setQboLookupSeverity] =
+    useState<"success" | "info" | "warning" | "error">("info");
 
   const [purchaseDialogOpen, setPurchaseDialogOpen] = useState(false);
   const [purchaseForm, setPurchaseForm] =
@@ -533,6 +608,163 @@ export default function SalesTaxPage() {
     return blockers;
   }, [summary]);
 
+  function applyQboPayment(
+    result: QboInvoiceLookupResult,
+    payment: QboLookupPayment,
+  ) {
+    const paymentOnlyCoversThisInvoice =
+      Math.abs(payment.totalPaymentCents - payment.appliedToInvoiceCents) <= 1;
+    const fullInvoicePayment =
+      Math.abs(
+        payment.appliedToInvoiceCents - result.invoice.totalAmountCents,
+      ) <= 1;
+    const canAutofillAllocation =
+      paymentOnlyCoversThisInvoice &&
+      fullInvoicePayment &&
+      result.suggestedAllocation.safeToAutofill;
+
+    setPaymentForm((current) => {
+      const next: PaymentForm = {
+        ...current,
+        paymentDate: payment.paymentDate || current.paymentDate,
+        customerName: result.invoice.customerName || current.customerName,
+        reference: payment.reference || current.reference,
+        invoiceNumber: result.invoice.docNumber,
+        qboInvoiceId: result.invoice.invoiceId,
+        qboPaymentId: payment.paymentId,
+        source: "qbo_invoice_prefill",
+        paymentAmount: centsToInput(payment.totalPaymentCents),
+        reviewed: false,
+      };
+
+      if (canAutofillAllocation) {
+        next.nonTaxableLabor = centsToInput(
+          result.suggestedAllocation.nonTaxableLaborCents,
+        );
+        next.nonTaxableParts = centsToInput(
+          result.suggestedAllocation.nonTaxablePartsCents,
+        );
+        next.taxableLabor825 = centsToInput(
+          result.suggestedAllocation.taxableLabor825Cents,
+        );
+        next.taxableParts825 = centsToInput(
+          result.suggestedAllocation.taxableParts825Cents,
+        );
+        next.cityTax825 = centsToInput(
+          result.suggestedAllocation.cityTax825Cents,
+        );
+        next.cityPermits = centsToInput(
+          result.suggestedAllocation.cityPermitsCents,
+        );
+        next.taxableLabor675 = centsToInput(
+          result.suggestedAllocation.taxableLabor675Cents,
+        );
+        next.taxableParts675 = centsToInput(
+          result.suggestedAllocation.taxableParts675Cents,
+        );
+        next.countyTax675 = centsToInput(
+          result.suggestedAllocation.countyTax675Cents,
+        );
+      }
+
+      return next;
+    });
+
+    if (canAutofillAllocation) {
+      setQboLookupSeverity("success");
+      setQboLookupMessage(
+        `Loaded invoice #${result.invoice.docNumber} and payment ${formatCents(
+          payment.totalPaymentCents,
+        )} from QuickBooks. Allocation was prefilled; review it before saving.`,
+      );
+    } else {
+      setQboLookupSeverity("warning");
+      const coverageNote = paymentOnlyCoversThisInvoice
+        ? ""
+        : ` The full QBO payment is ${formatCents(
+            payment.totalPaymentCents,
+          )}, while ${formatCents(
+            payment.appliedToInvoiceCents,
+          )} is applied to this invoice, so the payment covers additional transactions.`;
+      setQboLookupMessage(
+        `QuickBooks payment details were loaded, but the tax allocation was left manual because this payment does not safely match one full invoice.${coverageNote}`,
+      );
+    }
+  }
+
+  async function pullInvoiceFromQbo() {
+    const invoiceNumber = paymentForm.invoiceNumber.trim();
+    if (!invoiceNumber) {
+      setQboLookupSeverity("warning");
+      setQboLookupMessage("Enter an invoice number first.");
+      return;
+    }
+
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser) {
+      setQboLookupSeverity("error");
+      setQboLookupMessage("Your DCFlow sign-in session is not available.");
+      return;
+    }
+
+    try {
+      setQboLookupLoading(true);
+      setQboLookupResult(null);
+      setQboLookupMessage("");
+
+      const idToken = await firebaseUser.getIdToken();
+      const response = await fetch(
+        `/api/qbo/sales-tax/invoice-lookup?docNumber=${encodeURIComponent(
+          invoiceNumber,
+        )}`,
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${idToken}` },
+          cache: "no-store",
+        },
+      );
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(body?.error || "QuickBooks invoice lookup failed.");
+      }
+
+      const result = body as QboInvoiceLookupResult;
+      setQboLookupResult(result);
+      setPaymentForm((current) => ({
+        ...current,
+        customerName: result.invoice.customerName || current.customerName,
+        invoiceNumber: result.invoice.docNumber,
+        qboInvoiceId: result.invoice.invoiceId,
+        qboPaymentId: "",
+        source: "qbo_invoice_prefill",
+        reviewed: false,
+      }));
+
+      if (result.payments.length === 1) {
+        applyQboPayment(result, result.payments[0]);
+      } else if (result.payments.length > 1) {
+        setQboLookupSeverity("info");
+        setQboLookupMessage(
+          `Invoice #${result.invoice.docNumber} was found. Select which QuickBooks payment you are entering.`,
+        );
+      } else {
+        setQboLookupSeverity("warning");
+        setQboLookupMessage(
+          `Invoice #${result.invoice.docNumber} was found, but no linked QuickBooks payment was found. Customer and invoice information were loaded only.`,
+        );
+      }
+    } catch (err: unknown) {
+      setQboLookupResult(null);
+      setQboLookupSeverity("error");
+      setQboLookupMessage(
+        err instanceof Error ? err.message : "QuickBooks invoice lookup failed.",
+      );
+    } finally {
+      setQboLookupLoading(false);
+    }
+  }
+
   async function savePayment() {
     if (!appUser?.uid || isFiled) return;
 
@@ -574,6 +806,8 @@ export default function SalesTaxPage() {
       setPaymentDialogOpen(false);
       setEditingPaymentId(null);
       setPaymentForm(emptyPaymentForm());
+      setQboLookupResult(null);
+      setQboLookupMessage("");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save payment.");
     }
@@ -672,6 +906,7 @@ export default function SalesTaxPage() {
     rows.push([
       "Date",
       "Customer",
+      "Invoice #",
       "Reference",
       "Payment",
       "Non-Tax Labor",
@@ -691,6 +926,7 @@ export default function SalesTaxPage() {
       rows.push([
         p.paymentDate,
         p.customerName,
+        p.invoiceNumber || "",
         p.reference || "",
         centsToInput(p.paymentAmountCents),
         centsToInput(p.nonTaxableLaborCents),
@@ -948,6 +1184,8 @@ export default function SalesTaxPage() {
                       onClick={() => {
                         setEditingPaymentId(null);
                         setPaymentForm(emptyPaymentForm());
+                        setQboLookupResult(null);
+                        setQboLookupMessage("");
                         setPaymentDialogOpen(true);
                       }}
                     >
@@ -986,8 +1224,18 @@ export default function SalesTaxPage() {
                           return (
                             <TableRow key={payment.id} hover>
                               <TableCell>{payment.paymentDate}</TableCell>
-                              <TableCell sx={{ fontWeight: 750 }}>
-                                {payment.customerName}
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 750 }}>
+                                  {payment.customerName}
+                                </Typography>
+                                {payment.invoiceNumber ? (
+                                  <Typography variant="caption" color="text.secondary">
+                                    Invoice #{payment.invoiceNumber}
+                                    {payment.source === "qbo_invoice_prefill"
+                                      ? " • QBO prefill"
+                                      : ""}
+                                  </Typography>
+                                ) : null}
                               </TableCell>
                               <TableCell align="right">
                                 {formatCents(payment.paymentAmountCents)}
@@ -1346,7 +1594,11 @@ export default function SalesTaxPage() {
 
         <Dialog
           open={paymentDialogOpen}
-          onClose={() => setPaymentDialogOpen(false)}
+          onClose={() => {
+            setPaymentDialogOpen(false);
+            setQboLookupResult(null);
+            setQboLookupMessage("");
+          }}
           maxWidth="md"
           fullWidth
         >
@@ -1355,6 +1607,412 @@ export default function SalesTaxPage() {
           </DialogTitle>
           <DialogContent dividers>
             <Stack spacing={2}>
+              <Box
+                sx={{
+                  p: 1.5,
+                  borderRadius: 2,
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
+                  backgroundColor: alpha(theme.palette.primary.main, 0.055),
+                }}
+              >
+                <Stack spacing={1.25}>
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>
+                      QuickBooks Prefill
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Enter the QBO invoice number. DCFlow will preview the invoice
+                      and linked payment, but nothing is saved until you click Save
+                      Payment.
+                    </Typography>
+                  </Box>
+
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="QuickBooks Invoice #"
+                      value={paymentForm.invoiceNumber}
+                      onChange={(e) => {
+                        setPaymentForm((current) => ({
+                          ...current,
+                          invoiceNumber: e.target.value,
+                          qboInvoiceId: "",
+                          qboPaymentId: "",
+                          source: "manual",
+                        }));
+                        setQboLookupResult(null);
+                        setQboLookupMessage("");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void pullInvoiceFromQbo();
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outlined"
+                      onClick={() => void pullInvoiceFromQbo()}
+                      disabled={qboLookupLoading || !paymentForm.invoiceNumber.trim()}
+                      sx={{ minWidth: 190, whiteSpace: "nowrap" }}
+                    >
+                      {qboLookupLoading ? (
+                        <>
+                          <CircularProgress size={18} sx={{ mr: 1 }} />
+                          Loading…
+                        </>
+                      ) : (
+                        "Pull from QuickBooks"
+                      )}
+                    </Button>
+                  </Stack>
+
+                  {qboLookupResult && qboLookupResult.payments.length > 1 ? (
+                    <TextField
+                      select
+                      size="small"
+                      label="QuickBooks Payment"
+                      value={paymentForm.qboPaymentId}
+                      onChange={(e) => {
+                        const selected = qboLookupResult.payments.find(
+                          (payment) => payment.paymentId === e.target.value,
+                        );
+                        if (selected) applyQboPayment(qboLookupResult, selected);
+                      }}
+                    >
+                      {qboLookupResult.payments.map((payment) => (
+                        <MenuItem key={payment.paymentId} value={payment.paymentId}>
+                          {payment.paymentDate || "No date"} • Payment {formatCents(
+                            payment.totalPaymentCents,
+                          )}
+                          {Math.abs(
+                            payment.totalPaymentCents -
+                              payment.appliedToInvoiceCents,
+                          ) > 1
+                            ? ` • ${formatCents(
+                                payment.appliedToInvoiceCents,
+                              )} applied here`
+                            : ""}
+                          {payment.reference ? ` • Ref ${payment.reference}` : ""}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  ) : null}
+
+                  {qboLookupMessage ? (
+                    <Alert severity={qboLookupSeverity} sx={{ py: 0.25 }}>
+                      {qboLookupMessage}
+                    </Alert>
+                  ) : null}
+
+                  {qboLookupResult?.warnings?.length ? (
+                    <Alert severity="warning" sx={{ py: 0.25 }}>
+                      {qboLookupResult.warnings.join(" ")}
+                    </Alert>
+                  ) : null}
+
+                  {qboLookupResult ? (
+                    <Box
+                      sx={{
+                        mt: 0.25,
+                        p: 1.25,
+                        borderRadius: 1.5,
+                        border: `1px solid ${alpha("#FFFFFF", 0.08)}`,
+                        backgroundColor: alpha("#000000", 0.12),
+                      }}
+                    >
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        justifyContent="space-between"
+                        alignItems={{ xs: "flex-start", sm: "center" }}
+                        spacing={1}
+                      >
+                        <Box>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>
+                            QBO Invoice Breakdown
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Full invoice composition from QuickBooks. Use this as
+                            reference when manually allocating a partial payment.
+                          </Typography>
+                        </Box>
+
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={`Invoice #${qboLookupResult.invoice.docNumber}`}
+                          sx={{ fontWeight: 750 }}
+                        />
+                      </Stack>
+
+                      <Divider sx={{ my: 1.25 }} />
+
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: {
+                            xs: "1fr",
+                            sm: "repeat(2, minmax(0, 1fr))",
+                          },
+                          columnGap: 2,
+                          rowGap: 0.65,
+                        }}
+                      >
+                        {[
+                          [
+                            "Non-Tax Labor",
+                            qboLookupResult.suggestedAllocation
+                              .nonTaxableLaborCents,
+                          ],
+                          [
+                            "Non-Tax Parts",
+                            qboLookupResult.suggestedAllocation
+                              .nonTaxablePartsCents,
+                          ],
+                          [
+                            "Taxable Labor 8.25%",
+                            qboLookupResult.suggestedAllocation
+                              .taxableLabor825Cents,
+                          ],
+                          [
+                            "Taxable Parts 8.25%",
+                            qboLookupResult.suggestedAllocation
+                              .taxableParts825Cents,
+                          ],
+                          [
+                            "City Tax 8.25%",
+                            qboLookupResult.suggestedAllocation.cityTax825Cents,
+                          ],
+                          [
+                            "City Permits",
+                            qboLookupResult.suggestedAllocation.cityPermitsCents,
+                          ],
+                          [
+                            "Taxable Labor 6.75%",
+                            qboLookupResult.suggestedAllocation
+                              .taxableLabor675Cents,
+                          ],
+                          [
+                            "Taxable Parts 6.75%",
+                            qboLookupResult.suggestedAllocation
+                              .taxableParts675Cents,
+                          ],
+                          [
+                            "County Tax 6.75%",
+                            qboLookupResult.suggestedAllocation
+                              .countyTax675Cents,
+                          ],
+                        ]
+                          .filter(([, cents]) => Math.abs(Number(cents)) > 0)
+                          .map(([label, cents]) => (
+                            <Stack
+                              key={String(label)}
+                              direction="row"
+                              justifyContent="space-between"
+                              spacing={1.5}
+                            >
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {String(label)}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                sx={{ fontWeight: 850, whiteSpace: "nowrap" }}
+                              >
+                                {formatCents(Number(cents))}
+                              </Typography>
+                            </Stack>
+                          ))}
+
+                        {[
+                          ["Invoice Date", qboLookupResult.invoice.invoiceDate || "—"],
+                          [
+                            "QBO Current Balance",
+                            formatCents(qboLookupResult.invoice.balanceCents),
+                          ],
+                        ].map(([label, value]) => (
+                          <Stack
+                            key={String(label)}
+                            direction="row"
+                            justifyContent="space-between"
+                            spacing={1.5}
+                          >
+                            <Typography variant="caption" color="text.secondary">
+                              {String(label)}
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              sx={{ fontWeight: 850, whiteSpace: "nowrap" }}
+                            >
+                              {String(value)}
+                            </Typography>
+                          </Stack>
+                        ))}
+                      </Box>
+
+                      <Divider sx={{ my: 1.25 }} />
+
+                      <Stack
+                        direction="row"
+                        justifyContent="space-between"
+                        spacing={2}
+                      >
+                        <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                          Full Invoice Total
+                        </Typography>
+                        <Typography variant="body2" sx={{ fontWeight: 900 }}>
+                          {formatCents(
+                            qboLookupResult.invoice.totalAmountCents,
+                          )}
+                        </Typography>
+                      </Stack>
+
+                      {qboLookupResult.invoiceLines.length > 0 ? (
+                        <>
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              display: "block",
+                              mt: 1.25,
+                              mb: 0.65,
+                              fontWeight: 800,
+                              color: "text.secondary",
+                            }}
+                          >
+                            QuickBooks line details
+                          </Typography>
+
+                          <Stack spacing={0.65}>
+                            {qboLookupResult.invoiceLines.map((line) => {
+                              const kindLabel =
+                                line.kind === "labor"
+                                  ? "Labor"
+                                  : line.kind === "parts"
+                                    ? "Parts"
+                                    : line.kind === "permit"
+                                      ? "Permit"
+                                      : "Unmapped";
+
+                              const taxLabel =
+                                line.taxState === "taxable"
+                                  ? "Taxable"
+                                  : line.taxState === "non_taxable"
+                                    ? "Non-Taxable"
+                                    : "Tax Unknown";
+
+                              return (
+                                <Box
+                                  key={line.lineId}
+                                  sx={{
+                                    p: 0.85,
+                                    borderRadius: 1.25,
+                                    border: `1px solid ${alpha("#FFFFFF", 0.06)}`,
+                                  }}
+                                >
+                                  <Stack
+                                    direction="row"
+                                    justifyContent="space-between"
+                                    spacing={1.25}
+                                  >
+                                    <Box sx={{ minWidth: 0 }}>
+                                      <Typography
+                                        variant="caption"
+                                        sx={{
+                                          display: "block",
+                                          fontWeight: 800,
+                                        }}
+                                      >
+                                        {line.itemName ||
+                                          line.description ||
+                                          `QBO line ${line.lineNumber ?? ""}`}
+                                      </Typography>
+
+                                      {line.description &&
+                                      line.description !== line.itemName ? (
+                                        <Typography
+                                          variant="caption"
+                                          color="text.secondary"
+                                          sx={{
+                                            display: "block",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                            whiteSpace: "nowrap",
+                                          }}
+                                        >
+                                          {line.description}
+                                        </Typography>
+                                      ) : null}
+
+                                      <Stack
+                                        direction="row"
+                                        spacing={0.5}
+                                        sx={{ mt: 0.45, flexWrap: "wrap" }}
+                                        useFlexGap
+                                      >
+                                        <Chip
+                                          size="small"
+                                          label={kindLabel}
+                                          color={
+                                            line.kind === "unknown"
+                                              ? "warning"
+                                              : "default"
+                                          }
+                                          variant="outlined"
+                                          sx={{ height: 20, fontSize: 11 }}
+                                        />
+                                        <Chip
+                                          size="small"
+                                          label={taxLabel}
+                                          color={
+                                            line.taxState === "unknown"
+                                              ? "warning"
+                                              : line.taxState === "taxable"
+                                                ? "primary"
+                                                : "default"
+                                          }
+                                          variant="outlined"
+                                          sx={{ height: 20, fontSize: 11 }}
+                                        />
+                                        {line.taxCode ? (
+                                          <Chip
+                                            size="small"
+                                            label={`QBO tax code: ${line.taxCode}`}
+                                            variant="outlined"
+                                            sx={{ height: 20, fontSize: 11 }}
+                                          />
+                                        ) : null}
+                                      </Stack>
+                                    </Box>
+
+                                    <Typography
+                                      variant="body2"
+                                      sx={{
+                                        fontWeight: 900,
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      {formatCents(line.amountCents)}
+                                    </Typography>
+                                  </Stack>
+                                </Box>
+                              );
+                            })}
+                          </Stack>
+                        </>
+                      ) : (
+                        <Alert severity="warning" sx={{ mt: 1.25, py: 0.25 }}>
+                          QuickBooks returned the invoice, but no sales line
+                          details were available to display.
+                        </Alert>
+                      )}
+                    </Box>
+                  ) : null}
+                </Stack>
+              </Box>
+
               <Box
                 sx={{
                   display: "grid",
@@ -1450,7 +2108,15 @@ export default function SalesTaxPage() {
             </Stack>
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => setPaymentDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                setPaymentDialogOpen(false);
+                setQboLookupResult(null);
+                setQboLookupMessage("");
+              }}
+            >
+              Cancel
+            </Button>
             <Button variant="contained" onClick={savePayment}>
               Save Payment
             </Button>

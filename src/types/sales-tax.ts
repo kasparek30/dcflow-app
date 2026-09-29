@@ -31,6 +31,12 @@ export type SalesTaxPayment = {
   customerId?: string | null;
   reference?: string | null;
 
+  // Optional QBO audit trail when a payment row was prefilled by invoice lookup.
+  invoiceNumber?: string | null;
+  qboInvoiceId?: string | null;
+  qboPaymentId?: string | null;
+  source?: "manual" | "qbo_invoice_prefill";
+
   paymentAmountCents: number;
 
   nonTaxableLaborCents: number;
