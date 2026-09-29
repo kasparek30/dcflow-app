@@ -65,6 +65,7 @@ import ViewWeekRoundedIcon from "@mui/icons-material/ViewWeekRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
 import AdminPanelSettingsRoundedIcon from "@mui/icons-material/AdminPanelSettingsRounded";
+import AccountBalanceRoundedIcon from "@mui/icons-material/AccountBalanceRounded";
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
@@ -657,6 +658,8 @@ function getMobilePageLabel(pathname: string) {
   if (pathname.startsWith("/weekly-timesheet")) return "Weekly Timesheet";
   if (pathname.startsWith("/pto-requests")) return "PTO Requests";
   if (pathname.startsWith("/timesheet-review")) return "Timesheet Review";
+  if (pathname.startsWith("/accounting/sales-tax")) return "Sales Tax";
+  if (pathname.startsWith("/accounting")) return "Accounting";
   if (pathname.startsWith("/admin")) return "Admin";
   return "DCFlow";
 }
@@ -1785,13 +1788,19 @@ export default function AppShell({
   const showProjects =
     role === "admin" || role === "dispatcher" || role === "manager";
 
-  const showMaterialOrders =
-    role === "admin" ||
-    role === "dispatcher" ||
-    role === "manager" ||
-    role === "billing";
+const showMaterialOrders =
+  role === "admin" ||
+  role === "dispatcher" ||
+  role === "manager" ||
+  role === "billing";
 
-  const showWorkload = false;
+const showAccounting =
+  role === "admin" ||
+  role === "dispatcher" ||
+  role === "manager" ||
+  role === "billing";
+
+const showWorkload = false;
 
   const showTimeEntries =
     role === "admin" ||
@@ -2933,6 +2942,15 @@ export default function AppShell({
         href: "/material-orders",
         label: "Material Orders",
         icon: <Inventory2RoundedIcon />,
+      },
+    ]
+  : []),
+  ...(showAccounting
+  ? [
+      {
+        href: "/accounting",
+        label: "Accounting",
+        icon: <AccountBalanceRoundedIcon />,
       },
     ]
   : []),
