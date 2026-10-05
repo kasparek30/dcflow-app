@@ -117,6 +117,11 @@ type QboLookupPayment = {
   reference: string;
   totalPaymentCents: number;
   appliedToInvoiceCents: number;
+  alreadyAdded: boolean;
+  existingPeriodKey: string | null;
+  existingPaymentId: string | null;
+  existingCustomerName: string;
+  existingReference: string;
 };
 
 type QboInvoiceLineBreakdown = {
@@ -608,10 +613,55 @@ export default function SalesTaxPage() {
     return blockers;
   }, [summary]);
 
+  function qboPaymentConflict(payment: QboLookupPayment) {
+    const local = payments.find(
+      (existing) =>
+        String(existing.qboPaymentId || "").trim() === payment.paymentId &&
+        existing.id !== editingPaymentId,
+    );
+
+    if (local) {
+      return {
+        periodKey,
+        paymentId: local.id,
+        customerName: local.customerName || "",
+        reference: local.reference || "",
+      };
+    }
+
+    const isCurrentEditedRecord =
+      Boolean(editingPaymentId) &&
+      payment.existingPeriodKey === periodKey &&
+      payment.existingPaymentId === editingPaymentId;
+
+    if (payment.alreadyAdded && !isCurrentEditedRecord) {
+      return {
+        periodKey: payment.existingPeriodKey || "another month",
+        paymentId: payment.existingPaymentId || "",
+        customerName: payment.existingCustomerName || "",
+        reference: payment.existingReference || payment.reference || "",
+      };
+    }
+
+    return null;
+  }
+
   function applyQboPayment(
     result: QboInvoiceLookupResult,
     payment: QboLookupPayment,
   ) {
+    const conflict = qboPaymentConflict(payment);
+    if (conflict) {
+      setQboLookupSeverity("error");
+      setQboLookupMessage(
+        `This QuickBooks payment has already been added to Sales Tax for ${
+          conflict.periodKey
+        }${conflict.customerName ? ` — ${conflict.customerName}` : ""}${
+          conflict.reference ? ` — Ref ${conflict.reference}` : ""
+        }. It cannot be selected again.`,
+      );
+      return;
+    }
     const paymentOnlyCoversThisInvoice =
       Math.abs(payment.totalPaymentCents - payment.appliedToInvoiceCents) <= 1;
     const fullInvoicePayment =
@@ -775,12 +825,62 @@ export default function SalesTaxPage() {
     }
 
     const data = paymentFormToRecord(paymentForm, appUser);
+    const existing = editingPaymentId
+      ? payments.find((payment) => payment.id === editingPaymentId) || null
+      : null;
+
+    const localDuplicate = data.qboPaymentId
+      ? payments.find(
+          (payment) =>
+            String(payment.qboPaymentId || "").trim() ===
+              String(data.qboPaymentId || "").trim() &&
+            payment.id !== editingPaymentId,
+        )
+      : null;
+
+    if (localDuplicate) {
+      setError(
+        `This QuickBooks payment has already been added to ${monthLabel(
+          periodKey,
+        )} for ${localDuplicate.customerName}.`,
+      );
+      return;
+    }
 
     try {
       setError("");
 
-      if (editingPaymentId) {
-        const existing = payments.find((p) => p.id === editingPaymentId);
+      const requiresQboSafeguard = Boolean(
+        data.qboPaymentId || existing?.qboPaymentId,
+      );
+
+      if (requiresQboSafeguard) {
+        const firebaseUser = auth.currentUser;
+        if (!firebaseUser) {
+          throw new Error("Your DCFlow sign-in session is not available.");
+        }
+
+        const idToken = await firebaseUser.getIdToken();
+        const response = await fetch("/api/qbo/sales-tax/payment-save", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            periodKey,
+            editingPaymentId,
+            payment: data,
+          }),
+        });
+
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body?.ok !== true) {
+          throw new Error(
+            body?.error || "Failed to save the QuickBooks-linked payment.",
+          );
+        }
+      } else if (editingPaymentId) {
         await updateDoc(
           doc(
             db,
@@ -810,6 +910,50 @@ export default function SalesTaxPage() {
       setQboLookupMessage("");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save payment.");
+    }
+  }
+
+  async function deletePaymentRecord(payment: SalesTaxPayment) {
+    if (isFiled) return;
+
+    try {
+      setError("");
+
+      if (payment.qboPaymentId) {
+        const firebaseUser = auth.currentUser;
+        if (!firebaseUser) {
+          throw new Error("Your DCFlow sign-in session is not available.");
+        }
+
+        const idToken = await firebaseUser.getIdToken();
+        const response = await fetch("/api/qbo/sales-tax/payment-save", {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ periodKey, paymentId: payment.id }),
+        });
+
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body?.ok !== true) {
+          throw new Error(
+            body?.error || "Failed to delete the QuickBooks-linked payment.",
+          );
+        }
+      } else {
+        await deleteDoc(
+          doc(
+            db,
+            "salesTaxPeriods",
+            periodKey,
+            "payments",
+            payment.id,
+          ),
+        );
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to delete payment.");
     }
   }
 
@@ -1322,15 +1466,7 @@ export default function SalesTaxPage() {
                                           return;
                                         }
 
-                                        await deleteDoc(
-                                          doc(
-                                            db,
-                                            "salesTaxPeriods",
-                                            periodKey,
-                                            "payments",
-                                            payment.id,
-                                          ),
-                                        );
+                                        await deletePaymentRecord(payment);
                                       }}
                                     >
                                       <DeleteOutlineRoundedIcon fontSize="small" />
@@ -1414,14 +1550,38 @@ export default function SalesTaxPage() {
 
                     <Divider sx={{ my: 1.5 }} />
 
-                    <Stack spacing={0.75}>
-                      {purchases.slice(0, 8).map((purchase) => (
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      sx={{ mb: 1 }}
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        {purchases.length} purchase{purchases.length === 1 ? "" : "s"} this month
+                      </Typography>
+                      {purchases.length > 0 ? (
+                        <Typography variant="caption" color="text.secondary">
+                          Scroll to view the full list
+                        </Typography>
+                      ) : null}
+                    </Stack>
+
+                    <Stack
+                      spacing={0.75}
+                      sx={{
+                        maxHeight: 520,
+                        overflowY: "auto",
+                        pr: purchases.length > 8 ? 0.5 : 0,
+                      }}
+                    >
+                      {purchases.map((purchase) => (
                         <Box
                           key={purchase.id}
                           sx={{
                             p: 1,
                             borderRadius: 1.5,
                             border: `1px solid ${alpha("#FFFFFF", 0.07)}`,
+                            flexShrink: 0,
                           }}
                         >
                           <Stack
@@ -1459,27 +1619,25 @@ export default function SalesTaxPage() {
                                 {formatCents(purchase.amountCents)}
                               </Typography>
 
-                              <IconButton
-                                size="small"
-                                disabled={isFiled}
-                                onClick={() => {
-                                  setEditingPurchaseId(purchase.id);
-                                  setPurchaseForm(purchaseToForm(purchase));
-                                  setPurchaseDialogOpen(true);
-                                }}
-                              >
-                                <EditRoundedIcon sx={{ fontSize: 17 }} />
-                              </IconButton>
+                              <Tooltip title={isFiled ? "Reopen month to edit" : "Edit or delete purchase"}>
+                                <span>
+                                  <IconButton
+                                    size="small"
+                                    disabled={isFiled}
+                                    onClick={() => {
+                                      setEditingPurchaseId(purchase.id);
+                                      setPurchaseForm(purchaseToForm(purchase));
+                                      setPurchaseDialogOpen(true);
+                                    }}
+                                  >
+                                    <EditRoundedIcon sx={{ fontSize: 17 }} />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
                             </Stack>
                           </Stack>
                         </Box>
                       ))}
-
-                      {purchases.length > 8 ? (
-                        <Typography variant="caption" color="text.secondary">
-                          + {purchases.length - 8} more purchases
-                        </Typography>
-                      ) : null}
 
                       {purchases.length === 0 ? (
                         <Typography variant="body2" color="text.secondary">
@@ -1681,22 +1839,34 @@ export default function SalesTaxPage() {
                         if (selected) applyQboPayment(qboLookupResult, selected);
                       }}
                     >
-                      {qboLookupResult.payments.map((payment) => (
-                        <MenuItem key={payment.paymentId} value={payment.paymentId}>
-                          {payment.paymentDate || "No date"} • Payment {formatCents(
-                            payment.totalPaymentCents,
-                          )}
-                          {Math.abs(
-                            payment.totalPaymentCents -
-                              payment.appliedToInvoiceCents,
-                          ) > 1
-                            ? ` • ${formatCents(
+                      {qboLookupResult.payments.map((payment) => {
+                        const conflict = qboPaymentConflict(payment);
+                        return (
+                          <MenuItem
+                            key={payment.paymentId}
+                            value={payment.paymentId}
+                            disabled={Boolean(conflict)}
+                          >
+                            {payment.paymentDate || "No date"} • Payment {formatCents(
+                              payment.totalPaymentCents,
+                            )}
+                            {Math.abs(
+                              payment.totalPaymentCents -
                                 payment.appliedToInvoiceCents,
-                              )} applied here`
-                            : ""}
-                          {payment.reference ? ` • Ref ${payment.reference}` : ""}
-                        </MenuItem>
-                      ))}
+                            ) > 1
+                              ? ` • ${formatCents(
+                                  payment.appliedToInvoiceCents,
+                                )} applied here`
+                              : ""}
+                            {payment.reference
+                              ? ` • Ref ${payment.reference}`
+                              : ""}
+                            {conflict
+                              ? ` • Already added to ${conflict.periodKey}`
+                              : ""}
+                          </MenuItem>
+                        );
+                      })}
                     </TextField>
                   ) : null}
 
