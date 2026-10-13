@@ -550,7 +550,7 @@ function addMinutes(date: Date, mins: number) {
 }
 
 function roundToHalf(hours: number) {
-  return Math.round(hours * 2) / 2;
+  return Math.ceil(hours * 2) / 2;
 }
 
 function normalizeRole(role?: string | null) {
@@ -3758,9 +3758,10 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return crew;
   }
 
-  // Payroll time is actual active time, not invoice minimums or half-hour rounding.
+  // Payroll time entries use a 1-hour minimum and round UP to half-hour increments.
+  // Actual active minutes remain stored separately on the trip/timers.
   function payrollHoursFromMinutes(minutes: number) {
-    return Math.round((Math.max(0, minutes) / 60) * 100) / 100;
+    return Math.max(1, roundToHalf(Math.max(0, minutes) / 60));
   }
 
   // Legacy service trips may have trip-level pauseBlocks but worker timers
@@ -3810,7 +3811,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       Number.isFinite(override) &&
       override >= 0
     ) {
-      return roundToHalf(override);
+      return Math.max(1, roundToHalf(override));
     }
     return getDefaultBillableHours(computedMinutes);
   }
