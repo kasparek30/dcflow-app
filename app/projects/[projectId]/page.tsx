@@ -11,6 +11,8 @@ import {
   getDoc,
   getDocs,
   orderBy,
+  limit,
+  startAfter,
   query,
   setDoc,
   updateDoc,
@@ -68,6 +70,8 @@ import HomeWorkRoundedIcon from "@mui/icons-material/HomeWorkRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
 import MapRoundedIcon from "@mui/icons-material/MapRounded";
 import MoreVertRoundedIcon from "@mui/icons-material/MoreVertRounded";
+import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
+import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
@@ -1333,55 +1337,61 @@ function SectionCard({
   icon,
   action,
   children,
+  defaultExpanded,
 }: {
   title: string;
   subtitle?: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
   children: React.ReactNode;
+  defaultExpanded?: boolean;
 }) {
+  const initialExpanded = defaultExpanded ?? (
+    title === "Project Basics" || title === "Job Site / Address" ||
+    title === "Stages" || title.includes("Project Stage") || title.includes("Project Trips")
+  );
+  const [expanded, setExpanded] = useState(initialExpanded);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(`dcflow:project-section:${title}`);
+      if (saved === "open") setExpanded(true);
+      else if (saved === "closed") setExpanded(false);
+    } catch { /* Browser storage may be disabled. */ }
+  }, [title]);
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ expanded: boolean }>).detail;
+      if (detail) {
+        setExpanded(detail.expanded);
+        try { window.localStorage.setItem(`dcflow:project-section:${title}`, detail.expanded ? "open" : "closed"); } catch {}
+      }
+    };
+    window.addEventListener("dcflow-project-toggle-all", listener);
+    return () => window.removeEventListener("dcflow-project-toggle-all", listener);
+  }, [title]);
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    try { window.localStorage.setItem(`dcflow:project-section:${title}`, next ? "open" : "closed"); } catch {}
+  };
   return (
-    <Card
-      elevation={0}
-      sx={{
-        borderRadius: 1,
-        border: (theme) => `1px solid ${theme.palette.divider}`,
-        overflow: "hidden",
-      }}
-    >
-      <Box
-        sx={{
-          px: { xs: 2, sm: 3 },
-          py: 2,
-          borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.04),
-        }}
-      >
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2}
-          alignItems={{ xs: "flex-start", md: "center" }}
-          justifyContent="space-between"
-        >
-          <Stack direction="row" spacing={1.25} alignItems="center">
+    <Card elevation={0} sx={{ borderRadius: 2, border: (t) => `1px solid ${t.palette.divider}`, overflow: "hidden", minWidth: 0 }}>
+      <Box sx={{ px: { xs: 1.5, sm: 2.5 }, py: 1.4, bgcolor: (t) => alpha(t.palette.primary.main, 0.035) }}>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <IconButton onClick={toggle} aria-label={`${expanded ? "Collapse" : "Expand"} ${title}`} size="small">
+            {expanded ? <ExpandLessRoundedIcon /> : <ExpandMoreRoundedIcon />}
+          </IconButton>
+          <Box onClick={toggle} sx={{ display: "flex", gap: 1, alignItems: "center", flex: 1, cursor: "pointer", minWidth: 0 }}>
             {icon}
-            <Box>
-              <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                {title}
-              </Typography>
-              {subtitle ? (
-                <Typography variant="body2" color="text.secondary">
-                  {subtitle}
-                </Typography>
-              ) : null}
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>{title}</Typography>
+              {subtitle && <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{subtitle}</Typography>}
             </Box>
-          </Stack>
-
-          {action ? <Stack direction="row" spacing={1} flexWrap="wrap">{action}</Stack> : null}
+          </Box>
+          {expanded && action ? <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ justifyContent: "flex-end" }}>{action}</Stack> : null}
         </Stack>
       </Box>
-
-      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>{children}</CardContent>
+      {expanded && <CardContent sx={{ p: { xs: 1.5, sm: 2.5 }, borderTop: (t) => `1px solid ${t.palette.divider}`, "&:last-child": { pb: { xs: 1.5, sm: 2.5 } } }}>{children}</CardContent>}
     </Card>
   );
 }
@@ -1603,6 +1613,10 @@ export default function ProjectDetailPage() {
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityError, setActivityError] = useState("");
   const [activityLogs, setActivityLogs] = useState<ProjectActivityEntry[]>([]);
+  const [activityVisibleCount, setActivityVisibleCount] = useState(5);
+  const [activityCursor, setActivityCursor] = useState<any>(null);
+  const [activityHasMore, setActivityHasMore] = useState(false);
+  const [activityMoreLoading, setActivityMoreLoading] = useState(false);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -2748,7 +2762,7 @@ const canMarkTmReadyToBill =
 
       try {
         const snap = await getDocs(
-          query(collection(db, "projects", projectId, "activity"), orderBy("createdAt", "desc")),
+          query(collection(db, "projects", projectId, "activity"), orderBy("createdAt", "desc"), limit(25)),
         );
 
         const items: ProjectActivityEntry[] = snap.docs.map((docSnap) => {
@@ -2767,6 +2781,9 @@ const canMarkTmReadyToBill =
         });
 
         setActivityLogs(items);
+        setActivityCursor(snap.docs[snap.docs.length - 1] || null);
+        setActivityHasMore(snap.docs.length === 25);
+        setActivityVisibleCount(5);
       } catch (err: unknown) {
         setActivityError(
           err instanceof Error ? err.message : "Failed to load project activity.",
@@ -2778,6 +2795,30 @@ const canMarkTmReadyToBill =
 
     loadActivity();
   }, [projectId]);
+
+  async function loadMoreActivity() {
+    if (!projectId || !activityHasMore || !activityCursor || activityMoreLoading) return;
+    setActivityMoreLoading(true);
+    try {
+      const snap = await getDocs(query(
+        collection(db, "projects", projectId, "activity"),
+        orderBy("createdAt", "desc"), startAfter(activityCursor), limit(25),
+      ));
+      const items: ProjectActivityEntry[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data() as any;
+        return { id: docSnap.id, type: d.type ?? "project_updated", title: d.title ?? "Activity",
+          description: d.description ?? null, details: Array.isArray(d.details) ? d.details.filter(Boolean) : [],
+          createdAt: d.createdAt ?? "", createdByUid: d.createdByUid ?? null,
+          createdByName: d.createdByName ?? null, createdByRole: d.createdByRole ?? null };
+      });
+      setActivityLogs(prev => [...prev, ...items]);
+      setActivityVisibleCount(n => n + 5);
+      setActivityCursor(snap.docs[snap.docs.length - 1] || null);
+      setActivityHasMore(snap.docs.length === 25);
+    } catch (err: any) {
+      setActivityError(err?.message || "Failed to load older activity.");
+    } finally { setActivityMoreLoading(false); }
+  }
 
   useEffect(() => {
     if (!crewNotesDraft.useDefaultHelper) return;
@@ -6058,6 +6099,7 @@ if (nextStatus === "active_work") {
   }
 
   function ProjectWorkNotesHistoryCard() {
+  const [notesLimit, setNotesLimit] = useState(5);
   return (
     <SectionCard
       title="Project Work Notes History"
@@ -6070,7 +6112,7 @@ if (nextStatus === "active_work") {
         </Alert>
       ) : (
         <Stack spacing={1.25}>
-          {projectWorkNoteHistoryItems.map((item) => {
+          {projectWorkNoteHistoryItems.slice(0, notesLimit).map((item) => {
             const trip = item.trip;
             const canViewTrip = canCurrentUserViewTrip(trip);
             const crew = buildCrewLineForHistory(trip.crew || null);
@@ -6173,13 +6215,55 @@ if (nextStatus === "active_work") {
               </Paper>
             );
           })}
+          {projectWorkNoteHistoryItems.length > notesLimit && <Button variant="outlined" onClick={() => setNotesLimit(n => n + 5)}>Show 5 More Work Notes</Button>}
         </Stack>
       )}
     </SectionCard>
   );
 }
 
+  function ManagedTripList({ trips }: { trips: TripDoc[] }) {
+    const [showHistory, setShowHistory] = useState(false);
+    const [historyCount, setHistoryCount] = useState(10);
+    const today = toIsoDate(new Date());
+    const visible = trips.filter((t) => canCurrentUserViewTrip(t));
+    const upcoming = visible.filter((t) => {
+      const st = safeTrim(t.status).toLowerCase();
+      return t.active !== false && !["complete", "completed", "cancelled", "canceled"].includes(st);
+    }).sort((a,b) => {
+      const aActive = a.status === "in_progress" || a.timerState === "running" || a.timerState === "paused";
+      const bActive = b.status === "in_progress" || b.timerState === "running" || b.timerState === "paused";
+      if (aActive !== bActive) return aActive ? -1 : 1;
+      return `${a.date}_${a.startTime}`.localeCompare(`${b.date}_${b.startTime}`);
+    });
+    const historical = visible.filter((t) => !upcoming.includes(t)).sort((a,b) => `${b.date}_${b.startTime}`.localeCompare(`${a.date}_${a.startTime}`));
+    return (
+      <Stack spacing={1.5}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Active & Upcoming ({upcoming.length})</Typography>
+          <Typography variant="caption" color="text.secondary">All active visits · In-progress first · By date</Typography>
+        </Stack>
+        {upcoming.length === 0 && <Alert severity="info" variant="outlined">No active or upcoming visits in this section.</Alert>}
+        {upcoming.map((t) => (
+          <Box key={t.id} sx={{ outline: t.date === today ? "2px solid" : "none", outlineColor: "primary.light", borderRadius: 2 }}>
+            {t.date === today && <Chip size="small" color="primary" label="TODAY" sx={{ mb: 0.5 }} />}
+            <TripRow t={t} />
+          </Box>
+        ))}
+        {historical.length > 0 && <>
+          <Button variant="outlined" color="inherit" onClick={() => setShowHistory(v => !v)} endIcon={showHistory ? <ExpandLessRoundedIcon /> : <ExpandMoreRoundedIcon />}
+            sx={{ alignSelf: "stretch", justifyContent: "space-between" }}>
+            Completed / Cancelled History ({historical.length})
+          </Button>
+          {showHistory && historical.slice(0,historyCount).map(t => <TripRow key={t.id} t={t} />)}
+          {showHistory && historical.length > historyCount && <Button variant="text" onClick={() => setHistoryCount(n=>n+10)}>Show 10 More Trips</Button>}
+        </>}
+      </Stack>
+    );
+  }
+
   function TripRow({ t }: { t: TripDoc }) {
+    const [detailsExpanded, setDetailsExpanded] = useState(false);
     const canEditThis = canCurrentUserEditTrip(t);
     const canOperateThis = canCurrentUserOperateTrip(t);
     const cancelled = t.status === "cancelled" || t.active === false;
@@ -6261,6 +6345,18 @@ if (nextStatus === "active_work") {
               </Stack>
             </Stack>
 
+            <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1} flexWrap="wrap">
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {canEditThis && <Button size="small" variant="contained" startIcon={<EditRoundedIcon />} onClick={() => openEditTrip(t)} sx={{ borderRadius: 2 }}>Edit Trip</Button>}
+                {String(t.status).toLowerCase() === "complete" && canCurrentUserViewTrip(t) && (
+                  <Button size="small" variant="outlined" onClick={() => openCloseoutDetails(t)}>View Closeout</Button>
+                )}
+              </Stack>
+              <Button size="small" variant="text" onClick={() => setDetailsExpanded(v => !v)} endIcon={detailsExpanded ? <ExpandLessRoundedIcon /> : <ExpandMoreRoundedIcon />}>
+                {detailsExpanded ? "Hide Details" : "Details / Actions"}
+              </Button>
+            </Stack>
+            {detailsExpanded ? <>
             {timerReview?.needsReview ? (
               <Alert severity="warning" variant="outlined">
                 <strong>This project trip is still running.</strong> The timer shows{" "}
@@ -6425,6 +6521,7 @@ if (nextStatus === "active_work") {
                   : "Techs can operate trips they are assigned to. Admin / Dispatcher / Manager can act on any project trip from this desktop card."}
               </Typography>
             ) : null}
+            </> : null}
           </Stack>
         </CardContent>
       </Card>
@@ -7306,6 +7403,9 @@ if (nextStatus === "active_work") {
             bgcolor: "background.default",
             px: { xs: 1, sm: 2, md: 3 },
             py: { xs: 2, md: 3 },
+            maxWidth: 1600,
+            mx: "auto",
+            minWidth: 0,
           }}
         >
           {loading ? <Typography>Loading project...</Typography> : null}
@@ -7358,7 +7458,7 @@ if (nextStatus === "active_work") {
                       />
                     </Stack>
 
-                    <Typography variant="h4" sx={{ fontWeight: 900, letterSpacing: -0.4 }}>
+                    <Typography variant="h4" sx={{ fontWeight: 900, letterSpacing: -0.4, fontSize: { xs: "1.5rem", sm: "2.125rem" }, overflowWrap: "anywhere" }}>
                       {project.projectName || "Untitled Project"}
                     </Typography>
 
@@ -7419,6 +7519,29 @@ if (nextStatus === "active_work") {
                       </Button>
                     ) : null}
                   </Stack>
+                </Stack>
+              </Paper>
+              <Paper variant="outlined" sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 2 }}>
+                <Stack spacing={2}>
+                  <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }} spacing={1}>
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>Project at a Glance</Typography>
+                    <Stack direction="row" spacing={1}>
+                      <Button size="small" variant="outlined" onClick={() => window.dispatchEvent(new CustomEvent("dcflow-project-toggle-all", { detail: { expanded: true } }))}>Expand All</Button>
+                      <Button size="small" variant="outlined" onClick={() => window.dispatchEvent(new CustomEvent("dcflow-project-toggle-all", { detail: { expanded: false } }))}>Collapse All</Button>
+                    </Stack>
+                  </Stack>
+                  <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0,1fr))", md: "repeat(4,minmax(0,1fr))" }, gap: 1.5 }}>
+                    <InfoField label="Active / Upcoming" value={projectTrips.filter(t => t.active !== false && !["complete", "completed", "cancelled", "canceled"].includes(safeTrim(t.status).toLowerCase())).length} />
+                    <InfoField label="Completed Visits" value={projectTrips.filter(t => t.active !== false && safeTrim(t.status).toLowerCase() === "complete").length} />
+                    <InfoField label="Next Visit" value={formatShortDate(projectTrips.filter(t => t.active !== false && !["complete", "cancelled", "canceled"].includes(safeTrim(t.status).toLowerCase()) && t.date >= toIsoDate(new Date())).sort((a,b)=>a.date.localeCompare(b.date))[0]?.date)} />
+                    <InfoField label="Billing" value={isTmProject ? `${tmBillingOverview.readyPeriods.length} periods ready` : `${enabledStages.filter(k => getStageBillingStatus((project as any)[k]) === "ready_to_bill").length} stages ready`} />
+                  </Box>
+                  {(projectBillingSummary.needsTimeEntryReview || (isTmProject ? tmBillingOverview.readyPeriods.length > 0 : enabledStages.some(k=>getStageBillingStatus((project as any)[k]) === "ready_to_bill"))) && (
+                    <Alert severity="warning" variant="outlined">
+                      {projectBillingSummary.needsTimeEntryReview ? "Some completed trips need time-entry review. " : ""}
+                      {isTmProject ? `${tmBillingOverview.readyPeriods.length} billing period(s) ready.` : `${enabledStages.filter(k=>getStageBillingStatus((project as any)[k]) === "ready_to_bill").length} stage(s) ready for invoicing.`}
+                    </Alert>
+                  )}
                 </Stack>
               </Paper>
 
@@ -9266,9 +9389,7 @@ if (nextStatus === "active_work") {
 
                             {!tripsLoading && !tripsError && visibleStageTrips.length > 0 ? (
                               <Stack spacing={1.5}>
-                                {visibleStageTrips.map((t) => (
-                                  <TripRow key={t.id} t={t} />
-                                ))}
+                                <ManagedTripList trips={visibleStageTrips} />
                               </Stack>
                             ) : null}
                           </Stack>
@@ -9541,9 +9662,7 @@ if (nextStatus === "active_work") {
 
                     {!tripsLoading && !tripsError && nonStageProjectTrips.length > 0 ? (
                       <Stack spacing={1.5}>
-                        {nonStageProjectTrips.map((t) => (
-                          <TripRow key={t.id} t={t} />
-                        ))}
+                        <ManagedTripList trips={nonStageProjectTrips} />
                       </Stack>
                     ) : null}
                   </Stack>
@@ -9778,7 +9897,7 @@ if (nextStatus === "active_work") {
                           }}
                         >
                           <Stack spacing={2}>
-                            {activityLogs.map((entry) => (
+                            {activityLogs.slice(0, activityVisibleCount).map((entry) => (
                               <Box key={entry.id} sx={{ position: "relative" }}>
                                 <Box
                                   sx={{
@@ -9858,6 +9977,12 @@ if (nextStatus === "active_work") {
                               </Box>
                             ))}
                           </Stack>
+                          {(activityLogs.length > activityVisibleCount || activityHasMore) && (
+                            <Button sx={{ mt: 2 }} variant="outlined" disabled={activityMoreLoading}
+                              onClick={() => activityVisibleCount < activityLogs.length ? setActivityVisibleCount(n => n + 5) : void loadMoreActivity()}>
+                              {activityMoreLoading ? "Loading..." : "Show More Activity"}
+                            </Button>
+                          )}
                         </Box>
                       ) : null}
                     </Stack>

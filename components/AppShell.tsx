@@ -303,8 +303,12 @@ function projectTimerRequiresReview(
 }
 
 function isValidProjectSavedHours(value: number) {
-  if (!Number.isFinite(value) || value < 1) return false;
-  return Math.abs(value * 2 - Math.round(value * 2)) < 0.001;
+  // Payroll follows worked time, not the 1-hour / half-hour billing minimum.
+  return Number.isFinite(value) && value >= 0 && Math.abs(value * 100 - Math.round(value * 100)) < 0.001;
+}
+
+function projectWorkedHours(minutes: number) {
+  return Math.round((Math.max(0, minutes) / 60) * 100) / 100;
 }
 
 function formatElapsedMinutes(totalMinutes: number) {
@@ -2075,21 +2079,18 @@ const showWorkload = false;
       elapsedMinutes,
       timerStoppedAt,
     );
-    const suggestedHours = timerNeedsReview
-      ? getScheduledProjectTripHours(activeTrip)
-      : roundProjectTimerMinutesToHours(elapsedMinutes);
+    // Never replace recorded work with a scheduled shift or billing minimum.
+    // If the timer was left running, flag it for a manual correction instead.
+    const suggestedHours = projectWorkedHours(elapsedMinutes);
     const crew = activeTrip.crewConfirmed || activeTrip.crew || null;
     const crewRows = buildProjectCloseoutCrewHours(crew, suggestedHours).map((member) => {
       const memberMinutes = getWorkerTimerMinutesAt(activeTrip, member.uid, timerStoppedMs);
-      const memberHours = roundProjectTimerMinutesToHours(Number(memberMinutes || 0));
+      const memberHours = memberMinutes == null
+        ? suggestedHours
+        : projectWorkedHours(memberMinutes);
       return {
         ...member,
-        hours: (timerNeedsReview
-          ? suggestedHours
-          : memberHours > 0
-            ? memberHours
-            : suggestedHours
-        ).toFixed(2),
+        hours: memberHours.toFixed(2),
       };
     });
     const savedMaterialNote = safeTrim(
@@ -2127,7 +2128,7 @@ const showWorkload = false;
     const hoursNumber = Number(projectHoursWorked);
     if (!isValidProjectSavedHours(hoursNumber)) {
       setProjectCloseoutError(
-        "Saved project hours must be at least 1.00 hour and use 0.50-hour increments.",
+        "Enter actual project hours in 0.01-hour increments (zero is allowed if no work was done).",
       );
       return;
     }
@@ -2137,7 +2138,7 @@ const showWorkload = false;
       const memberHours = Number(member.hours);
       if (!isValidProjectSavedHours(memberHours)) {
         setProjectCloseoutError(
-          `${member.name}'s saved hours must be at least 1.00 hour and use 0.50-hour increments.`,
+          `${member.name}'s hours must be actual worked time in 0.01-hour increments.`,
         );
         return;
       }
@@ -2163,6 +2164,22 @@ const showWorkload = false;
     try {
       const stamp = safeTrim(projectTimerStoppedAt) || nowIso();
       const savedAt = nowIso();
+      const tripRef = doc(db, "trips", activeTrip.id);
+      // Check the live version before finalizing; never overwrite a newer pause,
+      // resume, or another worker's closeout from an outdated screen snapshot.
+      const liveTripSnap = await getDoc(tripRef);
+      if (!liveTripSnap.exists()) throw new Error("Project trip no longer exists.");
+      const liveTripData = liveTripSnap.data() as TripDoc;
+      if (normalizeTripStatus(liveTripData.status) !== "in_progress") {
+        throw new Error("This trip is no longer in progress. Refresh before closing it.");
+      }
+      if (
+        JSON.stringify(liveTripData.workerTimers || {}) !== JSON.stringify(activeTrip.workerTimers || {}) ||
+        JSON.stringify(liveTripData.pauseBlocks || []) !== JSON.stringify(activeTrip.pauseBlocks || []) ||
+        safeTrim(liveTripData.actualStartAt) !== safeTrim(activeTrip.actualStartAt)
+      ) {
+        throw new Error("Trip timer changed since closeout opened. Close this dialog and select Finish Day again so the worked hours are refreshed.");
+      }
       const crewHoursAdjusted = projectCrewHours.some(
         (member) => Number(member.hours) !== hoursNumber,
       );
@@ -2170,8 +2187,7 @@ const showWorkload = false;
         projectTimerMinutes,
       );
       const submittedHoursAdjusted =
-        Math.abs(rawRoundedTimerHours - hoursNumber) >= 0.25;
-      const tripRef = doc(db, "trips", activeTrip.id);
+        Math.abs(projectWorkedHours(projectTimerMinutes) - hoursNumber) >= 0.01;
       const projectRef = doc(db, "projects", projectId);
 
       const pauseBlocks: PauseBlock[] = Array.isArray(activeTrip.pauseBlocks)
@@ -2211,6 +2227,7 @@ const showWorkload = false;
         crewHoursByUid,
         crewHoursAdjusted,
         timerElapsedMinutes: projectTimerMinutes,
+        actualMinutes: projectTimerMinutes,
         timerRoundedHours: rawRoundedTimerHours,
         submittedHoursAuthoritative: true,
         hoursSource: "submitted_closeout",
@@ -4090,7 +4107,7 @@ const showWorkload = false;
                   From trip timer: {formatElapsedMinutes(projectTimerMinutes)}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Rounded to nearest 0.5 hr • 1 hr minimum
+                  Actual active time, excluding pauses • displayed to 0.01 hr
                 </Typography>
               </Stack>
             </Paper>
@@ -4101,7 +4118,7 @@ const showWorkload = false;
                   This timer has been running for {formatElapsedMinutes(projectTimerMinutes)}.
                 </Typography>
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  It may have been left running. The scheduled workday was used as the starting value; use Correct Hours to enter the time actually worked.
+                  It may have been left running. The timer's pause-adjusted duration is shown; use Correct Hours to enter the time actually worked if the timer was not stopped correctly.
                 </Typography>
               </Alert>
             ) : null}
@@ -4129,7 +4146,7 @@ const showWorkload = false;
                     label="Hours for the entire crew"
                     type="number"
                     size="small"
-                    inputProps={{ min: 1, step: 0.5 }}
+                    inputProps={{ min: 0, step: 0.01 }}
                     value={projectHoursWorked}
                     onChange={(e) => {
                       const nextHours = e.target.value;
@@ -4142,7 +4159,7 @@ const showWorkload = false;
                       );
                     }}
                     disabled={projectCloseoutSaving}
-                    helperText="Changes the saved trip hours and every assigned crew member together."
+                    helperText="Updates the trip duration and each crew member's worked hours; do not include pauses."
                     fullWidth
                   />
 
@@ -4152,7 +4169,7 @@ const showWorkload = false;
                       label={`${member.name} • ${member.roleLabel}`}
                       type="number"
                       size="small"
-                      inputProps={{ min: 1, step: 0.5 }}
+                      inputProps={{ min: 0, step: 0.01 }}
                       value={member.hours}
                       onChange={(e) =>
                         setProjectCrewHours((current) =>
@@ -4164,7 +4181,7 @@ const showWorkload = false;
                         )
                       }
                       disabled={projectCloseoutSaving}
-                      helperText="1.00 hr minimum • 0.50 hr increments"
+                      helperText="Actual worked hours • 0.01 hr increments • excludes pauses"
                       fullWidth
                     />
                   ))}

@@ -3758,6 +3758,51 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return crew;
   }
 
+  // Payroll time is actual active time, not invoice minimums or half-hour rounding.
+  function payrollHoursFromMinutes(minutes: number) {
+    return Math.round((Math.max(0, minutes) / 60) * 100) / 100;
+  }
+
+  // Legacy service trips may have trip-level pauseBlocks but worker timers
+  // without their own copied pause history. Apply the legacy pauses only when
+  // there are no employee-level pauses, so pauses are never subtracted twice.
+  function activeMinutesForCloseout(
+    trip: TripDoc,
+    workerUid: string | null,
+    completedTimers: WorkerTimersByUid,
+    completedAtMs: number,
+  ) {
+    const snapshot = { ...trip, workerTimers: completedTimers };
+    const worker = workerUid ? completedTimers[workerUid] : null;
+    const workerMinutes = workerUid
+      ? getWorkerTimerMinutesAt(snapshot, workerUid, completedAtMs)
+      : getTripActiveMinutesAt(snapshot, completedAtMs);
+
+    const hasLegacyPauses = Array.isArray(trip.pauseBlocks) && trip.pauseBlocks.length > 0;
+    const hasWorkerPauses = worker
+      ? Array.isArray(worker.pauseBlocks) && worker.pauseBlocks.length > 0
+      : Object.values(completedTimers).some(
+          (timer) => Array.isArray(timer.pauseBlocks) && timer.pauseBlocks.length > 0,
+        );
+    if (!hasLegacyPauses || hasWorkerPauses) return workerMinutes;
+
+    const startedAt = worker?.startedAt || trip.actualStartAt;
+    const startedMs = startedAt ? Date.parse(startedAt) : NaN;
+    const endedMs = worker?.endedAt ? Date.parse(worker.endedAt) : completedAtMs;
+    if (!Number.isFinite(startedMs) || !Number.isFinite(endedMs)) return workerMinutes;
+    const gross = Math.max(0, Math.round((endedMs - startedMs) / 60000));
+    const overlappingPaused = (trip.pauseBlocks || []).reduce((sum, block) => {
+      const pauseStart = Date.parse(block.startAt);
+      const pauseEnd = block.endAt ? Date.parse(block.endAt) : completedAtMs;
+      if (!Number.isFinite(pauseStart) || !Number.isFinite(pauseEnd)) return sum;
+      return sum + Math.max(
+        0,
+        Math.round((Math.min(endedMs, pauseEnd) - Math.max(startedMs, pauseStart)) / 60000),
+      );
+    }, 0);
+    return Math.max(0, gross - Math.min(gross, overlappingPaused));
+  }
+
   function getHoursToUse(tripId: string, computedMinutes: number) {
     const override = hoursOverrideByTrip[tripId];
     if (
@@ -6059,25 +6104,25 @@ async function handleStartTrip(trip: TripDoc) {
         throw new Error(materialCheck.message);
       }
 
-      const pauseBlocks = [
-        ...(Array.isArray(trip.pauseBlocks) ? trip.pauseBlocks : []),
-      ];
-      for (let i = pauseBlocks.length - 1; i >= 0; i--) {
-        if (pauseBlocks[i] && pauseBlocks[i].startAt && !pauseBlocks[i].endAt) {
-          pauseBlocks[i] = { ...pauseBlocks[i], endAt: now };
-          break;
-        }
+      // Read the latest pause history before finalizing. A stale React trip
+      // snapshot can omit a pause/resume written from another device.
+      const latestSnap = await getDoc(doc(db, "trips", trip.id));
+      if (!latestSnap.exists()) throw new Error("Trip no longer exists.");
+      const latestTrip = mapTripLikeFromDoc(latestSnap);
+      if (!canFinishTrip(latestTrip.status, latestTrip.timerState)) {
+        throw new Error("Trip was already completed or its status changed. Refresh and try again.");
       }
-
-      const completedWorkerTimers = completeAllWorkerTimers(trip, now, myUid);
+      const pauseBlocks = (latestTrip.pauseBlocks || []).map((block) => ({
+        ...block,
+        endAt: block.endAt || now,
+      }));
+      const completedWorkerTimers = completeAllWorkerTimers(latestTrip, now, myUid);
       const completionMs = new Date(now).getTime();
 
-      const actualMinutes = getTripActiveMinutesAt(
-        {
-          ...trip,
-          workerTimers: completedWorkerTimers,
-          actualEndAt: now,
-        },
+      const actualMinutes = activeMinutesForCloseout(
+        latestTrip,
+        null,
+        completedWorkerTimers,
         completionMs,
       );
 
@@ -6087,11 +6132,6 @@ async function handleStartTrip(trip: TripDoc) {
       if (!actualMinutes || actualMinutes <= 0) {
         throw new Error("Trip duration is 0 minutes; no time entry created.");
       }
-
-      const latestSnap = await getDoc(doc(db, "trips", trip.id));
-      const latestTrip = latestSnap.exists()
-        ? (latestSnap.data() as any)
-        : null;
 
       const crewConfirmed = applyHelperConfirmation(
         (latestTrip?.crewConfirmed ??
@@ -6116,13 +6156,19 @@ async function handleStartTrip(trip: TripDoc) {
       const hoursToUse = getHoursToUse(trip.id, actualMinutes);
       const payrollHoursByUid = Object.fromEntries(
         crewMembers.map((member) => {
-          const memberMinutes = getWorkerTimerMinutesAt(
-            { ...trip, workerTimers: completedWorkerTimers } as any,
+          const memberMinutes = activeMinutesForCloseout(
+            latestTrip,
             member.uid,
+            completedWorkerTimers,
             completionMs,
           );
-          const memberHours = getDefaultBillableHours(Number(memberMinutes || 0));
-          return [member.uid, memberHours > 0 ? memberHours : hoursToUse];
+          // Only fall back for genuinely missing legacy employee timers.
+          // A valid zero-minute timer must never turn into a billable minimum.
+          const hasTimer = Boolean(completedWorkerTimers[member.uid]);
+          const memberHours = hasTimer && memberMinutes !== null
+            ? payrollHoursFromMinutes(memberMinutes)
+            : payrollHoursFromMinutes(actualMinutes);
+          return [member.uid, memberHours];
         }),
       ) as Record<string, number>;
       const entryDate = trip.date;
@@ -6175,7 +6221,7 @@ async function handleStartTrip(trip: TripDoc) {
           trip,
           member,
           entryDate,
-          hoursGenerated: payrollHoursByUid[member.uid] || hoursToUse,
+          hoursGenerated: payrollHoursByUid[member.uid] ?? payrollHoursFromMinutes(actualMinutes),
           weekStartDate,
           weekEndDate,
           timesheetId,
