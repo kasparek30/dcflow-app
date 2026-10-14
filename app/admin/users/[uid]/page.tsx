@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { getAuth } from "firebase/auth";
 import {
   collection,
   doc,
@@ -192,6 +193,7 @@ export default function AdminUserDetailPage({ params }: Props) {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [changingAccess, setChangingAccess] = useState(false);
   const [error, setError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
@@ -395,6 +397,43 @@ export default function AdminUserDetailPage({ params }: Props) {
     load();
   }, [params]);
 
+  async function handleAccountAccess(nextActive: boolean) {
+    if (!userDoc || changingAccess || saving) return;
+    if (appUser?.uid === userDoc.uid) {
+      setError("You cannot deactivate your own administrator account.");
+      return;
+    }
+    const confirmation = nextActive
+      ? `Reactivate DCFlow login for ${userDoc.displayName}? Scheduling eligibility stays OFF until an administrator reviews it.`
+      : `Deactivate DCFlow login for ${userDoc.displayName}? They will be removed from future scheduling, but their work history and QuickBooks records will remain.`;
+    if (!window.confirm(confirmation)) return;
+    setChangingAccess(true);
+    setError("");
+    setSaveMsg("");
+    try {
+      const signedInUser = getAuth().currentUser;
+      if (!signedInUser) throw new Error("Your login expired. Sign in again.");
+      const token = await signedInUser.getIdToken();
+      const response = await fetch("/api/admin/user-access", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ uid: userDoc.uid, active: nextActive }),
+      });
+      const result = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || "Could not change account access.");
+      setUserDoc((current) => current ? { ...current, active: nextActive } : current);
+      setSupportUsers((current) => current.filter((user) => user.uid !== userDoc.uid));
+      setTechOptions((current) => current.filter((user) => user.uid !== userDoc.uid));
+      setSaveMsg(result.message || (nextActive ? "Account reactivated." : "Account deactivated."));
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : "Could not update account access.");
+    } finally {
+      setChangingAccess(false);
+    }
+  }
   async function handleSave(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -680,6 +719,32 @@ export default function AdminUserDetailPage({ params }: Props) {
 
                 {saveMsg ? <Alert severity="success">{saveMsg}</Alert> : null}
 
+                <Card variant="outlined" sx={{ borderRadius: 2, borderColor: userDoc.active ? "warning.main" : "divider" }}>
+                  <CardContent>
+                    <Stack spacing={2}>
+                      <Typography variant="h6">DCFlow Account Access</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Disable login and scheduling without deleting time entries,
+                        completed work, or QuickBooks payroll history.
+                      </Typography>
+                      <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ xs: "stretch", sm: "center" }} justifyContent="space-between" spacing={2}>
+                        <Chip size="small" label={userDoc.active ? "Login active" : "Login deactivated"} color={userDoc.active ? "success" : "default"} sx={{ alignSelf: "flex-start" }} />
+                        <Button
+                          type="button"
+                          variant="outlined"
+                          color={userDoc.active ? "error" : "success"}
+                          disabled={saving || changingAccess || appUser?.uid === userDoc.uid}
+                          onClick={() => handleAccountAccess(!userDoc.active)}
+                        >
+                          {changingAccess ? "Updating access..." : userDoc.active ? "Deactivate Account" : "Reactivate Account"}
+                        </Button>
+                      </Stack>
+                      {!userDoc.active ? (
+                        <Alert severity="info">Reactivating login will not automatically restore scheduling eligibility. Review the linked employee profile before assigning work.</Alert>
+                      ) : null}
+                    </Stack>
+                  </CardContent>
+                </Card>
                 <Box component="form" onSubmit={handleSave}>
                   <Box
                     sx={{
@@ -1340,7 +1405,7 @@ export default function AdminUserDetailPage({ params }: Props) {
                       type="submit"
                       variant="contained"
                       size="large"
-                      disabled={saving}
+                      disabled={saving || changingAccess}
                       sx={{
                         borderRadius: 999,
                         minWidth: 150,
