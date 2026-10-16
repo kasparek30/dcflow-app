@@ -74,6 +74,7 @@ import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownR
 import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
 import BlockRoundedIcon from "@mui/icons-material/BlockRounded";
 import DeleteRoundedIcon from "@mui/icons-material/DeleteRounded";
+import EditCalendarRoundedIcon from "@mui/icons-material/EditCalendarRounded";
 import SharedTripCard from "../../components/trips/SharedTripCard";
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -442,6 +443,11 @@ function projectIsSchedulableByStatus(d: any) {
   const statusValues = [
     d?.status,
     d?.projectStatus,
+    d?.bidStatus,
+    d?.estimateStatus,
+    d?.salesStatus,
+    d?.projectOutcome,
+    d?.outcome,
     d?.officeStatus,
     d?.workflowStatus,
     d?.lifecycleStatus,
@@ -455,6 +461,10 @@ function projectIsSchedulableByStatus(d: any) {
     .filter(Boolean);
 
   const closedStatuses = new Set([
+    "lost",
+    "declined",
+    "rejected",
+    "not_awarded",
     "invoiced",
     "invoice_created",
     "invoice_sent",
@@ -1891,6 +1901,7 @@ export default function SchedulePage() {
   const [openProjectItems, setOpenProjectItems] = useState<PickerItem[]>([]);
 
   const [meetOpen, setMeetOpen] = useState(false);
+  const [eventListDate, setEventListDate] = useState("");
   const [editingMeetId, setEditingMeetId] = useState<string | null>(null);
   const [editingMeetOriginalDate, setEditingMeetOriginalDate] = useState<string>("");
   const [meetDateIso, setMeetDateIso] = useState("");
@@ -1937,6 +1948,16 @@ export default function SchedulePage() {
 
   const [tripActionAnchorEl, setTripActionAnchorEl] = useState<HTMLElement | null>(null);
   const [tripActionTripId, setTripActionTripId] = useState("");
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [rescheduleTripId, setRescheduleTripId] = useState("");
+  const [rescheduleDate, setRescheduleDate] = useState("");
+  const [rescheduleWindow, setRescheduleWindow] = useState<"am" | "pm" | "all_day" | "custom">("am");
+  const [rescheduleStart, setRescheduleStart] = useState("08:00");
+  const [rescheduleEnd, setRescheduleEnd] = useState("12:00");
+  const [rescheduleOverride, setRescheduleOverride] = useState(false);
+  const [rescheduleReason, setRescheduleReason] = useState("");
+  const [rescheduleSaving, setRescheduleSaving] = useState(false);
+  const [rescheduleErr, setRescheduleErr] = useState("");
   const [removeTripOpen, setRemoveTripOpen] = useState(false);
   const [removeTripId, setRemoveTripId] = useState("");
   const [removeTripSaving, setRemoveTripSaving] = useState(false);
@@ -2591,6 +2612,10 @@ if (addTripType === "project") {
       return setAddErr("That project could not be found.");
     }
 
+    if (!projectIsSchedulableByStatus(liveProjectSnap.data())) {
+      return setAddErr("This project is lost, completed, cancelled, or otherwise closed and cannot be scheduled.");
+    }
+
     const liveStageOptions = extractProjectStageOptions(liveProjectSnap.data() as any);
     verifiedProjectStage =
       liveStageOptions.find((stage) => stage.key === addProjectStageKey) || null;
@@ -2839,6 +2864,134 @@ closeAddModal(true);
     closeTripActionMenu();
     if (!tripId) return;
     openHelperEditDialog({ tripId, slot: "add" });
+  }
+
+  const rescheduleTarget = trips.find((trip) => trip.id === rescheduleTripId) || null;
+
+  function openRescheduleFromMenu() {
+    const trip = tripActionTrip;
+    closeTripActionMenu();
+    if (!trip || !isPlannedStatus(trip.status)) return;
+    const windowValue = String(trip.timeWindow || "am");
+    const normalized = ["am", "pm", "all_day", "custom"].includes(windowValue) ? windowValue : "custom";
+    setRescheduleTripId(trip.id);
+    setRescheduleDate(String(trip.date || todayIsoLocal()));
+    setRescheduleWindow(normalized as "am" | "pm" | "all_day" | "custom");
+    setRescheduleStart(String(trip.startTime || "08:00"));
+    setRescheduleEnd(String(trip.endTime || "12:00"));
+    setRescheduleOverride(false);
+    setRescheduleReason("");
+    setRescheduleErr("");
+    setRescheduleOpen(true);
+  }
+
+  function closeReschedule() {
+    if (rescheduleSaving) return;
+    setRescheduleOpen(false);
+    setRescheduleTripId("");
+    setRescheduleErr("");
+  }
+
+  async function saveReschedule() {
+    if (!canEditSchedule || !rescheduleTarget) return;
+    const dateIso = rescheduleDate.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return setRescheduleErr("Choose a valid date.");
+    if (dateIso < todayIsoLocal()) return setRescheduleErr("Trips cannot be scheduled in the past.");
+    const defaults = rescheduleWindow === "custom" ? null : slotDefaults(rescheduleWindow);
+    const startTime = defaults?.startTime || rescheduleStart;
+    const endTime = defaults?.endTime || rescheduleEnd;
+    const st = minutesFromHHMM(startTime);
+    const en = minutesFromHHMM(endTime);
+    if (st == null || en == null || en <= st) return setRescheduleErr("End time must be after start time.");
+
+    setRescheduleSaving(true);
+    setRescheduleErr("");
+    try {
+      const liveRef = doc(db, "trips", rescheduleTarget.id);
+      const liveSnap = await getDoc(liveRef);
+      if (!liveSnap.exists() || liveSnap.data().active === false || !isPlannedStatus(liveSnap.data().status)) {
+        throw new Error("This trip is no longer planned. Refresh the schedule before editing.");
+      }
+      const liveTrip = { id: liveSnap.id, ...liveSnap.data() } as TripDoc;
+      const [dayTripsSnap, dayEventsSnap, holidaysSnap, ptoSnap] = await Promise.all([
+        getDocs(query(collection(db, "trips"), where("date", "==", dateIso))),
+        getDocs(query(collection(db, "companyEvents"), where("date", "==", dateIso))),
+        getDocs(collection(db, "companyHolidays")),
+        getDocs(collection(db, "ptoRequests")),
+      ]);
+      const dayTrips = dayTripsSnap.docs
+        .filter((ds) => ds.id !== liveTrip.id)
+        .map((ds) => ({ id: ds.id, ...ds.data() } as TripDoc))
+        .filter((trip) => trip.active !== false && !["cancelled", "canceled"].includes(normalizeStatus(trip.status)));
+      const dayEvents: CompanyEvent[] = dayEventsSnap.docs
+        .map((ds) => ({ id: ds.id, ...ds.data() } as CompanyEvent))
+        .filter((event) => event.active !== false);
+      const holiday = holidaysSnap.docs.find((ds) => {
+        const d = ds.data() as any;
+        return d.active !== false && String(d.date ?? d.holidayDate ?? d.holiday_date ?? "") === dateIso;
+      });
+      const dayPto: Record<string, Record<string, PtoDay>> = {};
+      for (const ds of ptoSnap.docs) {
+        const d = ds.data() as any;
+        if (!looksApprovedPto(d) || !extractPtoDates(d).includes(dateIso)) continue;
+        const uid = extractEmployeeUid(d);
+        if (!uid) continue;
+        dayPto[uid] = { [dateIso]: { uid, employeeName: extractEmployeeName(d), date: dateIso, requestId: ds.id } };
+      }
+      const proposed: TripDoc = {
+        ...liveTrip, date: dateIso, timeWindow: rescheduleWindow, startTime, endTime,
+      };
+      const crewUids = uniqueTrimmedStrings([
+        liveTrip.crew?.primaryTechUid, liveTrip.crew?.secondaryTechUid,
+        liveTrip.crew?.helperUid, liveTrip.crew?.secondaryHelperUid,
+      ]);
+      const hard: string[] = [];
+      const soft: string[] = [];
+      const conflictTripIds = new Set<string>();
+      if (holiday) hard.push(`This date is a company holiday (${String(holiday.data().name || holiday.data().title || "Holiday")}).`);
+      for (const uid of crewUids) {
+        const name = employeeNamesByUid[uid] || uid;
+        if (dayPto[uid]?.[dateIso]) hard.push(`${name} has approved PTO on this date.`);
+        const role = employeeRolesByUid[uid] || "technician";
+        for (const event of dayEvents) {
+          if (event.blocksSchedule !== false && eventAppliesToUid(event, uid, role) &&
+              selectedSlotsForWindow(rescheduleWindow, startTime, endTime).some((slot) => eventBlocksSlot(event, slot))) {
+            hard.push(`${name} is blocked by ${event.title || "an event"}.`);
+          }
+        }
+        for (const other of dayTrips) {
+          if (!isEmployeeOnTrip(other, uid) || !tripsOverlapByExactTime(proposed, other)) continue;
+          if (isInProgressStatus(other.status)) hard.push(`${name} has an in-progress trip that overlaps.`);
+          else if (isPlannedStatus(other.status)) {
+            soft.push(`${name} already has a scheduled trip (${formatTimeRangeForCard(other)}).`);
+            conflictTripIds.add(other.id);
+          }
+        }
+      }
+      if (hard.length) throw new Error(hard.join(" "));
+      if (soft.length && !rescheduleOverride) throw new Error(`${soft.join(" ")} Enable Dispatch Override to continue.`);
+      if (soft.length && !rescheduleReason.trim()) throw new Error("Provide a reason for the Dispatch Override.");
+      const now = nowIso();
+      const nextOverride: DispatchOverrideInfo | null = soft.length ? {
+        enabled: true, reason: rescheduleReason.trim(), createdAt: now,
+        createdByUid: appUser?.uid || null, createdByName: appUser?.displayName || null,
+        conflictTypes: ["scheduled_overlap"], conflictTripIds: Array.from(conflictTripIds),
+      } : null;
+      await updateDoc(liveRef, {
+        date: dateIso, timeWindow: rescheduleWindow, startTime, endTime,
+        dispatchOverride: nextOverride, updatedAt: now, updatedByUid: appUser?.uid || null,
+      });
+      setTrips((prev) => prev.map((trip) => trip.id === liveTrip.id ?
+        { ...trip, date: dateIso, timeWindow: rescheduleWindow, startTime, endTime, dispatchOverride: nextOverride, updatedAt: now } : trip));
+      setRescheduleOpen(false);
+      setRescheduleTripId("");
+      // The target may lie outside the currently loaded week: navigate to its new location.
+      setAnchorIso(dateIso);
+    } catch (e: any) {
+      setRescheduleErr(e?.message || "Unable to change this trip's schedule.");
+    } finally {
+      setRescheduleSaving(false);
+    }
   }
 
   function openRemoveTripDialogFromMenu() {
@@ -5031,6 +5184,8 @@ useEffect(() => {
         label={`${list.length} meetings`}
         color="success"
         variant="outlined"
+        clickable
+        onClick={() => setEventListDate(dateIso)}
         sx={{
           borderRadius: 1.5,
           fontWeight: 500,
@@ -5039,107 +5194,61 @@ useEffect(() => {
     );
   }
 
-  function renderStaffCoverageBadgeSmall(dateIso: string) {
-  const list = staffCoverageByDate[dateIso] || [];
-  if (!list.length) return null;
-
-  if (list.length === 1) {
-    const item = list[0];
+  // Office coverage stays in the day header, never as crew rows.
+  function renderStaffCoverageBadgeSmall(dateIso: string, compact = false) {
+    const list = (staffCoverageByDate[dateIso] || []).filter((entry) =>
+      entry.active && String(entry.status).toLowerCase() !== "cancelled"
+    );
+    if (!list.length) return null;
 
     return (
-      <Chip
-        size="small"
-        icon={<SupportAgentRoundedIcon sx={{ fontSize: 16 }} />}
-        label={`${staffCoverageWorkTypeLabel(item.workType)} • ${item.employeeName}`}
-        color="info"
-        variant="outlined"
-        sx={{
-          borderRadius: 1.5,
-          fontWeight: 500,
-          maxWidth: 320,
-          "& .MuiChip-label": {
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          },
-        }}
-      />
+      <Stack direction="row" spacing={0.35} alignItems="center" justifyContent="center" flexWrap="wrap" useFlexGap>
+        {list.map((entry) => (
+          <Chip
+            key={entry.id}
+            size="small"
+            icon={<SupportAgentRoundedIcon sx={{ fontSize: compact ? 12 : 15 }} />}
+            label={entry.employeeName}
+            title={`${staffCoverageWorkTypeLabel(entry.workType)}: ${entry.employeeName} • ${compactTimeLabel(entry.startTime, entry.endTime)}`}
+            color="info"
+            variant="outlined"
+            clickable={canEditSchedule}
+            onClick={canEditSchedule ? () => router.push("/admin/staff-coverage") : undefined}
+            sx={{ height: compact ? 19 : 23, borderRadius: 999, fontSize: compact ? 9 : 11,
+              fontWeight: 750, maxWidth: compact ? 170 : 240,
+              "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", px: 0.55 } }}
+          />
+        ))}
+      </Stack>
     );
   }
-
-  return (
-    <Chip
-      size="small"
-      icon={<SupportAgentRoundedIcon sx={{ fontSize: 16 }} />}
-      label={`${list.length} staff coverage`}
-      color="info"
-      variant="outlined"
-      sx={{
-        borderRadius: 1.5,
-        fontWeight: 500,
-      }}
-    />
-  );
-}
 
 function renderStaffCoverageCards(dateIso: string) {
   const list = staffCoverageByDate[dateIso] || [];
   if (!list.length) return null;
-
-  // return (
-  //   <Paper
-  //     elevation={0}
-  //     sx={{
-  //       p: 1.25,
-  //       borderRadius: 2,
-  //       border: `1px solid ${alpha(theme.palette.info.main, 0.22)}`,
-  //       backgroundColor: alpha(theme.palette.info.main, 0.06),
-  //     }}
-  //   >
-  //     <Stack spacing={0.75}>
-  //       <Typography
-  //         variant="caption"
-  //         sx={{
-  //           fontWeight: 800,
-  //           color: "text.secondary",
-  //           letterSpacing: "0.04em",
-  //           textTransform: "uppercase",
-  //         }}
-  //       >
-  //         Office / Dispatch Coverage
-  //       </Typography>
-
-  //       {list.map((item) => (
-  //         <Stack
-  //           key={item.id}
-  //           direction="row"
-  //           spacing={1}
-  //           alignItems="center"
-  //           justifyContent="space-between"
-  //         >
-  //           <Box sx={{ minWidth: 0 }}>
-  //             <Typography variant="body2" sx={{ fontWeight: 800 }}>
-  //               {item.employeeName}
-  //             </Typography>
-
-  //             <Typography variant="caption" color="text.secondary">
-  //               {staffCoverageWorkTypeLabel(item.workType)} •{" "}
-  //               {compactTimeLabel(item.startTime, item.endTime)} •{" "}
-  //               {Number(item.scheduledHours || 0).toFixed(2)}h
-  //             </Typography>
-  //           </Box>
-
-  //           <Chip
-  //             size="small"
-  //             label={item.status || "scheduled"}
-  //             variant="outlined"
-  //             sx={{ borderRadius: 1.5 }}
-  //           />
-  //         </Stack>
-  //       ))}
-  //     </Stack>
-  //   </Paper>
-  // );
+  return (
+    <Paper elevation={0} sx={{ mb: 1.25, p: 1.25, borderRadius: 2,
+      border: `1px solid ${alpha(theme.palette.info.main, 0.22)}`,
+      bgcolor: alpha(theme.palette.info.main, 0.045) }}>
+      <Stack spacing={0.85}>
+        <Typography variant="caption" sx={{ fontWeight: 900, color: "info.light" }}>
+          OFFICE / DISPATCH COVERAGE
+        </Typography>
+        {list.map((item) => (
+          <Stack key={item.id} direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="body2" sx={{ fontWeight: 800 }}>{item.employeeName}</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {staffCoverageWorkTypeLabel(item.workType)} • {compactTimeLabel(item.startTime, item.endTime)}
+                {item.scheduledHours > 0 ? ` • ${item.scheduledHours}h` : ""}
+              </Typography>
+            </Box>
+            <Chip size="small" label={item.status || "scheduled"} variant="outlined" />
+          </Stack>
+        ))}
+      </Stack>
+    </Paper>
+  );
 }
 
   function renderTripCard(
@@ -5695,7 +5804,6 @@ function renderStaffCoverageCards(dateIso: string) {
           </Stack>
         </Paper>
 
-        {renderStaffCoverageCards(iso)}
 
         <Paper
           elevation={0}
@@ -6416,10 +6524,13 @@ function renderStaffCoverageCards(dateIso: string) {
                               label={`${(eventsByDate[iso] || []).length} event${(eventsByDate[iso] || []).length === 1 ? "" : "s"}`}
                               color="success"
                               variant="outlined"
-                              sx={{ height: 17, borderRadius: 999, fontSize: 8.5, fontWeight: 800 }}
+                              clickable
+                              onClick={() => setEventListDate(iso)}
+                              sx={{ height: 17, borderRadius: 999, fontSize: 8.5, fontWeight: 800, cursor: "pointer" }}
                             />
                           ) : null}
                         </Stack>
+                        {renderStaffCoverageBadgeSmall(iso, true)}
                       </Stack>
                     </Box>
                   );
@@ -8190,8 +8301,7 @@ function renderStaffCoverageCards(dateIso: string) {
                             </Stack>
                           </Paper>
 
-                          {renderStaffCoverageCards(iso)}
-
+                  
                           <Stack spacing={0}>
                             {rows.map((r, rowIndex) => {
                               const rowKey = r.key === "UNASSIGNED" ? "UNASSIGNED" : r.key;
@@ -8411,6 +8521,14 @@ function renderStaffCoverageCards(dateIso: string) {
             },
           }}
         >
+          <MenuItem
+            disabled={!tripActionTrip || !isPlannedStatus(tripActionTrip.status)}
+            onClick={openRescheduleFromMenu}
+          >
+            <ListItemIcon><EditCalendarRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="Change Schedule" secondary="Move date or time without recreating trip" />
+          </MenuItem>
+
           <MenuItem
             disabled={!tripActionTrip || !isPlannedStatus(tripActionTrip.status)}
             onClick={manageTripHelpersFromMenu}
@@ -9118,6 +9236,52 @@ function renderStaffCoverageCards(dateIso: string) {
           </DialogActions>
         </Dialog>
 
+        <Dialog open={rescheduleOpen} onClose={closeReschedule} fullWidth maxWidth="sm"
+          PaperProps={{ sx: { borderRadius: 2, backgroundImage: "none" } }}>
+          <DialogTitle>Change Trip Schedule</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2} sx={{ pt: 1 }}>
+              {rescheduleTarget ? <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                {tripDisplayInfo(rescheduleTarget).title}
+              </Typography> : null}
+              <Alert severity="info" variant="outlined">
+                Changes the existing trip only. Its assigned crew, linked service ticket or project, and history remain intact.
+              </Alert>
+              <TextField label="New date" type="date" value={rescheduleDate} fullWidth
+                InputLabelProps={{ shrink: true }} onChange={(e) => setRescheduleDate(e.target.value)} />
+              <FormControl fullWidth>
+                <InputLabel id="reschedule-window-label">Time slot</InputLabel>
+                <Select labelId="reschedule-window-label" label="Time slot" value={rescheduleWindow}
+                  onChange={(e) => setRescheduleWindow(e.target.value as typeof rescheduleWindow)}>
+                  <MenuItem value="am">AM (8:00 AM–12:00 PM)</MenuItem>
+                  <MenuItem value="pm">PM (1:00 PM–5:00 PM)</MenuItem>
+                  <MenuItem value="all_day">All Day (8:00 AM–5:00 PM)</MenuItem>
+                  <MenuItem value="custom">Custom time</MenuItem>
+                </Select>
+              </FormControl>
+              {rescheduleWindow === "custom" ? <Stack direction="row" spacing={2}>
+                <TextField label="Start" type="time" fullWidth value={rescheduleStart}
+                  InputLabelProps={{ shrink: true }} onChange={(e) => setRescheduleStart(e.target.value)} />
+                <TextField label="End" type="time" fullWidth value={rescheduleEnd}
+                  InputLabelProps={{ shrink: true }} onChange={(e) => setRescheduleEnd(e.target.value)} />
+              </Stack> : null}
+              <FormControlLabel control={<Checkbox checked={rescheduleOverride}
+                onChange={(e) => setRescheduleOverride(e.target.checked)} />}
+                label="Allow overlapping planned trips with Dispatch Override" />
+              {rescheduleOverride ? <TextField label="Dispatch Override reason" fullWidth required
+                value={rescheduleReason} onChange={(e) => setRescheduleReason(e.target.value)} /> : null}
+              {rescheduleErr ? <Alert severity="error">{rescheduleErr}</Alert> : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={closeReschedule} disabled={rescheduleSaving}>Cancel</Button>
+            <Button variant="contained" disabled={rescheduleSaving || !rescheduleTarget}
+              onClick={saveReschedule} startIcon={<EditCalendarRoundedIcon />}>
+              {rescheduleSaving ? "Saving…" : "Save Schedule Change"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Dialog
           open={removeTripOpen}
           onClose={closeRemoveTripDialog}
@@ -9380,6 +9544,33 @@ function renderStaffCoverageCards(dateIso: string) {
               {blockSaving ? "Saving…" : "Add Block"}
             </Button>
           </DialogActions>
+        </Dialog>
+
+        <Dialog open={Boolean(eventListDate)} onClose={() => setEventListDate("")} fullWidth maxWidth="sm">
+          <DialogTitle>Scheduled Events • {eventListDate ? formatDateLong(eventListDate) : ""}</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={1}>
+              {(eventsByDate[eventListDate] || []).map((event) => (
+                <Paper key={event.id} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 800 }}>{meetingChipLabel(event)}</Typography>
+                      {event.location ? <Typography variant="caption" color="text.secondary">{event.location}</Typography> : null}
+                      {event.notes ? <Typography variant="body2" color="text.secondary">{event.notes}</Typography> : null}
+                    </Box>
+                    {canEditSchedule ? (
+                      <Button variant="outlined" size="small" onClick={() => {
+                        setEventListDate("");
+                        openEditMeetingModal(event);
+                      }} disabled={event.type !== "meeting"}>Edit</Button>
+                    ) : null}
+                  </Stack>
+                  {event.type !== "meeting" ? <Typography variant="caption" color="text.secondary">Manual blocks are managed separately.</Typography> : null}
+                </Paper>
+              ))}
+            </Stack>
+          </DialogContent>
+          <DialogActions><Button onClick={() => setEventListDate("")}>Close</Button></DialogActions>
         </Dialog>
 
         <Dialog
