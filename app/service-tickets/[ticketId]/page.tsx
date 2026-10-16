@@ -875,8 +875,12 @@ function mergeTripMaterials(trips: TripDoc[]) {
 }
 
 function getDefaultBillableHours(actualMinutes: number) {
-  const safeMinutes = Math.max(0, Number(actualMinutes || 0));
-  return Math.max(1, roundToHalf(safeMinutes / 60));
+  // Billable time rounds to the nearest half-hour, with exact 15-minute
+  // midpoints rounding DOWN: 5h00–5h15 => 5.0, 5h16–5h45 => 5.5.
+  // The existing one-hour minimum for service calls is preserved.
+  const safeMinutes = Math.max(0, Math.round(Number(actualMinutes || 0)));
+  const roundedHalfHours = Math.floor((safeMinutes + 14) / 30);
+  return Math.max(1, roundedHalfHours / 2);
 }
 
 function getStoredOrComputedBillableHours(
