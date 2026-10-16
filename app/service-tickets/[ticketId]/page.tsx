@@ -874,13 +874,16 @@ function mergeTripMaterials(trips: TripDoc[]) {
     .filter((item) => String(item?.name || "").trim());
 }
 
+function nearestHalfHoursFromMinutes(actualMinutes: number) {
+  const mins = Math.max(0, Math.round(Number(actualMinutes || 0)));
+  return Math.floor((mins + 14) / 30) / 2;
+}
+
 function getDefaultBillableHours(actualMinutes: number) {
   // Billable time rounds to the nearest half-hour, with exact 15-minute
   // midpoints rounding DOWN: 5h00–5h15 => 5.0, 5h16–5h45 => 5.5.
   // The existing one-hour minimum for service calls is preserved.
-  const safeMinutes = Math.max(0, Math.round(Number(actualMinutes || 0)));
-  const roundedHalfHours = Math.floor((safeMinutes + 14) / 30);
-  return Math.max(1, roundedHalfHours / 2);
+  return Math.max(1, nearestHalfHoursFromMinutes(actualMinutes));
 }
 
 function getStoredOrComputedBillableHours(
@@ -3762,15 +3765,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return crew;
   }
 
-  // Payroll time entries use a 1-hour minimum and round UP to half-hour increments.
-  // Actual active minutes remain stored separately on the trip/timers.
+  // Payroll and customer billing are separate records. Both round NET time to
+  // the nearest half hour, with the exact 15-minute midpoint rounding DOWN.
   function payrollHoursFromMinutes(minutes: number) {
-    return Math.max(1, roundToHalf(Math.max(0, minutes) / 60));
+    return Math.max(1, nearestHalfHoursFromMinutes(minutes));
   }
 
-  // Legacy service trips may have trip-level pauseBlocks but worker timers
-  // without their own copied pause history. Apply the legacy pauses only when
-  // there are no employee-level pauses, so pauses are never subtracted twice.
   function activeMinutesForCloseout(
     trip: TripDoc,
     workerUid: string | null,
@@ -3778,34 +3778,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     completedAtMs: number,
   ) {
     const snapshot = { ...trip, workerTimers: completedTimers };
-    const worker = workerUid ? completedTimers[workerUid] : null;
-    const workerMinutes = workerUid
+    return workerUid
       ? getWorkerTimerMinutesAt(snapshot, workerUid, completedAtMs)
       : getTripActiveMinutesAt(snapshot, completedAtMs);
-
-    const hasLegacyPauses = Array.isArray(trip.pauseBlocks) && trip.pauseBlocks.length > 0;
-    const hasWorkerPauses = worker
-      ? Array.isArray(worker.pauseBlocks) && worker.pauseBlocks.length > 0
-      : Object.values(completedTimers).some(
-          (timer) => Array.isArray(timer.pauseBlocks) && timer.pauseBlocks.length > 0,
-        );
-    if (!hasLegacyPauses || hasWorkerPauses) return workerMinutes;
-
-    const startedAt = worker?.startedAt || trip.actualStartAt;
-    const startedMs = startedAt ? Date.parse(startedAt) : NaN;
-    const endedMs = worker?.endedAt ? Date.parse(worker.endedAt) : completedAtMs;
-    if (!Number.isFinite(startedMs) || !Number.isFinite(endedMs)) return workerMinutes;
-    const gross = Math.max(0, Math.round((endedMs - startedMs) / 60000));
-    const overlappingPaused = (trip.pauseBlocks || []).reduce((sum, block) => {
-      const pauseStart = Date.parse(block.startAt);
-      const pauseEnd = block.endAt ? Date.parse(block.endAt) : completedAtMs;
-      if (!Number.isFinite(pauseStart) || !Number.isFinite(pauseEnd)) return sum;
-      return sum + Math.max(
-        0,
-        Math.round((Math.min(endedMs, pauseEnd) - Math.max(startedMs, pauseStart)) / 60000),
-      );
-    }, 0);
-    return Math.max(0, gross - Math.min(gross, overlappingPaused));
   }
 
   function getHoursToUse(tripId: string, computedMinutes: number) {
@@ -6179,9 +6154,63 @@ async function handleStartTrip(trip: TripDoc) {
       const entryDate = trip.date;
       const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
 
-      await updateDoc(
-        doc(db, "trips", trip.id),
-        stripUndefined({
+      // Prepare billing and payroll BEFORE committing the completion. Core records
+      // are committed together, or none are committed. Deterministic time-entry IDs
+      // and a status guard prevent double-completion on concurrent devices.
+      const committedTrips = trips.map((t) => t.id === trip.id ? {
+        ...latestTrip,
+        status: "complete", timerState: "complete", actualEndAt: now,
+        endedByUid: myUid, pauseBlocks, workerTimers: completedWorkerTimers,
+        actualMinutes, billableHours: hoursToUse, outcome: mode,
+        workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+        resolutionNotes: mode === "resolved" ? resolutionNotes : null,
+        followUpNotes: mode === "follow_up" ? followNotes : null,
+        readyToBillAt: mode === "resolved" ? now : null,
+        materials: materialCheck.cleaned, noMaterialsUsed, crewConfirmed: finalCrew,
+        updatedAt: now,
+      } : t);
+      const committedStatus = deriveNextTicketStatus(committedTrips, mode);
+      const committedBilling: BillingPacket | null = mode === "resolved" && committedStatus === "completed"
+        ? buildBillingPacketFromResolvedTrips({trips: committedTrips, fallbackUpdatedAt: now})
+        : null;
+      const addressShort = [ticket?.serviceAddressLine1 || "", ticket?.serviceCity || "",
+        ticket?.serviceState || "", ticket?.servicePostalCode || ""].filter(Boolean).join(", ");
+      const completionActivityRef = ticket?.id
+        ? doc(collection(db, "serviceTickets", ticket.id, "activity")) : null;
+      const completionActivity: ServiceTicketActivityEntry = {
+        id: completionActivityRef?.id || "", type: mode === "resolved"
+          ? "service_trip_completed_resolved" : "service_trip_completed_follow_up",
+        title: mode === "resolved" ? "Trip Completed" : "Follow Up Required",
+        description: mode === "resolved" ? "Trip was completed as Resolved — Ready to Bill."
+          : "Trip was completed with Follow Up required.",
+        details: [`Billable hours: ${hoursToUse}`, `Trip: ${trip.id}`],
+        createdAt: now, createdByUid: myUid || null,
+        createdByName: appUser?.displayName || "System",
+        createdByRole: appUser?.role || null,
+      };
+      const tripRef = doc(db, "trips", trip.id);
+      const ticketRef = ticket?.id ? doc(db, "serviceTickets", ticket.id) : null;
+      const payrollRefs = crewMembers.map(member => ({
+        member,
+        entryRef: doc(db, "timeEntries", `trip_${trip.id}_${member.uid}`),
+        sheetRef: doc(db, "weeklyTimesheets", buildWeeklyTimesheetId(member.uid, weekStartDate)),
+      }));
+      await runTransaction(db, async (tx) => {
+        // Firestore requires all transaction reads to precede all writes.
+        const liveTripSnap = await tx.get(tripRef);
+        if (!liveTripSnap.exists()) throw new Error("Trip no longer exists.");
+        const liveTrip = liveTripSnap.data() as TripDoc;
+        if (!canFinishTrip(liveTrip.status, liveTrip.timerState)) {
+          throw new Error("Trip has already been completed or changed. Refresh the page.");
+        }
+        const liveTicketSnap = ticketRef ? await tx.get(ticketRef) : null;
+        if (liveTicketSnap?.exists() && ["invoiced", "cancelled"].includes(String(liveTicketSnap.data().status))) {
+          throw new Error("Ticket is locked or cancelled.");
+        }
+        const existingEntries = await Promise.all(payrollRefs.map(item => tx.get(item.entryRef)));
+        const existingSheets = await Promise.all(payrollRefs.map(item => tx.get(item.sheetRef)));
+
+        tx.update(tripRef, stripUndefined({
           status: "complete",
           timerState: "complete",
           actualEndAt: now,
@@ -6200,43 +6229,54 @@ async function handleStartTrip(trip: TripDoc) {
           crewConfirmed: finalCrew,
           updatedAt: now,
           updatedByUid: myUid,
-        }),
-      );
-
-      for (const member of crewMembers) {
-        const timesheetId = await upsertWeeklyTimesheetHeader({
-          employeeId: member.uid,
-          employeeName: member.name,
-          employeeRole: member.role,
-          weekStartDate,
-          weekEndDate,
-          createdByUid: myUid || null,
+        }));
+        payrollRefs.forEach(({member, entryRef, sheetRef}, index) => {
+          const oldEntry = existingEntries[index].exists() ? existingEntries[index].data() as ExistingTimeEntry : null;
+          const oldSheet = existingSheets[index].exists() ? existingSheets[index].data() : null;
+          const hoursGenerated = payrollHoursByUid[member.uid] ?? payrollHoursFromMinutes(actualMinutes);
+          const hoursLocked = Boolean(oldEntry?.hoursLocked);
+          const hoursToWrite = hoursLocked ? Number(oldEntry?.hours ?? hoursGenerated) : hoursGenerated;
+          const timesheetId = buildWeeklyTimesheetId(member.uid, weekStartDate);
+          tx.set(sheetRef, stripUndefined({
+            employeeId: member.uid, employeeName: member.name, employeeRole: member.role,
+            weekStartDate, weekEndDate, status: oldSheet?.status || "draft",
+            createdAt: oldSheet?.createdAt || now,
+            createdByUid: oldSheet?.createdByUid || myUid || null,
+            updatedAt: now, updatedByUid: myUid || null,
+          }), {merge: true});
+          tx.set(entryRef, stripUndefined({
+            employeeId: member.uid, employeeName: member.name, employeeRole: member.role,
+            entryDate, weekStartDate, weekEndDate, timesheetId,
+            category: "service_ticket", payType: "regular", billable: true,
+            source: "trip_completion", hours: hoursToWrite, hoursSource: hoursGenerated,
+            hoursLocked, tripId: trip.id, serviceTicketId: trip.link?.serviceTicketId || ticket?.id || null,
+            projectId: trip.link?.projectId || null, projectStageKey: trip.link?.projectStageKey || null,
+            displayTitle: ticket?.customerDisplayName || "Customer",
+            displaySubtitle: ticket?.issueSummary || "Service Ticket",
+            outcome: mode, entryStatus: "draft",
+            notes: [`Title: ${ticket?.customerDisplayName || "Customer"}`,
+              `Detail: ${ticket?.issueSummary || "Service Ticket"}`,
+              `Address: ${addressShort}`, `Outcome: ${mode === "resolved" ? "Resolved" : "Follow Up"}`,
+              `Trip: ${trip.id}`].join("\n"),
+            createdAt: oldEntry?.createdAt || now,
+            createdByUid: oldEntry?.createdByUid || myUid || null,
+            updatedAt: now, updatedByUid: myUid || null,
+          }), {merge: true});
         });
-
-        const addressShort = [
-          ticket?.serviceAddressLine1 || "",
-          ticket?.serviceCity || "",
-          ticket?.serviceState || "",
-          ticket?.servicePostalCode || "",
-        ]
-          .filter(Boolean)
-          .join(", ");
-
-        await upsertTimeEntryFromTrip({
-          trip,
-          member,
-          entryDate,
-          hoursGenerated: payrollHoursByUid[member.uid] ?? payrollHoursFromMinutes(actualMinutes),
-          weekStartDate,
-          weekEndDate,
-          timesheetId,
-          createdByUid: myUid || null,
-          displayTitle: ticket?.customerDisplayName || "Customer",
-          displaySubtitle: ticket?.issueSummary || "Service Ticket",
-          outcomeLabel: mode === "resolved" ? "Resolved" : "Follow Up",
-          addressShort,
-        });
+        if (ticketRef && liveTicketSnap?.exists()) {
+          tx.update(ticketRef, stripUndefined({
+            status: committedStatus, billing: committedBilling,
+            ...getTicketAuditFields(now),
+          }));
+        }
+        if (completionActivityRef) tx.set(completionActivityRef, stripUndefined(completionActivity));
+      });
+      if (ticketRef) {
+        setTicket(prev => prev ? { ...prev, status: committedStatus,
+          billing: committedBilling, ...getTicketAuditFields(now) } : prev);
+        setTicketStatusEdit(committedStatus);
       }
+      if (completionActivityRef) setActivityEntries(prev => [completionActivity, ...prev]);
 
       const nextTrips = trips.map((t) =>
         t.id === trip.id
@@ -6276,54 +6316,6 @@ async function handleStartTrip(trip: TripDoc) {
         [trip.date]: nextTrips.filter((t) => t.date === trip.date),
       }));
       setFinishModeByTrip((prev) => ({ ...prev, [trip.id]: "none" }));
-
-      const nextStatus = deriveNextTicketStatus(nextTrips, mode);
-      let billingOverride: BillingPacket | null | undefined = undefined;
-
-      if (mode === "resolved") {
-        if (nextStatus === "completed") {
-          billingOverride = buildBillingPacketFromResolvedTrips({
-            trips: nextTrips,
-            fallbackUpdatedAt: now,
-          });
-        } else {
-          billingOverride = null;
-        }
-      } else {
-        billingOverride = null;
-      }
-
-      if (ticket?.id) {
-        await persistTicketStatus(nextStatus, now, billingOverride);
-      }
-
-      await logServiceTicketActivity({
-        type:
-          mode === "resolved"
-            ? "service_trip_completed_resolved"
-            : "service_trip_completed_follow_up",
-        title: mode === "resolved" ? "Trip Completed" : "Follow Up Required",
-        description:
-          mode === "resolved"
-            ? "Trip was completed as Resolved — Ready to Bill."
-            : "Trip was completed with Follow Up required.",
-        details: [
-          `Billable hours: ${hoursToUse}`,
-          materialCheck.cleaned.length > 0
-            ? `Materials captured: ${materialCheck.cleaned.length}`
-            : noMaterialsUsed
-              ? "No materials used"
-              : "",
-          mode === "resolved" && resolutionNotes
-            ? `Resolution: ${getPreviewText(resolutionNotes, 160)}`
-            : "",
-          mode === "follow_up" && followNotes
-            ? `Follow-up notes: ${getPreviewText(followNotes, 160)}`
-            : "",
-          `Trip: ${trip.id}`,
-        ],
-        createdAt: now,
-      });
 
       let createdSeparateTicket: { id: string; summary: string } | null = null;
 
@@ -8058,30 +8050,7 @@ async function handleStartTrip(trip: TripDoc) {
                         "number"
                           ? hoursOverrideByTrip[mobileFinishTrip.id]
                           : getDefaultBillableHours(
-                              Math.max(
-                                0,
-                                (() => {
-                                  const paused = sumPausedMinutes(
-                                    mobileFinishTrip.pauseBlocks,
-                                    liveNowIso,
-                                  );
-                                  const gross =
-                                    mobileFinishTrip.actualStartAt &&
-                                    !mobileFinishTrip.actualEndAt
-                                      ? minutesBetweenIso(
-                                          mobileFinishTrip.actualStartAt,
-                                          liveNowIso,
-                                        )
-                                      : mobileFinishTrip.actualStartAt &&
-                                          mobileFinishTrip.actualEndAt
-                                        ? minutesBetweenIso(
-                                            mobileFinishTrip.actualStartAt,
-                                            mobileFinishTrip.actualEndAt,
-                                          )
-                                        : 0;
-                                  return gross - paused;
-                                })(),
-                              ),
+                              getTripActiveMinutesAt(mobileFinishTrip, liveNowMs),
                             )
                       }
                       onChange={(e) =>
@@ -9238,7 +9207,7 @@ async function handleStartTrip(trip: TripDoc) {
                         : 0;
 
                       const billableMinutes =
-                        Number(computedWorkerMinutes || 0) > 0
+                        computedWorkerMinutes !== null
                           ? Number(computedWorkerMinutes)
                           : Math.max(
                               0,

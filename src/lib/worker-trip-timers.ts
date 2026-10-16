@@ -197,73 +197,47 @@ export function getWorkerTimerStatus(
   return getWorkerTimer(trip, workerUid)?.status || "not_started";
 }
 
-export function getWorkerTimerMinutesAt(
-  trip: TripTimerLike,
-  workerUid: string,
-  referenceMs: number,
-) {
-  const timer = getWorkerTimer(
-    trip,
-    workerUid,
-    new Date(referenceMs).toISOString(),
-  );
-  if (!timer) return null;
-
-  const startMs = parseIsoMs(timer.startedAt);
-  const endMs =
-    timer.status === "complete" && timer.endedAt
-      ? parseIsoMs(timer.endedAt)
-      : referenceMs;
-
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
-    return null;
-  }
-
+/** Net elapsed minutes, subtracting only pauses within the timer's boundaries.
+ * Overlapping pause blocks are merged so they cannot be counted twice. */
+function getNetElapsedMinutes(startMs: number, endMs: number, blocks?: PauseBlock[] | null) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
   const gross = minutesBetween(startMs, endMs);
-  const paused = sumWorkerPausedMinutes(timer.pauseBlocks, endMs);
-  return Math.max(0, gross - paused);
+  const windows = (blocks || []).map((block) => {
+    const begin = parseIsoMs(block.startAt);
+    const finish = block.endAt ? parseIsoMs(block.endAt) : endMs;
+    return { begin: Math.max(startMs, begin), finish: Math.min(endMs, finish) };
+  }).filter(({begin, finish}) => Number.isFinite(begin) && Number.isFinite(finish) && finish > begin)
+    .sort((a, b) => a.begin - b.begin);
+  let pausedMs = 0;
+  let lastEnd = startMs;
+  for (const { begin, finish } of windows) {
+    pausedMs += Math.max(0, finish - Math.max(begin, lastEnd));
+    lastEnd = Math.max(lastEnd, finish);
+  }
+  return Math.max(0, gross - Math.round(pausedMs / 60000));
 }
 
-export function getTripActiveMinutesAt(
-  trip: TripTimerLike,
-  referenceMs: number,
-) {
-  const explicitTimerUids =
-    trip.workerTimers && typeof trip.workerTimers === "object"
-      ? Object.keys(trip.workerTimers)
-      : [];
+export function getWorkerTimerMinutesAt(trip: TripTimerLike, workerUid: string, referenceMs: number) {
+  const timer = getWorkerTimer(trip, workerUid, new Date(referenceMs).toISOString());
+  if (!timer) return null;
+  const startMs = parseIsoMs(timer.startedAt);
+  const endMs = timer.status === "complete" && timer.endedAt
+    ? parseIsoMs(timer.endedAt) : referenceMs;
+  return getNetElapsedMinutes(startMs, endMs, timer.pauseBlocks);
+}
 
-  const workerUids =
-    explicitTimerUids.length > 0
-      ? explicitTimerUids
-      : getTripCrewUids(trip);
-
-  const activeMinutes = workerUids
-    .map((uid) => getWorkerTimerMinutesAt(trip, uid, referenceMs))
-    .filter(
-      (minutes): minutes is number =>
-        typeof minutes === "number" &&
-        Number.isFinite(minutes) &&
-        minutes >= 0,
-    );
-
-  if (activeMinutes.length > 0) {
-    // Customer billable trip duration is elapsed active trip time, not the
-    // sum of every crew member's payroll hours.
-    return Math.max(...activeMinutes);
-  }
-
-  // Backward-compatible fallback for legacy trips that predate workerTimers.
-  const startMs = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
-  const endMs = referenceMs;
-
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
-    return 0;
-  }
-
-  const gross = minutesBetween(startMs, endMs);
-  const paused = sumWorkerPausedMinutes(trip.pauseBlocks, endMs);
-  return Math.max(0, gross - paused);
+export function getTripActiveMinutesAt(trip: TripTimerLike, referenceMs: number) {
+  const explicitTimerUids = trip.workerTimers && typeof trip.workerTimers === "object"
+    ? Object.keys(trip.workerTimers) : [];
+  const workerUids = explicitTimerUids.length > 0 ? explicitTimerUids : getTripCrewUids(trip);
+  const minutes = workerUids.map(uid => getWorkerTimerMinutesAt(trip, uid, referenceMs))
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  // A valid zero-minute timer is meaningful. Do not fall back to gross time.
+  if (minutes.length > 0) return Math.max(...minutes);
+  const start = parseIsoMs(trip.actualStartAt || trip.startedAt || null);
+  const end = trip.actualEndAt || trip.completedAt
+    ? parseIsoMs(trip.actualEndAt || trip.completedAt) : referenceMs;
+  return getNetElapsedMinutes(start, end, trip.pauseBlocks) ?? 0;
 }
 
 export function deriveTripTimerState(workerTimers: WorkerTimersByUid) {
