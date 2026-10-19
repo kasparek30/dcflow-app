@@ -98,6 +98,13 @@ import {
   queueProjectTripTimeEntryWrites,
   upsertProjectTripTimeEntriesForCrew,
 } from "../../../src/lib/project-trip-time-entries";
+import {
+  completeAllWorkerTimers,
+  getTripActiveMinutesAt,
+  pauseAllWorkersOnTrip,
+  switchWorkerToTrip,
+  type WorkerTimersByUid,
+} from "../../../src/lib/worker-trip-timers";
 import type { AppUser } from "../../../src/types/app-user";
 import type {
   Project,
@@ -294,6 +301,8 @@ type TripDoc = {
   actualStartAt?: string | null;
   actualEndAt?: string | null;
   pauseBlocks?: PauseBlock[] | null;
+  workerTimers?: WorkerTimersByUid | null;
+  crewConfirmed?: TripCrew | null;
   closeout?: any;
   closeoutHours?: number | null;
   materialsUsedToday?: string | null;
@@ -655,6 +664,11 @@ function sumPausedMinutes(pauseBlocks?: PauseBlock[] | null, referenceEndMs?: nu
 
 function getTimerElapsedMinutesForTrip(t?: TripDoc | null, referenceEndMs?: number) {
   if (!t) return 0;
+  if (t.workerTimers && Object.keys(t.workerTimers).length > 0) {
+    const endMs = parseIsoMs(t.actualEndAt || t.completedAt || null);
+    const referenceMs = Number.isFinite(endMs) ? endMs : referenceEndMs ?? Date.now();
+    return getTripActiveMinutesAt(t, referenceMs);
+  }
 
   const startMs = parseIsoMs(t.actualStartAt || t.startedAt || null);
   if (!Number.isFinite(startMs)) return 0;
@@ -677,10 +691,17 @@ function getTimerElapsedMinutesForTrip(t?: TripDoc | null, referenceEndMs?: numb
   return Math.max(0, grossMinutes - pausedMinutes);
 }
 
+// Net active minutes are rounded to half-hour blocks; exactly 15 minutes rounds down.
+function roundHalfHourWithMinimum(netMinutes: number) {
+  const minutes = Math.max(0, Math.round(netMinutes));
+  if (minutes === 0) return 0;
+  return Math.max(1, Math.floor((minutes + 14) / 30) / 2);
+}
+
 function getTimerDrivenHoursForTrip(t?: TripDoc | null) {
   const liveMinutes = getTimerElapsedMinutesForTrip(t);
   if (liveMinutes <= 0) return null;
-  return (Math.round((liveMinutes / 60) * 4) / 4).toFixed(2);
+  return roundHalfHourWithMinimum(liveMinutes).toFixed(2);
 }
 
 function getScheduledTripHours(t?: TripDoc | null) {
@@ -2658,6 +2679,8 @@ const canMarkTmReadyToBill =
             actualStartAt: d.actualStartAt ?? d.startedAt ?? null,
             actualEndAt: d.actualEndAt ?? d.completedAt ?? null,
             pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
+            workerTimers: d.workerTimers ?? null,
+            crewConfirmed: d.crewConfirmed ?? null,
             closeout: d.closeout ?? null,
             closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
             materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
@@ -4390,12 +4413,41 @@ const canMarkTmReadyToBill =
           pausedAt: null,
           active: true,
           closeout: null,
+          workerTimers: null,
+          actualStartAt: null,
+          actualEndAt: null,
+          startedAt: null,
         };
         activityType = "trip_reopened";
         activityTitle = "Trip reopened";
       }
 
-      await updateDoc(doc(db, "trips", t.id), patch as any);
+      if (action === "start" || action === "resume") {
+        const leadUid = safeTrim(t.crew?.primaryTechUid || t.crew?.helperUid ||
+          t.crew?.secondaryTechUid || t.crew?.secondaryHelperUid);
+        if (!leadUid) throw new Error("This trip needs an assigned crew member.");
+        const result = await switchWorkerToTrip({
+          db, tripId: t.id, workerUid: leadUid,
+          actorUid: myUid || null, actorName: actorDisplayName,
+        });
+        patch = {
+          ...patch, status: "in_progress", timerState: result.timerState,
+          workerTimers: result.workerTimers,
+          actualStartAt: t.actualStartAt || result.stamp,
+          startedAt: t.startedAt || result.stamp,
+          pausedAt: null,
+        };
+      } else if (action === "pause") {
+        const result = await pauseAllWorkersOnTrip({
+          db, tripId: t.id, actorUid: myUid || null, actorName: actorDisplayName,
+        });
+        patch = {
+          ...patch, status: "in_progress", timerState: result.timerState,
+          workerTimers: result.workerTimers, pausedAt: result.stamp,
+        };
+      } else {
+        await updateDoc(doc(db, "trips", t.id), patch as any);
+      }
 
       setProjectTrips((prev) =>
         prev.map((x) =>
@@ -4493,7 +4545,17 @@ const canMarkTmReadyToBill =
       const now = nowIso();
       const workNotes = safeTrim(closeoutModal.workNotes);
       const materials = safeTrim(closeoutModal.materialsUsedToday);
-      const timerReview = getCloseoutTimerReview(t);
+      const existingTripSnap = await getDoc(doc(db, "trips", t.id));
+      if (!existingTripSnap.exists() ||
+          String(existingTripSnap.data().status || "").toLowerCase() === "complete") {
+        throw new Error("This trip has already been completed or is unavailable. Refresh before retrying.");
+      }
+      const completedWorkerTimers = completeAllWorkerTimers(t, now, myUid || null);
+      const completedTimerTrip = {
+        ...t, workerTimers: completedWorkerTimers,
+        actualEndAt: now, completedAt: now, timerState: "complete",
+      };
+      const timerReview = getCloseoutTimerReview(completedTimerTrip);
       const timerHoursWereAdjusted =
         timerReview.rawHours != null && Math.abs(timerReview.rawHours - hoursWorked) >= 0.13;
 
@@ -4501,10 +4563,10 @@ const canMarkTmReadyToBill =
 
       const tripPatch: Record<string, any> = {
         status: "complete",
-        timerState: "stopped",
+        timerState: "complete",
+        workerTimers: completedWorkerTimers,
         completedAt: now,
-        actualEndAt:
-          safeTrim(t.timerState).toLowerCase() === "paused" && t.pausedAt ? t.pausedAt : now,
+        actualEndAt: now,
         pausedAt: null,
         active: true,
         notes: workNotes || null,
@@ -5475,7 +5537,7 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     const state = String(timerState || "idle").toLowerCase();
     if (state === "running") return "Timer: running";
     if (state === "paused") return "Timer: paused";
-    if (state === "stopped") return "Timer: stopped";
+    if (state === "stopped" || state === "complete") return "Timer: stopped";
     return "Timer: idle";
   }
 
