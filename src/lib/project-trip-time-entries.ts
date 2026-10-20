@@ -163,13 +163,13 @@ function resolveHoursForMember(args: {
   memberUid: string;
   crewHoursByUid?: ProjectTripCrewHoursByUid | null;
 }): number {
-  // The closeout's individual crew-hour values are authoritative, including
-  // explicit zero-hour corrections. Do not replace these with timer rounding.
+  // Explicit crew-hour corrections take precedence over timer values, but must
+  // still follow half-hour payroll rounding. Explicit zero hours remain zero.
   const provided = args.crewHoursByUid;
   if (provided && Object.prototype.hasOwnProperty.call(provided, args.memberUid)) {
     const explicitHours = Number(provided[args.memberUid]);
     if (Number.isFinite(explicitHours) && explicitHours >= 0) {
-      return Math.round(explicitHours * 100) / 100;
+      return defaultHoursToPayrollHours(explicitHours);
     }
   }
   // For callers without explicit crew hours, use the pause-aware individual timer.

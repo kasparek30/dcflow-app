@@ -96,6 +96,7 @@ function NewTimeEntryPageContent() {
   const [employeeId, setEmployeeId] = useState(appUser?.uid || "");
   const [entryDate, setEntryDate] = useState(initialDate);
   const [category, setCategory] = useState<TimeEntryCategory>("office");
+  const isTripLaborCategory = category === "service_ticket" || category === "project_stage";
   const [hours, setHours] = useState(1);
   const [billable, setBillable] = useState(false);
   const [notes, setNotes] = useState("");
@@ -206,8 +207,12 @@ function NewTimeEntryPageContent() {
       return;
     }
 
-    if (hours <= 0) {
+    if (!Number.isFinite(hours) || hours <= 0) {
       setError("Hours must be greater than 0.");
+      return;
+    }
+    if (isTripLaborCategory && Math.abs(hours * 2 - Math.round(hours * 2)) > 0.000001) {
+      setError("Service and project payroll hours must be in half-hour increments (e.g., 3.0, 3.5, or 4.0).");
       return;
     }
 
@@ -377,7 +382,8 @@ function NewTimeEntryPageContent() {
                         <TextField
                           label="Hours Worked"
                           type="number"
-                          inputProps={{ min: 0.25, step: 0.25 }}
+                          inputProps={{ min: isTripLaborCategory ? 0.5 : 0.25, step: isTripLaborCategory ? 0.5 : 0.25 }}
+                          helperText={isTripLaborCategory ? "Half-hour increments required for service and project payroll." : undefined}
                           value={hours}
                           onChange={(e) => setHours(Number(e.target.value))}
                           fullWidth

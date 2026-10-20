@@ -4529,8 +4529,8 @@ const canMarkTmReadyToBill =
       return;
     }
 
-    const hoursWorked = Number(closeoutModal.hoursWorkedToday || 0);
-    if (Number.isNaN(hoursWorked) || hoursWorked <= 0) {
+    const submittedHours = Number(closeoutModal.hoursWorkedToday || 0);
+    if (!Number.isFinite(submittedHours) || submittedHours <= 0) {
       setCloseoutModal((prev) => ({
         ...prev,
         error: "Enter a valid hours value greater than 0.",
@@ -4538,6 +4538,7 @@ const canMarkTmReadyToBill =
       return;
     }
 
+    const hoursWorked = roundHalfHourWithMinimum(Math.round(submittedHours * 60));
     setCloseoutModal((prev) => ({ ...prev, saving: true, error: "" }));
     setTripActionBusyId(t.id);
 
@@ -6905,7 +6906,7 @@ if (nextStatus === "active_work") {
                   <TextField
                     label="Hours worked today"
                     type="number"
-                    inputProps={{ min: 0.25, step: "0.25" }}
+                    inputProps={{ min: 1, step: "0.5" }}
                     value={closeoutModal.hoursWorkedToday}
                     onChange={(e) =>
                       setCloseoutModal((prev) => ({
@@ -6913,7 +6914,7 @@ if (nextStatus === "active_work") {
                         hoursWorkedToday: e.target.value,
                       }))
                     }
-                    helperText="Enter the hours actually worked on this project today. These submitted hours control the trip labor total and every assigned crew member's time entry."
+                    helperText="Project closeout hours are rounded to the nearest half-hour (15-minute midpoint rounds down). Payroll uses each crew member's own net timer when available."
                     fullWidth
                   />
 
