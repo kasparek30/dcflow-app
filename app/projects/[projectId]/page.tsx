@@ -96,6 +96,7 @@ import {
 } from "../../../src/lib/purchase-orders";
 import {
   queueProjectTripTimeEntryWrites,
+  roundProjectPayrollHours,
   upsertProjectTripTimeEntriesForCrew,
 } from "../../../src/lib/project-trip-time-entries";
 import {
@@ -719,7 +720,7 @@ function getScheduledTripHours(t?: TripDoc | null) {
       const lunchMinutes =
         safeTrim(t.timeWindow).toLowerCase() === "all_day" && scheduledMinutes >= 360 ? 60 : 0;
       const paidMinutes = Math.max(15, scheduledMinutes - lunchMinutes);
-      return (Math.round((paidMinutes / 60) * 4) / 4).toFixed(2);
+      return roundHalfHourWithMinimum(paidMinutes).toFixed(2);
     }
   }
 
@@ -4529,14 +4530,18 @@ const canMarkTmReadyToBill =
       return;
     }
 
-    const hoursWorked = Number(closeoutModal.hoursWorkedToday || 0);
-    if (Number.isNaN(hoursWorked) || hoursWorked <= 0) {
+    const submittedHours = Number(closeoutModal.hoursWorkedToday || 0);
+    if (!Number.isFinite(submittedHours) || submittedHours <= 0) {
       setCloseoutModal((prev) => ({
         ...prev,
         error: "Enter a valid hours value greater than 0.",
       }));
       return;
     }
+
+    // Normalize any closeout entry before it reaches project labor, billing,
+    // payroll, or the activity log. Keep raw timer minutes separately.
+    const hoursWorked = roundProjectPayrollHours(submittedHours);
 
     setCloseoutModal((prev) => ({ ...prev, saving: true, error: "" }));
     setTripActionBusyId(t.id);
@@ -5382,8 +5387,9 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     );
 
     const estimatedHours = Number(estimateTripHours(t));
-    const hours =
-      Number.isFinite(closeoutHours) && closeoutHours > 0 ? closeoutHours : estimatedHours;
+    const hours = roundProjectPayrollHours(
+      Number.isFinite(closeoutHours) && closeoutHours > 0 ? closeoutHours : estimatedHours,
+    );
 
     if (!Number.isFinite(hours) || hours <= 0) {
       alert("This trip does not have valid hours to resync.");
@@ -6905,7 +6911,7 @@ if (nextStatus === "active_work") {
                   <TextField
                     label="Hours worked today"
                     type="number"
-                    inputProps={{ min: 0.25, step: "0.25" }}
+                    inputProps={{ min: 1, step: "0.5" }}
                     value={closeoutModal.hoursWorkedToday}
                     onChange={(e) =>
                       setCloseoutModal((prev) => ({
@@ -6913,7 +6919,7 @@ if (nextStatus === "active_work") {
                         hoursWorkedToday: e.target.value,
                       }))
                     }
-                    helperText="Enter the hours actually worked on this project today. These submitted hours control the trip labor total and every assigned crew member's time entry."
+                    helperText="Payroll and project closeout hours use half-hour increments. Entries such as 3.55 are rounded to 3.50 when saved. Raw timer minutes are retained separately."
                     fullWidth
                   />
 

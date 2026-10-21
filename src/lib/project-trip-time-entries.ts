@@ -153,7 +153,9 @@ function actualMinutesToHours(minutes: number): number {
   const wholeMinutes = Math.max(0, Math.round(minutes));
   return Math.max(1, Math.floor((wholeMinutes + 14) / 30) / 2);
 }
-function defaultHoursToPayrollHours(hours: number): number {
+// Shared final rounding gate for all project payroll values, including
+// closeout overrides and manual resync. Zero remains a valid correction.
+export function roundProjectPayrollHours(hours: number): number {
   if (!Number.isFinite(hours) || hours <= 0) return 0;
   return actualMinutesToHours(Math.round(hours * 60));
 }
@@ -163,13 +165,13 @@ function resolveHoursForMember(args: {
   memberUid: string;
   crewHoursByUid?: ProjectTripCrewHoursByUid | null;
 }): number {
-  // The closeout's individual crew-hour values are authoritative, including
-  // explicit zero-hour corrections. Do not replace these with timer rounding.
+  // Explicit crew-hour corrections take precedence over timers, including
+  // zero-hour corrections, but must follow the half-hour payroll policy.
   const provided = args.crewHoursByUid;
   if (provided && Object.prototype.hasOwnProperty.call(provided, args.memberUid)) {
     const explicitHours = Number(provided[args.memberUid]);
     if (Number.isFinite(explicitHours) && explicitHours >= 0) {
-      return Math.round(explicitHours * 100) / 100;
+      return roundProjectPayrollHours(explicitHours);
     }
   }
   // For callers without explicit crew hours, use the pause-aware individual timer.
@@ -189,7 +191,7 @@ function resolveHoursForMember(args: {
   }
   // Legacy trips without usable worker timer data use the submitted closeout
   // duration, applying the same payroll rounding rule.
-  return defaultHoursToPayrollHours(args.defaultHours);
+  return roundProjectPayrollHours(args.defaultHours);
 }
 export async function queueProjectTripTimeEntryWrites(
   batch: WriteBatch,
@@ -244,12 +246,14 @@ export async function queueProjectTripTimeEntryWrites(
   const createdOrUpdatedEntryIds: string[] = [];
   for (const rawMember of crewMembers) {
     const member = await resolveUserProfileFallback(rawMember);
-    const memberHours = resolveHoursForMember({
+    // Final write boundary: never persist fractional project payroll hours
+    // other than .00 or .50, regardless of which upstream path provided them.
+    const memberHours = roundProjectPayrollHours(resolveHoursForMember({
       trip,
       defaultHours,
       memberUid: member.uid,
       crewHoursByUid: args.crewHoursByUid,
-    });
+    }));
     if (!Number.isFinite(memberHours) || memberHours <= 0) continue;
     const timesheetId = buildWeeklyTimesheetId(member.uid, weekStartDate);
     const timeEntryId = buildProjectTripTimeEntryId(tripId, member.uid);

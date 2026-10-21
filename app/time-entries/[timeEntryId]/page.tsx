@@ -797,6 +797,7 @@ export default function TimeEntryDetailPage({ params }: Props) {
   }, [entry?.hoursLocked]);
 
   const normalizedEntryCategory = useMemo(() => normalizeCategory(entry?.category), [entry?.category]);
+  const isTripLaborEntry = normalizedEntryCategory === "service" || normalizedEntryCategory === "project";
   const isHolidayEntry = normalizedEntryCategory === "holiday";
   const isPtoEntry = normalizedEntryCategory === "pto";
   const isMeetingEntry = normalizedEntryCategory === "meeting";
@@ -994,8 +995,12 @@ export default function TimeEntryDetailPage({ params }: Props) {
         (entry.laborRoleType as AppUser["laborRoleType"]) ??
         null) as AppUser["laborRoleType"] | null;
 
-    if (hours <= 0) {
+    if (!Number.isFinite(hours) || hours <= 0) {
       setError("Hours must be greater than 0.");
+      return;
+    }
+    if (isTripLaborEntry && Math.abs(hours * 2 - Math.round(hours * 2)) > 0.000001) {
+      setError("Service and project payroll hours must be in half-hour increments (e.g., 3.0, 3.5, or 4.0).");
       return;
     }
 
@@ -1348,14 +1353,16 @@ await updateDoc(doc(db, "weeklyTimesheets", matchingTimesheet.id), {
                         type="number"
                         value={hours}
                         onChange={(e) => setHours(Number(e.target.value))}
-                        inputProps={{ min: 0.25, step: 0.25 }}
+                        inputProps={{ min: isTripLaborEntry ? 0.5 : 0.25, step: isTripLaborEntry ? 0.5 : 0.25 }}
                         disabled={!canEdit}
                         helperText={
                           isPtoEntry
                             ? "Adjust to actual PTO taken for the day."
                             : isHolidayEntry
                             ? "Holiday hours are normally controlled by admin/company holiday setup."
-                            : "Quarter-hour increments recommended."
+                            : isTripLaborEntry
+                            ? "Half-hour increments required for service and project payroll."
+                            : "Quarter-hour increments recommended for this category."
                         }
                         fullWidth
                       />
