@@ -52,6 +52,7 @@ import {
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import DashboardRoundedIcon from "@mui/icons-material/DashboardRounded";
+import AssessmentRoundedIcon from "@mui/icons-material/AssessmentRounded";
 import EventNoteRoundedIcon from "@mui/icons-material/EventNoteRounded";
 import CalendarMonthRoundedIcon from "@mui/icons-material/CalendarMonthRounded";
 import TvRoundedIcon from "@mui/icons-material/TvRounded";
@@ -647,6 +648,7 @@ function pickLatestRejectedNotice(notices: RejectedTimesheetNotice[]) {
 
 function getMobilePageLabel(pathname: string) {
   if (pathname.startsWith("/dashboard")) return "Dashboard";
+  if (pathname.startsWith("/reports")) return "Reports";
   if (pathname.startsWith("/dispatch")) return "Dispatcher Board";
   if (pathname.startsWith("/technician/project-trips/")) return "Project Trip";
   if (pathname.startsWith("/technician/my-day")) return "My Day";
@@ -2979,6 +2981,9 @@ const showWorkload = false;
             icon: <AccessTimeFilledRoundedIcon />,
           },
         ]
+      : []),
+    ...(["admin", "manager", "dispatcher"].includes(role || "")
+      ? [{ href: "/reports", label: "Reports", icon: <AssessmentRoundedIcon /> }]
       : []),
     ...(showWeeklyTimesheet
       ? [
