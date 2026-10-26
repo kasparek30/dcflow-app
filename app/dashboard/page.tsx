@@ -2969,6 +2969,8 @@ export default function DashboardPage() {
     useState("");
   const [staffCoverageMessage, setStaffCoverageMessage] = useState("");
   const [staffCoverageError, setStaffCoverageError] = useState("");
+  const [staffCoverageLoadError, setStaffCoverageLoadError] = useState("");
+  const [staffCoverageLoading, setStaffCoverageLoading] = useState(true);
   const [staffEditItem, setStaffEditItem] =
     useState<DashboardStaffCoverageItem | null>(null);
   const [staffEditStartTime, setStaffEditStartTime] = useState("08:00");
@@ -3324,15 +3326,20 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!appUser?.uid) {
       setMyStaffCoverage([]);
+      setStaffCoverageLoading(false);
+      setStaffCoverageLoadError("");
       return;
     }
 
+    setStaffCoverageLoading(true);
+    setStaffCoverageLoadError("");
     const unsubStaffCoverage = onSnapshot(
       query(
         collection(db, "staffCoverage"),
         where("employeeId", "==", appUser.uid),
         where("active", "==", true),
-        limit(50),
+        // Do not limit an unordered employee history: older and newer records
+        // can otherwise crowd out the shifts still awaiting confirmation.
       ),
       (snap) => {
         const items = snap.docs
@@ -3379,8 +3386,16 @@ export default function DashboardPage() {
           });
 
         setMyStaffCoverage(items);
+        setStaffCoverageLoading(false);
+        setStaffCoverageLoadError("");
       },
-      () => setMyStaffCoverage([]),
+      (err) => {
+        console.error("Staff coverage subscription failed:", err);
+        setStaffCoverageLoading(false);
+        setStaffCoverageLoadError(
+          `Unable to load staff coverage: ${err.message || "Unknown Firestore error"}. Contact an administrator.`,
+        );
+      },
     );
 
     return () => unsubStaffCoverage();
@@ -4066,12 +4081,12 @@ export default function DashboardPage() {
               }}
             >
               <Stack spacing={2}>
-                {myStaffCoverage.length > 0 ? (
+                {myStaffCoverage.length > 0 || staffCoverageLoading || staffCoverageLoadError || (appUser?.role === "dispatcher" || appUser?.role === "billing") ? (
                   <MyStaffHoursSection
                     items={myStaffCoverage}
                     confirmingId={confirmingStaffCoverageId}
                     message={staffCoverageMessage}
-                    error={staffCoverageError}
+                    error={staffCoverageLoadError || staffCoverageError}
                     onConfirm={handleConfirmStaffCoverage}
                     onEditActual={handleOpenStaffActualEdit}
                   />

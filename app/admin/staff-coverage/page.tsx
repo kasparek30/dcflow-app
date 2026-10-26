@@ -210,6 +210,7 @@ export default function StaffCoverageAdminPage() {
 
   const [employees, setEmployees] = useState<StaffEmployeeOption[]>([]);
   const [coverageRows, setCoverageRows] = useState<StaffCoverage[]>([]);
+  const [coverageView, setCoverageView] = useState<"all" | "upcoming" | "past">("all");
 
   const [employeeId, setEmployeeId] = useState("");
   const [workType, setWorkType] =
@@ -222,6 +223,14 @@ export default function StaffCoverageAdminPage() {
 
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+
+  const visibleCoverageRows = useMemo(() => {
+    const today = todayIsoLocal();
+    return coverageRows.filter((row) =>
+      coverageView === "all" ||
+      (coverageView === "upcoming" ? row.date >= today : row.date < today)
+    );
+  }, [coverageRows, coverageView]);
 
   const selectedEmployee = useMemo(() => {
     return employees.find((employee) => employee.uid === employeeId) || null;
@@ -353,7 +362,7 @@ export default function StaffCoverageAdminPage() {
             updatedByName: data.updatedByName ?? null,
           } satisfies StaffCoverage;
         })
-        .filter((row) => row.active !== false && row.date >= todayIsoLocal())
+        .filter((row) => row.active !== false)
         .sort((a, b) => {
           const byDate = a.date.localeCompare(b.date);
           if (byDate !== 0) return byDate;
@@ -434,6 +443,22 @@ export default function StaffCoverageAdminPage() {
 
     if (scheduledHours == null || scheduledHours <= 0) {
       setError("End time must be after start time.");
+      return;
+    }
+
+    // Avoid accidentally scheduling the same employee over an existing block.
+    const requestedStart = minutesFromHHMM(startTime);
+    const requestedEnd = minutesFromHHMM(endTime);
+    const overlaps = coverageRows.some((row) => {
+      if (row.employeeId !== selectedEmployee.uid || row.date !== date) return false;
+      const existingStart = minutesFromHHMM(row.startTime);
+      const existingEnd = minutesFromHHMM(row.endTime);
+      return requestedStart != null && requestedEnd != null &&
+        existingStart != null && existingEnd != null &&
+        requestedStart < existingEnd && existingStart < requestedEnd;
+    });
+    if (overlaps) {
+      setError("This employee already has overlapping staff coverage on this date. Review the existing assignment before scheduling another.");
       return;
     }
 
@@ -597,11 +622,6 @@ export default function StaffCoverageAdminPage() {
   }
 
   async function handleCancelCoverage(row: StaffCoverage) {
-    const ok = window.confirm(
-      `Cancel ${row.employeeName}'s ${labelForWorkType(row.workType)} coverage on ${row.date}? This will remove the linked draft time entry if the timesheet is not locked.`
-    );
-    if (!ok) return;
-
     setSaving(true);
     setError("");
     setMessage("");
@@ -623,6 +643,36 @@ export default function StaffCoverageAdminPage() {
           `${row.employeeName}'s weekly timesheet is locked/submitted. Unlock or reject it before cancelling this staff coverage.`
         );
       }
+
+      // A scheduled coverage entry can subsequently be edited or clocked against.
+      // Never erase actual worked hours or non-draft records from this page.
+      if (row.actualStartAt || row.actualEndAt || row.confirmedAt) {
+        throw new Error("This coverage has actual or confirmed work. Review the employee's time entry before cancelling it.");
+      }
+      if (!row.linkedTimeEntryId) {
+        throw new Error("This coverage has no linked time entry. Review it before cancelling.");
+      }
+      const linkedEntryRef = doc(db, "timeEntries", row.linkedTimeEntryId);
+      const linkedEntrySnap = await getDoc(linkedEntryRef);
+      if (!linkedEntrySnap.exists()) {
+        throw new Error("The linked time entry could not be found. No records were changed.");
+      }
+      const linkedEntry = linkedEntrySnap.data() as Record<string, any>;
+      if (
+        linkedEntry.staffCoverageId !== row.id ||
+        linkedEntry.source !== "staff_schedule" ||
+        String(linkedEntry.entryStatus || "").toLowerCase() !== "draft" ||
+        linkedEntry.hoursLocked === true ||
+        linkedEntry.actualStartAt || linkedEntry.actualEndAt ||
+        linkedEntry.clockInAt || linkedEntry.clockOutAt ||
+        linkedEntry.startAt || linkedEntry.endAt
+      ) {
+        throw new Error("This time entry is no longer an untouched draft coverage entry. It was not deleted; review it on the timesheet.");
+      }
+      const ok = window.confirm(
+        `Cancel ${row.employeeName}'s ${labelForWorkType(row.workType)} coverage on ${row.date} (${formatTime12h(row.startTime)}–${formatTime12h(row.endTime)}) and DELETE its linked draft time entry? Only proceed for an accidental duplicate, not actual worked hours.`
+      );
+      if (!ok) return;
 
       const existingTimeEntryIds = timesheetSnap.exists()
         ? Array.isArray((timesheetSnap.data() as any).timeEntryIds)
@@ -899,10 +949,22 @@ export default function StaffCoverageAdminPage() {
 
             <Box>
               <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
-                Upcoming active coverage
+                Active staff coverage (including past dates)
               </Typography>
+              <FormControl size="small" sx={{ mb: 2, minWidth: 220 }}>
+                <InputLabel>Coverage dates</InputLabel>
+                <Select
+                  value={coverageView}
+                  label="Coverage dates"
+                  onChange={(event) => setCoverageView(event.target.value as "all" | "upcoming" | "past")}
+                >
+                  <MenuItem value="all">All active dates</MenuItem>
+                  <MenuItem value="past">Past dates only</MenuItem>
+                  <MenuItem value="upcoming">Today and future</MenuItem>
+                </Select>
+              </FormControl>
 
-              {coverageRows.length === 0 && !loading ? (
+              {visibleCoverageRows.length === 0 && !loading ? (
                 <Paper
                   elevation={0}
                   sx={{
@@ -912,13 +974,13 @@ export default function StaffCoverageAdminPage() {
                   }}
                 >
                   <Typography variant="body2" color="text.secondary">
-                    No active staff coverage scheduled yet.
+                    No active staff coverage found for this date filter.
                   </Typography>
                 </Paper>
               ) : null}
 
               <Stack spacing={1.25}>
-                {coverageRows.map((row) => (
+                {visibleCoverageRows.map((row) => (
                   <Paper
                     key={row.id}
                     elevation={0}
