@@ -1390,46 +1390,69 @@ function crewUidsFromCrew(crew?: TripCrew | null) {
 function dateFallsWithinPto(date: string, request: PtoRequestLite) {
   return (
     date >= String(request.startDate || "") &&
-    date <= String(request.endDate || "")
+    date <= String(request.endDate || request.startDate || "")
   );
+}
+
+function oneMinuteAfterNow() {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() + 1);
+  const result = hhmmLocal(date);
+  return result > hhmmLocal(new Date()) ? result : "24:00";
+}
+
+function getPtoTimeRange(request: PtoRequestLite) {
+  const partialType = String(request.partialDayType || "").toLowerCase();
+  const isPartial =
+    request.requestDayType === "partial_day" ||
+    ["am", "pm", "custom"].includes(partialType) ||
+    Boolean(request.partialStartTime && request.partialEndTime) ||
+    (typeof request.hoursPerDay === "number" &&
+      request.hoursPerDay > 0 && request.hoursPerDay < 8);
+
+  if (!isPartial) return { start: "00:00", end: "24:00" };
+  if (partialType === "am") return { start: "08:00", end: "12:00" };
+  if (partialType === "pm") return { start: "13:00", end: "17:00" };
+  const start = String(request.partialStartTime || "").trim();
+  const end = String(request.partialEndTime || "").trim();
+  if (/^\d{2}:\d{2}$/.test(start) && /^\d{2}:\d{2}$/.test(end) && start < end) {
+    return { start, end };
+  }
+  // Match the availability library's legacy four-hour morning fallback.
+  if (typeof request.hoursPerDay === "number" && request.hoursPerDay > 0 && request.hoursPerDay <= 4) {
+    return { start: "08:00", end: "12:00" };
+  }
+  // Unknown partial-day time: fail closed instead of allowing an unsafe assignment.
+  return { start: "00:00", end: "24:00" };
 }
 
 function getApprovedPtoForEmployeeOnDate(
   employeeId: string,
   date: string,
   requests: PtoRequestLite[],
+  startTime = "00:00",
+  endTime = "24:00",
 ) {
   const uid = String(employeeId || "").trim();
   const targetDate = String(date || "").trim();
-
   if (!uid || !targetDate) return null;
-
-  return (
-    requests.find(
-      (request) =>
-        String(request.employeeId || "").trim() === uid &&
-        String(request.status || "")
-          .trim()
-          .toLowerCase() === "approved" &&
-        dateFallsWithinPto(targetDate, request),
-    ) || null
-  );
+  return requests.find((request) => {
+    if (String(request.employeeId || "").trim() !== uid) return false;
+    if (String(request.status || "").trim().toLowerCase() !== "approved") return false;
+    if (!dateFallsWithinPto(targetDate, request)) return false;
+    const pto = getPtoTimeRange(request);
+    return rangesOverlap(startTime, endTime, pto.start, pto.end);
+  }) || null;
 }
 
 function getPtoUnavailableMessage(name: string, request: PtoRequestLite) {
   const cleanName = String(name || "Employee").trim();
   const start = String(request.startDate || "").trim();
   const end = String(request.endDate || request.startDate || "").trim();
-
-  if (start && end && start !== end) {
-    return `${cleanName} has approved PTO from ${start} to ${end}.`;
-  }
-
-  if (start) {
-    return `${cleanName} has approved PTO on ${start}.`;
-  }
-
-  return `${cleanName} has approved PTO.`;
+  const time = getPtoTimeRange(request);
+  const timeLabel = time.start === "00:00" && time.end === "24:00"
+    ? "all day" : `${formatTime12h(time.start)}–${formatTime12h(time.end)}`;
+  return `${cleanName} has approved PTO ${start === end ? `on ${start}` : `from ${start} to ${end}`} (${timeLabel}).`;
 }
 
 function getCrewPtoStartBlockMessage(args: {
@@ -1441,36 +1464,20 @@ function getCrewPtoStartBlockMessage(args: {
   const members = [
     { uid: crew.primaryTechUid, name: crew.primaryTechName || "Lead Tech" },
     { uid: crew.helperUid, name: crew.helperName || "Helper" },
-    {
-      uid: crew.secondaryTechUid,
-      name: crew.secondaryTechName || "Secondary Tech",
-    },
-    {
-      uid: crew.secondaryHelperUid,
-      name: crew.secondaryHelperName || "Secondary Helper",
-    },
-  ]
-    .map((member) => ({
-      uid: String(member.uid || "").trim(),
-      name: String(member.name || "Crew Member").trim(),
-    }))
-    .filter((member) => member.uid);
-
+    { uid: crew.secondaryTechUid, name: crew.secondaryTechName || "Secondary Tech" },
+    { uid: crew.secondaryHelperUid, name: crew.secondaryHelperName || "Secondary Helper" },
+  ];
+  // Starting/resuming now only conflicts with PTO that covers this moment.
+  const now = hhmmLocal(new Date());
+  const instantEnd = new Date();
+  instantEnd.setMinutes(instantEnd.getMinutes() + 1);
+  const end = hhmmLocal(instantEnd);
   for (const member of members) {
-    const approvedPto = getApprovedPtoForEmployeeOnDate(
-      member.uid,
-      args.date,
-      args.ptoRequests,
-    );
-
-    if (approvedPto) {
-      return `${getPtoUnavailableMessage(
-        member.name,
-        approvedPto,
-      )} Update the crew before starting this trip.`;
-    }
+    const uid = String(member.uid || "").trim();
+    if (!uid) continue;
+    const pto = getApprovedPtoForEmployeeOnDate(uid, isoTodayLocal(), args.ptoRequests, now, end > now ? end : "24:00");
+    if (pto) return `${getPtoUnavailableMessage(String(member.name), pto)} Update the crew before starting this trip.`;
   }
-
   return "";
 }
 
@@ -1648,20 +1655,10 @@ function collectDispatchOverrideConflicts(args: {
   }
 
   for (const member of args.members) {
-    const approvedPto = args.ptoRequests.find(
-      (request) =>
-        String(request.employeeId || "").trim() === member.uid &&
-        String(request.status || "")
-          .trim()
-          .toLowerCase() === "approved" &&
-        dateFallsWithinPto(args.date, request),
+    const approvedPto = getApprovedPtoForEmployeeOnDate(
+      member.uid, args.date, args.ptoRequests, selectedRange.start, selectedRange.end,
     );
-
-    if (approvedPto) {
-      hard.add(
-        `${member.name} has approved PTO (${approvedPto.startDate} to ${approvedPto.endDate}).`,
-      );
-    }
+    if (approvedPto) hard.add(getPtoUnavailableMessage(member.name, approvedPto));
 
     for (const trip of args.dayTrips || []) {
       if (!trip || trip.active === false) continue;
@@ -1745,20 +1742,11 @@ function getOptionAvailabilityLabel(args: {
     };
   }
 
-  const approvedPto = args.ptoRequests.find(
-    (request) =>
-      String(request.employeeId || "").trim() === args.uid &&
-      String(request.status || "")
-        .trim()
-        .toLowerCase() === "approved" &&
-      dateFallsWithinPto(args.date, request),
+  const approvedPto = getApprovedPtoForEmployeeOnDate(
+    args.uid, args.date, args.ptoRequests, selectedRange.start, selectedRange.end,
   );
-
   if (approvedPto) {
-    return {
-      label: `${args.baseLabel} — PTO`,
-      disabled: true,
-    };
+    return { label: `${args.baseLabel} — PTO (${getPtoTimeRange(approvedPto).start}–${getPtoTimeRange(approvedPto).end})`, disabled: true };
   }
 
   for (const trip of args.dayTrips || []) {
@@ -2914,6 +2902,11 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               status: String(p.status || "pending")
                 .trim()
                 .toLowerCase(),
+              hoursPerDay: typeof p.hoursPerDay === "number" ? p.hoursPerDay : undefined,
+              requestDayType: p.requestDayType ?? undefined,
+              partialDayType: p.partialDayType ?? null,
+              partialStartTime: p.partialStartTime ?? null,
+              partialEndTime: p.partialEndTime ?? null,
               notes: p.notes ?? null,
             } as PtoRequestLite;
           }),
@@ -7024,6 +7017,8 @@ async function handleStartTrip(trip: TripDoc) {
         myUid,
         isoTodayLocal(),
         ptoRequests,
+        hhmmLocal(new Date()),
+        oneMinuteAfterNow(),
       );
 
       if (claimantPto) {
@@ -7043,6 +7038,8 @@ async function handleStartTrip(trip: TripDoc) {
         myUid,
         isoTodayLocal(),
         ptoRequests,
+        hhmmLocal(new Date()),
+        oneMinuteAfterNow(),
       );
 
       if (techPto) {
@@ -7065,6 +7062,8 @@ async function handleStartTrip(trip: TripDoc) {
           defaultHelper.uid,
           isoTodayLocal(),
           ptoRequests,
+          hhmmLocal(new Date()),
+          oneMinuteAfterNow(),
         );
 
         if (helperPto) {
@@ -7091,6 +7090,8 @@ async function handleStartTrip(trip: TripDoc) {
         myUid,
         isoTodayLocal(),
         ptoRequests,
+        hhmmLocal(new Date()),
+        oneMinuteAfterNow(),
       );
 
       if (claimantPto) {
@@ -7132,6 +7133,8 @@ async function handleStartTrip(trip: TripDoc) {
         pairedTech.uid,
         isoTodayLocal(),
         ptoRequests,
+        hhmmLocal(new Date()),
+        oneMinuteAfterNow(),
       );
 
       if (pairedTechPto) {
