@@ -206,6 +206,13 @@ type TripDoc = {
   workerTimers?: WorkerTimersByUid | null;
   actualMinutes?: number | null;
   billableHours?: number | null;
+  // Confirmed service closeout time drives timesheets; keep raw timer for audit.
+  closeoutHours?: number | null;
+  timerElapsedMinutes?: number | null;
+  submittedHoursAuthoritative?: boolean | null;
+  hoursSource?: string | null;
+  hoursAdjusted?: boolean | null;
+  crewHoursByUid?: Record<string, number> | null;
   workNotes?: string | null;
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
@@ -3407,6 +3414,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         typeof trip.actualMinutes === "number" ? trip.actualMinutes : null,
       billableHours:
         typeof trip.billableHours === "number" ? trip.billableHours : null,
+      closeoutHours:
+        typeof trip.closeoutHours === "number" ? trip.closeoutHours : null,
+      timerElapsedMinutes:
+        typeof trip.timerElapsedMinutes === "number" ? trip.timerElapsedMinutes : null,
+      submittedHoursAuthoritative: trip.submittedHoursAuthoritative === true,
+      hoursSource: trip.hoursSource || null,
+      hoursAdjusted: trip.hoursAdjusted === true,
+      crewHoursByUid: trip.crewHoursByUid || null,
       workNotes: trip.workNotes ?? null,
       resolutionNotes: trip.resolutionNotes ?? null,
       followUpNotes: trip.followUpNotes ?? null,
@@ -3765,10 +3780,37 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return crew;
   }
 
-  // Payroll and customer billing are separate records. Both round NET time to
-  // the nearest half hour, with the exact 15-minute midpoint rounding DOWN.
-  function payrollHoursFromMinutes(minutes: number) {
-    return Math.max(1, nearestHalfHoursFromMinutes(minutes));
+  // Service closeout is the source of truth for the crew's WORKED hours.
+  // A forgotten timer must not override a technician's manual correction.
+  // Keep the 1-hour minimum only in customer billing, not in payroll.
+  function getSubmittedServiceHours(tripId: string, computedMinutes: number) {
+    const hasOverride = Object.prototype.hasOwnProperty.call(
+      hoursOverrideByTrip,
+      tripId,
+    );
+    const submittedHours = hasOverride
+      ? hoursOverrideByTrip[tripId]
+      : getDefaultBillableHours(computedMinutes);
+
+    if (computedMinutes > 10 * 60 && !hasOverride) {
+      throw new Error(
+        "The timer exceeds 10 hours. Enter the actual hours worked to confirm them before finishing this trip.",
+      );
+    }
+
+    // Technicians enter a half-hour figure; reject rather than silently
+    // rounding or replacing their entered number.
+    if (
+      !Number.isFinite(submittedHours) ||
+      submittedHours < 0.5 ||
+      Math.abs(submittedHours * 2 - Math.round(submittedHours * 2)) > 0.000001
+    ) {
+      throw new Error(
+        "Enter actual hours worked in 0.50-hour increments (minimum 0.50).",
+      );
+    }
+
+    return submittedHours;
   }
 
   function activeMinutesForCloseout(
@@ -3781,18 +3823,6 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return workerUid
       ? getWorkerTimerMinutesAt(snapshot, workerUid, completedAtMs)
       : getTripActiveMinutesAt(snapshot, completedAtMs);
-  }
-
-  function getHoursToUse(tripId: string, computedMinutes: number) {
-    const override = hoursOverrideByTrip[tripId];
-    if (
-      typeof override === "number" &&
-      Number.isFinite(override) &&
-      override >= 0
-    ) {
-      return Math.max(1, roundToHalf(override));
-    }
-    return getDefaultBillableHours(computedMinutes);
   }
 
   const mobileFinishTrip = useMemo(
@@ -6099,7 +6129,9 @@ async function handleStartTrip(trip: TripDoc) {
       const completedWorkerTimers = completeAllWorkerTimers(latestTrip, now, myUid);
       const completionMs = new Date(now).getTime();
 
-      const actualMinutes = activeMinutesForCloseout(
+      // Raw timer duration is retained for audit, but is NEVER the payroll
+      // source after the technician confirms the service closeout hours.
+      const timerElapsedMinutes = activeMinutesForCloseout(
         latestTrip,
         null,
         completedWorkerTimers,
@@ -6109,9 +6141,21 @@ async function handleStartTrip(trip: TripDoc) {
       if (!trip.date) {
         throw new Error("Trip is missing date; cannot create time entries.");
       }
-      if (!actualMinutes || actualMinutes <= 0) {
+      if (!timerElapsedMinutes || timerElapsedMinutes <= 0) {
         throw new Error("Trip duration is 0 minutes; no time entry created.");
       }
+
+      const closeoutHours = getSubmittedServiceHours(
+        trip.id,
+        timerElapsedMinutes,
+      );
+      // Canonical actual minutes follow the confirmed worked hours. The raw
+      // timer remains available separately in timerElapsedMinutes/workerTimers.
+      const actualMinutes = Math.round(closeoutHours * 60);
+      const hoursToUse = Math.max(1, closeoutHours); // Customer billing minimum.
+      const hoursAdjusted =
+        Math.abs(closeoutHours - nearestHalfHoursFromMinutes(timerElapsedMinutes)) >
+        0.000001;
 
       const crewConfirmed = applyHelperConfirmation(
         (latestTrip?.crewConfirmed ??
@@ -6133,23 +6177,11 @@ async function handleStartTrip(trip: TripDoc) {
         throw new Error("No crew members found on trip.");
       }
 
-      const hoursToUse = getHoursToUse(trip.id, actualMinutes);
+      // All included service crew members get the technician-confirmed
+      // closeout hours, not their independently running (possibly forgotten)
+      // timers. Respect the existing helper inclusion checkbox above.
       const payrollHoursByUid = Object.fromEntries(
-        crewMembers.map((member) => {
-          const memberMinutes = activeMinutesForCloseout(
-            latestTrip,
-            member.uid,
-            completedWorkerTimers,
-            completionMs,
-          );
-          // Only fall back for genuinely missing legacy employee timers.
-          // A valid zero-minute timer must never turn into a billable minimum.
-          const hasTimer = Boolean(completedWorkerTimers[member.uid]);
-          const memberHours = hasTimer && memberMinutes !== null
-            ? payrollHoursFromMinutes(memberMinutes)
-            : payrollHoursFromMinutes(actualMinutes);
-          return [member.uid, memberHours];
-        }),
+        crewMembers.map((member) => [member.uid, closeoutHours]),
       ) as Record<string, number>;
       const entryDate = trip.date;
       const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
@@ -6162,6 +6194,9 @@ async function handleStartTrip(trip: TripDoc) {
         status: "complete", timerState: "complete", actualEndAt: now,
         endedByUid: myUid, pauseBlocks, workerTimers: completedWorkerTimers,
         actualMinutes, billableHours: hoursToUse, outcome: mode,
+        closeoutHours, timerElapsedMinutes, submittedHoursAuthoritative: true,
+        hoursSource: "submitted_closeout", hoursAdjusted,
+        crewHoursByUid: payrollHoursByUid,
         workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
         resolutionNotes: mode === "resolved" ? resolutionNotes : null,
         followUpNotes: mode === "follow_up" ? followNotes : null,
@@ -6183,7 +6218,12 @@ async function handleStartTrip(trip: TripDoc) {
         title: mode === "resolved" ? "Trip Completed" : "Follow Up Required",
         description: mode === "resolved" ? "Trip was completed as Resolved — Ready to Bill."
           : "Trip was completed with Follow Up required.",
-        details: [`Billable hours: ${hoursToUse}`, `Trip: ${trip.id}`],
+        details: [
+          `Confirmed crew hours: ${closeoutHours}`,
+          `Billable hours: ${hoursToUse}`,
+          `Raw timer: ${timerElapsedMinutes} min`,
+          `Trip: ${trip.id}`,
+        ],
         createdAt: now, createdByUid: myUid || null,
         createdByName: appUser?.displayName || "System",
         createdByRole: appUser?.role || null,
@@ -6219,6 +6259,12 @@ async function handleStartTrip(trip: TripDoc) {
           workerTimers: completedWorkerTimers,
           actualMinutes,
           billableHours: hoursToUse,
+          closeoutHours,
+          timerElapsedMinutes,
+          submittedHoursAuthoritative: true,
+          hoursSource: "submitted_closeout",
+          hoursAdjusted,
+          crewHoursByUid: payrollHoursByUid,
           workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
           resolutionNotes: mode === "resolved" ? resolutionNotes : null,
           followUpNotes: mode === "follow_up" ? followNotes : null,
@@ -6233,7 +6279,7 @@ async function handleStartTrip(trip: TripDoc) {
         payrollRefs.forEach(({member, entryRef, sheetRef}, index) => {
           const oldEntry = existingEntries[index].exists() ? existingEntries[index].data() as ExistingTimeEntry : null;
           const oldSheet = existingSheets[index].exists() ? existingSheets[index].data() : null;
-          const hoursGenerated = payrollHoursByUid[member.uid] ?? payrollHoursFromMinutes(actualMinutes);
+          const hoursGenerated = payrollHoursByUid[member.uid] ?? closeoutHours;
           const hoursLocked = Boolean(oldEntry?.hoursLocked);
           const hoursToWrite = hoursLocked ? Number(oldEntry?.hours ?? hoursGenerated) : hoursGenerated;
           const timesheetId = buildWeeklyTimesheetId(member.uid, weekStartDate);
@@ -6249,6 +6295,8 @@ async function handleStartTrip(trip: TripDoc) {
             entryDate, weekStartDate, weekEndDate, timesheetId,
             category: "service_ticket", payType: "regular", billable: true,
             source: "trip_completion", hours: hoursToWrite, hoursSource: hoursGenerated,
+            hoursOrigin: "submitted_closeout", closeoutHours,
+            timerElapsedMinutes, hoursAdjusted,
             hoursLocked, tripId: trip.id, serviceTicketId: trip.link?.serviceTicketId || ticket?.id || null,
             projectId: trip.link?.projectId || null, projectStageKey: trip.link?.projectStageKey || null,
             displayTitle: ticket?.customerDisplayName || "Customer",
@@ -6290,6 +6338,12 @@ async function handleStartTrip(trip: TripDoc) {
               workerTimers: completedWorkerTimers,
               actualMinutes,
               billableHours: hoursToUse,
+              closeoutHours,
+              timerElapsedMinutes,
+              submittedHoursAuthoritative: true,
+              hoursSource: "submitted_closeout",
+              hoursAdjusted,
+              crewHoursByUid: payrollHoursByUid,
               workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
               resolutionNotes: mode === "resolved" ? resolutionNotes : null,
               followUpNotes: mode === "follow_up" ? followNotes : null,
@@ -8040,11 +8094,17 @@ async function handleStartTrip(trip: TripDoc) {
               <DialogContent dividers>
                 {mobileFinishTrip ? (
                   <Stack spacing={2}>
+                    {getTripActiveMinutesAt(mobileFinishTrip, liveNowMs) > 600 ? (
+                      <Alert severity="warning">
+                        The timer exceeds 10 hours. Enter the actual hours worked
+                        in the field below to confirm the correct crew time.
+                      </Alert>
+                    ) : null}
                     <TextField
-                      label="Hours (override)"
+                      label="Actual hours worked"
                       type="number"
                       size="small"
-                      inputProps={{ min: 0, step: 0.5 }}
+                      inputProps={{ min: 0.5, step: 0.5 }}
                       value={
                         typeof hoursOverrideByTrip[mobileFinishTrip.id] ===
                         "number"
@@ -8059,7 +8119,7 @@ async function handleStartTrip(trip: TripDoc) {
                           [mobileFinishTrip.id]: Number(e.target.value),
                         }))
                       }
-                      helperText="Timer default shown above; you can override if needed."
+                      helperText="Confirm or correct the timer hours. This number is used for every included crew member's timesheet; customer billing keeps its separate 1-hour minimum."
                     />
 
                     <FormControlLabel
@@ -9878,11 +9938,17 @@ async function handleStartTrip(trip: TripDoc) {
                                 }}
                               >
                                 <Stack spacing={1.25}>
+                                  {billableMinutes > 600 ? (
+                                    <Alert severity="warning">
+                                      Timer exceeds 10 hours. Enter the actual
+                                      worked hours below to confirm crew time.
+                                    </Alert>
+                                  ) : null}
                                   <TextField
-                                    label="Hours (override)"
+                                    label="Actual hours worked"
                                     type="number"
                                     size="small"
-                                    inputProps={{ min: 0, step: 0.5 }}
+                                    inputProps={{ min: 0.5, step: 0.5 }}
                                     value={
                                       typeof hoursOverrideByTrip[trip.id] ===
                                       "number"
@@ -9897,6 +9963,7 @@ async function handleStartTrip(trip: TripDoc) {
                                         [trip.id]: Number(e.target.value),
                                       }))
                                     }
+                                    helperText="Confirmed hours drive every included crew member's timesheet. Customer billing retains its separate 1-hour minimum."
                                   />
 
                                   <FormControlLabel
