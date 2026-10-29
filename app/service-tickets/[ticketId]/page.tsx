@@ -217,6 +217,8 @@ type TripDoc = {
   resolutionNotes?: string | null;
   followUpNotes?: string | null;
   materials?: TripMaterial[] | null;
+  // Technician-entered text is independent of supplier OCR materials.
+  manualMaterialsNotes?: string | null;
   noMaterialsUsed?: boolean | null;
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
@@ -809,38 +811,34 @@ function materialLinesToText(materials?: TripMaterial[] | null) {
     .join("\n");
 }
 
+// Only display manual lines in an editable technician field. Supplier OCR
+// material items must never be editable text that could replace technician notes.
+function manualMaterialsToText(materials?: TripMaterial[] | null) {
+  const items = Array.isArray(materials) ? materials : [];
+  return materialLinesToText(
+    items.filter((material) =>
+      !material?.imported && material?.source !== "supplier_invoice",
+    ),
+  );
+}
+
 function parseMaterialsText(
   value?: string,
   existingMaterials?: TripMaterial[] | null,
 ) {
-  const existingImported = (
-    Array.isArray(existingMaterials) ? existingMaterials : []
-  ).filter(
-    (material) => material?.imported || material?.source === "supplier_invoice",
-  );
-
-  const manualLines = String(value || "")
+  const existingImported = getImportedMaterialChips(existingMaterials);
+  const manualMaterials = String(value || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((line) => ({
+      name: line,
+      qty: 1,
+      source: "manual" as const,
+    } satisfies TripMaterial));
 
-  const importedLineText = new Set(
-    existingImported.map((material) =>
-      formatSingleMaterialLine(material).trim(),
-    ),
-  );
-
-  const manualMaterials = manualLines
-    .filter((line) => !importedLineText.has(line))
-    .map(
-      (line) =>
-        ({
-          name: line,
-          qty: 1,
-          source: "manual" as const,
-        }) satisfies TripMaterial,
-    );
-
+  // A tech can legitimately report the same item as a supplier invoice.
+  // Preserve BOTH sources rather than dropping matching descriptions.
   return [...existingImported, ...manualMaterials];
 }
 
@@ -1050,6 +1048,68 @@ function buildBillingPacketFromClosedFollowUp(args: {
     qboInvoiceStatus: null,
     invoiceError: null,
     updatedAt: args.fallbackUpdatedAt,
+  };
+}
+
+// Protect office-entered billing notes and older material lines whenever a
+// billing packet is rebuilt. Supplier imports must add information, not erase
+// the technician or office's previously recorded materials.
+function preserveBillingMaterialsOnRebuild(
+  proposed: BillingPacket,
+  existing?: BillingPacket | null,
+): BillingPacket {
+  if (!existing) return proposed;
+  const previous = Array.isArray(existing.materials) ? existing.materials : [];
+  const current = Array.isArray(proposed.materials) ? proposed.materials : [];
+  const identity = (item: TripMaterial) =>
+    item.supplierLineKey
+      ? `supplier:${item.supplierLineKey}`
+      : JSON.stringify([
+          item.source || "manual", item.id || "", item.name || "",
+          Number(item.qty || 0), item.unit || "", item.notes || "",
+        ]);
+  const counts = new Map<string, number>();
+  for (const item of current) counts.set(identity(item), (counts.get(identity(item)) || 0) + 1);
+  const kept = [...current];
+  for (const oldItem of previous) {
+    const key = identity(oldItem);
+    const available = counts.get(key) || 0;
+    if (available > 0) counts.set(key, available - 1);
+    else if (String(oldItem.name || "").trim()) kept.push(oldItem);
+  }
+
+  const priorSummary = String(existing.materialsSummary || "").trim();
+  const generatedPriorSummary = buildMaterialsSummaryFromLines(previous);
+  let summary = buildMaterialsSummaryFromLines(kept) || null;
+  if (priorSummary && priorSummary !== generatedPriorSummary) {
+    const oldCounts = new Map<string, number>();
+    for (const item of previous) oldCounts.set(identity(item), (oldCounts.get(identity(item)) || 0) + 1);
+    const additions: string[] = [];
+    for (const item of kept) {
+      const key = identity(item);
+      const remaining = oldCounts.get(key) || 0;
+      if (remaining > 0) {
+        oldCounts.set(key, remaining - 1);
+        continue;
+      }
+      const line = formatSingleMaterialLine(item);
+      if (line && !priorSummary.includes(line)) additions.push(line);
+    }
+    summary = [priorSummary, ...additions].join(", ") || null;
+  }
+  return {
+    ...existing,
+    ...proposed,
+    materials: kept,
+    materialsSummary: summary,
+    materialsAmount: existing.materialsAmount ?? proposed.materialsAmount,
+    photos: Array.isArray(existing.photos) ? existing.photos : proposed.photos,
+    invoiceSource: existing.invoiceSource ?? proposed.invoiceSource,
+    qboInvoiceId: existing.qboInvoiceId ?? proposed.qboInvoiceId,
+    qboDocNumber: existing.qboDocNumber ?? proposed.qboDocNumber,
+    qboInvoiceUrl: existing.qboInvoiceUrl ?? proposed.qboInvoiceUrl,
+    qboSyncedAt: existing.qboSyncedAt ?? proposed.qboSyncedAt,
+    qboInvoiceStatus: existing.qboInvoiceStatus ?? proposed.qboInvoiceStatus,
   };
 }
 
@@ -3107,7 +3167,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           nextResolution[trip.id] = String(trip.resolutionNotes || "");
           nextFollow[trip.id] = String(trip.followUpNotes || "");
           nextMaterials[trip.id] = loadedMaterials;
-          nextMaterialsText[trip.id] = materialLinesToText(loadedMaterials);
+          nextMaterialsText[trip.id] =
+            trip.manualMaterialsNotes ?? manualMaterialsToText(loadedMaterials);
           nextNoMaterials[trip.id] = Boolean(trip.noMaterialsUsed);
           nextFinish[trip.id] = "none";
           nextHelperConfirmed[trip.id] = true;
@@ -3269,7 +3330,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           const next = { ...prev };
           for (const trip of nextTrips) {
             if (!(trip.id in next)) {
-              next[trip.id] = materialLinesToText(trip.materials || []);
+              next[trip.id] = trip.manualMaterialsNotes ??
+                manualMaterialsToText(trip.materials || []);
             }
           }
           return next;
@@ -3419,6 +3481,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       resolutionNotes: trip.resolutionNotes ?? null,
       followUpNotes: trip.followUpNotes ?? null,
       materials: Array.isArray(trip.materials) ? trip.materials : [],
+      manualMaterialsNotes: trip.manualMaterialsNotes ?? null,
       noMaterialsUsed: Boolean(trip.noMaterialsUsed),
       outcome: trip.outcome ?? null,
       readyToBillAt: normalizeDateLike(trip.readyToBillAt),
@@ -4573,8 +4636,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }
 
   function renderTripMaterialsEditor(tripId: string) {
-    const materialsText =
-      tripMaterialsText[tripId] ?? materialLinesToText(tripMaterials[tripId]);
+    const latestTrip = trips.find((item) => item.id === tripId);
+    const materialsText = tripMaterialsText[tripId] ??
+      latestTrip?.manualMaterialsNotes ??
+      manualMaterialsToText(latestTrip?.materials || tripMaterials[tripId]);
+    const importedMaterials = getImportedMaterialChips(
+      latestTrip?.materials || tripMaterials[tripId],
+    );
     const noMaterialsUsed = Boolean(tripNoMaterialsUsed[tripId]);
 
     return (
@@ -4584,35 +4652,34 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             Materials Used
           </Typography>
 
-          {getImportedMaterialChips(tripMaterials[tripId]).length > 0 ? (
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              {getImportedMaterialChips(tripMaterials[tripId]).map(
-                (material, index) => (
-                  <Chip
-                    key={material.supplierLineKey || material.id || index}
-                    size="small"
-                    color={
-                      material.reviewStatus === "pending"
-                        ? "warning"
-                        : "success"
-                    }
-                    variant="outlined"
-                    label={[
-                      "Imported",
-                      material.supplierName || "Supplier",
-                      material.supplierInvoiceNumber
-                        ? `Invoice #${material.supplierInvoiceNumber}`
-                        : "",
-                      material.poCode ? `PO ${material.poCode}` : "",
-                      material.reviewStatus === "pending" ? "Needs Review" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" • ")}
-                    sx={{ borderRadius: 99, fontWeight: 700 }}
-                  />
-                ),
-              )}
-            </Stack>
+          {importedMaterials.length > 0 ? (
+            <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 1 }}>
+              <Stack spacing={0.75}>
+                <Typography variant="subtitle2" fontWeight={700}>
+                  Supplier PO Materials — Imported Automatically
+                </Typography>
+                {importedMaterials.map((material, index) => (
+                  <Box key={material.supplierLineKey || material.id || index}>
+                    <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                      {formatSingleMaterialLine(material)}
+                    </Typography>
+                    <Chip
+                      size="small"
+                      color={material.reviewStatus === "pending" ? "warning" : "success"}
+                      variant="outlined"
+                      label={[
+                        material.supplierName || "Supplier",
+                        material.poCode ? `PO ${material.poCode}` : "",
+                        material.reviewStatus === "pending" ? "Needs Review" : "",
+                      ].filter(Boolean).join(" • ")}
+                    />
+                  </Box>
+                ))}
+                <Typography variant="caption" color="text.secondary">
+                  Supplier items are recorded separately. They cannot replace technician notes.
+                </Typography>
+              </Stack>
+            </Paper>
           ) : null}
 
           <FormControlLabel
@@ -4626,16 +4693,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                     [tripId]: checked,
                   }));
 
-                  if (checked) {
-                    setTripMaterials((prev) => ({
-                      ...prev,
-                      [tripId]: [],
-                    }));
-                    setTripMaterialsText((prev) => ({
-                      ...prev,
-                      [tripId]: "",
-                    }));
-                  }
+                  // Do not clear any notes here. An accidental checkbox tap
+                  // must not silently erase the technician's materials text.
+                  // Supplier items are always preserved independently.
                 }}
               />
             }
@@ -4648,7 +4708,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             </Alert>
           ) : (
             <TextField
-              label="Materials / Parts Used"
+              label="Technician Materials / Parts Used"
               multiline
               minRows={5}
               value={materialsText}
@@ -4663,7 +4723,7 @@ Angle stop
 Wax ring
 PVC fittings for drain reset
 Supply line`}
-              helperText="Use a simple freeform list. One line per item works best."
+              helperText="Technician notes only. PO materials remain in the separate list above and are not overwritten."
             />
           )}
         </Stack>
@@ -6096,22 +6156,26 @@ async function handleStartTrip(trip: TripDoc) {
       }
 
       const materialsText = String(tripMaterialsText[trip.id] || "").trim();
-      const mats = parseMaterialsText(materialsText, tripMaterials[trip.id]);
       const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
+      if (noMaterialsUsed && materialsText) {
+        throw new Error(
+          'There are technician material notes entered. Uncheck "No materials used" or clear the notes intentionally before completing the trip.',
+        );
+      }
+      // This initial check is only for immediate UI validation; the final
+      // materials are re-evaluated from the live trip INSIDE the transaction.
       const materialCheck = validateTripMaterialsCapture({
-        materials: mats,
+        materials: parseMaterialsText(materialsText, tripMaterials[trip.id]),
         noMaterialsUsed,
       });
-
-      if (!materialCheck.ok) {
-        throw new Error(materialCheck.message);
-      }
 
       // Read the latest pause history before finalizing. A stale React trip
       // snapshot can omit a pause/resume written from another device.
       const latestSnap = await getDoc(doc(db, "trips", trip.id));
       if (!latestSnap.exists()) throw new Error("Trip no longer exists.");
       const latestTrip = mapTripLikeFromDoc(latestSnap);
+      // Do not reject a stale page snapshot here: the authoritative materials
+      // validation happens in the transaction against the latest trip record.
       if (!canFinishTrip(latestTrip.status, latestTrip.timerState)) {
         throw new Error("Trip was already completed or its status changed. Refresh and try again.");
       }
@@ -6194,11 +6258,12 @@ async function handleStartTrip(trip: TripDoc) {
         resolutionNotes: mode === "resolved" ? resolutionNotes : null,
         followUpNotes: mode === "follow_up" ? followNotes : null,
         readyToBillAt: mode === "resolved" ? now : null,
-        materials: materialCheck.cleaned, noMaterialsUsed, crewConfirmed: finalCrew,
+        materials: materialCheck.cleaned, manualMaterialsNotes: materialsText,
+        noMaterialsUsed, crewConfirmed: finalCrew,
         updatedAt: now,
       } : t);
-      const committedStatus = deriveNextTicketStatus(committedTrips, mode);
-      const committedBilling: BillingPacket | null = mode === "resolved" && committedStatus === "completed"
+      let committedStatus = deriveNextTicketStatus(committedTrips, mode);
+      let committedBilling: BillingPacket | null = mode === "resolved" && committedStatus === "completed"
         ? buildBillingPacketFromResolvedTrips({trips: committedTrips, fallbackUpdatedAt: now})
         : null;
       const addressShort = [ticket?.serviceAddressLine1 || "", ticket?.serviceCity || "",
@@ -6228,7 +6293,7 @@ async function handleStartTrip(trip: TripDoc) {
         entryRef: doc(db, "timeEntries", `trip_${trip.id}_${member.uid}`),
         sheetRef: doc(db, "weeklyTimesheets", buildWeeklyTimesheetId(member.uid, weekStartDate)),
       }));
-      await runTransaction(db, async (tx) => {
+      const savedMaterials: TripMaterial[] = await runTransaction(db, async (tx) => {
         // Firestore requires all transaction reads to precede all writes.
         const liveTripSnap = await tx.get(tripRef);
         if (!liveTripSnap.exists()) throw new Error("Trip no longer exists.");
@@ -6242,6 +6307,48 @@ async function handleStartTrip(trip: TripDoc) {
         }
         const existingEntries = await Promise.all(payrollRefs.map(item => tx.get(item.entryRef)));
         const existingSheets = await Promise.all(payrollRefs.map(item => tx.get(item.sheetRef)));
+
+        // OCR could finish at any time while this closeout is open. Merge its
+        // latest imported rows INSIDE the same transaction as the closeout.
+        const liveCheck = validateTripMaterialsCapture({
+          materials: parseMaterialsText(materialsText, liveTrip.materials),
+          noMaterialsUsed,
+        });
+        if (!liveCheck.ok) throw new Error(liveCheck.message);
+        const completedLiveTrip: TripDoc = {
+          ...liveTrip,
+          id: trip.id,
+          status: "complete",
+          timerState: "complete",
+          outcome: mode,
+          actualEndAt: now,
+          readyToBillAt: mode === "resolved" ? now : null,
+          materials: liveCheck.cleaned,
+          manualMaterialsNotes: materialsText,
+          noMaterialsUsed,
+          billableHours: hoursToUse,
+          actualMinutes,
+          closeoutHours,
+          workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+          resolutionNotes: mode === "resolved" ? resolutionNotes : null,
+          followUpNotes: mode === "follow_up" ? followNotes : null,
+          updatedAt: now,
+        };
+        const finalTripList = trips.map((existingTrip) =>
+          existingTrip.id === trip.id ? completedLiveTrip : existingTrip,
+        );
+        committedStatus = deriveNextTicketStatus(finalTripList, mode);
+        committedBilling = mode === "resolved" && committedStatus === "completed"
+          ? preserveBillingMaterialsOnRebuild(
+              buildBillingPacketFromResolvedTrips({
+                trips: finalTripList,
+                fallbackUpdatedAt: now,
+              })!,
+              liveTicketSnap?.exists()
+                ? normalizeBillingPacket(liveTicketSnap.data().billing)
+                : null,
+            )
+          : null;
 
         tx.update(tripRef, stripUndefined({
           status: "complete",
@@ -6263,7 +6370,8 @@ async function handleStartTrip(trip: TripDoc) {
           followUpNotes: mode === "follow_up" ? followNotes : null,
           outcome: mode,
           readyToBillAt: mode === "resolved" ? now : null,
-          materials: materialCheck.cleaned,
+          materials: liveCheck.cleaned,
+          manualMaterialsNotes: materialsText,
           noMaterialsUsed,
           crewConfirmed: finalCrew,
           updatedAt: now,
@@ -6311,6 +6419,10 @@ async function handleStartTrip(trip: TripDoc) {
           }));
         }
         if (completionActivityRef) tx.set(completionActivityRef, stripUndefined(completionActivity));
+
+        // Return the materials actually committed to Firestore. This is always
+        // a TripMaterial[] because invalid closeout materials throw above.
+        return liveCheck.cleaned;
       });
       if (ticketRef) {
         setTicket(prev => prev ? { ...prev, status: committedStatus,
@@ -6342,7 +6454,8 @@ async function handleStartTrip(trip: TripDoc) {
               followUpNotes: mode === "follow_up" ? followNotes : null,
               outcome: mode,
               readyToBillAt: mode === "resolved" ? now : null,
-              materials: materialCheck.cleaned,
+              materials: savedMaterials,
+              manualMaterialsNotes: materialsText,
               noMaterialsUsed,
               crewConfirmed: finalCrew,
             }
@@ -6352,11 +6465,11 @@ async function handleStartTrip(trip: TripDoc) {
       setTrips(nextTrips);
       setTripMaterials((prev) => ({
         ...prev,
-        [trip.id]: materialCheck.cleaned,
+        [trip.id]: savedMaterials,
       }));
       setTripMaterialsText((prev) => ({
         ...prev,
-        [trip.id]: materialLinesToText(materialCheck.cleaned),
+        [trip.id]: materialsText,
       }));
       setAvailabilityTripsByDate((prev) => ({
         ...prev,
@@ -7451,20 +7564,41 @@ async function handleStartTrip(trip: TripDoc) {
         );
       }
 
-      const nextBilling: BillingPacket = {
-        ...ticket.billing,
-        materialsSummary: billingMaterialsSummaryEdit.trim() || null,
-        materialsAmount: parsedAmount,
-        updatedAt: now,
-      };
-
-      await updateDoc(doc(db, "serviceTickets", ticket.id), {
-        billing: nextBilling,
-        ...getTicketAuditFields(now),
+      const ticketRef = doc(db, "serviceTickets", ticket.id);
+      let nextBilling: BillingPacket | null = null;
+      await runTransaction(db, async (tx) => {
+        const liveSnap = await tx.get(ticketRef);
+        if (!liveSnap.exists()) throw new Error("Service ticket no longer exists.");
+        const liveData = liveSnap.data() as any;
+        if (String(liveData.status || "") === "invoiced") {
+          throw new Error("Invoiced ticket is locked.");
+        }
+        const liveBilling = normalizeBillingPacket(liveData.billing);
+        if (!liveBilling) throw new Error("Billing packet no longer exists.");
+        if (
+          String(liveBilling.materialsSummary || "") !==
+          String(ticket.billing?.materialsSummary || "")
+        ) {
+          throw new Error(
+            "Materials changed since this page opened. Refresh the ticket and review technician/PO materials before saving.",
+          );
+        }
+        nextBilling = {
+          ...liveBilling,
+          materialsSummary: billingMaterialsSummaryEdit.trim() || null,
+          materialsAmount: parsedAmount,
+          updatedAt: now,
+        };
+        tx.update(ticketRef, {
+          "billing.materialsSummary": nextBilling.materialsSummary,
+          "billing.materialsAmount": nextBilling.materialsAmount,
+          "billing.updatedAt": now,
+          ...getTicketAuditFields(now),
+        });
       });
 
       setTicket((prev) =>
-        prev
+        prev && nextBilling
           ? { ...prev, billing: nextBilling, ...getTicketAuditFields(now) }
           : prev,
       );
@@ -7683,32 +7817,42 @@ async function handleStartTrip(trip: TripDoc) {
         );
       }
 
-      await updateDoc(doc(db, "serviceTickets", ticket.id), {
-        billing: nextBilling,
-        status: "completed",
-        ...getTicketAuditFields(now),
+      const ticketRef = doc(db, "serviceTickets", ticket.id);
+      let safeBilling: BillingPacket = nextBilling;
+      await runTransaction(db, async (tx) => {
+        const liveSnap = await tx.get(ticketRef);
+        if (!liveSnap.exists()) throw new Error("Service ticket no longer exists.");
+        const liveData = liveSnap.data() as any;
+        if (String(liveData.status || "") === "invoiced") {
+          throw new Error("Ticket is already invoiced.");
+        }
+        safeBilling = preserveBillingMaterialsOnRebuild(
+          nextBilling,
+          normalizeBillingPacket(liveData.billing),
+        );
+        tx.update(ticketRef, {
+          billing: safeBilling,
+          status: "completed",
+          ...getTicketAuditFields(now),
+        });
       });
 
-      setTicket((prev) =>
-        prev
-          ? {
-              ...prev,
-              billing: nextBilling,
-              status: "completed",
-              ...getTicketAuditFields(now),
-            }
-          : prev,
-      );
+      setTicket((prev) => prev ? {
+        ...prev,
+        billing: safeBilling,
+        status: "completed",
+        ...getTicketAuditFields(now),
+      } : prev);
 
       setTicketStatusEdit("completed");
       setBillingMaterialsSummaryEdit(
-        String(nextBilling.materialsSummary || "").trim() ||
-          buildMaterialsSummaryFromLines(nextBilling.materials),
+        String(safeBilling.materialsSummary || "").trim() ||
+          buildMaterialsSummaryFromLines(safeBilling.materials),
       );
       setBillingMaterialsAmountEdit(
-        typeof nextBilling.materialsAmount === "number" &&
-          Number.isFinite(nextBilling.materialsAmount)
-          ? String(nextBilling.materialsAmount)
+        typeof safeBilling.materialsAmount === "number" &&
+          Number.isFinite(safeBilling.materialsAmount)
+          ? String(safeBilling.materialsAmount)
           : "",
       );
 
@@ -7717,10 +7861,10 @@ async function handleStartTrip(trip: TripDoc) {
         title: "Billing Packet Resynced",
         description: "Billing packet was rebuilt from completed trip history.",
         details: [
-          `Status: ${formatBillingPacketStatus(nextBilling.status)}`,
-          `Ready trip: ${nextBilling.readyToBillTripId || "—"}`,
-          `Labor hours: ${nextBilling.labor.totalHours}`,
-          `Materials: ${nextBilling.materials.length}`,
+          `Status: ${formatBillingPacketStatus(safeBilling.status)}`,
+          `Ready trip: ${safeBilling.readyToBillTripId || "—"}`,
+          `Labor hours: ${safeBilling.labor.totalHours}`,
+          `Materials: ${safeBilling.materials.length}`,
         ],
         createdAt: now,
       });
@@ -7738,9 +7882,7 @@ async function handleStartTrip(trip: TripDoc) {
   async function markBillingStatus(nextStatus: BillingPacket["status"]) {
     if (!ticket?.id || !canBill) return;
     if (ticket.status === "invoiced") {
-      setBillingErr(
-        "Invoiced tickets are locked and billing status cannot be changed.",
-      );
+      setBillingErr("Invoiced tickets are locked and billing status cannot be changed.");
       return;
     }
 
@@ -7750,99 +7892,95 @@ async function handleStartTrip(trip: TripDoc) {
 
     try {
       const now = nowIso();
-
-      const parsedAmount =
-        billingMaterialsAmountEdit.trim() === ""
-          ? null
-          : Number(billingMaterialsAmountEdit);
-
-      if (
-        parsedAmount !== null &&
-        (!Number.isFinite(parsedAmount) || parsedAmount < 0)
-      ) {
-        throw new Error(
-          "Materials Amount must be blank or a number 0 or greater.",
-        );
+      const parsedAmount = billingMaterialsAmountEdit.trim() === ""
+        ? null
+        : Number(billingMaterialsAmountEdit);
+      if (parsedAmount !== null && (!Number.isFinite(parsedAmount) || parsedAmount < 0)) {
+        throw new Error("Materials Amount must be blank or a number 0 or greater.");
       }
 
-      const base: BillingPacket = ticket.billing || {
-        status: "not_ready",
-        readyToBillAt: null,
-        readyToBillTripId: null,
-        resolutionNotes: null,
-        workNotes: null,
-        labor: { totalHours: 0, byCrew: [] },
-        materials: [],
-        materialsSummary: null,
-        materialsAmount: null,
-        photos: [],
-        invoiceSource: null,
-        qboInvoiceId: null,
-        qboDocNumber: null,
-        qboInvoiceUrl: null,
-        qboSyncedAt: null,
-        qboInvoiceStatus: null,
-        invoiceError: null,
-        updatedAt: now,
-      };
+      // Read the CURRENT billing packet before changing its status. An OCR
+      // import may have added PO lines after the user opened this page.
+      const ticketRef = doc(db, "serviceTickets", ticket.id);
+      let next: BillingPacket | null = null;
+      let nextTicketStatus: TicketStatus = ticket.status;
+      await runTransaction(db, async (tx) => {
+        const liveSnap = await tx.get(ticketRef);
+        if (!liveSnap.exists()) throw new Error("Service ticket no longer exists.");
+        const liveData = liveSnap.data() as any;
+        if (String(liveData.status || "") === "invoiced") {
+          throw new Error("Ticket was invoiced while the page was open. Refresh.");
+        }
+        const liveBilling = normalizeBillingPacket(liveData.billing);
+        if (String(liveBilling?.materialsSummary || "") !==
+            String(ticket.billing?.materialsSummary || "")) {
+          throw new Error(
+            "Materials changed since this page opened. Refresh the ticket and review all technician and PO materials before changing status.",
+          );
+        }
+        const base: BillingPacket = liveBilling || {
+          status: "not_ready",
+          readyToBillAt: null,
+          readyToBillTripId: null,
+          resolutionNotes: null,
+          workNotes: null,
+          labor: { totalHours: 0, byCrew: [] },
+          materials: [],
+          materialsSummary: null,
+          materialsAmount: null,
+          photos: [],
+          invoiceSource: null,
+          qboInvoiceId: null,
+          qboDocNumber: null,
+          qboInvoiceUrl: null,
+          qboSyncedAt: null,
+          qboInvoiceStatus: null,
+          invoiceError: null,
+          updatedAt: now,
+        };
+        const candidate: BillingPacket = {
+          ...base,
+          status: nextStatus,
+          materialsSummary: billingMaterialsSummaryEdit.trim() || null,
+          materialsAmount: parsedAmount,
+          updatedAt: now,
+        };
+        if (nextStatus === "not_ready") {
+          candidate.readyToBillAt = null;
+          candidate.readyToBillTripId = null;
+          candidate.invoiceSource = null;
+          candidate.invoiceError = null;
+        } else if (nextStatus === "ready_to_bill") {
+          candidate.invoiceSource = null;
+          candidate.invoiceError = null;
+        } else if (nextStatus === "invoiced") {
+          candidate.invoiceSource = candidate.invoiceSource || "manual";
+          candidate.qboInvoiceStatus = candidate.qboInvoiceStatus || "manual";
+          candidate.invoiceError = null;
+        }
+        next = candidate;
+        nextTicketStatus = nextStatus === "invoiced"
+          ? "invoiced"
+          : String(liveData.status || "new") as TicketStatus;
+        tx.update(ticketRef, {
+          billing: candidate,
+          status: nextTicketStatus,
+          ...getTicketAuditFields(now),
+        });
+      });
 
-      const next: BillingPacket = {
-        ...base,
-        status: nextStatus,
-        materialsSummary: billingMaterialsSummaryEdit.trim() || null,
-        materialsAmount: parsedAmount,
-        updatedAt: now,
-      };
-
-      if (nextStatus === "not_ready") {
-        next.readyToBillAt = null;
-        next.readyToBillTripId = null;
-        next.invoiceSource = null;
-        next.invoiceError = null;
-      }
-
-      if (nextStatus === "ready_to_bill") {
-        next.invoiceSource = null;
-        next.invoiceError = null;
-      }
-
-      if (nextStatus === "invoiced") {
-        next.invoiceSource = next.invoiceSource || "manual";
-        next.qboInvoiceStatus = next.qboInvoiceStatus || "manual";
-        next.invoiceError = null;
-      }
-
-      const nextTicketStatus: TicketStatus =
-        nextStatus === "invoiced" ? "invoiced" : ticket.status;
-
-      await updateDoc(doc(db, "serviceTickets", ticket.id), {
+      if (!next) throw new Error("Billing status was not saved.");
+      setTicket((prev) => prev ? {
+        ...prev,
         billing: next,
         status: nextTicketStatus,
         ...getTicketAuditFields(now),
-      });
-
-      setTicket((prev) =>
-        prev
-          ? {
-              ...prev,
-              billing: next,
-              status: nextTicketStatus,
-              ...getTicketAuditFields(now),
-            }
-          : prev,
-      );
-
+      } : prev);
       setTicketStatusEdit(nextTicketStatus);
 
       await logServiceTicketActivity({
-        type:
-          nextStatus === "invoiced"
-            ? "billing_marked_invoiced"
-            : "billing_status_updated",
-        title:
-          nextStatus === "invoiced"
-            ? "Ticket Marked Invoiced"
-            : "Billing Status Updated",
+        type: nextStatus === "invoiced" ? "billing_marked_invoiced" : "billing_status_updated",
+        title: nextStatus === "invoiced" ? "Ticket Marked Invoiced" : "Billing Status Updated",
         description: `Billing status updated to ${formatBillingPacketStatus(nextStatus)}.`,
         details: [
           `Billing status: ${formatBillingPacketStatus(nextStatus)}`,
@@ -7851,14 +7989,9 @@ async function handleStartTrip(trip: TripDoc) {
         ],
         createdAt: now,
       });
-
-      setBillingOk(
-        `Billing status updated: ${formatBillingPacketStatus(nextStatus)}`,
-      );
+      setBillingOk(`Billing status updated: ${formatBillingPacketStatus(nextStatus)}`);
     } catch (err: unknown) {
-      setBillingErr(
-        err instanceof Error ? err.message : "Failed to update billing status.",
-      );
+      setBillingErr(err instanceof Error ? err.message : "Failed to update billing status.");
     } finally {
       setBillingSaving(false);
     }

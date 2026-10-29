@@ -263,6 +263,7 @@ type PickerItem = {
 type AddSlotConflictSummary = {
   hardMessages: string[];
   softMessages: string[];
+  infoMessages: string[];
   softTripIds: string[];
 };
 
@@ -1227,6 +1228,69 @@ function eventBlocksSlot(e: CompanyEvent, slot: HalfDaySlotKey) {
   return stMin < slotEnd && etMin > slotStart;
 }
 
+// Find the longest continuous portion of a requested window that is free of
+// blocking company events for ALL assigned crew members. Endpoints are exclusive:
+// a meeting ending at 09:00 does not conflict with a trip starting at 09:00.
+function availableTripRangeAfterEvents(args: {
+  dateIso: string;
+  slot: SlotKey;
+  crewUids: string[];
+  employeeRolesByUid: Record<string, string>;
+  eventsByDate: Record<string, CompanyEvent[]>;
+}) {
+  const { dateIso, slot, crewUids, employeeRolesByUid, eventsByDate } = args;
+  const start = SLOT_AM_START;
+  const end = slot === "am" ? SLOT_AM_END : slot === "pm" ? SLOT_PM_END : SLOT_PM_END;
+  const windowStart = slot === "pm" ? SLOT_PM_START : start;
+  const windowEnd = end;
+  const intervals: Array<{ start: number; end: number; title: string }> = [];
+  for (const event of eventsByDate[dateIso] || []) {
+    if (!event.active || !event.blocksSchedule) continue;
+    if (!crewUids.some((uid) => eventAppliesToUid(event, uid, employeeRolesByUid[uid] || "employee"))) continue;
+    const windowValue = String(event.timeWindow || "").toLowerCase();
+    let eventStart: number;
+    let eventEnd: number;
+    if (windowValue === "all_day") {
+      eventStart = SLOT_AM_START;
+      eventEnd = SLOT_PM_END;
+    } else if (windowValue === "am") {
+      eventStart = SLOT_AM_START;
+      eventEnd = SLOT_AM_END;
+    } else if (windowValue === "pm") {
+      eventStart = SLOT_PM_START;
+      eventEnd = SLOT_PM_END;
+    } else {
+      const st = minutesFromHHMM(String(event.startTime || ""));
+      const en = minutesFromHHMM(String(event.endTime || ""));
+      // Malformed blocking events remain blocking for safety.
+      eventStart = st != null && en != null && en > st ? st : SLOT_AM_START;
+      eventEnd = st != null && en != null && en > st ? en : SLOT_PM_END;
+    }
+    const overlapStart = Math.max(windowStart, eventStart);
+    const overlapEnd = Math.min(windowEnd, eventEnd);
+    if (overlapStart < overlapEnd) intervals.push({ start: overlapStart, end: overlapEnd, title: event.title || "Company event" });
+  }
+  intervals.sort((a, b) => a.start - b.start);
+  let cursor = windowStart;
+  const free: Array<{ start: number; end: number }> = [];
+  for (const interval of intervals) {
+    if (interval.start > cursor) free.push({ start: cursor, end: interval.start });
+    cursor = Math.max(cursor, interval.end);
+  }
+  if (cursor < windowEnd) free.push({ start: cursor, end: windowEnd });
+  // Prefer the longest continuous opening, then the earliest one.
+  free.sort((a, b) => (b.end - b.start) - (a.end - a.start) || a.start - b.start);
+  const best = free[0] || null;
+  const format = (minutes: number) => `${pad2(Math.floor(minutes / 60))}:${pad2(minutes % 60)}`;
+  return {
+    startTime: best ? format(best.start) : null,
+    endTime: best ? format(best.end) : null,
+    blocked: !best,
+    partial: Boolean(best && (best.start !== windowStart || best.end !== windowEnd)),
+    eventTitles: Array.from(new Set(intervals.map((interval) => interval.title))),
+  };
+}
+
 function selectedSlotsForWindow(
   windowValue: string,
   startTime?: string | null,
@@ -1407,8 +1471,9 @@ function computeCellAvailability(args: {
     (trip) => tripBlocksSlot(trip, "pm") && isPlannedStatus(trip.status)
   );
 
-  const amMeeting = meetings.some((event) => eventBlocksSlot(event, "am"));
-  const pmMeeting = meetings.some((event) => eventBlocksSlot(event, "pm"));
+  const roleMap = { [rowKey]: "technician" };
+  const amMeeting = rowKey !== "UNASSIGNED" && availableTripRangeAfterEvents({ dateIso: iso, slot: "am", crewUids: [rowKey], employeeRolesByUid: roleMap, eventsByDate }).blocked;
+  const pmMeeting = rowKey !== "UNASSIGNED" && availableTripRangeAfterEvents({ dateIso: iso, slot: "pm", crewUids: [rowKey], employeeRolesByUid: roleMap, eventsByDate }).blocked;
 
   const amHardBusy = holiday || pto || amMeeting || amHardTrip;
   const pmHardBusy = holiday || pto || pmMeeting || pmHardTrip;
@@ -1457,6 +1522,7 @@ function computeAddSlotConflict(args: {
 }) {
   const hard = new Set<string>();
   const soft = new Set<string>();
+  const info = new Set<string>();
   const softTripIds = new Set<string>();
 
   const {
@@ -1493,13 +1559,9 @@ function computeAddSlotConflict(args: {
       eventAppliesToUid(event, uid, employeeRole)
     );
 
-    const meetingBlock = meetings.some((event) =>
-      halfDaySlots.some((halfDaySlot) => eventBlocksSlot(event, halfDaySlot))
-    );
-
-    if (meetingBlock) {
-      hard.add(`${employeeName} is blocked by a company meeting/event during ${formatSlotForMessage(slot)}.`);
-    }
+    // Meeting availability is calculated for the full crew below, so a meeting
+    // that ends at 9 AM leaves 9 AM–noon schedulable.
+    void meetings;
 
     const overlappingTrips = trips.filter(
       (trip) =>
@@ -1522,9 +1584,18 @@ function computeAddSlotConflict(args: {
     }
   }
 
+  const available = availableTripRangeAfterEvents({
+    dateIso, slot, crewUids, employeeRolesByUid, eventsByDate,
+  });
+  if (available.blocked) {
+    hard.add(`The assigned crew has no free continuous time during ${formatSlotForMessage(slot)} because of company meetings/events.`);
+  } else if (available.partial && available.startTime && available.endTime) {
+    info.add(`Company meeting/event: this trip will be scheduled for ${formatTime12h(available.startTime)}–${formatTime12h(available.endTime)} instead of the full ${formatSlotForMessage(slot)} window.`);
+  }
   return {
     hardMessages: Array.from(hard),
     softMessages: Array.from(soft),
+    infoMessages: Array.from(info),
     softTripIds: Array.from(softTripIds),
   } satisfies AddSlotConflictSummary;
 }
@@ -2213,6 +2284,7 @@ const addSlotConflicts = useMemo(() => {
     return {
       hardMessages: [],
       softMessages: [],
+      infoMessages: [],
       softTripIds: [],
     } satisfies AddSlotConflictSummary;
   }
@@ -2690,6 +2762,14 @@ const liveConflicts = computeAddSlotConflict({
 const now = nowIso();
 const techName = findTechName(techUid) || "Technician";
 const slot = slotDefaults(addSlot);
+const meetingAdjusted = availableTripRangeAfterEvents({
+  dateIso, slot: addSlot,
+  crewUids: uniqueTrimmedStrings([techUid, liveHelperUid, liveSecondaryHelperUid]),
+  employeeRolesByUid, eventsByDate,
+});
+if (meetingAdjusted.blocked || !meetingAdjusted.startTime || !meetingAdjusted.endTime) {
+  throw new Error("The selected crew has no available time around company events.");
+}
 
 const estimatedDurationMinutes =
   addTripType === "service" && typeof selectedAddPickerItem?.estimatedHours === "number"
@@ -2727,9 +2807,9 @@ const secondaryHelperName = secondaryHelperUid
         type: addTripType,
         status: "planned",
 date: dateIso,
-timeWindow: slot.timeWindow,
-startTime: slot.startTime,
-endTime: slot.endTime,
+timeWindow: meetingAdjusted.partial ? "custom" : slot.timeWindow,
+startTime: meetingAdjusted.startTime,
+endTime: meetingAdjusted.endTime,
 estimatedDurationMinutes,
 dispatchOverride,
 crew: {
@@ -2898,8 +2978,9 @@ closeAddModal(true);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return setRescheduleErr("Choose a valid date.");
     if (dateIso < todayIsoLocal()) return setRescheduleErr("Trips cannot be scheduled in the past.");
     const defaults = rescheduleWindow === "custom" ? null : slotDefaults(rescheduleWindow);
-    const startTime = defaults?.startTime || rescheduleStart;
-    const endTime = defaults?.endTime || rescheduleEnd;
+    let startTime = defaults?.startTime || rescheduleStart;
+    let endTime = defaults?.endTime || rescheduleEnd;
+    let effectiveWindow: "am" | "pm" | "all_day" | "custom" = rescheduleWindow;
     const st = minutesFromHHMM(startTime);
     const en = minutesFromHHMM(endTime);
     if (st == null || en == null || en <= st) return setRescheduleErr("End time must be after start time.");
@@ -2938,13 +3019,32 @@ closeAddModal(true);
         if (!uid) continue;
         dayPto[uid] = { [dateIso]: { uid, employeeName: extractEmployeeName(d), date: dateIso, requestId: ds.id } };
       }
-      const proposed: TripDoc = {
-        ...liveTrip, date: dateIso, timeWindow: rescheduleWindow, startTime, endTime,
-      };
       const crewUids = uniqueTrimmedStrings([
         liveTrip.crew?.primaryTechUid, liveTrip.crew?.secondaryTechUid,
         liveTrip.crew?.helperUid, liveTrip.crew?.secondaryHelperUid,
       ]);
+      // AM/PM/All Day reschedules automatically use the free uninterrupted
+      // portion of the window if the crew has a short company event.
+      if (rescheduleWindow !== "custom") {
+        const adjusted = availableTripRangeAfterEvents({
+          dateIso,
+          slot: rescheduleWindow,
+          crewUids,
+          employeeRolesByUid,
+          eventsByDate: { [dateIso]: dayEvents },
+        });
+        if (adjusted.blocked || !adjusted.startTime || !adjusted.endTime) {
+          throw new Error("There is no uninterrupted time available for this crew around company events.");
+        }
+        if (adjusted.partial) {
+          effectiveWindow = "custom";
+          startTime = adjusted.startTime;
+          endTime = adjusted.endTime;
+        }
+      }
+      const proposed: TripDoc = {
+        ...liveTrip, date: dateIso, timeWindow: effectiveWindow, startTime, endTime,
+      };
       const hard: string[] = [];
       const soft: string[] = [];
       const conflictTripIds = new Set<string>();
@@ -2955,7 +3055,7 @@ closeAddModal(true);
         const role = employeeRolesByUid[uid] || "technician";
         for (const event of dayEvents) {
           if (event.blocksSchedule !== false && eventAppliesToUid(event, uid, role) &&
-              selectedSlotsForWindow(rescheduleWindow, startTime, endTime).some((slot) => eventBlocksSlot(event, slot))) {
+              tripBlocksEventWindowByExactTime(proposed, event.timeWindow || "all_day", event.startTime, event.endTime)) {
             hard.push(`${name} is blocked by ${event.title || "an event"}.`);
           }
         }
@@ -2978,11 +3078,11 @@ closeAddModal(true);
         conflictTypes: ["scheduled_overlap"], conflictTripIds: Array.from(conflictTripIds),
       } : null;
       await updateDoc(liveRef, {
-        date: dateIso, timeWindow: rescheduleWindow, startTime, endTime,
+        date: dateIso, timeWindow: effectiveWindow, startTime, endTime,
         dispatchOverride: nextOverride, updatedAt: now, updatedByUid: appUser?.uid || null,
       });
       setTrips((prev) => prev.map((trip) => trip.id === liveTrip.id ?
-        { ...trip, date: dateIso, timeWindow: rescheduleWindow, startTime, endTime, dispatchOverride: nextOverride, updatedAt: now } : trip));
+        { ...trip, date: dateIso, timeWindow: effectiveWindow, startTime, endTime, dispatchOverride: nextOverride, updatedAt: now } : trip));
       setRescheduleOpen(false);
       setRescheduleTripId("");
       // The target may lie outside the currently loaded week: navigate to its new location.
@@ -3225,6 +3325,7 @@ closeAddModal(true);
 
     const overlappingEvents = (eventsByDate[dateIso] || []).filter(
       (event) =>
+        event.active !== false && event.blocksSchedule !== false &&
         eventAppliesToUid(event, uid, employeeRole) &&
         tripBlocksEventWindowByExactTime(trip, event.timeWindow || "all_day", event.startTime, event.endTime)
     );
@@ -7271,6 +7372,10 @@ function renderStaffCoverageCards(dateIso: string) {
               </Alert>
             ) : null}
 
+            {addSlotConflicts.infoMessages.length > 0 ? (
+              <Alert severity="info" variant="outlined">{addSlotConflicts.infoMessages[0]}</Alert>
+            ) : null}
+
             {addSlotConflicts.hardMessages.length > 0 ? (
               <Alert severity="error" variant="outlined">
                 {addSlotConflicts.hardMessages[0]}
@@ -8976,7 +9081,11 @@ function renderStaffCoverageCards(dateIso: string) {
                 placeholder="Optional dispatch note…"
               />
 
-              {addSlotConflicts.hardMessages.length > 0 ? (
+              {addSlotConflicts.infoMessages.length > 0 ? (
+                <Alert severity="info" variant="outlined">{addSlotConflicts.infoMessages[0]}</Alert>
+              ) : null}
+
+            {addSlotConflicts.hardMessages.length > 0 ? (
                 <Alert severity="error" variant="outlined">
                   {addSlotConflicts.hardMessages[0]}
                 </Alert>
