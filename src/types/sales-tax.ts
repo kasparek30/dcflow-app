@@ -22,6 +22,10 @@ export type SalesTaxPeriod = {
   filedByName?: string | null;
   filingConfirmation?: string | null;
   filingNotes?: string | null;
+
+  returnSupportExportedAt?: string | null;
+  returnSupportExportedByUid?: string | null;
+  returnSupportExportedByName?: string | null;
 };
 
 export type SalesTaxPayment = {

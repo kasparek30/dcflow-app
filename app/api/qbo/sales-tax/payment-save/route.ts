@@ -220,6 +220,15 @@ export async function POST(req: Request) {
         updatedByName: authz.displayName,
       });
 
+      transaction.update(periodRef, {
+        returnSupportExportedAt: null,
+        returnSupportExportedByUid: null,
+        returnSupportExportedByName: null,
+        updatedAt: stamp,
+        updatedByUid: authz.uid,
+        updatedByName: authz.displayName,
+      });
+
       if (
         oldLockRef &&
         oldQboPaymentId &&
@@ -312,6 +321,16 @@ export async function DELETE(req: Request) {
       const lockSnap = lockRef ? await transaction.get(lockRef) : null;
 
       transaction.delete(paymentRef);
+
+      const stamp = nowIso();
+      transaction.update(periodRef, {
+        returnSupportExportedAt: null,
+        returnSupportExportedByUid: null,
+        returnSupportExportedByName: null,
+        updatedAt: stamp,
+        updatedByUid: authz.uid,
+        updatedByName: authz.displayName,
+      });
 
       if (
         lockRef &&

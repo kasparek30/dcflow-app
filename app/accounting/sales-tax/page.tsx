@@ -815,6 +815,19 @@ export default function SalesTaxPage() {
     }
   }
 
+  async function clearReturnSupportExportStatus() {
+    if (!period?.returnSupportExportedAt) return;
+
+    await updateDoc(doc(db, "salesTaxPeriods", periodKey), {
+      returnSupportExportedAt: null,
+      returnSupportExportedByUid: null,
+      returnSupportExportedByName: null,
+      updatedAt: nowIso(),
+      updatedByUid: appUser?.uid || null,
+      updatedByName: actorName(appUser),
+    });
+  }
+
   async function savePayment() {
     if (!appUser?.uid || isFiled) return;
 
@@ -903,6 +916,8 @@ export default function SalesTaxPage() {
         );
       }
 
+      await clearReturnSupportExportStatus();
+
       setPaymentDialogOpen(false);
       setEditingPaymentId(null);
       setPaymentForm(emptyPaymentForm());
@@ -952,6 +967,8 @@ export default function SalesTaxPage() {
           ),
         );
       }
+
+      await clearReturnSupportExportStatus();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to delete payment.");
     }
@@ -993,6 +1010,8 @@ export default function SalesTaxPage() {
           data,
         );
       }
+
+      await clearReturnSupportExportStatus();
 
       setPurchaseDialogOpen(false);
       setEditingPurchaseId(null);
@@ -1041,7 +1060,7 @@ export default function SalesTaxPage() {
     }
   }
 
-  function exportCsv() {
+  async function exportCsv() {
     const rows: string[][] = [];
 
     rows.push(["DCFlow Sales Tax", monthLabel(periodKey)]);
@@ -1148,6 +1167,24 @@ export default function SalesTaxPage() {
     a.remove();
 
     URL.revokeObjectURL(url);
+
+    try {
+      const stamp = nowIso();
+      await updateDoc(doc(db, "salesTaxPeriods", periodKey), {
+        returnSupportExportedAt: stamp,
+        returnSupportExportedByUid: appUser?.uid || null,
+        returnSupportExportedByName: actorName(appUser),
+        updatedAt: stamp,
+        updatedByUid: appUser?.uid || null,
+        updatedByName: actorName(appUser),
+      });
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error
+          ? `CSV downloaded, but DCFlow could not record the export: ${err.message}`
+          : "CSV downloaded, but DCFlow could not record the export.",
+      );
+    }
   }
 
   return (
@@ -1292,17 +1329,7 @@ export default function SalesTaxPage() {
               />
             </Box>
 
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: {
-                  xs: "1fr",
-                  xl: "minmax(0, 2.25fr) minmax(380px, 0.9fr)",
-                },
-                gap: 1.5,
-                alignItems: "start",
-              }}
-            >
+            <Stack spacing={1.5}>
               <SectionCard>
                 <CardContent sx={{ p: 0, "&:last-child": { pb: 0 } }}>
                   <Stack
@@ -1339,13 +1366,36 @@ export default function SalesTaxPage() {
 
                   <Divider />
 
-                  <TableContainer sx={{ maxHeight: 620 }}>
-                    <Table stickyHeader size="small" sx={{ minWidth: 1500 }}>
+                  <TableContainer
+                    sx={{
+                      overflowX: { xs: "auto", lg: "visible" },
+                    }}
+                  >
+                    <Table
+                      size="small"
+                      sx={{
+                        width: "100%",
+                        tableLayout: { xs: "auto", lg: "fixed" },
+                        minWidth: { xs: 1250, lg: 0 },
+                        "& .MuiTableCell-root": {
+                          px: { xs: 0.75, xl: 1 },
+                          py: 0.9,
+                          fontSize: { lg: "0.71rem", xl: "0.77rem" },
+                          verticalAlign: "top",
+                        },
+                        "& .MuiTableCell-head": {
+                          fontWeight: 850,
+                          lineHeight: 1.15,
+                          whiteSpace: "normal",
+                          backgroundColor: "background.paper",
+                        },
+                      }}
+                    >
                       <TableHead>
                         <TableRow>
-                          <TableCell>Date</TableCell>
-                          <TableCell>Customer</TableCell>
-                          <TableCell align="right">Payment</TableCell>
+                          <TableCell sx={{ width: 82 }}>Date</TableCell>
+                          <TableCell sx={{ width: 185 }}>Customer</TableCell>
+                          <TableCell align="right" sx={{ width: 92 }}>Payment</TableCell>
                           <TableCell align="right">Non-Tax Labor</TableCell>
                           <TableCell align="right">Non-Tax Parts</TableCell>
                           <TableCell align="right">Tax Labor 8.25%</TableCell>
@@ -1355,8 +1405,8 @@ export default function SalesTaxPage() {
                           <TableCell align="right">Tax Labor 6.75%</TableCell>
                           <TableCell align="right">Tax Parts 6.75%</TableCell>
                           <TableCell align="right">County Tax</TableCell>
-                          <TableCell>Status</TableCell>
-                          <TableCell />
+                          <TableCell sx={{ width: 135 }}>Status</TableCell>
+                          <TableCell sx={{ width: 72 }} />
                         </TableRow>
                       </TableHead>
 
@@ -1412,7 +1462,7 @@ export default function SalesTaxPage() {
                                 {formatCents(payment.countyTax675Cents)}
                               </TableCell>
                               <TableCell>
-                                <Stack direction="row" spacing={0.75}>
+                                <Stack direction="column" spacing={0.5} alignItems="flex-start">
                                   <Chip
                                     size="small"
                                     label={
@@ -1516,18 +1566,17 @@ export default function SalesTaxPage() {
                 </CardContent>
               </SectionCard>
 
-              <Stack spacing={1.5}>
-                <SectionCard>
-                  <CardContent>
-                    <Stack
-                      direction="row"
-                      justifyContent="space-between"
-                      alignItems="flex-start"
-                      spacing={1}
-                    >
-                      <Box>
-                        <Typography variant="h6" sx={{ fontWeight: 850 }}>
-                          Untaxed Purchases
+              <SectionCard>
+                <CardContent>
+                  <Stack
+                    direction="row"
+                    justifyContent="space-between"
+                    alignItems="flex-start"
+                    spacing={1}
+                  >
+                    <Box>
+                      <Typography variant="h6" sx={{ fontWeight: 850 }}>
+                        Untaxed Purchases
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
                           Tool/vendor purchases where sales tax was not paid.
@@ -1566,9 +1615,15 @@ export default function SalesTaxPage() {
                       ) : null}
                     </Stack>
 
-                    <Stack
-                      spacing={0.75}
+                    <Box
                       sx={{
+                        display: "grid",
+                        gridTemplateColumns: {
+                          xs: "1fr",
+                          md: "repeat(2, minmax(0, 1fr))",
+                          xl: "repeat(3, minmax(0, 1fr))",
+                        },
+                        gap: 0.75,
                         maxHeight: 520,
                         overflowY: "auto",
                         pr: purchases.length > 8 ? 0.5 : 0,
@@ -1644,7 +1699,7 @@ export default function SalesTaxPage() {
                           No untaxed purchases entered.
                         </Typography>
                       ) : null}
-                    </Stack>
+                    </Box>
 
                     <Divider sx={{ my: 1.5 }} />
 
@@ -1669,6 +1724,14 @@ export default function SalesTaxPage() {
                   </CardContent>
                 </SectionCard>
 
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" },
+                  gap: 1.5,
+                  alignItems: "start",
+                }}
+              >
                 <SectionCard>
                   <CardContent>
                     <Typography variant="h6" sx={{ fontWeight: 850 }}>
@@ -1735,7 +1798,7 @@ export default function SalesTaxPage() {
                         label="Verify untaxed purchases"
                       />
                       <ChecklistRow
-                        done={false}
+                        done={Boolean(period?.returnSupportExportedAt)}
                         label="Export return support"
                       />
                       <ChecklistRow
@@ -1745,8 +1808,8 @@ export default function SalesTaxPage() {
                     </Stack>
                   </CardContent>
                 </SectionCard>
-              </Stack>
-            </Box>
+              </Box>
+            </Stack>
           </Stack>
         </Box>
 
@@ -2425,6 +2488,7 @@ export default function SalesTaxPage() {
                         editingPurchaseId,
                       ),
                     );
+                    await clearReturnSupportExportStatus();
                     setPurchaseDialogOpen(false);
                     setEditingPurchaseId(null);
                   }}
