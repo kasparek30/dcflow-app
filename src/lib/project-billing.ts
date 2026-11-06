@@ -136,13 +136,25 @@ export function createOpenBillingPeriod(args: {
   };
 }
 
+/**
+ * Project billable hours use half-hour increments, with an exact midpoint
+ * rounded down. This is per trip, not per crew member; payroll time entries
+ * and the underlying raw timer readings are not changed here.
+ *
+ * Examples: 7.25 -> 7.00, 7.32 -> 7.50, 7.75 -> 7.50.
+ */
+export function roundProjectBillingHours(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(0.5, Math.ceil(value * 2 - 0.5) / 2);
+}
+
 export function getTripCloseoutHours(trip?: ProjectBillingTripLike | null) {
   const raw =
     trip?.closeout?.hoursWorkedToday ??
     trip?.closeoutHours ??
     null;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  return roundProjectBillingHours(n);
 }
 
 export function getTripMaterialsSummary(trip?: ProjectBillingTripLike | null) {

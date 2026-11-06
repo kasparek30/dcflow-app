@@ -842,13 +842,6 @@ function parseMaterialsText(
   return [...existingImported, ...manualMaterials];
 }
 
-function getPreviewText(value?: string | null, maxLength = 220) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return "";
-  if (trimmed.length <= maxLength) return trimmed;
-  return `${trimmed.slice(0, maxLength).trimEnd()}…`;
-}
-
 function getHelperPayrollSummary(
   trip: Pick<TripDoc, "crew" | "crewConfirmed">,
 ) {
@@ -9431,20 +9424,17 @@ async function handleStartTrip(trip: TripDoc) {
                       const resolutionNoteMissing =
                         finishMode === "resolved" &&
                         !String(tripResolutionNotes[trip.id] || "").trim();
-                      const completedResolutionPreview = getPreviewText(
-                        trip.resolutionNotes,
-                        280,
-                      );
-                      const completedFollowUpPreview = getPreviewText(
-                        trip.followUpNotes,
-                        280,
-                      );
-                      const completedMaterialsPreview = trip.noMaterialsUsed
+                      // Display complete technician closeout notes. Do not
+                      // truncate any saved text in the trip summary.
+                      const completedResolutionNotes = String(
+                        trip.resolutionNotes || "",
+                      ).trim();
+                      const completedFollowUpNotes = String(
+                        trip.followUpNotes || "",
+                      ).trim();
+                      const completedMaterialsNotes = trip.noMaterialsUsed
                         ? "No materials used"
-                        : getPreviewText(
-                            materialLinesToText(trip.materials),
-                            280,
-                          );
+                        : materialLinesToText(trip.materials);
                       const helperPayrollSummary =
                         getHelperPayrollSummary(trip);
 
@@ -9963,54 +9953,53 @@ async function handleStartTrip(trip: TripDoc) {
                                       {helperPayrollSummary}
                                     </Typography>
 
-                                    {completedResolutionPreview ? (
+                                    {completedResolutionNotes ? (
                                       <Box>
                                         <Typography
                                           variant="caption"
                                           color="text.secondary"
                                         >
-                                          Resolution Notes Preview
+                                          Resolution Notes (Full)
                                         </Typography>
                                         <Typography
                                           variant="body2"
-                                          sx={{ whiteSpace: "pre-wrap" }}
+                                          sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
                                         >
-                                          {completedResolutionPreview}
+                                          {completedResolutionNotes}
                                         </Typography>
                                       </Box>
                                     ) : null}
 
-                                    {!completedResolutionPreview &&
-                                    completedFollowUpPreview ? (
+                                    {completedFollowUpNotes ? (
                                       <Box>
                                         <Typography
                                           variant="caption"
                                           color="text.secondary"
                                         >
-                                          Follow-Up Notes Preview
+                                          Follow-Up Notes (Full)
                                         </Typography>
                                         <Typography
                                           variant="body2"
-                                          sx={{ whiteSpace: "pre-wrap" }}
+                                          sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
                                         >
-                                          {completedFollowUpPreview}
+                                          {completedFollowUpNotes}
                                         </Typography>
                                       </Box>
                                     ) : null}
 
-                                    {completedMaterialsPreview ? (
+                                    {completedMaterialsNotes ? (
                                       <Box>
                                         <Typography
                                           variant="caption"
                                           color="text.secondary"
                                         >
-                                          Materials Preview
+                                          Materials Used
                                         </Typography>
                                         <Typography
                                           variant="body2"
-                                          sx={{ whiteSpace: "pre-wrap" }}
+                                          sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
                                         >
-                                          {completedMaterialsPreview}
+                                          {completedMaterialsNotes}
                                         </Typography>
                                       </Box>
                                     ) : null}

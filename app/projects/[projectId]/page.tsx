@@ -120,12 +120,12 @@ import {
   getEffectiveProjectOfficeStatus,
   getNextBillingSequence,
   getProjectBillingPeriods,
-  getProjectBillingSummary,
+  getProjectBillingSummary as getProjectBillingSummaryFromBilling,
   getTripCloseoutHours as getTripCloseoutHoursFromBilling,
   getTripMaterialsSummary,
   getUnbilledCompletedTrips,
   isTimeMaterialsProject,
-  summarizeBillingPeriodTrips,
+  summarizeBillingPeriodTrips as summarizeBillingPeriodTripsFromBilling,
 } from "../../../src/lib/project-billing";
 import {
   deleteObject,
@@ -690,6 +690,34 @@ function getTimerElapsedMinutesForTrip(t?: TripDoc | null, referenceEndMs?: numb
   const grossMinutes = minutesBetweenMs(startMs, endMs);
   const pausedMinutes = sumPausedMinutes(t.pauseBlocks || null, endMs);
   return Math.max(0, grossMinutes - pausedMinutes);
+}
+
+// Apply the same half-hour policy to legacy project closeouts when they are
+// displayed or included in a billing calculation. Do not round raw timer data.
+// This does not change Firestore documents or employee time entries.
+function normalizeProjectTripForBilling<T extends TripDoc>(trip: T): T {
+  const closeout = trip.closeout && typeof trip.closeout === "object" ? trip.closeout : {};
+  const raw = Number(closeout.hoursWorkedToday ?? closeout.closeoutHours ?? trip.closeoutHours);
+  if (!Number.isFinite(raw) || raw <= 0) return trip;
+  const rounded = roundProjectPayrollHours(raw);
+  if (Math.abs(raw - rounded) < 0.000001) return trip;
+  return {
+    ...trip,
+    closeoutHours: rounded,
+    closeout: {
+      ...closeout,
+      hoursWorkedToday: rounded,
+      closeoutHours: rounded,
+    },
+  };
+}
+
+function summarizeBillingPeriodTrips(trips: TripDoc[]) {
+  return summarizeBillingPeriodTripsFromBilling(trips.map(normalizeProjectTripForBilling));
+}
+
+function getProjectBillingSummary(trips: TripDoc[], project: Project | null) {
+  return getProjectBillingSummaryFromBilling(trips.map(normalizeProjectTripForBilling), project);
 }
 
 // Net active minutes are rounded to half-hour blocks; exactly 15 minutes rounds down.
@@ -5022,7 +5050,12 @@ if (Object.keys(cleanProjectPatch).length > 1) {
           actorName: actorDisplayName || null,
           openedAt: now,
         });
-      const summary = summarizeBillingPeriodTrips(eligibleTrips);
+      // The billing helper returns a narrower ProjectBillingTripLike type.
+      // Use the matching full trip records for local closeout-hour normalization.
+      const eligibleTripIds = new Set(eligibleTrips.map((trip) => trip.id));
+      const summary = summarizeBillingPeriodTrips(
+        projectTrips.filter((trip) => eligibleTripIds.has(trip.id)),
+      );
 
       const frozenPeriod = stripUndefinedDeep<ProjectBillingPeriod>({
         ...openPeriod,
@@ -5551,10 +5584,12 @@ if (Object.keys(cleanProjectPatch).length > 1) {
     const submittedHours = Number(
       (t?.closeout as any)?.hoursWorkedToday ?? t?.closeoutHours ?? 0,
     );
-    if (Number.isFinite(submittedHours) && submittedHours > 0) return submittedHours;
+    if (Number.isFinite(submittedHours) && submittedHours > 0) {
+      return roundProjectPayrollHours(submittedHours);
+    }
 
     const n = Number(getTripCloseoutHoursFromBilling(t || null));
-    return Number.isFinite(n) && n > 0 ? n : null;
+    return Number.isFinite(n) && n > 0 ? roundProjectPayrollHours(n) : null;
   }
 
   function getCloseoutSavedSummary(t: TripDoc) {
