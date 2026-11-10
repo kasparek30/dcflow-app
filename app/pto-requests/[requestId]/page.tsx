@@ -104,6 +104,10 @@ type UnavailabilityLite = {
   id: string;
   uid: string;
   date: string;
+  startDate?: string;
+  endDate?: string;
+  allDay?: boolean;
+  timeWindow?: string;
   type: string;
   source: string;
   ptoRequestId?: string;
@@ -243,6 +247,23 @@ function normalizePartialDayType(
   }
 
   return "custom";
+}
+
+function getPartialTimeWindow(
+  partialDayType: PTORequestPartialDayType,
+  customStart?: string | null,
+  customEnd?: string | null
+) {
+  if (partialDayType === "am") {
+    return { startTime: "08:00", endTime: "12:00" };
+  }
+  if (partialDayType === "pm") {
+    return { startTime: "13:00", endTime: "17:00" };
+  }
+  return {
+    startTime: String(customStart || "").trim(),
+    endTime: String(customEnd || "").trim(),
+  };
 }
 
 function buildTimingLabel(request: PTORequest) {
@@ -1422,6 +1443,12 @@ export default function PTORequestDetailPage({
                   employeeName,
 
                 date: entryDate,
+                startDate: entryDate,
+                endDate: entryDate,
+                allDay: normalizeRequestDayType(requestItem.requestDayType) !== "partial_day",
+                timeWindow: normalizeRequestDayType(requestItem.requestDayType) === "partial_day"
+                  ? normalizePartialDayType(requestItem.partialDayType)
+                  : "all_day",
 
                 type: "pto",
 
@@ -1450,16 +1477,22 @@ export default function PTORequestDetailPage({
                   normalizeRequestDayType(
                     requestItem.requestDayType
                   ) === "partial_day"
-                    ? requestItem.partialStartTime ||
-                      null
+                    ? getPartialTimeWindow(
+                        normalizePartialDayType(requestItem.partialDayType),
+                        requestItem.partialStartTime,
+                        requestItem.partialEndTime
+                      ).startTime || null
                     : null,
 
                 endTime:
                   normalizeRequestDayType(
                     requestItem.requestDayType
                   ) === "partial_day"
-                    ? requestItem.partialEndTime ||
-                      null
+                    ? getPartialTimeWindow(
+                        normalizePartialDayType(requestItem.partialDayType),
+                        requestItem.partialStartTime,
+                        requestItem.partialEndTime
+                      ).endTime || null
                     : null,
 
                 hours:
@@ -1498,6 +1531,12 @@ export default function PTORequestDetailPage({
               requestItem.employeeId,
 
             date: entryDate,
+            startDate: entryDate,
+            endDate: entryDate,
+            allDay: normalizeRequestDayType(requestItem.requestDayType) !== "partial_day",
+            timeWindow: normalizeRequestDayType(requestItem.requestDayType) === "partial_day"
+              ? normalizePartialDayType(requestItem.partialDayType)
+              : "all_day",
 
             type: "pto",
 
@@ -1928,38 +1967,38 @@ export default function PTORequestDetailPage({
           )
         : undefined;
 
-    const partialStartTime =
-      requestDayType === "partial_day" &&
-      partialDayType === "custom"
-        ? editPartialStartTime.trim()
-        : undefined;
+    const partialWindow =
+      requestDayType === "partial_day" && partialDayType
+        ? getPartialTimeWindow(
+            partialDayType,
+            editPartialStartTime,
+            editPartialEndTime
+          )
+        : null;
 
-    const partialEndTime =
-      requestDayType === "partial_day" &&
-      partialDayType === "custom"
-        ? editPartialEndTime.trim()
-        : undefined;
+    const partialStartTime = partialWindow?.startTime;
+    const partialEndTime = partialWindow?.endTime;
 
-    if (
-      requestDayType === "partial_day" &&
-      partialDayType === "custom"
-    ) {
+    if (requestDayType === "partial_day") {
       if (
         !partialStartTime ||
-        !partialEndTime
+        !partialEndTime ||
+        !/^\d{2}:\d{2}$/.test(partialStartTime) ||
+        !/^\d{2}:\d{2}$/.test(partialEndTime) ||
+        partialEndTime <= partialStartTime
       ) {
-        setError(
-          "Custom partial-day PTO requires a start and end time."
-        );
+        setError("Partial-day PTO requires a valid start and end time.");
         return;
       }
 
-      if (
-        partialEndTime <=
-        partialStartTime
-      ) {
+      const [startHour, startMinute] = partialStartTime.split(":").map(Number);
+      const [endHour, endMinute] = partialEndTime.split(":").map(Number);
+      const calculatedHours =
+        ((endHour * 60 + endMinute) - (startHour * 60 + startMinute)) / 60;
+
+      if (!Number.isFinite(calculatedHours) || Math.abs(calculatedHours - hoursPerDay) > 0.001) {
         setError(
-          "Partial-day end time must be after the start time."
+          `Hours per day must match the selected partial-day time range (${calculatedHours.toFixed(2)} hours).`
         );
         return;
       }
@@ -2202,6 +2241,12 @@ export default function PTORequestDetailPage({
               "Unknown",
 
             date: entryDate,
+            startDate: entryDate,
+            endDate: entryDate,
+            allDay: requestDayType !== "partial_day",
+            timeWindow: requestDayType === "partial_day"
+              ? partialDayType || "custom"
+              : "all_day",
 
             type: "pto",
 
@@ -2220,18 +2265,14 @@ export default function PTORequestDetailPage({
 
             startTime:
               requestDayType ===
-                "partial_day" &&
-              partialDayType ===
-                "custom"
+                "partial_day"
                 ? partialStartTime ||
                   null
                 : null,
 
             endTime:
               requestDayType ===
-                "partial_day" &&
-              partialDayType ===
-                "custom"
+                "partial_day"
                 ? partialEndTime ||
                   null
                 : null,
@@ -2292,15 +2333,13 @@ export default function PTORequestDetailPage({
 
         partialStartTime:
           requestDayType ===
-            "partial_day" &&
-          partialDayType === "custom"
+            "partial_day"
             ? partialStartTime || null
             : null,
 
         partialEndTime:
           requestDayType ===
-            "partial_day" &&
-          partialDayType === "custom"
+            "partial_day"
             ? partialEndTime || null
             : null,
 
@@ -2340,15 +2379,13 @@ export default function PTORequestDetailPage({
 
         partialStartTime:
           requestDayType ===
-            "partial_day" &&
-          partialDayType === "custom"
+            "partial_day"
             ? partialStartTime
             : undefined,
 
         partialEndTime:
           requestDayType ===
-            "partial_day" &&
-          partialDayType === "custom"
+            "partial_day"
             ? partialEndTime
             : undefined,
 

@@ -74,6 +74,9 @@ type UnavailabilityView = {
   endDate?: string;
 
   allDay?: boolean;
+  requestDayType?: string;
+  partialDayType?: string;
+  timeWindow?: string;
 
   startTime?: string;
   endTime?: string;
@@ -245,7 +248,23 @@ function getEndDate(item: UnavailabilityView) {
 }
 
 function getIsAllDay(item: UnavailabilityView) {
-  return item.allDay !== false;
+  // PTO approval records historically omitted `allDay`, but stored
+  // requestDayType and partial times. Those should not become all-day blocks.
+  if (normalize(item.requestDayType) === "partial_day") return false;
+  if (normalize(item.requestDayType) === "full_day") return true;
+  if (normalize(item.timeWindow) === "all_day") return true;
+  if (["am", "pm", "custom"].includes(normalize(item.timeWindow))) return false;
+  if (["am", "pm", "custom"].includes(normalize(item.partialDayType))) return false;
+  if (typeof item.allDay === "boolean") return item.allDay;
+  if (item.startTime && item.endTime) return false;
+  return true;
+}
+
+function getAbsenceTimes(item: UnavailabilityView) {
+  const partialDayType = normalize(item.partialDayType);
+  if (partialDayType === "am") return { start: "08:00", end: "12:00" };
+  if (partialDayType === "pm") return { start: "13:00", end: "17:00" };
+  return { start: item.startTime || "", end: item.endTime || "" };
 }
 
 function formatDateRange(item: UnavailabilityView) {
@@ -596,7 +615,14 @@ export default function AdminUnavailabilityPage() {
           allDay:
             typeof data.allDay === "boolean"
               ? data.allDay
-              : true,
+              : undefined,
+
+          requestDayType:
+            data.requestDayType != null ? String(data.requestDayType) : undefined,
+          partialDayType:
+            data.partialDayType != null ? String(data.partialDayType) : undefined,
+          timeWindow:
+            data.timeWindow != null ? String(data.timeWindow) : undefined,
 
           startTime:
             data.startTime != null
@@ -1949,6 +1975,7 @@ export default function AdminUnavailabilityPage() {
 
                         const isAllDay =
                           getIsAllDay(item);
+                        const absenceTimes = getAbsenceTimes(item);
 
                         const start =
                           getStartDate(item);
@@ -2094,9 +2121,9 @@ export default function AdminUnavailabilityPage() {
                                     {isAllDay
                                       ? "All day"
                                       : `${formatTime(
-                                          item.startTime
+                                          absenceTimes.start
                                         )} – ${formatTime(
-                                          item.endTime
+                                          absenceTimes.end
                                         )}`}
                                   </Typography>
                                 </Stack>

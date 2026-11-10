@@ -212,6 +212,10 @@ type PtoDay = {
   hours?: number | null;
   requestId: string;
   reason?: string | null;
+  requestDayType?: string | null;
+  partialDayType?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
 };
 
 type CompanyEvent = {
@@ -1062,6 +1066,43 @@ function meetingChipLabel(e: CompanyEvent) {
   return e.title;
 }
 
+function buildPtoDay(d: any, requestId: string, date: string, employeeName: string, uid: string): PtoDay {
+  const partial = String(d.requestDayType || "").toLowerCase() === "partial_day" ||
+    (!d.requestDayType && Boolean(d.partialDayType || d.partialStartTime || d.partialEndTime));
+  const partialType = String(d.partialDayType || "").toLowerCase();
+  return {
+    uid, employeeName, date, requestId,
+    requestDayType: partial ? "partial_day" : "full_day",
+    partialDayType: partialType,
+    startTime: d.partialStartTime || (partialType === "am" ? "08:00" : partialType === "pm" ? "13:00" : null),
+    endTime: d.partialEndTime || (partialType === "am" ? "12:00" : partialType === "pm" ? "17:00" : null),
+  };
+}
+
+// Approved PTO is stored per date, but scheduling must honor its time window.
+function ptoBlocksSlot(day: PtoDay | null | undefined, slot: HalfDaySlotKey): boolean {
+  if (!day) return false;
+  const dayType = String(day.requestDayType || "").toLowerCase();
+  if (dayType !== "partial_day") return true;
+  const partialType = String(day.partialDayType || "").toLowerCase();
+  const start = minutesFromHHMM(String(day.startTime || ""));
+  const end = minutesFromHHMM(String(day.endTime || ""));
+  // Use explicit times first, including custom ranges spanning both slots.
+  if (start != null && end != null && end > start) {
+    const slotStart = slot === "am" ? SLOT_AM_START : SLOT_PM_START;
+    const slotEnd = slot === "am" ? SLOT_AM_END : SLOT_PM_END;
+    return start < slotEnd && end > slotStart;
+  }
+  if (partialType === "am") return slot === "am";
+  if (partialType === "pm") return slot === "pm";
+  // Missing/invalid custom timing: fail closed, not accidentally allow an absence.
+  return true;
+}
+
+function ptoBlocksWindow(day: PtoDay | null | undefined, window: string, startTime?: string | null, endTime?: string | null) {
+  return selectedSlotsForWindow(window, startTime, endTime).some(slot => ptoBlocksSlot(day, slot));
+}
+
 function getPtoSummaryForDate(
   dateIso: string,
   ptoByUidByDate: Record<string, Record<string, PtoDay>>
@@ -1455,7 +1496,7 @@ function computeCellAvailability(args: {
       : (eventsByDate[iso] || []).filter((event) => eventAppliesToUid(event, rowKey, "technician"));
 
   const holiday = Boolean(holidayByDate[iso]);
-  const pto = rowKey !== "UNASSIGNED" ? Boolean(ptoByUidByDate[rowKey]?.[iso]) : false;
+  const pto = rowKey !== "UNASSIGNED" ? ptoByUidByDate[rowKey]?.[iso] : null;
 
   const amHardTrip = cellTrips.some(
     (trip) => tripBlocksSlot(trip, "am") && isInProgressStatus(trip.status)
@@ -1475,8 +1516,8 @@ function computeCellAvailability(args: {
   const amMeeting = rowKey !== "UNASSIGNED" && availableTripRangeAfterEvents({ dateIso: iso, slot: "am", crewUids: [rowKey], employeeRolesByUid: roleMap, eventsByDate }).blocked;
   const pmMeeting = rowKey !== "UNASSIGNED" && availableTripRangeAfterEvents({ dateIso: iso, slot: "pm", crewUids: [rowKey], employeeRolesByUid: roleMap, eventsByDate }).blocked;
 
-  const amHardBusy = holiday || pto || amMeeting || amHardTrip;
-  const pmHardBusy = holiday || pto || pmMeeting || pmHardTrip;
+  const amHardBusy = holiday || ptoBlocksSlot(pto, "am") || amMeeting || amHardTrip;
+  const pmHardBusy = holiday || ptoBlocksSlot(pto, "pm") || pmMeeting || pmHardTrip;
 
   const amSoftBusy = !amHardBusy && amSoftTrip;
   const pmSoftBusy = !pmHardBusy && pmSoftTrip;
@@ -1551,8 +1592,8 @@ function computeAddSlotConflict(args: {
     const employeeRole = employeeRolesByUid[uid] || "employee";
 
     const pto = ptoByUidByDate[uid]?.[dateIso];
-    if (pto) {
-      hard.add(`${employeeName} is on approved PTO for ${dateIso}.`);
+    if (pto && halfDaySlots.some((halfDaySlot) => ptoBlocksSlot(pto, halfDaySlot))) {
+      hard.add(`${employeeName} is on approved PTO during ${formatSlotForMessage(slot)} on ${dateIso}.`);
     }
 
     const meetings = (eventsByDate[dateIso] || []).filter((event) =>
@@ -2137,9 +2178,9 @@ const unavailableDefaultHelpersForAddTrip = useMemo(() => {
   if (!dateIso) return [] as HelperOption[];
 
   return defaultHelpersForAddTech.filter((helper) =>
-    Boolean(ptoByUidByDate[helper.uid]?.[dateIso])
+    ptoBlocksWindow(ptoByUidByDate[helper.uid]?.[dateIso], addSlot)
   );
-}, [addDateIso, defaultHelpersForAddTech, ptoByUidByDate]);
+}, [addDateIso, addSlot, defaultHelpersForAddTech, ptoByUidByDate]);
 
 const availableDefaultHelpersForAddTrip = useMemo(() => {
   const unavailable = new Set(unavailableDefaultHelpersForAddTrip.map((helper) => helper.uid));
@@ -2219,7 +2260,7 @@ const addShouldRecommendAllDay =
       const role = employee?.role || "employee";
 
       const pto = ptoByUidByDate[uid]?.[meetDateIso];
-      if (pto) {
+      if (ptoBlocksWindow(pto, meetWindow, meetStart, meetEnd)) {
         soft.add(`${name} has approved PTO on ${formatDateLong(meetDateIso)}.`);
         conflictUids.add(uid);
       }
@@ -2584,7 +2625,7 @@ function slotDefaults(slot: SlotKey) {
       return;
     }
 
-    if (techUid && dateIso && ptoByUidByDate[techUid]?.[dateIso]) {
+    if (techUid && dateIso && ["am", "pm"].every((slot) => ptoBlocksSlot(ptoByUidByDate[techUid]?.[dateIso], slot as HalfDaySlotKey))) {
       return;
     }
 
@@ -2722,7 +2763,7 @@ const liveDefaultHelpers = helpers
   .slice(0, 2);
 
 const liveAvailableDefaultHelpers = liveDefaultHelpers.filter(
-  (helper) => !ptoByUidByDate[helper.uid]?.[dateIso]
+  (helper) => !ptoBlocksWindow(ptoByUidByDate[helper.uid]?.[dateIso], addSlot)
 );
 
 const liveHelperUid = liveAvailableDefaultHelpers[0]?.uid || "";
@@ -3017,7 +3058,7 @@ closeAddModal(true);
         if (!looksApprovedPto(d) || !extractPtoDates(d).includes(dateIso)) continue;
         const uid = extractEmployeeUid(d);
         if (!uid) continue;
-        dayPto[uid] = { [dateIso]: { uid, employeeName: extractEmployeeName(d), date: dateIso, requestId: ds.id } };
+        dayPto[uid] = { [dateIso]: buildPtoDay(d, ds.id, dateIso, extractEmployeeName(d), uid) };
       }
       const crewUids = uniqueTrimmedStrings([
         liveTrip.crew?.primaryTechUid, liveTrip.crew?.secondaryTechUid,
@@ -3051,7 +3092,7 @@ closeAddModal(true);
       if (holiday) hard.push(`This date is a company holiday (${String(holiday.data().name || holiday.data().title || "Holiday")}).`);
       for (const uid of crewUids) {
         const name = employeeNamesByUid[uid] || uid;
-        if (dayPto[uid]?.[dateIso]) hard.push(`${name} has approved PTO on this date.`);
+        if (ptoBlocksWindow(dayPto[uid]?.[dateIso], effectiveWindow, startTime, endTime)) hard.push(`${name} has approved PTO during the selected trip time.`);
         const role = employeeRolesByUid[uid] || "technician";
         for (const event of dayEvents) {
           if (event.blocksSchedule !== false && eventAppliesToUid(event, uid, role) &&
@@ -3319,8 +3360,8 @@ closeAddModal(true);
     }
 
     const pto = ptoByUidByDate[uid]?.[dateIso];
-    if (pto) {
-      hard.add(`${employeeName} is on approved PTO for ${dateIso}.`);
+    if (ptoBlocksWindow(pto, String(trip.timeWindow || "custom"), trip.startTime, trip.endTime)) {
+      hard.add(`${employeeName} is on approved PTO during this trip on ${dateIso}.`);
     }
 
     const overlappingEvents = (eventsByDate[dateIso] || []).filter(
@@ -4604,14 +4645,9 @@ useEffect(() => {
             if (date < range.startIso || date > range.endIso) continue;
 
             if (!byUid[uid]) byUid[uid] = {};
-            byUid[uid][date] = {
-              uid,
-              employeeName,
-              date,
-              hours: Number.isFinite(Number(hours)) ? Number(hours) : null,
-              requestId: ds.id,
-              reason: reason ? String(reason) : null,
-            };
+            byUid[uid][date] = buildPtoDay(d, ds.id, date, employeeName, uid);
+            byUid[uid][date].hours = Number.isFinite(Number(hours)) ? Number(hours) : (Number.isFinite(Number(d.hoursPerDay)) ? Number(d.hoursPerDay) : null);
+            byUid[uid][date].reason = reason ? String(reason) : null;
 
             if (!namesByDate[date]) namesByDate[date] = new Set<string>();
             namesByDate[date].add(employeeName);
@@ -5976,7 +6012,7 @@ function renderStaffCoverageCards(dateIso: string) {
               canEditSchedule &&
               rowKey !== "UNASSIGNED" &&
               !isPast &&
-              !pto &&
+              !((ptoBlocksSlot(pto, "am") && ptoBlocksSlot(pto, "pm"))) &&
               !holiday;
 
             const emptyLabel = holiday
@@ -6075,7 +6111,7 @@ function renderStaffCoverageCards(dateIso: string) {
                         <Paper
                           elevation={0}
                           onClick={
-                            canShowScheduleAction
+                            canShowScheduleAction && !ptoBlocksSlot(pto, "am")
                               ? () => openAddModal({ techUid: rowKey, dateIso: iso, slot: "am" })
                               : undefined
                           }
@@ -6090,7 +6126,7 @@ function renderStaffCoverageCards(dateIso: string) {
                           }}
                         >
                           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                            {emptyLabel === "Open" && canShowScheduleAction ? "+" : emptyLabel}
+                            {holiday ? "Holiday" : ptoBlocksSlot(pto, "am") ? "PTO" : canShowScheduleAction ? "+" : emptyLabel}
                           </Typography>
                         </Paper>
                       )}
@@ -6109,7 +6145,7 @@ function renderStaffCoverageCards(dateIso: string) {
                         <Paper
                           elevation={0}
                           onClick={
-                            canShowScheduleAction
+                            canShowScheduleAction && !ptoBlocksSlot(pto, "pm")
                               ? () => openAddModal({ techUid: rowKey, dateIso: iso, slot: "pm" })
                               : undefined
                           }
@@ -6124,7 +6160,7 @@ function renderStaffCoverageCards(dateIso: string) {
                           }}
                         >
                           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                            {emptyLabel === "Open" && canShowScheduleAction ? "+" : emptyLabel}
+                            {holiday ? "Holiday" : ptoBlocksSlot(pto, "pm") ? "PTO" : canShowScheduleAction ? "+" : emptyLabel}
                           </Typography>
                         </Paper>
                       )}
@@ -6366,7 +6402,7 @@ function renderStaffCoverageCards(dateIso: string) {
       canEditSchedule &&
       rowKey !== "UNASSIGNED" &&
       !isPast &&
-      !pto &&
+      !ptoBlocksSlot(pto, slot) &&
       !holiday &&
       !hardBusy;
     const isOverrideAction = canAdd && softBusy;
@@ -6374,7 +6410,7 @@ function renderStaffCoverageCards(dateIso: string) {
 
     const blockedText = holiday
       ? "Holiday"
-      : pto
+      : ptoBlocksSlot(pto, slot)
         ? "PTO"
         : availability.meetings.some((event) => eventBlocksSlot(event, slot))
           ? "Meeting"
@@ -7598,10 +7634,12 @@ function renderStaffCoverageCards(dateIso: string) {
           status = "other";
           label = "Holiday";
           detail = holiday.name;
-        } else if (pto) {
-          status = "pto";
-          label = "PTO";
-          detail = pto.hours ? `${pto.hours}h approved` : "Approved PTO";
+        } else if (pto && (ptoBlocksSlot(pto, "am") || ptoBlocksSlot(pto, "pm"))) {
+          const amPto = ptoBlocksSlot(pto, "am");
+          const pmPto = ptoBlocksSlot(pto, "pm");
+          status = amPto && pmPto ? "pto" : "partial";
+          label = amPto && pmPto ? "PTO" : "Partial PTO";
+          detail = amPto && pmPto ? "PTO all day" : amPto ? "AM PTO / PM open" : "AM open / PM PTO";
         } else if (blockingEvent) {
           status = "other";
           label = "Other";
@@ -8430,7 +8468,7 @@ function renderStaffCoverageCards(dateIso: string) {
                                 canEditSchedule &&
                                 rowKey !== "UNASSIGNED" &&
                                 !isPast &&
-                                !pto &&
+                                !((ptoBlocksSlot(pto, "am") && ptoBlocksSlot(pto, "pm"))) &&
                                 !holiday;
 
                               return (
