@@ -55,14 +55,19 @@ import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import BeachAccessRoundedIcon from "@mui/icons-material/BeachAccessRounded";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import GroupAddRoundedIcon from "@mui/icons-material/GroupAddRounded";
+import PersonRemoveRoundedIcon from "@mui/icons-material/PersonRemoveRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { formatTimeRange12h } from "../../../src/lib/time-format";
 import {
+  addWorkerToActiveTrip,
   getWorkerTimerStatus,
+  removeWorkerFromActiveTrip,
   switchWorkerToTrip,
+  type TripParticipationRole,
   type WorkerTimersByUid,
 } from "../../../src/lib/worker-trip-timers";
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
@@ -150,6 +155,8 @@ type MyDayItem = {
   hasAttachments?: boolean;
   attachmentCount?: number;
   lastAttachmentPhase?: string | null;
+  crew?: TripCrew;
+  workerTimers?: WorkerTimersByUid | null;
 };
 
 type EmployeeOption = {
@@ -244,6 +251,34 @@ function isoTodayLocal() {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function toDateTimeLocalValue(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function dateTimeLocalToIso(value: string) {
+  const date = new Date(value);
+  if (!value || !Number.isFinite(date.getTime())) {
+    throw new Error("Enter a valid actual crew start time.");
+  }
+  return date.toISOString();
+}
+
+function formatCrewTimestamp(value?: string | null) {
+  if (!value) return "now";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "now";
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function safeStr(x: unknown) {
@@ -1054,6 +1089,16 @@ export default function TechnicianMyDayPage() {
   const [followUpByTicketId, setFollowUpByTicketId] = useState<Record<string, string>>({});
 
   const [startBusyTripId, setStartBusyTripId] = useState<string>("");
+  const [crewDialogTripId, setCrewDialogTripId] = useState("");
+  const [crewEmployeeUid, setCrewEmployeeUid] = useState("");
+  const [crewParticipationRole, setCrewParticipationRole] =
+    useState<TripParticipationRole>("helper");
+  const [crewStartMode, setCrewStartMode] =
+    useState<"now" | "earlier">("now");
+  const [crewEffectiveStartLocal, setCrewEffectiveStartLocal] = useState("");
+  const [crewSaving, setCrewSaving] = useState(false);
+  const [crewError, setCrewError] = useState("");
+  const [crewSuccess, setCrewSuccess] = useState("");
 
   const [showCompleted, setShowCompleted] = useState(false);
 
@@ -1092,11 +1137,6 @@ export default function TechnicianMyDayPage() {
 
   useEffect(() => {
     async function loadEmployees() {
-      if (!canViewOtherEmployees) {
-        setEmployeesLoading(false);
-        return;
-      }
-
       setEmployeesLoading(true);
       try {
         const snap = await getDocs(collection(db, "users"));
@@ -1123,7 +1163,7 @@ export default function TechnicianMyDayPage() {
     }
 
     loadEmployees();
-  }, [canViewOtherEmployees]);
+  }, []);
 
   const filteredEmployees = useMemo(() => {
     const q = employeeSearch.trim().toLowerCase();
@@ -1629,12 +1669,14 @@ return {
           attachmentCount:
             typeof st?.attachmentCount === "number" ? st.attachmentCount : 0,
           lastAttachmentPhase: st?.lastAttachmentPhase ?? null,
+          crew: trip.crew,
+          workerTimers: trip.workerTimers ?? null,
         };
       });
 
     mapped.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     return mapped;
-  }, [visibleTrips, ticketById, projectById, followUpByTicketId, showCompleted, myRole]);
+  }, [visibleTrips, ticketById, projectById, followUpByTicketId, showCompleted, myRole, whoUid]);
 
   const banner = useMemo(() => {
     if (!whoUid) return null;
@@ -1766,6 +1808,155 @@ async function handleGeneratePo(item: MyDayItem) {
     setPoBusyTripId("");
   }
 }
+
+  const crewDialogItem = useMemo(
+    () => items.find((item) => item.id === crewDialogTripId) || null,
+    [items, crewDialogTripId],
+  );
+
+  const activeCrewMembers = useMemo(() => {
+    const crew = crewDialogItem?.crew || {};
+    return [
+      {
+        uid: String(crew.primaryTechUid || ""),
+        name: String(crew.primaryTechName || "Primary technician"),
+        participationRole: "technician" as TripParticipationRole,
+        primary: true,
+      },
+      {
+        uid: String(crew.helperUid || ""),
+        name: String(crew.helperName || "Helper"),
+        participationRole: "helper" as TripParticipationRole,
+        primary: false,
+      },
+      {
+        uid: String(crew.secondaryTechUid || ""),
+        name: String(crew.secondaryTechName || "Secondary technician"),
+        participationRole: "technician" as TripParticipationRole,
+        primary: false,
+      },
+      {
+        uid: String(crew.secondaryHelperUid || ""),
+        name: String(crew.secondaryHelperName || "Secondary helper"),
+        participationRole: "helper" as TripParticipationRole,
+        primary: false,
+      },
+    ].filter((member) => member.uid);
+  }, [crewDialogItem]);
+
+  const activeCrewUidSet = useMemo(
+    () => new Set(activeCrewMembers.map((member) => member.uid)),
+    [activeCrewMembers],
+  );
+
+  const eligibleCrewEmployees = useMemo(
+    () => employees.filter((employee) => !activeCrewUidSet.has(employee.uid)),
+    [employees, activeCrewUidSet],
+  );
+
+  function canManageCrewForItem(item: MyDayItem) {
+    if (item.status !== "in_progress" || !item.isActive) return false;
+    if (canViewOtherEmployees) return true;
+    return myRole === "technician" && whoUid === myUid;
+  }
+
+  function openCrewDialog(item: MyDayItem) {
+    setCrewDialogTripId(item.id);
+    setCrewEmployeeUid("");
+    setCrewParticipationRole("helper");
+    setCrewStartMode("now");
+    setCrewEffectiveStartLocal(toDateTimeLocalValue(nowIso()));
+    setCrewError("");
+    setCrewSuccess("");
+  }
+
+  function closeCrewDialog() {
+    if (crewSaving) return;
+    setCrewDialogTripId("");
+    setCrewEmployeeUid("");
+    setCrewStartMode("now");
+    setCrewEffectiveStartLocal("");
+    setCrewError("");
+    setCrewSuccess("");
+  }
+
+  function selectCrewEmployee(uid: string) {
+    setCrewEmployeeUid(uid);
+    const employee = employees.find((option) => option.uid === uid);
+    const employeeRole = normalizeRole(employee?.role);
+    setCrewParticipationRole(
+      employeeRole === "helper" || employeeRole === "apprentice"
+        ? "helper"
+        : "technician",
+    );
+  }
+
+  async function handleAddCrewMember() {
+    if (!crewDialogItem || !crewEmployeeUid) return;
+    const employee = employees.find((option) => option.uid === crewEmployeeUid);
+    if (!employee) {
+      setCrewError("Select an active field employee.");
+      return;
+    }
+
+    setCrewSaving(true);
+    setCrewError("");
+    setCrewSuccess("");
+    try {
+      const effectiveStartAt =
+        crewStartMode === "earlier"
+          ? dateTimeLocalToIso(crewEffectiveStartLocal)
+          : null;
+      const result = await addWorkerToActiveTrip({
+        db,
+        tripId: crewDialogItem.id,
+        workerUid: employee.uid,
+        workerName: employee.displayName,
+        participationRole: crewParticipationRole,
+        actorUid: myUid || null,
+        actorName: myName || null,
+        actorRole: myRole || null,
+        effectiveStartAt,
+      });
+      setCrewEmployeeUid("");
+      setCrewParticipationRole("helper");
+      setCrewStartMode("now");
+      setCrewEffectiveStartLocal(toDateTimeLocalValue(nowIso()));
+      setCrewSuccess(
+        `${employee.displayName} joined as ${crewParticipationRole === "helper" ? "a helper" : "a technician"}. Payroll starts ${effectiveStartAt ? formatCrewTimestamp(result.effectiveStartAt) : "now"}.`,
+      );
+    } catch (error) {
+      setCrewError(error instanceof Error ? error.message : "Failed to add crew member.");
+    } finally {
+      setCrewSaving(false);
+    }
+  }
+
+  async function handleRemoveCrewMember(member: {
+    uid: string;
+    name: string;
+    participationRole: TripParticipationRole;
+  }) {
+    if (!crewDialogItem) return;
+    setCrewSaving(true);
+    setCrewError("");
+    setCrewSuccess("");
+    try {
+      await removeWorkerFromActiveTrip({
+        db,
+        tripId: crewDialogItem.id,
+        workerUid: member.uid,
+        actorUid: myUid || null,
+        actorName: myName || null,
+        actorRole: myRole || null,
+      });
+      setCrewSuccess(`${member.name}'s trip time stopped now.`);
+    } catch (error) {
+      setCrewError(error instanceof Error ? error.message : "Failed to remove crew member.");
+    } finally {
+      setCrewSaving(false);
+    }
+  }
 
   function renderServiceFooter(item: MyDayItem, isCompleted: boolean, canStartService: boolean) {
     const canGeneratePo = canGeneratePoForServiceTrip(item);
@@ -1964,6 +2155,162 @@ async function handleGeneratePo(item: MyDayItem) {
       ]}
     >
       <AppShell appUser={appUser}>
+        <Dialog
+          open={Boolean(crewDialogTripId)}
+          onClose={closeCrewDialog}
+          fullWidth
+          maxWidth="sm"
+        >
+          <DialogTitle>Manage Active Crew</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2.25}>
+              <Alert severity="info" variant="outlined">
+                Each person receives payroll time only from when they join until they
+                leave. Helper time is tracked as labor cost and does not add customer
+                billable hours.
+              </Alert>
+
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 800 }}>
+                  Crew working now
+                </Typography>
+                <Stack spacing={1}>
+                  {activeCrewMembers.map((member) => (
+                    <Stack
+                      key={member.uid}
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      justifyContent="space-between"
+                      sx={{
+                        p: 1.25,
+                        borderRadius: 2,
+                        border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 800 }} noWrap>
+                          {member.name}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {member.primary
+                            ? "Primary technician"
+                            : member.participationRole === "helper"
+                              ? "Helper · payroll only"
+                              : "Additional technician"}
+                        </Typography>
+                      </Box>
+                      {!member.primary ? (
+                        <Button
+                          type="button"
+                          color="error"
+                          size="small"
+                          variant="outlined"
+                          startIcon={<PersonRemoveRoundedIcon />}
+                          disabled={crewSaving}
+                          onClick={() => handleRemoveCrewMember(member)}
+                        >
+                          Remove
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  ))}
+                </Stack>
+              </Box>
+
+              <Divider />
+
+              <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                Add someone now
+              </Typography>
+              <FormControl fullWidth disabled={crewSaving || employeesLoading}>
+                <InputLabel id="mid-trip-employee-label">Employee</InputLabel>
+                <Select
+                  labelId="mid-trip-employee-label"
+                  value={crewEmployeeUid}
+                  label="Employee"
+                  onChange={(event) => selectCrewEmployee(String(event.target.value))}
+                >
+                  {eligibleCrewEmployees.map((employee) => (
+                    <MenuItem key={employee.uid} value={employee.uid}>
+                      {employee.displayName} ({formatRoleLabel(employee.role)})
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth disabled={crewSaving}>
+                <InputLabel id="mid-trip-role-label">Participation role</InputLabel>
+                <Select
+                  labelId="mid-trip-role-label"
+                  value={crewParticipationRole}
+                  label="Participation role"
+                  onChange={(event) =>
+                    setCrewParticipationRole(event.target.value as TripParticipationRole)
+                  }
+                >
+                  <MenuItem value="helper">Helper — payroll/labor cost only</MenuItem>
+                  <MenuItem value="technician">Technician — billable participant</MenuItem>
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth disabled={crewSaving}>
+                <InputLabel id="mid-trip-start-mode-label">
+                  Actual start time
+                </InputLabel>
+                <Select
+                  labelId="mid-trip-start-mode-label"
+                  value={crewStartMode}
+                  label="Actual start time"
+                  onChange={(event) => {
+                    const mode = event.target.value as "now" | "earlier";
+                    setCrewStartMode(mode);
+                    if (mode === "earlier" && !crewEffectiveStartLocal) {
+                      setCrewEffectiveStartLocal(toDateTimeLocalValue(nowIso()));
+                    }
+                  }}
+                >
+                  <MenuItem value="now">Start now</MenuItem>
+                  <MenuItem value="earlier">Started earlier</MenuItem>
+                </Select>
+              </FormControl>
+
+              {crewStartMode === "earlier" ? (
+                <TextField
+                  fullWidth
+                  type="datetime-local"
+                  label="When did they actually start?"
+                  value={crewEffectiveStartLocal}
+                  onChange={(event) =>
+                    setCrewEffectiveStartLocal(event.target.value)
+                  }
+                  InputLabelProps={{ shrink: true }}
+                  inputProps={{ max: toDateTimeLocalValue(nowIso()) }}
+                  helperText="The recorded add time remains in the audit history; payroll uses this actual start time."
+                  disabled={crewSaving}
+                />
+              ) : null}
+
+              {crewError ? <Alert severity="error">{crewError}</Alert> : null}
+              {crewSuccess ? <Alert severity="success">{crewSuccess}</Alert> : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button type="button" onClick={closeCrewDialog} disabled={crewSaving}>
+              Done
+            </Button>
+            <Button
+              type="button"
+              variant="contained"
+              startIcon={<GroupAddRoundedIcon />}
+              disabled={crewSaving || !crewEmployeeUid}
+              onClick={handleAddCrewMember}
+            >
+              {crewSaving ? "Saving..." : "Add to Trip Now"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Dialog
           open={generatedPoDialog.open}
           onClose={() =>
@@ -2562,11 +2909,29 @@ PTO coverage is active right now.
                               ) : undefined
                             }
                             footer={
-                              isProject ? (
-                                renderProjectFooter(item, isCompleted, canStartProject)
-                              ) : isService ? (
-                                renderServiceFooter(item, isCompleted, canStartService)
-                              ) : undefined
+                              <Stack spacing={1.25}>
+                                {isProject
+                                  ? renderProjectFooter(item, isCompleted, canStartProject)
+                                  : isService
+                                    ? renderServiceFooter(item, isCompleted, canStartService)
+                                    : null}
+                                {canManageCrewForItem(item) ? (
+                                  <Button
+                                    type="button"
+                                    variant="outlined"
+                                    fullWidth
+                                    startIcon={<GroupAddRoundedIcon />}
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      openCrewDialog(item);
+                                    }}
+                                    sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+                                  >
+                                    Manage Active Crew
+                                  </Button>
+                                ) : null}
+                              </Stack>
                             }
                             onClick={() => {
                               window.location.href = item.href;

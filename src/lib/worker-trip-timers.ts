@@ -17,6 +17,26 @@ export type PauseBlock = {
 
 export type WorkerTripTimerStatus = "running" | "paused" | "complete";
 
+export type TripParticipationRole = "technician" | "helper";
+
+export type ParticipationWindow = {
+  joinedAt: string;
+  leftAt: string | null;
+  participationRole: TripParticipationRole;
+  systemJoinedAt?: string | null;
+};
+
+export type WorkerTimeAdjustmentHistoryEntry = {
+  previousJoinedAt: string;
+  previousLeftAt: string | null;
+  effectiveJoinedAt: string;
+  effectiveLeftAt: string;
+  adjustedAt: string;
+  adjustedByUid: string | null;
+  adjustedByName: string | null;
+  adjustedByRole: string | null;
+};
+
 export type WorkerTripTimer = {
   status: WorkerTripTimerStatus;
   startedAt: string;
@@ -24,15 +44,50 @@ export type WorkerTripTimer = {
   pauseBlocks: PauseBlock[];
   updatedAt: string;
   updatedByUid?: string | null;
+  workerName?: string | null;
+  participationRole?: TripParticipationRole | null;
+  joinedAt?: string | null;
+  leftAt?: string | null;
+  systemAddedAt?: string | null;
+  effectiveJoinedAt?: string | null;
+  addedMidTrip?: boolean;
+  addedByUid?: string | null;
+  addedByName?: string | null;
+  addedByRole?: string | null;
+  removedByUid?: string | null;
+  removedByName?: string | null;
+  removedByRole?: string | null;
+  participationWindows?: ParticipationWindow[];
+  timeAdjustmentHistory?: WorkerTimeAdjustmentHistoryEntry[];
 };
 
 export type WorkerTimersByUid = Record<string, WorkerTripTimer>;
 
 export type TripTimerCrew = {
   primaryTechUid?: string | null;
+  primaryTechName?: string | null;
+  primaryTechRole?: string | null;
   helperUid?: string | null;
+  helperName?: string | null;
+  helperRole?: string | null;
   secondaryTechUid?: string | null;
+  secondaryTechName?: string | null;
+  secondaryTechRole?: string | null;
   secondaryHelperUid?: string | null;
+  secondaryHelperName?: string | null;
+  secondaryHelperRole?: string | null;
+};
+
+export type CrewChangeHistoryEntry = {
+  action: "added" | "removed";
+  workerUid: string;
+  workerName: string;
+  participationRole: TripParticipationRole;
+  at: string;
+  effectiveAt?: string | null;
+  actorUid: string | null;
+  actorName: string | null;
+  actorRole: string | null;
 };
 
 export type TripTimerLike = {
@@ -48,6 +103,7 @@ export type TripTimerLike = {
   crew?: TripTimerCrew | null;
   crewConfirmed?: TripTimerCrew | null;
   workerTimers?: WorkerTimersByUid | null;
+  crewChangeHistory?: CrewChangeHistoryEntry[] | null;
   link?: {
     serviceTicketId?: string | null;
     projectId?: string | null;
@@ -149,6 +205,9 @@ function legacyTimerForWorker(
   const pauseBlocks = Array.isArray(trip.pauseBlocks)
     ? trip.pauseBlocks.map((block) => ({ ...block }))
     : [];
+  const crew = trip.crewConfirmed || trip.crew;
+  const participationRole = timerRoleFromCrew(crew, workerUid);
+  const workerName = timerNameFromCrew(crew, workerUid);
 
   return {
     status: state === "complete" ? "complete" : state,
@@ -160,6 +219,24 @@ function legacyTimerForWorker(
     pauseBlocks,
     updatedAt: stamp,
     updatedByUid: null,
+    workerName,
+    participationRole,
+    joinedAt: startedAt,
+    leftAt:
+      state === "complete"
+        ? safeTrim(trip.actualEndAt) || safeTrim(trip.completedAt) || stamp
+        : null,
+    addedMidTrip: false,
+    participationWindows: [
+      {
+        joinedAt: startedAt,
+        leftAt:
+          state === "complete"
+            ? safeTrim(trip.actualEndAt) || safeTrim(trip.completedAt) || stamp
+            : null,
+        participationRole,
+      },
+    ],
   };
 }
 
@@ -220,6 +297,16 @@ function getNetElapsedMinutes(startMs: number, endMs: number, blocks?: PauseBloc
 export function getWorkerTimerMinutesAt(trip: TripTimerLike, workerUid: string, referenceMs: number) {
   const timer = getWorkerTimer(trip, workerUid, new Date(referenceMs).toISOString());
   if (!timer) return null;
+  const participationWindows = Array.isArray(timer.participationWindows)
+    ? timer.participationWindows.filter((window) => safeTrim(window?.joinedAt))
+    : [];
+  if (participationWindows.length > 0) {
+    return participationWindows.reduce((total, window) => {
+      const startMs = parseIsoMs(window.joinedAt);
+      const endMs = window.leftAt ? parseIsoMs(window.leftAt) : referenceMs;
+      return total + (getNetElapsedMinutes(startMs, endMs, timer.pauseBlocks) || 0);
+    }, 0);
+  }
   const startMs = parseIsoMs(timer.startedAt);
   const endMs = timer.status === "complete" && timer.endedAt
     ? parseIsoMs(timer.endedAt) : referenceMs;
@@ -324,6 +411,9 @@ function mapTrip(id: string, data: any): TripTimerLike {
       data.workerTimers && typeof data.workerTimers === "object"
         ? data.workerTimers
         : null,
+    crewChangeHistory: Array.isArray(data.crewChangeHistory)
+      ? data.crewChangeHistory
+      : [],
     link:
       data.link && typeof data.link === "object"
         ? {
@@ -333,6 +423,553 @@ function mapTrip(id: string, data: any): TripTimerLike {
           }
         : null,
   };
+}
+
+function normalizeParticipationRole(value: unknown): TripParticipationRole {
+  return safeTrim(value).toLowerCase() === "helper" ? "helper" : "technician";
+}
+
+function addWorkerToCrewSlots(args: {
+  crew?: TripTimerCrew | null;
+  workerUid: string;
+  workerName: string;
+  participationRole: TripParticipationRole;
+}) {
+  const crew: TripTimerCrew = { ...(args.crew || {}) };
+  const workerUid = safeTrim(args.workerUid);
+
+  if (getCrewUids(crew).includes(workerUid)) {
+    throw new Error("This employee is already assigned to the trip.");
+  }
+
+  if (args.participationRole === "helper") {
+    if (!safeTrim(crew.helperUid)) {
+      crew.helperUid = workerUid;
+      crew.helperName = args.workerName;
+      crew.helperRole = "helper";
+      return crew;
+    }
+    if (!safeTrim(crew.secondaryHelperUid)) {
+      crew.secondaryHelperUid = workerUid;
+      crew.secondaryHelperName = args.workerName;
+      crew.secondaryHelperRole = "helper";
+      return crew;
+    }
+    throw new Error("Both helper positions are already filled on this trip.");
+  }
+
+  if (!safeTrim(crew.primaryTechUid)) {
+    crew.primaryTechUid = workerUid;
+    crew.primaryTechName = args.workerName;
+    crew.primaryTechRole = "technician";
+    return crew;
+  }
+  if (!safeTrim(crew.secondaryTechUid)) {
+    crew.secondaryTechUid = workerUid;
+    crew.secondaryTechName = args.workerName;
+    crew.secondaryTechRole = "technician";
+    return crew;
+  }
+  throw new Error("Both technician positions are already filled on this trip.");
+}
+
+function removeWorkerFromCrewSlots(
+  crew: TripTimerCrew | null | undefined,
+  workerUid: string,
+  allowMissing = false,
+) {
+  const next: TripTimerCrew = { ...(crew || {}) };
+  const uid = safeTrim(workerUid);
+
+  if (safeTrim(next.primaryTechUid) === uid) {
+    throw new Error("The primary technician cannot be removed from an active trip.");
+  }
+
+  if (safeTrim(next.helperUid) === uid) {
+    next.helperUid = null;
+    next.helperName = null;
+    next.helperRole = null;
+    return next;
+  }
+  if (safeTrim(next.secondaryTechUid) === uid) {
+    next.secondaryTechUid = null;
+    next.secondaryTechName = null;
+    next.secondaryTechRole = null;
+    return next;
+  }
+  if (safeTrim(next.secondaryHelperUid) === uid) {
+    next.secondaryHelperUid = null;
+    next.secondaryHelperName = null;
+    next.secondaryHelperRole = null;
+    return next;
+  }
+
+  if (allowMissing) return next;
+  throw new Error("This employee is not an active secondary crew member.");
+}
+
+function timerRoleFromCrew(crew: TripTimerCrew | null | undefined, workerUid: string) {
+  const uid = safeTrim(workerUid);
+  if (safeTrim(crew?.helperUid) === uid || safeTrim(crew?.secondaryHelperUid) === uid) {
+    return "helper" as const;
+  }
+  return "technician" as const;
+}
+
+function timerNameFromCrew(crew: TripTimerCrew | null | undefined, workerUid: string) {
+  const uid = safeTrim(workerUid);
+  if (safeTrim(crew?.primaryTechUid) === uid) return safeTrim(crew?.primaryTechName) || uid;
+  if (safeTrim(crew?.helperUid) === uid) return safeTrim(crew?.helperName) || uid;
+  if (safeTrim(crew?.secondaryTechUid) === uid) return safeTrim(crew?.secondaryTechName) || uid;
+  if (safeTrim(crew?.secondaryHelperUid) === uid) return safeTrim(crew?.secondaryHelperName) || uid;
+  return uid;
+}
+
+export async function addWorkerToActiveTrip(args: {
+  db: Firestore;
+  tripId: string;
+  workerUid: string;
+  workerName: string;
+  participationRole: TripParticipationRole;
+  actorUid?: string | null;
+  actorName?: string | null;
+  actorRole?: string | null;
+  effectiveStartAt?: string | null;
+}) {
+  const tripId = safeTrim(args.tripId);
+  const workerUid = safeTrim(args.workerUid);
+  const workerName = safeTrim(args.workerName) || workerUid;
+  const participationRole = normalizeParticipationRole(args.participationRole);
+  const actorUid = safeTrim(args.actorUid) || null;
+  const actorName = safeTrim(args.actorName) || null;
+  const actorRole = safeTrim(args.actorRole) || null;
+  const requestedEffectiveStartAt = safeTrim(args.effectiveStartAt) || null;
+
+  if (!tripId) throw new Error("Missing trip id.");
+  if (!workerUid) throw new Error("Select an employee to add.");
+
+  const targetRef = doc(args.db, "trips", tripId);
+  const targetSnap = await getDoc(targetRef);
+  if (!targetSnap.exists()) throw new Error("Trip not found.");
+
+  const target = mapTrip(tripId, targetSnap.data());
+  if (normalizeStatus(target.status) !== "in_progress") {
+    throw new Error("Crew can only be added while the trip is in progress.");
+  }
+
+  const candidateTrips = await queryTripsForWorker(args.db, workerUid);
+  const candidateIds = Array.from(new Set(candidateTrips.map((trip) => trip.id)));
+  const stamp = new Date().toISOString();
+
+  return runTransaction(args.db, async (tx) => {
+    const liveTargetSnap = await tx.get(targetRef);
+    if (!liveTargetSnap.exists()) throw new Error("Trip not found.");
+    const liveTarget = mapTrip(tripId, liveTargetSnap.data());
+
+    const otherTrips = new Map<string, TripTimerLike>();
+    for (const candidateId of candidateIds) {
+      if (candidateId === tripId) continue;
+      const snap = await tx.get(doc(args.db, "trips", candidateId));
+      if (snap.exists()) otherTrips.set(candidateId, mapTrip(candidateId, snap.data()));
+    }
+
+    // Read linked service tickets before any transaction writes so switching a
+    // worker does not leave another ticket showing a stale running timer.
+    const linkedTicketSnaps = new Map<string, Awaited<ReturnType<typeof tx.get>>>();
+    for (const otherTrip of otherTrips.values()) {
+      const linkedTicketId = safeTrim(otherTrip.link?.serviceTicketId);
+      if (!linkedTicketId || linkedTicketSnaps.has(linkedTicketId)) continue;
+      linkedTicketSnaps.set(
+        linkedTicketId,
+        await tx.get(doc(args.db, "serviceTickets", linkedTicketId)),
+      );
+    }
+
+    if (normalizeStatus(liveTarget.status) !== "in_progress") {
+      throw new Error("This trip is no longer in progress.");
+    }
+    if (getTripCrewUids(liveTarget).includes(workerUid)) {
+      throw new Error("This employee is already assigned to the trip.");
+    }
+
+    const recordedAtMs = parseIsoMs(stamp);
+    const tripStartedAt =
+      safeTrim(liveTarget.actualStartAt) || safeTrim(liveTarget.startedAt) || stamp;
+    const tripStartedAtMs = parseIsoMs(tripStartedAt);
+    const effectiveStartAt = requestedEffectiveStartAt || stamp;
+    const effectiveStartMs = parseIsoMs(effectiveStartAt);
+    if (!Number.isFinite(effectiveStartMs)) {
+      throw new Error("Enter a valid actual crew start time.");
+    }
+    if (effectiveStartMs > recordedAtMs) {
+      throw new Error("Actual crew start time cannot be in the future.");
+    }
+    if (Number.isFinite(tripStartedAtMs) && effectiveStartMs < tripStartedAtMs) {
+      throw new Error("Crew start time cannot be before the trip started.");
+    }
+
+    for (const [candidateId, otherTrip] of otherTrips.entries()) {
+      const timers = materializeWorkerTimers(otherTrip, stamp);
+      const timer = timers[workerUid];
+      if (!timer || timer.status !== "running") continue;
+      // A backdated effective join also becomes the worker's stop point on
+      // another running trip, preventing overlapping payroll time.
+      timers[workerUid] = pauseTimer(timer, effectiveStartAt, actorUid);
+      const nextTimerState = deriveTripTimerState(timers);
+      tx.update(doc(args.db, "trips", candidateId), {
+        workerTimers: timers,
+        timerState: nextTimerState,
+        updatedAt: stamp,
+        updatedByUid: actorUid,
+      });
+
+      const linkedTicketId = safeTrim(otherTrip.link?.serviceTicketId);
+      const linkedTicketSnap = linkedTicketId
+        ? linkedTicketSnaps.get(linkedTicketId)
+        : null;
+      if (linkedTicketId && linkedTicketSnap?.exists()) {
+        const activeTripId = safeTrim((linkedTicketSnap.data() as any).activeTripId);
+        if (!activeTripId || activeTripId === candidateId) {
+          tx.update(
+            doc(args.db, "serviceTickets", linkedTicketId),
+            buildLinkedTicketTimerPatch({
+              tripId: candidateId,
+              timerState: nextTimerState,
+              stamp,
+              actorUid,
+              actorName,
+              actorRole,
+            }),
+          );
+        }
+      }
+    }
+
+    const nextCrew = addWorkerToCrewSlots({
+      crew: liveTarget.crew,
+      workerUid,
+      workerName,
+      participationRole,
+    });
+    const nextConfirmedCrew = addWorkerToCrewSlots({
+      crew: liveTarget.crewConfirmed || liveTarget.crew,
+      workerUid,
+      workerName,
+      participationRole,
+    });
+
+    const timers = materializeWorkerTimers(liveTarget, stamp);
+    const previousTimer = timers[workerUid];
+    const targetTimerState = normalizeTimerState(liveTarget.timerState, liveTarget.status);
+    const participationWindows = Array.isArray(previousTimer?.participationWindows)
+      ? [...previousTimer.participationWindows]
+      : [];
+    participationWindows.push({
+      joinedAt: effectiveStartAt,
+      leftAt: null,
+      participationRole,
+      systemJoinedAt: stamp,
+    });
+
+    const gapPauseBlocks = Array.isArray(previousTimer?.pauseBlocks)
+      ? previousTimer.pauseBlocks.map((block) => ({ ...block }))
+      : [];
+    if (previousTimer?.endedAt) {
+      gapPauseBlocks.push({ startAt: previousTimer.endedAt, endAt: stamp });
+    }
+    if (targetTimerState === "paused") {
+      gapPauseBlocks.push({ startAt: stamp, endAt: null });
+    }
+
+    // If dispatch records that the employee actually joined before the button
+    // was clicked, carry over trip pauses from that participation period so
+    // only active working time is paid.
+    for (const block of liveTarget.pauseBlocks || []) {
+      const blockStartMs = parseIsoMs(block.startAt);
+      const blockEndMs = block.endAt ? parseIsoMs(block.endAt) : recordedAtMs;
+      if (blockEndMs <= effectiveStartMs || blockStartMs >= recordedAtMs) continue;
+      const startAt = new Date(Math.max(blockStartMs, effectiveStartMs)).toISOString();
+      const endAt = block.endAt
+        ? new Date(Math.min(blockEndMs, recordedAtMs)).toISOString()
+        : null;
+      if (!gapPauseBlocks.some((existing) =>
+        existing.startAt === startAt && existing.endAt === endAt)) {
+        gapPauseBlocks.push({ startAt, endAt });
+      }
+    }
+
+    timers[workerUid] = {
+      status: targetTimerState === "paused" ? "paused" : "running",
+      startedAt: previousTimer?.startedAt || effectiveStartAt,
+      endedAt: null,
+      pauseBlocks: gapPauseBlocks,
+      updatedAt: stamp,
+      updatedByUid: actorUid,
+      workerName,
+      participationRole,
+      joinedAt: effectiveStartAt,
+      leftAt: null,
+      systemAddedAt: stamp,
+      effectiveJoinedAt: effectiveStartAt,
+      addedMidTrip: true,
+      addedByUid: actorUid,
+      addedByName: actorName,
+      addedByRole: actorRole,
+      removedByUid: null,
+      removedByName: null,
+      removedByRole: null,
+      participationWindows,
+    };
+
+    const history = Array.isArray(liveTarget.crewChangeHistory)
+      ? [...liveTarget.crewChangeHistory]
+      : [];
+    history.push({
+      action: "added",
+      workerUid,
+      workerName,
+      participationRole,
+      at: stamp,
+      effectiveAt: effectiveStartAt,
+      actorUid,
+      actorName,
+      actorRole,
+    });
+
+    tx.update(targetRef, {
+      crew: nextCrew,
+      crewConfirmed: nextConfirmedCrew,
+      workerTimers: timers,
+      timerState: deriveTripTimerState(timers),
+      crewChangeHistory: history,
+      updatedAt: stamp,
+      updatedByUid: actorUid,
+    });
+
+    return {
+      stamp,
+      effectiveStartAt,
+      crew: nextCrew,
+      crewConfirmed: nextConfirmedCrew,
+      workerTimers: timers,
+    };
+  });
+}
+
+/**
+ * Applies a closeout correction to the most recent participation window.
+ * This is intentionally pure: the caller commits the returned workerTimers in
+ * the same transaction that creates payroll entries.
+ */
+export function applyWorkerParticipationAdjustment(args: {
+  trip: TripTimerLike;
+  workerUid: string;
+  effectiveJoinedAt: string;
+  effectiveLeftAt: string;
+  adjustedAt: string;
+  actorUid?: string | null;
+  actorName?: string | null;
+  actorRole?: string | null;
+}) {
+  const workerUid = safeTrim(args.workerUid);
+  const joinedAt = safeTrim(args.effectiveJoinedAt);
+  const leftAt = safeTrim(args.effectiveLeftAt);
+  const adjustedAt = safeTrim(args.adjustedAt) || new Date().toISOString();
+  const joinedMs = parseIsoMs(joinedAt);
+  const leftMs = parseIsoMs(leftAt);
+  const tripStartMs = parseIsoMs(args.trip.actualStartAt || args.trip.startedAt || null);
+  const adjustedMs = parseIsoMs(adjustedAt);
+
+  if (!workerUid) throw new Error("Missing crew member.");
+  if (!Number.isFinite(joinedMs) || !Number.isFinite(leftMs)) {
+    throw new Error("Enter valid crew start and end times.");
+  }
+  if (leftMs <= joinedMs) {
+    throw new Error("Crew end time must be after their start time.");
+  }
+  if (Number.isFinite(tripStartMs) && joinedMs < tripStartMs) {
+    throw new Error("Crew start time cannot be before the trip started.");
+  }
+  if (Number.isFinite(adjustedMs) && leftMs > adjustedMs) {
+    throw new Error("Crew end time cannot be after trip closeout.");
+  }
+
+  const timers = materializeWorkerTimers(args.trip, adjustedAt);
+  const timer = timers[workerUid];
+  if (!timer || (!timer.addedMidTrip && !timer.removedByUid)) {
+    throw new Error("Only partial crew members can use individual crew time.");
+  }
+  const windows = Array.isArray(timer.participationWindows)
+    ? timer.participationWindows.map((window) => ({ ...window }))
+    : [];
+  const windowIndex = windows.length - 1;
+  const currentWindow = windowIndex >= 0
+    ? windows[windowIndex]
+    : {
+        joinedAt: timer.joinedAt || timer.startedAt,
+        leftAt: timer.leftAt || timer.endedAt || null,
+        participationRole: (timer.participationRole || "helper") as TripParticipationRole,
+        systemJoinedAt: timer.systemAddedAt || timer.joinedAt || timer.startedAt,
+      };
+  const previousJoinedAt = currentWindow.joinedAt;
+  const previousLeftAt = currentWindow.leftAt || null;
+  const nextWindow = { ...currentWindow, joinedAt, leftAt };
+  if (windowIndex >= 0) windows[windowIndex] = nextWindow;
+  else windows.push(nextWindow);
+
+  const pauseBlocks = Array.isArray(timer.pauseBlocks)
+    ? timer.pauseBlocks.map((block) => ({ ...block }))
+    : [];
+  for (const block of args.trip.pauseBlocks || []) {
+    if (!pauseBlocks.some((existing) =>
+      existing.startAt === block.startAt && existing.endAt === block.endAt)) {
+      pauseBlocks.push({ ...block });
+    }
+  }
+
+  const changed = previousJoinedAt !== joinedAt || previousLeftAt !== leftAt;
+  const history = Array.isArray(timer.timeAdjustmentHistory)
+    ? [...timer.timeAdjustmentHistory]
+    : [];
+  if (changed) {
+    history.push({
+      previousJoinedAt,
+      previousLeftAt,
+      effectiveJoinedAt: joinedAt,
+      effectiveLeftAt: leftAt,
+      adjustedAt,
+      adjustedByUid: safeTrim(args.actorUid) || null,
+      adjustedByName: safeTrim(args.actorName) || null,
+      adjustedByRole: safeTrim(args.actorRole) || null,
+    });
+  }
+
+  timers[workerUid] = {
+    ...timer,
+    status: "complete",
+    startedAt: timer.startedAt === previousJoinedAt ? joinedAt : timer.startedAt,
+    endedAt: leftAt,
+    joinedAt,
+    leftAt,
+    effectiveJoinedAt: joinedAt,
+    pauseBlocks,
+    participationWindows: windows,
+    timeAdjustmentHistory: history,
+    updatedAt: adjustedAt,
+    updatedByUid: safeTrim(args.actorUid) || null,
+  };
+  return timers;
+}
+
+export async function removeWorkerFromActiveTrip(args: {
+  db: Firestore;
+  tripId: string;
+  workerUid: string;
+  actorUid?: string | null;
+  actorName?: string | null;
+  actorRole?: string | null;
+}) {
+  const tripId = safeTrim(args.tripId);
+  const workerUid = safeTrim(args.workerUid);
+  const actorUid = safeTrim(args.actorUid) || null;
+  const actorName = safeTrim(args.actorName) || null;
+  const actorRole = safeTrim(args.actorRole) || null;
+  if (!tripId) throw new Error("Missing trip id.");
+  if (!workerUid) throw new Error("Missing employee id.");
+
+  const tripRef = doc(args.db, "trips", tripId);
+  const stamp = new Date().toISOString();
+
+  return runTransaction(args.db, async (tx) => {
+    const snap = await tx.get(tripRef);
+    if (!snap.exists()) throw new Error("Trip not found.");
+    const trip = mapTrip(tripId, snap.data());
+    if (normalizeStatus(trip.status) !== "in_progress") {
+      throw new Error("Crew can only be removed while the trip is in progress.");
+    }
+
+    const participationRole = timerRoleFromCrew(trip.crew, workerUid);
+    const workerName = timerNameFromCrew(trip.crew, workerUid);
+    const nextCrew = removeWorkerFromCrewSlots(trip.crew, workerUid);
+    const nextConfirmedCrew = removeWorkerFromCrewSlots(
+      trip.crewConfirmed || trip.crew,
+      workerUid,
+      true,
+    );
+
+    const timers = materializeWorkerTimers(trip, stamp);
+    const current = timers[workerUid];
+    if (!current) throw new Error("No active timer was found for this employee.");
+    if (current.status === "complete") {
+      throw new Error("This employee has already left the trip.");
+    }
+
+    const pauseBlocks = Array.isArray(current.pauseBlocks)
+      ? current.pauseBlocks.map((block) => ({ ...block }))
+      : [];
+    const openPauseIndex = findOpenPauseIndex(pauseBlocks);
+    if (openPauseIndex !== -1) {
+      pauseBlocks[openPauseIndex] = { ...pauseBlocks[openPauseIndex], endAt: stamp };
+    }
+    const participationWindows = Array.isArray(current.participationWindows)
+      ? current.participationWindows.map((window) => ({ ...window }))
+      : [];
+    let openWindowIndex = -1;
+    for (let index = participationWindows.length - 1; index >= 0; index -= 1) {
+      if (!participationWindows[index]?.leftAt) {
+        openWindowIndex = index;
+        break;
+      }
+    }
+    if (openWindowIndex !== -1) {
+      participationWindows[openWindowIndex] = {
+        ...participationWindows[openWindowIndex],
+        leftAt: stamp,
+      };
+    }
+
+    timers[workerUid] = {
+      ...current,
+      status: "complete",
+      endedAt: stamp,
+      pauseBlocks,
+      updatedAt: stamp,
+      updatedByUid: actorUid,
+      workerName: current.workerName || workerName,
+      participationRole: current.participationRole || participationRole,
+      leftAt: stamp,
+      removedByUid: actorUid,
+      removedByName: actorName,
+      removedByRole: actorRole,
+      participationWindows,
+    };
+
+    const history = Array.isArray(trip.crewChangeHistory)
+      ? [...trip.crewChangeHistory]
+      : [];
+    history.push({
+      action: "removed",
+      workerUid,
+      workerName,
+      participationRole,
+      at: stamp,
+      actorUid,
+      actorName,
+      actorRole,
+    });
+
+    tx.update(tripRef, {
+      crew: nextCrew,
+      crewConfirmed: nextConfirmedCrew,
+      workerTimers: timers,
+      timerState: deriveTripTimerState(timers),
+      crewChangeHistory: history,
+      updatedAt: stamp,
+      updatedByUid: actorUid,
+    });
+
+    return { stamp, crew: nextCrew, crewConfirmed: nextConfirmedCrew, workerTimers: timers };
+  });
 }
 
 async function queryTripsForWorker(db: Firestore, workerUid: string) {
@@ -945,6 +1582,9 @@ export function completeAllWorkerTimers(
 ) {
   const timers = materializeWorkerTimers(trip, stamp);
   for (const [uid, timer] of Object.entries(timers)) {
+    // A worker removed before trip closeout already has an authoritative
+    // endedAt/leftAt. Never extend that employee's paid time to trip closeout.
+    if (timer.status === "complete" && timer.endedAt) continue;
     const pauseBlocks = Array.isArray(timer.pauseBlocks)
       ? timer.pauseBlocks.map((block) => ({ ...block }))
       : [];
@@ -952,11 +1592,25 @@ export function completeAllWorkerTimers(
     if (openIndex !== -1) {
       pauseBlocks[openIndex] = { ...pauseBlocks[openIndex], endAt: stamp };
     }
+    const participationWindows = Array.isArray(timer.participationWindows)
+      ? timer.participationWindows.map((window) => ({ ...window }))
+      : [];
+    for (let index = participationWindows.length - 1; index >= 0; index -= 1) {
+      if (!participationWindows[index]?.leftAt) {
+        participationWindows[index] = {
+          ...participationWindows[index],
+          leftAt: stamp,
+        };
+        break;
+      }
+    }
     timers[uid] = {
       ...timer,
       status: "complete",
       endedAt: stamp,
+      leftAt: timer.leftAt || stamp,
       pauseBlocks,
+      participationWindows,
       updatedAt: stamp,
       updatedByUid: safeTrim(actorUid) || null,
     };

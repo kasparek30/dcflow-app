@@ -88,7 +88,10 @@ function normalizeRoleFromCrewSlot(crewRole: CrewMemberForTimeEntry["crewRole"])
   if (crewRole === "helper" || crewRole === "secondaryHelper") return "helper";
   return "technician";
 }
-function uniqueCrewMembers(crew?: TripCrew | null): CrewMemberForTimeEntry[] {
+function uniqueCrewMembers(
+  crew?: TripCrew | null,
+  workerTimers?: WorkerTimersByUid | null,
+): CrewMemberForTimeEntry[] {
   const members: CrewMemberForTimeEntry[] = [];
   const seen = new Set<string>();
   function pushMember(input: {
@@ -126,6 +129,35 @@ function uniqueCrewMembers(crew?: TripCrew | null): CrewMemberForTimeEntry[] {
     name: crew?.secondaryHelperName,
     crewRole: "secondaryHelper",
   });
+
+  // Mid-trip workers who left before closeout are no longer in the active crew
+  // slots. Their completed timer remains an authoritative payroll record.
+  for (const [uid, timer] of Object.entries(workerTimers || {})) {
+    if (!uid || !timer) continue;
+    const participationRole =
+      timer.participationRole === "helper" ? "helper" : "technician";
+    const crewRole: CrewMemberForTimeEntry["crewRole"] =
+      participationRole === "helper" ? "helper" : "secondaryTech";
+    const existingIndex = members.findIndex((member) => member.uid === uid);
+    if (existingIndex === -1 && !timer.addedMidTrip && !timer.removedByUid) continue;
+    const nextMember: CrewMemberForTimeEntry = {
+      uid,
+      name: safeTrim(timer.workerName) || members[existingIndex]?.name || "Employee",
+      role: participationRole,
+      crewRole,
+    };
+    if (existingIndex === -1) {
+      seen.add(uid);
+      members.push(nextMember);
+    } else if (timer.participationRole) {
+      members[existingIndex] = {
+        ...members[existingIndex],
+        name: nextMember.name,
+        role: nextMember.role,
+        crewRole: nextMember.crewRole,
+      };
+    }
+  }
   return members;
 }
 async function resolveUserProfileFallback(member: CrewMemberForTimeEntry) {
@@ -140,7 +172,10 @@ async function resolveUserProfileFallback(member: CrewMemberForTimeEntry) {
         safeTrim(data.name) ||
         safeTrim(data.email) ||
         member.name,
-      role: safeTrim(data.role) || member.role,
+      // The participation role selected for this trip controls billing. An
+      // apprentice can participate as either a helper or technician without
+      // changing their permanent employee profile.
+      role: member.role,
     };
   } catch {
     return member;
@@ -224,7 +259,10 @@ export async function queueProjectTripTimeEntryWrites(
       skippedReason: "Hours cannot be negative.",
     };
   }
-  const crewMembers = uniqueCrewMembers(trip.crewConfirmed || trip.crew || null);
+  const crewMembers = uniqueCrewMembers(
+    trip.crewConfirmed || trip.crew || null,
+    trip.workerTimers || null,
+  );
   if (crewMembers.length === 0) {
     return {
       memberCount: 0,
@@ -299,7 +337,7 @@ export async function queueProjectTripTimeEntryWrites(
         timesheetId,
         category: "project",
         payType: "regular",
-        billable: true,
+        billable: member.role !== "helper" && member.role !== "apprentice",
         source: args.source || "project_trip_closeout",
         sourceType: "project_trip",
         sourceTripId: tripId,

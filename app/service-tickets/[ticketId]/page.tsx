@@ -33,13 +33,16 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   FormControlLabel,
   IconButton,
+  InputLabel,
   ListItemIcon,
   ListItemText,
   Menu,
   MenuItem,
   Paper,
+  Select,
   Stack,
   TextField,
   Typography,
@@ -64,6 +67,8 @@ import AddPhotoAlternateRoundedIcon from "@mui/icons-material/AddPhotoAlternateR
 import AttachFileRoundedIcon from "@mui/icons-material/AttachFileRounded";
 import ImageRoundedIcon from "@mui/icons-material/ImageRounded";
 import MovieRoundedIcon from "@mui/icons-material/MovieRounded";
+import GroupAddRoundedIcon from "@mui/icons-material/GroupAddRounded";
+import PersonRemoveRoundedIcon from "@mui/icons-material/PersonRemoveRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
@@ -71,6 +76,8 @@ import { useAuthContext } from "../../../src/context/auth-context";
 import { db } from "../../../src/lib/firebase";
 import { getPayrollWeekBounds } from "../../../src/lib/payroll";
 import {
+  addWorkerToActiveTrip,
+  applyWorkerParticipationAdjustment,
   completeAllWorkerTimers,
   getWorkerTimer,
   getWorkerTimerMinutesAt,
@@ -81,7 +88,9 @@ import {
   pauseAllWorkersOnTrip,
   resumeWorkerOnTrip,
   resumeAllWorkersOnTrip,
+  removeWorkerFromActiveTrip,
   switchWorkerToTrip,
+  type TripParticipationRole,
   type WorkerTimersByUid,
 } from "../../../src/lib/worker-trip-timers";
 import PictureAsPdfRoundedIcon from "@mui/icons-material/PictureAsPdfRounded";
@@ -424,6 +433,11 @@ type ServiceTicketAttachment = {
 
 type SeparateServiceRequestChoice = "no" | "yes";
 
+type CrewTimeAdjustmentDraft = {
+  startLocal: string;
+  endLocal: string;
+};
+
 type MobileCompletionResult = {
   mode: "resolved" | "follow_up";
   originalTicketId: string;
@@ -433,6 +447,34 @@ type MobileCompletionResult = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function toDateTimeLocalValue(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function dateTimeLocalToIso(value: string) {
+  const date = new Date(value);
+  if (!value || !Number.isFinite(date.getTime())) {
+    throw new Error("Enter a valid crew time.");
+  }
+  return date.toISOString();
+}
+
+function formatCrewTimestamp(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function normalizeDateLike(value: any): string | null {
@@ -1193,6 +1235,7 @@ function isUidOnTripCrew(uid: string, crew?: TripCrew | null) {
 function crewMembersFromTrip(trip: {
   crewConfirmed?: TripCrew | null;
   crew?: TripCrew | null;
+  workerTimers?: WorkerTimersByUid | null;
 }) {
   const crew = trip.crewConfirmed || trip.crew || {};
   const out: Array<{
@@ -1233,12 +1276,27 @@ function crewMembersFromTrip(trip: {
     });
   }
 
-  const seen = new Set<string>();
-  return out.filter((x) => {
-    if (!x.uid || seen.has(x.uid)) return false;
-    seen.add(x.uid);
-    return true;
-  });
+  const byUid = new Map<string, { uid: string; name: string; role: FieldWorkerRole }>();
+  for (const member of out) {
+    if (member.uid) byUid.set(member.uid, member);
+  }
+
+  // A person removed before closeout is no longer in the active crew slots,
+  // but their completed worker timer remains the payroll source of truth.
+  for (const [uid, timer] of Object.entries(trip.workerTimers || {})) {
+    if (!uid || !timer) continue;
+    const existing = byUid.get(uid);
+    if (!existing && !timer.addedMidTrip && !timer.removedByUid) continue;
+    const timerRole: FieldWorkerRole =
+      timer.participationRole === "helper" ? "helper" : "technician";
+    byUid.set(uid, {
+      uid,
+      name: String(timer.workerName || existing?.name || uid),
+      role: timer.participationRole ? timerRole : existing?.role || timerRole,
+    });
+  }
+
+  return Array.from(byUid.values());
 }
 
 function isOpenTripRecord(tripLike: {
@@ -2572,6 +2630,17 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [tripActionSuccess, setTripActionSuccess] = useState<
     Record<string, string>
   >({});
+  const [crewManagerTripId, setCrewManagerTripId] = useState("");
+  const [crewManagerEmployeeUid, setCrewManagerEmployeeUid] = useState("");
+  const [crewManagerParticipationRole, setCrewManagerParticipationRole] =
+    useState<TripParticipationRole>("helper");
+  const [crewManagerStartMode, setCrewManagerStartMode] =
+    useState<"now" | "earlier">("now");
+  const [crewManagerEffectiveStartLocal, setCrewManagerEffectiveStartLocal] =
+    useState("");
+  const [crewManagerSaving, setCrewManagerSaving] = useState(false);
+  const [crewManagerError, setCrewManagerError] = useState("");
+  const [crewManagerSuccess, setCrewManagerSuccess] = useState("");
   const [tripWorkNotes, setTripWorkNotes] = useState<Record<string, string>>(
     {},
   );
@@ -2598,6 +2667,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   >({});
   const [helperConfirmedByTrip, setHelperConfirmedByTrip] = useState<
     Record<string, boolean>
+  >({});
+  const [crewTimeAdjustmentsByTrip, setCrewTimeAdjustmentsByTrip] = useState<
+    Record<string, Record<string, CrewTimeAdjustmentDraft>>
   >({});
 
   const [ticketStatusEdit, setTicketStatusEdit] = useState<TicketStatus>("new");
@@ -3812,6 +3884,199 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     );
   }
 
+  const crewManagerTrip = useMemo(
+    () => trips.find((trip) => trip.id === crewManagerTripId) || null,
+    [trips, crewManagerTripId],
+  );
+
+  const crewManagerCurrentMembers = useMemo(() => {
+    const crew = crewManagerTrip?.crew || {};
+    return [
+      {
+        uid: String(crew.primaryTechUid || ""),
+        name: String(crew.primaryTechName || "Primary technician"),
+        participationRole: "technician" as TripParticipationRole,
+        primary: true,
+      },
+      {
+        uid: String(crew.helperUid || ""),
+        name: String(crew.helperName || "Helper"),
+        participationRole: "helper" as TripParticipationRole,
+        primary: false,
+      },
+      {
+        uid: String(crew.secondaryTechUid || ""),
+        name: String(crew.secondaryTechName || "Secondary technician"),
+        participationRole: "technician" as TripParticipationRole,
+        primary: false,
+      },
+      {
+        uid: String(crew.secondaryHelperUid || ""),
+        name: String(crew.secondaryHelperName || "Secondary helper"),
+        participationRole: "helper" as TripParticipationRole,
+        primary: false,
+      },
+    ].filter((member) => member.uid);
+  }, [crewManagerTrip]);
+
+  const crewManagerCurrentUidSet = useMemo(
+    () => new Set(crewManagerCurrentMembers.map((member) => member.uid)),
+    [crewManagerCurrentMembers],
+  );
+
+  const crewManagerEligibleEmployees = useMemo(
+    () =>
+      technicians.filter(
+        (employee) => !crewManagerCurrentUidSet.has(employee.uid),
+      ),
+    [technicians, crewManagerCurrentUidSet],
+  );
+
+  function canManageActiveCrew(trip: TripDoc) {
+    if (isInvoicedTicket) return false;
+    if (normalizeTripStatus(trip.status) !== "in_progress") return false;
+    if (canDispatch) return true;
+    return appUser?.role === "technician" && canCurrentUserActOnTrip(trip);
+  }
+
+  function openCrewManager(trip: TripDoc) {
+    setCrewManagerTripId(trip.id);
+    setCrewManagerEmployeeUid("");
+    setCrewManagerParticipationRole("helper");
+    setCrewManagerStartMode("now");
+    setCrewManagerEffectiveStartLocal(toDateTimeLocalValue(nowIso()));
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+  }
+
+  function closeCrewManager() {
+    if (crewManagerSaving) return;
+    setCrewManagerTripId("");
+    setCrewManagerEmployeeUid("");
+    setCrewManagerStartMode("now");
+    setCrewManagerEffectiveStartLocal("");
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+  }
+
+  function selectCrewManagerEmployee(uid: string) {
+    setCrewManagerEmployeeUid(uid);
+    const employee = technicians.find((option) => option.uid === uid);
+    const employeeRole = normalizeRole(employee?.role);
+    setCrewManagerParticipationRole(
+      employeeRole === "helper" || employeeRole === "apprentice"
+        ? "helper"
+        : "technician",
+    );
+  }
+
+  async function handleAddCrewFromTicket() {
+    if (!crewManagerTrip || !crewManagerEmployeeUid) return;
+    const employee = technicians.find(
+      (option) => option.uid === crewManagerEmployeeUid,
+    );
+    if (!employee) {
+      setCrewManagerError("Select an active field employee.");
+      return;
+    }
+
+    setCrewManagerSaving(true);
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+    try {
+      const effectiveStartAt =
+        crewManagerStartMode === "earlier"
+          ? dateTimeLocalToIso(crewManagerEffectiveStartLocal)
+          : null;
+      const result = await addWorkerToActiveTrip({
+        db,
+        tripId: crewManagerTrip.id,
+        workerUid: employee.uid,
+        workerName: employee.displayName,
+        participationRole: crewManagerParticipationRole,
+        actorUid: myUid || null,
+        actorName: appUser?.displayName || null,
+        actorRole: appUser?.role || null,
+        effectiveStartAt,
+      });
+      setTrips((previous) =>
+        previous.map((trip) =>
+          trip.id === crewManagerTrip.id
+            ? {
+                ...trip,
+                crew: result.crew as TripCrew,
+                crewConfirmed: result.crewConfirmed as TripCrew,
+                workerTimers: result.workerTimers,
+                timerState: normalizeTripTimerState({
+                  ...trip,
+                  workerTimers: result.workerTimers,
+                }),
+              }
+            : trip,
+        ),
+      );
+      setCrewManagerEmployeeUid("");
+      setCrewManagerParticipationRole("helper");
+      setCrewManagerStartMode("now");
+      setCrewManagerEffectiveStartLocal(toDateTimeLocalValue(nowIso()));
+      const joinedPausedTrip =
+        normalizeTripTimerState(crewManagerTrip) === "paused";
+      setCrewManagerSuccess(
+        `${employee.displayName} joined as ${crewManagerParticipationRole === "helper" ? "a helper" : "a technician"}. ${joinedPausedTrip ? "Their timer follows the trip's paused time." : `Payroll starts ${effectiveStartAt ? formatCrewTimestamp(result.effectiveStartAt) : "now"}.`}`,
+      );
+    } catch (error) {
+      setCrewManagerError(
+        error instanceof Error ? error.message : "Failed to add crew member.",
+      );
+    } finally {
+      setCrewManagerSaving(false);
+    }
+  }
+
+  async function handleRemoveCrewFromTicket(member: {
+    uid: string;
+    name: string;
+    participationRole: TripParticipationRole;
+  }) {
+    if (!crewManagerTrip) return;
+    setCrewManagerSaving(true);
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+    try {
+      const result = await removeWorkerFromActiveTrip({
+        db,
+        tripId: crewManagerTrip.id,
+        workerUid: member.uid,
+        actorUid: myUid || null,
+        actorName: appUser?.displayName || null,
+        actorRole: appUser?.role || null,
+      });
+      setTrips((previous) =>
+        previous.map((trip) =>
+          trip.id === crewManagerTrip.id
+            ? {
+                ...trip,
+                crew: result.crew as TripCrew,
+                crewConfirmed: result.crewConfirmed as TripCrew,
+                workerTimers: result.workerTimers,
+                timerState: normalizeTripTimerState({
+                  ...trip,
+                  workerTimers: result.workerTimers,
+                }),
+              }
+            : trip,
+        ),
+      );
+      setCrewManagerSuccess(`${member.name}'s trip time stopped now.`);
+    } catch (error) {
+      setCrewManagerError(
+        error instanceof Error ? error.message : "Failed to remove crew member.",
+      );
+    } finally {
+      setCrewManagerSaving(false);
+    }
+  }
+
   function applyHelperConfirmation(
     crew: TripCrew | null,
     tripId: string,
@@ -3872,6 +4137,167 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     return workerUid
       ? getWorkerTimerMinutesAt(snapshot, workerUid, completedAtMs)
       : getTripActiveMinutesAt(snapshot, completedAtMs);
+  }
+
+  function getPartialCrewRows(trip: TripDoc) {
+    return Object.entries(trip.workerTimers || {})
+      .filter(([, timer]) => Boolean(timer?.addedMidTrip || timer?.removedByUid))
+      .map(([uid, timer]) => ({
+        uid,
+        timer,
+        name: String(timer.workerName || userNameByUid[uid] || uid),
+        role: timer.participationRole === "helper" ? "Helper" : "Technician",
+      }));
+  }
+
+  function getCrewTimeDraft(
+    trip: TripDoc,
+    uid: string,
+  ): CrewTimeAdjustmentDraft {
+    const timer = trip.workerTimers?.[uid];
+    const stored = crewTimeAdjustmentsByTrip[trip.id]?.[uid];
+    if (stored) return stored;
+    return {
+      startLocal: toDateTimeLocalValue(
+        timer?.effectiveJoinedAt || timer?.joinedAt || timer?.startedAt,
+      ),
+      endLocal: toDateTimeLocalValue(
+        timer?.leftAt || timer?.endedAt || new Date(liveNowMs).toISOString(),
+      ),
+    };
+  }
+
+  function updateCrewTimeDraft(
+    trip: TripDoc,
+    uid: string,
+    patch: Partial<CrewTimeAdjustmentDraft>,
+  ) {
+    const current = getCrewTimeDraft(trip, uid);
+    setCrewTimeAdjustmentsByTrip((previous) => ({
+      ...previous,
+      [trip.id]: {
+        ...(previous[trip.id] || {}),
+        [uid]: { ...current, ...patch },
+      },
+    }));
+  }
+
+  function getPartialCrewPreview(trip: TripDoc, uid: string) {
+    try {
+      const draft = getCrewTimeDraft(trip, uid);
+      const referenceIso = new Date(liveNowMs).toISOString();
+      const workerTimers = applyWorkerParticipationAdjustment({
+        trip,
+        workerUid: uid,
+        effectiveJoinedAt: dateTimeLocalToIso(draft.startLocal),
+        effectiveLeftAt: dateTimeLocalToIso(draft.endLocal),
+        adjustedAt: referenceIso,
+        actorUid: myUid || null,
+        actorName: appUser?.displayName || null,
+        actorRole: appUser?.role || null,
+      });
+      const minutes = getWorkerTimerMinutesAt(
+        { ...trip, workerTimers },
+        uid,
+        liveNowMs,
+      );
+      if (minutes == null) return null;
+      return {
+        minutes,
+        hours: nearestHalfHoursFromMinutes(minutes),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function renderPartialCrewTimeReview(trip: TripDoc) {
+    const rows = getPartialCrewRows(trip);
+    if (!rows.length) return null;
+
+    return (
+      <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+        <Stack spacing={1.25}>
+          <Box>
+            <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>
+              Partial crew time review
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Confirm when each added crew member actually worked. Payroll uses
+              the rounded result below; helper time remains nonbillable.
+            </Typography>
+          </Box>
+
+          {rows.map(({ uid, timer, name, role }) => {
+            const draft = getCrewTimeDraft(trip, uid);
+            const preview = getPartialCrewPreview(trip, uid);
+            return (
+              <Box
+                key={uid}
+                sx={{
+                  p: 1.25,
+                  borderRadius: 1.5,
+                  backgroundColor: alpha(theme.palette.info.main, 0.05),
+                  border: `1px solid ${alpha(theme.palette.info.main, 0.22)}`,
+                }}
+              >
+                <Stack spacing={1}>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 850 }}>
+                      {name} · {role}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Added in DCFlow: {formatCrewTimestamp(
+                        timer.systemAddedAt || timer.updatedAt || timer.joinedAt,
+                      )}
+                    </Typography>
+                  </Box>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="datetime-local"
+                      label="Actual start"
+                      value={draft.startLocal}
+                      onChange={(event) =>
+                        updateCrewTimeDraft(trip, uid, {
+                          startLocal: event.target.value,
+                        })
+                      }
+                      InputLabelProps={{ shrink: true }}
+                    />
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="datetime-local"
+                      label="Actual end"
+                      value={draft.endLocal}
+                      onChange={(event) =>
+                        updateCrewTimeDraft(trip, uid, {
+                          endLocal: event.target.value,
+                        })
+                      }
+                      InputLabelProps={{ shrink: true }}
+                      inputProps={{ max: toDateTimeLocalValue(nowIso()) }}
+                    />
+                  </Stack>
+                  {preview ? (
+                    <Alert severity="info" variant="outlined" icon={false}>
+                      {preview.minutes} actual minutes → {preview.hours.toFixed(1)} payroll hours
+                      {role === "Helper" ? " · Nonbillable" : ""}
+                    </Alert>
+                  ) : (
+                    <Alert severity="error" variant="outlined">
+                      Enter a valid start and end within the trip.
+                    </Alert>
+                  )}
+                </Stack>
+              </Box>
+            );
+          })}
+        </Stack>
+      </Paper>
+    );
   }
 
   const mobileFinishTrip = useMemo(
@@ -6176,13 +6602,35 @@ async function handleStartTrip(trip: TripDoc) {
         ...block,
         endAt: block.endAt || now,
       }));
-      const completedWorkerTimers = completeAllWorkerTimers(latestTrip, now, myUid);
+      let timerTripForCloseout = latestTrip;
+      const crewTimeDrafts = crewTimeAdjustmentsByTrip[trip.id] || {};
+      for (const [workerUid, draft] of Object.entries(crewTimeDrafts)) {
+        const adjustedTimers = applyWorkerParticipationAdjustment({
+          trip: timerTripForCloseout,
+          workerUid,
+          effectiveJoinedAt: dateTimeLocalToIso(draft.startLocal),
+          effectiveLeftAt: dateTimeLocalToIso(draft.endLocal),
+          adjustedAt: now,
+          actorUid: myUid || null,
+          actorName: appUser?.displayName || null,
+          actorRole: appUser?.role || null,
+        });
+        timerTripForCloseout = {
+          ...timerTripForCloseout,
+          workerTimers: adjustedTimers,
+        };
+      }
+      const completedWorkerTimers = completeAllWorkerTimers(
+        timerTripForCloseout,
+        now,
+        myUid,
+      );
       const completionMs = new Date(now).getTime();
 
       // Raw timer duration is retained for audit, but is NEVER the payroll
       // source after the technician confirms the service closeout hours.
       const timerElapsedMinutes = activeMinutesForCloseout(
-        latestTrip,
+        timerTripForCloseout,
         null,
         completedWorkerTimers,
         completionMs,
@@ -6222,17 +6670,49 @@ async function handleStartTrip(trip: TripDoc) {
       const crewMembers = crewMembersFromTrip({
         crewConfirmed: finalCrew,
         crew: finalCrew,
+        workerTimers: completedWorkerTimers,
       });
       if (!crewMembers.length) {
         throw new Error("No crew members found on trip.");
       }
 
-      // All included service crew members get the technician-confirmed
-      // closeout hours, not their independently running (possibly forgotten)
-      // timers. Respect the existing helper inclusion checkbox above.
+      // The lead's submitted closeout remains authoritative for the service
+      // call. Mid-trip additions/removals use their own participation timer so
+      // nobody is paid for time before joining or after leaving.
+      const completedTimerSnapshot = {
+        ...timerTripForCloseout,
+        workerTimers: completedWorkerTimers,
+        actualEndAt: now,
+      };
       const payrollHoursByUid = Object.fromEntries(
-        crewMembers.map((member) => [member.uid, closeoutHours]),
+        crewMembers.map((member) => {
+          const timer = completedWorkerTimers[member.uid];
+          const usesIndividualWindow = Boolean(
+            timer?.addedMidTrip || (timer?.leftAt && timer.leftAt !== now),
+          );
+          const individualMinutes = usesIndividualWindow
+            ? getWorkerTimerMinutesAt(
+                completedTimerSnapshot,
+                member.uid,
+                completionMs,
+              )
+            : null;
+          const payrollHours =
+            individualMinutes == null
+              ? closeoutHours
+              : nearestHalfHoursFromMinutes(individualMinutes);
+          return [member.uid, payrollHours];
+        }),
       ) as Record<string, number>;
+      const participationTimerByUid = Object.fromEntries(
+        crewMembers.map((member) => {
+          const timer = completedWorkerTimers[member.uid];
+          return [
+            member.uid,
+            Boolean(timer?.addedMidTrip || (timer?.leftAt && timer.leftAt !== now)),
+          ];
+        }),
+      ) as Record<string, boolean>;
       const entryDate = trip.date;
       const { weekStartDate, weekEndDate } = getPayrollWeekBounds(entryDate);
 
@@ -6387,9 +6867,15 @@ async function handleStartTrip(trip: TripDoc) {
           tx.set(entryRef, stripUndefined({
             employeeId: member.uid, employeeName: member.name, employeeRole: member.role,
             entryDate, weekStartDate, weekEndDate, timesheetId,
-            category: "service_ticket", payType: "regular", billable: true,
+            category: "service_ticket", payType: "regular",
+            // A helper is paid and included in labor cost, but their time must
+            // never inflate customer billable hours.
+            billable: member.role !== "helper" && member.role !== "apprentice",
             source: "trip_completion", hours: hoursToWrite, hoursSource: hoursGenerated,
-            hoursOrigin: "submitted_closeout", closeoutHours,
+            hoursOrigin: participationTimerByUid[member.uid]
+              ? "crew_participation_timer"
+              : "submitted_closeout",
+            closeoutHours,
             timerElapsedMinutes, hoursAdjusted,
             hoursLocked, tripId: trip.id, serviceTicketId: trip.link?.serviceTicketId || ticket?.id || null,
             projectId: trip.link?.projectId || null, projectStageKey: trip.link?.projectStageKey || null,
@@ -8248,8 +8734,10 @@ async function handleStartTrip(trip: TripDoc) {
                           [mobileFinishTrip.id]: Number(e.target.value),
                         }))
                       }
-                      helperText="Confirm or correct the timer hours. This number is used for every included crew member's timesheet; customer billing keeps its separate 1-hour minimum."
+                      helperText="Confirm the lead/original crew hours. Anyone added or removed mid-trip uses their individual participation timer. Customer billing keeps its separate 1-hour minimum."
                     />
+
+                    {renderPartialCrewTimeReview(mobileFinishTrip)}
 
                     <FormControlLabel
                       control={
@@ -9650,6 +10138,19 @@ async function handleStartTrip(trip: TripDoc) {
                                   </Button>
                                 ) : null}
 
+                                {canManageActiveCrew(trip) ? (
+                                  <Button
+                                    variant="outlined"
+                                    color="primary"
+                                    startIcon={<GroupAddRoundedIcon />}
+                                    onClick={() => openCrewManager(trip)}
+                                    disabled={savingThis || isInvoicedTicket}
+                                    sx={{ minHeight: 44 }}
+                                  >
+                                    Manage Crew
+                                  </Button>
+                                ) : null}
+
                                 {!isMobile &&
                                 normalizeTripStatus(trip.status) ===
                                   "in_progress" ? (
@@ -10088,8 +10589,10 @@ async function handleStartTrip(trip: TripDoc) {
                                         [trip.id]: Number(e.target.value),
                                       }))
                                     }
-                                    helperText="Confirmed hours drive every included crew member's timesheet. Customer billing retains its separate 1-hour minimum."
+                                    helperText="Confirmed hours drive the lead/original crew timesheets. Anyone added or removed mid-trip uses their individual participation timer. Customer billing retains its separate 1-hour minimum."
                                   />
+
+                                  {renderPartialCrewTimeReview(trip)}
 
                                   <FormControlLabel
                                     control={
@@ -11259,6 +11762,205 @@ async function handleStartTrip(trip: TripDoc) {
                 </Section>
               </Stack>
             </Box>
+
+            <Dialog
+              open={Boolean(crewManagerTripId)}
+              onClose={closeCrewManager}
+              fullWidth
+              maxWidth="sm"
+            >
+              <DialogTitle>Manage Active Crew</DialogTitle>
+              <DialogContent dividers>
+                <Stack spacing={2.25}>
+                  <Alert severity="info" variant="outlined">
+                    {crewManagerTrip &&
+                    normalizeTripTimerState(crewManagerTrip) === "paused"
+                      ? "This trip is paused. New crew will be assigned now, but their payroll timer will begin when the trip resumes."
+                      : "Added crew begin earning payroll time when they join. Helper time is labor cost only and does not increase customer billable hours."}
+                  </Alert>
+
+                  {crewManagerTrip ? (
+                    <Typography variant="body2" color="text.secondary">
+                      Trip: {formatTripDateLabel(crewManagerTrip.date)} ·{" "}
+                      {formatTripTimeRange(
+                        crewManagerTrip.startTime,
+                        crewManagerTrip.endTime,
+                      )}
+                    </Typography>
+                  ) : null}
+
+                  <Box>
+                    <Typography
+                      variant="subtitle2"
+                      sx={{ mb: 1, fontWeight: 800 }}
+                    >
+                      Current crew
+                    </Typography>
+                    <Stack spacing={1}>
+                      {crewManagerCurrentMembers.map((member) => (
+                        <Stack
+                          key={member.uid}
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                          sx={{
+                            p: 1.25,
+                            borderRadius: 2,
+                            border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{ fontWeight: 800 }}
+                              noWrap
+                            >
+                              {member.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {member.primary
+                                ? "Primary technician"
+                                : member.participationRole === "helper"
+                                  ? "Helper · payroll/labor cost only"
+                                  : "Additional technician"}
+                            </Typography>
+                          </Box>
+
+                          {!member.primary ? (
+                            <Button
+                              type="button"
+                              color="error"
+                              size="small"
+                              variant="outlined"
+                              startIcon={<PersonRemoveRoundedIcon />}
+                              disabled={crewManagerSaving}
+                              onClick={() => handleRemoveCrewFromTicket(member)}
+                            >
+                              Remove
+                            </Button>
+                          ) : null}
+                        </Stack>
+                      ))}
+                    </Stack>
+                  </Box>
+
+                  <Divider />
+
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                    Add someone to this trip
+                  </Typography>
+
+                  <FormControl fullWidth disabled={crewManagerSaving}>
+                    <InputLabel id="ticket-mid-trip-employee-label">
+                      Employee
+                    </InputLabel>
+                    <Select
+                      labelId="ticket-mid-trip-employee-label"
+                      value={crewManagerEmployeeUid}
+                      label="Employee"
+                      onChange={(event) =>
+                        selectCrewManagerEmployee(String(event.target.value))
+                      }
+                    >
+                      {crewManagerEligibleEmployees.map((employee) => (
+                        <MenuItem key={employee.uid} value={employee.uid}>
+                          {employee.displayName} ({formatFieldWorkerRole(employee.role)})
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  <FormControl fullWidth disabled={crewManagerSaving}>
+                    <InputLabel id="ticket-mid-trip-start-mode-label">
+                      Actual start time
+                    </InputLabel>
+                    <Select
+                      labelId="ticket-mid-trip-start-mode-label"
+                      value={crewManagerStartMode}
+                      label="Actual start time"
+                      onChange={(event) => {
+                        const mode = event.target.value as "now" | "earlier";
+                        setCrewManagerStartMode(mode);
+                        if (mode === "earlier" && !crewManagerEffectiveStartLocal) {
+                          setCrewManagerEffectiveStartLocal(
+                            toDateTimeLocalValue(nowIso()),
+                          );
+                        }
+                      }}
+                    >
+                      <MenuItem value="now">Start now</MenuItem>
+                      <MenuItem value="earlier">Started earlier</MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  {crewManagerStartMode === "earlier" ? (
+                    <TextField
+                      fullWidth
+                      type="datetime-local"
+                      label="When did they actually start?"
+                      value={crewManagerEffectiveStartLocal}
+                      onChange={(event) =>
+                        setCrewManagerEffectiveStartLocal(event.target.value)
+                      }
+                      InputLabelProps={{ shrink: true }}
+                      inputProps={{ max: toDateTimeLocalValue(nowIso()) }}
+                      helperText="DCFlow keeps the time they were added for audit, but payroll uses this actual start time."
+                      disabled={crewManagerSaving}
+                    />
+                  ) : null}
+
+                  <FormControl fullWidth disabled={crewManagerSaving}>
+                    <InputLabel id="ticket-mid-trip-role-label">
+                      Participation role
+                    </InputLabel>
+                    <Select
+                      labelId="ticket-mid-trip-role-label"
+                      value={crewManagerParticipationRole}
+                      label="Participation role"
+                      onChange={(event) =>
+                        setCrewManagerParticipationRole(
+                          event.target.value as TripParticipationRole,
+                        )
+                      }
+                    >
+                      <MenuItem value="helper">
+                        Helper — payroll/labor cost only
+                      </MenuItem>
+                      <MenuItem value="technician">
+                        Technician — billable participant
+                      </MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  {crewManagerError ? (
+                    <Alert severity="error">{crewManagerError}</Alert>
+                  ) : null}
+                  {crewManagerSuccess ? (
+                    <Alert severity="success">{crewManagerSuccess}</Alert>
+                  ) : null}
+                </Stack>
+              </DialogContent>
+
+              <DialogActions sx={{ p: 2 }}>
+                <Button
+                  type="button"
+                  onClick={closeCrewManager}
+                  disabled={crewManagerSaving}
+                >
+                  Done
+                </Button>
+                <Button
+                  type="button"
+                  variant="contained"
+                  startIcon={<GroupAddRoundedIcon />}
+                  disabled={crewManagerSaving || !crewManagerEmployeeUid}
+                  onClick={handleAddCrewFromTicket}
+                >
+                  {crewManagerSaving ? "Saving..." : "Add to Trip"}
+                </Button>
+              </DialogActions>
+            </Dialog>
 
             <Dialog
               open={showCloseFollowUpDialog}
