@@ -175,6 +175,8 @@ type TripMaterial = {
   lineTotal?: number | null;
   reviewStatus?: "pending" | "edited" | "approved";
   importedAt?: string;
+  qtyUsed?: number;
+  purchasedQty?: number;
 };
 
 type DispatchOverrideInfo = {
@@ -229,6 +231,7 @@ type TripDoc = {
   // Technician-entered text is independent of supplier OCR materials.
   manualMaterialsNotes?: string | null;
   noMaterialsUsed?: boolean | null;
+  importedMaterialUsage?: Record<string, number> | null;
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
   createdAt?: string;
@@ -837,6 +840,40 @@ function getImportedMaterialChips(materials?: TripMaterial[] | null) {
   );
 }
 
+function supplierUsageKey(m: TripMaterial, index: number): string {
+  return String(m.supplierLineKey || m.id || [m.supplierInvoiceId || m.supplierInvoiceNumber || "", m.poCode || "", m.supplierSku || "", m.name, index].join("|"));
+}
+function getUsageMap(materials: TripMaterial[], changes: Record<string, number | string>, saved: Record<string, number>): Record<string, number> {
+  const result: Record<string, number> = {};
+  getImportedMaterialChips(materials).forEach((m, i) => {
+    const key = supplierUsageKey(m, i);
+    const value = Object.prototype.hasOwnProperty.call(changes, key) ? changes[key]
+      : Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : m.qtyUsed ?? m.qty;
+    const num = value === "" ? NaN : Number(value);
+    if (!Number.isFinite(num) || num < 0 || num > Number(m.qty))
+      throw new Error(`Quantity Used for "${m.name}" must be between 0 and ${m.qty}.`);
+    result[key] = num;
+  });
+  return result;
+}
+function tagMaterialUsage(materials: TripMaterial[], usage: Record<string, number>): TripMaterial[] {
+  let i = 0;
+  return materials.map(m => {
+    if (!m.imported && m.source !== "supplier_invoice") return m;
+    const key = supplierUsageKey(m, i++);
+    return { ...m, qtyUsed: usage[key] ?? m.qtyUsed ?? m.qty };
+  });
+}
+function getUsedMaterialsForBilling(trip: TripDoc): TripMaterial[] {
+  let i = 0;
+  return (trip.materials || []).flatMap(m => {
+    if (!m.imported && m.source !== "supplier_invoice") return m.qty > 0 ? [m] : [];
+    const key = supplierUsageKey(m, i++);
+    const used = Number(trip.importedMaterialUsage?.[key] ?? m.qtyUsed ?? m.qty);
+    return Number.isFinite(used) && used > 0
+      ? [{ ...m, purchasedQty: m.qty, qty: used, qtyUsed: used }] : [];
+  });
+}
 function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
   return items
@@ -909,9 +946,7 @@ function getHelperPayrollSummary(
 }
 
 function mergeTripMaterials(trips: TripDoc[]) {
-  return trips
-    .flatMap((trip) => (Array.isArray(trip.materials) ? trip.materials : []))
-    .filter((item) => String(item?.name || "").trim());
+  return trips.flatMap(getUsedMaterialsForBilling).filter(item => String(item?.name || "").trim());
 }
 
 function nearestHalfHoursFromMinutes(actualMinutes: number) {
@@ -1092,6 +1127,7 @@ function buildBillingPacketFromClosedFollowUp(args: {
 function preserveBillingMaterialsOnRebuild(
   proposed: BillingPacket,
   existing?: BillingPacket | null,
+  excludedSupplierKeys: Set<string> = new Set(),
 ): BillingPacket {
   if (!existing) return proposed;
   const previous = Array.isArray(existing.materials) ? existing.materials : [];
@@ -1107,6 +1143,7 @@ function preserveBillingMaterialsOnRebuild(
   for (const item of current) counts.set(identity(item), (counts.get(identity(item)) || 0) + 1);
   const kept = [...current];
   for (const oldItem of previous) {
+    if (oldItem.supplierLineKey && excludedSupplierKeys.has(String(oldItem.supplierLineKey))) continue;
     const key = identity(oldItem);
     const available = counts.get(key) || 0;
     if (available > 0) counts.set(key, available - 1);
@@ -1173,7 +1210,9 @@ function validateTripMaterialsCapture(args: {
     }
   }
 
-  if (!args.noMaterialsUsed && cleaned.length < 1) {
+  const hasUsed = cleaned.some(m => (m.imported || m.source === "supplier_invoice") ? Number(m.qtyUsed ?? m.qty) > 0 : m.qty > 0);
+  if (args.noMaterialsUsed && hasUsed) return { ok: false as const, message: 'Set imported Quantity Used to 0 and clear manual materials, or uncheck No materials used.' };
+  if (!args.noMaterialsUsed && !hasUsed) {
     return {
       ok: false as const,
       message: "Enter materials used or check No materials used.",
@@ -2659,6 +2698,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [tripNoMaterialsUsed, setTripNoMaterialsUsed] = useState<
     Record<string, boolean>
   >({});
+  const [tripImportedQtyUsed, setTripImportedQtyUsed] = useState<
+    Record<string, Record<string, number | string>>
+  >({});
   const [finishModeByTrip, setFinishModeByTrip] = useState<
     Record<string, FinishMode>
   >({});
@@ -3216,6 +3258,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         const nextMaterials: Record<string, TripMaterial[]> = {};
         const nextMaterialsText: Record<string, string> = {};
         const nextNoMaterials: Record<string, boolean> = {};
+        const nextImportedUsage: Record<string, Record<string, number | string>> = {};
         const nextFinish: Record<string, FinishMode> = {};
         const nextHelperConfirmed: Record<string, boolean> = {};
         const nextSeparateRequestChoice: Record<
@@ -3235,6 +3278,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           nextMaterialsText[trip.id] =
             trip.manualMaterialsNotes ?? manualMaterialsToText(loadedMaterials);
           nextNoMaterials[trip.id] = Boolean(trip.noMaterialsUsed);
+          nextImportedUsage[trip.id] = { ...(trip.importedMaterialUsage || {}) };
           nextFinish[trip.id] = "none";
           nextHelperConfirmed[trip.id] = true;
           nextSeparateRequestChoice[trip.id] = "no";
@@ -3247,6 +3291,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTripMaterials(nextMaterials);
         setTripMaterialsText(nextMaterialsText);
         setTripNoMaterialsUsed(nextNoMaterials);
+        setTripImportedQtyUsed(nextImportedUsage);
         setFinishModeByTrip(nextFinish);
         setHelperConfirmedByTrip(nextHelperConfirmed);
         setSeparateRequestChoiceByTrip(nextSeparateRequestChoice);
@@ -5070,6 +5115,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       latestTrip?.materials || tripMaterials[tripId],
     );
     const noMaterialsUsed = Boolean(tripNoMaterialsUsed[tripId]);
+    const importedDraft = tripImportedQtyUsed[tripId] || {};
+    const savedUsage = latestTrip?.importedMaterialUsage || {};
 
     return (
       <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 1 }}>
@@ -5084,25 +5131,40 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 <Typography variant="subtitle2" fontWeight={700}>
                   Supplier PO Materials — Imported Automatically
                 </Typography>
-                {importedMaterials.map((material, index) => (
-                  <Box key={material.supplierLineKey || material.id || index}>
-                    <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-                      {formatSingleMaterialLine(material)}
-                    </Typography>
-                    <Chip
-                      size="small"
-                      color={material.reviewStatus === "pending" ? "warning" : "success"}
-                      variant="outlined"
-                      label={[
-                        material.supplierName || "Supplier",
-                        material.poCode ? `PO ${material.poCode}` : "",
-                        material.reviewStatus === "pending" ? "Needs Review" : "",
-                      ].filter(Boolean).join(" • ")}
-                    />
-                  </Box>
-                ))}
+                {importedMaterials.map((material, index) => {
+                  const key = supplierUsageKey(material, index);
+                  const purchased = Number(material.qty);
+                  const selected = Object.prototype.hasOwnProperty.call(importedDraft, key)
+                    ? importedDraft[key] : Object.prototype.hasOwnProperty.call(savedUsage, key)
+                    ? savedUsage[key] : material.qtyUsed ?? purchased;
+                  const used = selected === "" ? NaN : Number(selected);
+                  const invalid = !Number.isFinite(used) || used < 0 || used > purchased;
+                  return (
+                    <Box key={key}>
+                      <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                        {formatSingleMaterialLine(material)}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        color={material.reviewStatus === "pending" ? "warning" : "success"}
+                        variant="outlined"
+                        label={[material.supplierName || "Supplier", material.poCode ? `PO ${material.poCode}` : "", material.reviewStatus === "pending" ? "Needs Review" : ""].filter(Boolean).join(" • ")}
+                      />
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1, mb: 1 }}>
+                        <TextField label="Purchased" size="small" value={purchased} disabled sx={{ width: 100 }} />
+                        <TextField label="Quantity Used" size="small" type="number" value={selected}
+                          error={invalid} inputProps={{ min: 0, max: purchased, step: "any" }}
+                          onChange={e => setTripImportedQtyUsed(prev => ({ ...prev,
+                            [tripId]: { ...(prev[tripId] || {}), [key]: e.target.value },
+                          }))} sx={{ width: 135 }} />
+                        <TextField label="Unused" size="small" disabled
+                          value={invalid ? "—" : Number((purchased - used).toFixed(4))} sx={{ width: 90 }} />
+                      </Stack>
+                    </Box>
+                  );
+                })}
                 <Typography variant="caption" color="text.secondary">
-                  Supplier items are recorded separately. They cannot replace technician notes.
+                  Purchase quantities are locked. Only Quantity Used can be adjusted. Unused quantities stay on the purchase record.
                 </Typography>
               </Stack>
             </Paper>
@@ -6588,6 +6650,9 @@ async function handleStartTrip(trip: TripDoc) {
 
       const materialsText = String(tripMaterialsText[trip.id] || "").trim();
       const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
+      const importedUsageChanges = tripImportedQtyUsed[trip.id] || {};
+      const importedUsage = getUsageMap(tripMaterials[trip.id] || trip.materials || [],
+        importedUsageChanges, trip.importedMaterialUsage || {});
       if (noMaterialsUsed && materialsText) {
         throw new Error(
           'There are technician material notes entered. Uncheck "No materials used" or clear the notes intentionally before completing the trip.',
@@ -6596,7 +6661,7 @@ async function handleStartTrip(trip: TripDoc) {
       // This initial check is only for immediate UI validation; the final
       // materials are re-evaluated from the live trip INSIDE the transaction.
       const materialCheck = validateTripMaterialsCapture({
-        materials: parseMaterialsText(materialsText, tripMaterials[trip.id]),
+        materials: tagMaterialUsage(parseMaterialsText(materialsText, tripMaterials[trip.id]), importedUsage),
         noMaterialsUsed,
       });
 
@@ -6744,7 +6809,7 @@ async function handleStartTrip(trip: TripDoc) {
         followUpNotes: mode === "follow_up" ? followNotes : null,
         readyToBillAt: mode === "resolved" ? now : null,
         materials: materialCheck.cleaned, manualMaterialsNotes: materialsText,
-        noMaterialsUsed, crewConfirmed: finalCrew,
+        noMaterialsUsed, importedMaterialUsage: importedUsage, crewConfirmed: finalCrew,
         updatedAt: now,
       } : t);
       let committedStatus = deriveNextTicketStatus(committedTrips, mode);
@@ -6795,8 +6860,10 @@ async function handleStartTrip(trip: TripDoc) {
 
         // OCR could finish at any time while this closeout is open. Merge its
         // latest imported rows INSIDE the same transaction as the closeout.
+        const liveUsage = getUsageMap(liveTrip.materials || [],
+          importedUsageChanges, liveTrip.importedMaterialUsage || {});
         const liveCheck = validateTripMaterialsCapture({
-          materials: parseMaterialsText(materialsText, liveTrip.materials),
+          materials: tagMaterialUsage(parseMaterialsText(materialsText, liveTrip.materials), liveUsage),
           noMaterialsUsed,
         });
         if (!liveCheck.ok) throw new Error(liveCheck.message);
@@ -6811,6 +6878,7 @@ async function handleStartTrip(trip: TripDoc) {
           materials: liveCheck.cleaned,
           manualMaterialsNotes: materialsText,
           noMaterialsUsed,
+          importedMaterialUsage: liveUsage,
           billableHours: hoursToUse,
           actualMinutes,
           closeoutHours,
@@ -6832,6 +6900,10 @@ async function handleStartTrip(trip: TripDoc) {
               liveTicketSnap?.exists()
                 ? normalizeBillingPacket(liveTicketSnap.data().billing)
                 : null,
+              new Set((completedLiveTrip.materials || [])
+                .filter(m => (m.imported || m.source === "supplier_invoice") &&
+                  Number(m.qtyUsed ?? m.qty) === 0 && m.supplierLineKey)
+                .map(m => String(m.supplierLineKey))),
             )
           : null;
 
@@ -6858,6 +6930,7 @@ async function handleStartTrip(trip: TripDoc) {
           materials: liveCheck.cleaned,
           manualMaterialsNotes: materialsText,
           noMaterialsUsed,
+          importedMaterialUsage: liveUsage,
           crewConfirmed: finalCrew,
           updatedAt: now,
           updatedByUid: myUid,
@@ -6948,6 +7021,7 @@ async function handleStartTrip(trip: TripDoc) {
               materials: savedMaterials,
               manualMaterialsNotes: materialsText,
               noMaterialsUsed,
+              importedMaterialUsage: importedUsage,
               crewConfirmed: finalCrew,
             }
           : t,
