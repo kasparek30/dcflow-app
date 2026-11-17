@@ -35,6 +35,8 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
+  Radio,
+  RadioGroup,
   IconButton,
   InputLabel,
   ListItemIcon,
@@ -175,6 +177,8 @@ type TripMaterial = {
   lineTotal?: number | null;
   reviewStatus?: "pending" | "edited" | "approved";
   importedAt?: string;
+  qtyUsed?: number;
+  purchasedQty?: number;
 };
 
 type DispatchOverrideInfo = {
@@ -229,6 +233,9 @@ type TripDoc = {
   // Technician-entered text is independent of supplier OCR materials.
   manualMaterialsNotes?: string | null;
   noMaterialsUsed?: boolean | null;
+  importedMaterialUsage?: Record<string, number> | null;
+  poMaterialsReviewedAtCloseout?: boolean;
+  additionalMaterialsDeclaration?: "yes" | "none" | null;
   outcome?: "resolved" | "follow_up" | string | null;
   readyToBillAt?: string | null;
   createdAt?: string;
@@ -837,6 +844,55 @@ function getImportedMaterialChips(materials?: TripMaterial[] | null) {
   );
 }
 
+function supplierUsageKey(m: TripMaterial, index: number): string {
+  return String(m.supplierLineKey || m.id || [m.supplierInvoiceId || m.supplierInvoiceNumber || "", m.poCode || "", m.supplierSku || "", m.name, index].join("|"));
+}
+function getUsageMap(materials: TripMaterial[], changes: Record<string, number | string>, saved: Record<string, number>): Record<string, number> {
+  const result: Record<string, number> = {};
+  getImportedMaterialChips(materials).forEach((m, i) => {
+    const key = supplierUsageKey(m, i);
+    const value = Object.prototype.hasOwnProperty.call(changes, key) ? changes[key]
+      : Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : m.qtyUsed ?? m.qty;
+    const num = value === "" ? NaN : Number(value);
+    if (!Number.isFinite(num) || num < 0 || num > Number(m.qty))
+      throw new Error(`Quantity Used for "${m.name}" must be between 0 and ${m.qty}.`);
+    result[key] = num;
+  });
+  return result;
+}
+function supplierReviewSignature(
+  materials: TripMaterial[],
+  draft: Record<string, number | string>,
+  saved: Record<string, number> = {},
+): string {
+  return JSON.stringify(getImportedMaterialChips(materials).map((material, index) => {
+    const key = supplierUsageKey(material, index);
+    const quantity = Object.prototype.hasOwnProperty.call(draft, key)
+      ? draft[key]
+      : Object.prototype.hasOwnProperty.call(saved, key)
+        ? saved[key] : material.qtyUsed ?? material.qty;
+    return [key, material.name, material.qty, quantity];
+  }));
+}
+
+function tagMaterialUsage(materials: TripMaterial[], usage: Record<string, number>): TripMaterial[] {
+  let i = 0;
+  return materials.map(m => {
+    if (!m.imported && m.source !== "supplier_invoice") return m;
+    const key = supplierUsageKey(m, i++);
+    return { ...m, qtyUsed: usage[key] ?? m.qtyUsed ?? m.qty };
+  });
+}
+function getUsedMaterialsForBilling(trip: TripDoc): TripMaterial[] {
+  let i = 0;
+  return (trip.materials || []).flatMap(m => {
+    if (!m.imported && m.source !== "supplier_invoice") return m.qty > 0 ? [m] : [];
+    const key = supplierUsageKey(m, i++);
+    const used = Number(trip.importedMaterialUsage?.[key] ?? m.qtyUsed ?? m.qty);
+    return Number.isFinite(used) && used > 0
+      ? [{ ...m, purchasedQty: m.qty, qty: used, qtyUsed: used }] : [];
+  });
+}
 function buildMaterialsSummaryFromLines(materials?: TripMaterial[] | null) {
   const items = Array.isArray(materials) ? materials : [];
   return items
@@ -909,9 +965,7 @@ function getHelperPayrollSummary(
 }
 
 function mergeTripMaterials(trips: TripDoc[]) {
-  return trips
-    .flatMap((trip) => (Array.isArray(trip.materials) ? trip.materials : []))
-    .filter((item) => String(item?.name || "").trim());
+  return trips.flatMap(getUsedMaterialsForBilling).filter(item => String(item?.name || "").trim());
 }
 
 function nearestHalfHoursFromMinutes(actualMinutes: number) {
@@ -1092,6 +1146,7 @@ function buildBillingPacketFromClosedFollowUp(args: {
 function preserveBillingMaterialsOnRebuild(
   proposed: BillingPacket,
   existing?: BillingPacket | null,
+  excludedSupplierKeys: Set<string> = new Set(),
 ): BillingPacket {
   if (!existing) return proposed;
   const previous = Array.isArray(existing.materials) ? existing.materials : [];
@@ -1107,6 +1162,7 @@ function preserveBillingMaterialsOnRebuild(
   for (const item of current) counts.set(identity(item), (counts.get(identity(item)) || 0) + 1);
   const kept = [...current];
   for (const oldItem of previous) {
+    if (oldItem.supplierLineKey && excludedSupplierKeys.has(String(oldItem.supplierLineKey))) continue;
     const key = identity(oldItem);
     const available = counts.get(key) || 0;
     if (available > 0) counts.set(key, available - 1);
@@ -1173,7 +1229,9 @@ function validateTripMaterialsCapture(args: {
     }
   }
 
-  if (!args.noMaterialsUsed && cleaned.length < 1) {
+  const hasUsed = cleaned.some(m => (m.imported || m.source === "supplier_invoice") ? Number(m.qtyUsed ?? m.qty) > 0 : m.qty > 0);
+  if (args.noMaterialsUsed && hasUsed) return { ok: false as const, message: 'Set imported Quantity Used to 0 and clear manual materials, or uncheck No materials used.' };
+  if (!args.noMaterialsUsed && !hasUsed) {
     return {
       ok: false as const,
       message: "Enter materials used or check No materials used.",
@@ -2659,6 +2717,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [tripNoMaterialsUsed, setTripNoMaterialsUsed] = useState<
     Record<string, boolean>
   >({});
+  const [tripImportedQtyUsed, setTripImportedQtyUsed] = useState<
+    Record<string, Record<string, number | string>>
+  >({});
+  // Each trip closeout needs new affirmative decisions. No option is preselected.
+  const [poReviewConfirmation, setPoReviewConfirmation] = useState<Record<string, string>>({});
+  const [additionalMaterialChoice, setAdditionalMaterialChoice] = useState<
+    Record<string, "yes" | "none">
+  >({});
   const [finishModeByTrip, setFinishModeByTrip] = useState<
     Record<string, FinishMode>
   >({});
@@ -3216,6 +3282,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         const nextMaterials: Record<string, TripMaterial[]> = {};
         const nextMaterialsText: Record<string, string> = {};
         const nextNoMaterials: Record<string, boolean> = {};
+        const nextImportedUsage: Record<string, Record<string, number | string>> = {};
         const nextFinish: Record<string, FinishMode> = {};
         const nextHelperConfirmed: Record<string, boolean> = {};
         const nextSeparateRequestChoice: Record<
@@ -3235,6 +3302,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           nextMaterialsText[trip.id] =
             trip.manualMaterialsNotes ?? manualMaterialsToText(loadedMaterials);
           nextNoMaterials[trip.id] = Boolean(trip.noMaterialsUsed);
+          nextImportedUsage[trip.id] = { ...(trip.importedMaterialUsage || {}) };
           nextFinish[trip.id] = "none";
           nextHelperConfirmed[trip.id] = true;
           nextSeparateRequestChoice[trip.id] = "no";
@@ -3247,6 +3315,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         setTripMaterials(nextMaterials);
         setTripMaterialsText(nextMaterialsText);
         setTripNoMaterialsUsed(nextNoMaterials);
+        setTripImportedQtyUsed(nextImportedUsage);
         setFinishModeByTrip(nextFinish);
         setHelperConfirmedByTrip(nextHelperConfirmed);
         setSeparateRequestChoiceByTrip(nextSeparateRequestChoice);
@@ -3548,6 +3617,9 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       materials: Array.isArray(trip.materials) ? trip.materials : [],
       manualMaterialsNotes: trip.manualMaterialsNotes ?? null,
       noMaterialsUsed: Boolean(trip.noMaterialsUsed),
+      importedMaterialUsage: trip.importedMaterialUsage ?? null,
+      poMaterialsReviewedAtCloseout: Boolean(trip.poMaterialsReviewedAtCloseout),
+      additionalMaterialsDeclaration: trip.additionalMaterialsDeclaration ?? null,
       outcome: trip.outcome ?? null,
       readyToBillAt: normalizeDateLike(trip.readyToBillAt),
       createdAt: normalizeDateLike(trip.createdAt) ?? undefined,
@@ -4313,6 +4385,13 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     [trips],
   );
 
+  const mobileWorkPerformedMissing =
+    Boolean(mobileFinishTrip) &&
+    mobileFinishMode === "follow_up" &&
+    !String(
+      mobileFinishTrip ? tripWorkNotes[mobileFinishTrip.id] || "" : "",
+    ).trim();
+
   const mobileResolutionNoteMissing =
     Boolean(mobileFinishTrip) &&
     mobileFinishMode === "resolved" &&
@@ -4340,6 +4419,8 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const mobileCompleteDisabled =
     !mobileFinishTrip ||
     mobileFinishMode === "none" ||
+    mobileWorkPerformedMissing ||
+    Boolean(mobileFinishTrip && getMaterialsCloseoutError(mobileFinishTrip)) ||
     mobileResolutionNoteMissing ||
     mobileFollowUpNoteMissing ||
     mobileSeparateRequestDescriptionMissing ||
@@ -5054,6 +5135,43 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     }
   }
 
+  function getMaterialsCloseoutError(trip: TripDoc): string {
+    const imported = getImportedMaterialChips(trip.materials || tripMaterials[trip.id]);
+    const manualText = String(tripMaterialsText[trip.id] ?? trip.manualMaterialsNotes ?? "").trim();
+    const noMaterials = Boolean(tripNoMaterialsUsed[trip.id]);
+
+    if (imported.length > 0) {
+      const signature = supplierReviewSignature(
+        imported, tripImportedQtyUsed[trip.id] || {}, trip.importedMaterialUsage || {},
+      );
+      if (poReviewConfirmation[trip.id] !== signature) {
+        return "Review and confirm all supplier PO quantities used.";
+      }
+      const choice = additionalMaterialChoice[trip.id];
+      if (!choice) return "Confirm whether any additional materials were used.";
+      if (choice === "yes" && !manualText) {
+        return "List the additional materials used.";
+      }
+      if (choice === "none" && manualText) {
+        return "Additional materials are listed. Select Yes or clear those notes.";
+      }
+      try {
+        getUsageMap(imported, tripImportedQtyUsed[trip.id] || {}, trip.importedMaterialUsage || {});
+      } catch (error) {
+        return error instanceof Error ? error.message : "Invalid PO quantity used.";
+      }
+      return "";
+    }
+
+    if (noMaterials && manualText) {
+      return 'Clear the materials entered or uncheck "No materials used".';
+    }
+    if (!noMaterials && !manualText) {
+      return 'Enter materials used or check "No materials used on this trip".';
+    }
+    return "";
+  }
+
   function renderTripMaterialsEditor(tripId: string) {
     const latestTrip = trips.find((item) => item.id === tripId);
     const materialsText = tripMaterialsText[tripId] ??
@@ -5063,6 +5181,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
       latestTrip?.materials || tripMaterials[tripId],
     );
     const noMaterialsUsed = Boolean(tripNoMaterialsUsed[tripId]);
+    const importedDraft = tripImportedQtyUsed[tripId] || {};
+    const savedUsage = latestTrip?.importedMaterialUsage || {};
+    const hasImported = importedMaterials.length > 0;
+    const reviewSignature = supplierReviewSignature(importedMaterials, importedDraft, savedUsage);
+    const isReviewed = poReviewConfirmation[tripId] === reviewSignature;
+    const extraChoice = additionalMaterialChoice[tripId];
 
     return (
       <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 1 }}>
@@ -5077,73 +5201,154 @@ export default function ServiceTicketDetailPage({ params }: Props) {
                 <Typography variant="subtitle2" fontWeight={700}>
                   Supplier PO Materials — Imported Automatically
                 </Typography>
-                {importedMaterials.map((material, index) => (
-                  <Box key={material.supplierLineKey || material.id || index}>
-                    <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-                      {formatSingleMaterialLine(material)}
-                    </Typography>
-                    <Chip
-                      size="small"
-                      color={material.reviewStatus === "pending" ? "warning" : "success"}
-                      variant="outlined"
-                      label={[
-                        material.supplierName || "Supplier",
-                        material.poCode ? `PO ${material.poCode}` : "",
-                        material.reviewStatus === "pending" ? "Needs Review" : "",
-                      ].filter(Boolean).join(" • ")}
-                    />
-                  </Box>
-                ))}
+                {importedMaterials.map((material, index) => {
+                  const key = supplierUsageKey(material, index);
+                  const purchased = Number(material.qty);
+                  const selected = Object.prototype.hasOwnProperty.call(importedDraft, key)
+                    ? importedDraft[key] : Object.prototype.hasOwnProperty.call(savedUsage, key)
+                    ? savedUsage[key] : material.qtyUsed ?? purchased;
+                  const used = selected === "" ? NaN : Number(selected);
+                  const invalid = !Number.isFinite(used) || used < 0 || used > purchased;
+                  return (
+                    <Box key={key}>
+                      <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                        {formatSingleMaterialLine(material)}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        color={material.reviewStatus === "pending" ? "warning" : "success"}
+                        variant="outlined"
+                        label={[material.supplierName || "Supplier", material.poCode ? `PO ${material.poCode}` : "", material.reviewStatus === "pending" ? "Needs Review" : ""].filter(Boolean).join(" • ")}
+                      />
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1, mb: 1 }}>
+                        <TextField label="Purchased" size="small" value={purchased} disabled sx={{ width: 100 }} />
+                        <TextField label="Quantity Used" size="small" type="number" value={selected}
+                          error={invalid} inputProps={{ min: 0, max: purchased, step: "any" }}
+                          onChange={e => {
+                            setTripImportedQtyUsed(prev => ({ ...prev,
+                              [tripId]: { ...(prev[tripId] || {}), [key]: e.target.value },
+                            }));
+                            setPoReviewConfirmation(prev => ({ ...prev, [tripId]: "" }));
+                          }} sx={{ width: 135 }} />
+                        <TextField label="Unused" size="small" disabled
+                          value={invalid ? "—" : Number((purchased - used).toFixed(4))} sx={{ width: 90 }} />
+                      </Stack>
+                    </Box>
+                  );
+                })}
                 <Typography variant="caption" color="text.secondary">
-                  Supplier items are recorded separately. They cannot replace technician notes.
+                  Purchase quantities are locked. Only Quantity Used can be adjusted. Unused quantities stay on the purchase record.
                 </Typography>
+                <FormControlLabel
+                  control={<Checkbox checked={isReviewed} onChange={(e) =>
+                    setPoReviewConfirmation(prev => ({
+                      ...prev,
+                      [tripId]: e.target.checked ? reviewSignature : "",
+                    }))
+                  } />}
+                  label="I reviewed the PO materials and confirmed the quantities actually used."
+                />
               </Stack>
             </Paper>
           ) : null}
 
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={noMaterialsUsed}
+          {hasImported ? (
+            <>
+              <Divider sx={{ my: 1 }} />
+              <Typography variant="subtitle2" fontWeight={700}>
+                2. Additional Materials Used
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Did you use any additional materials not already listed on the PO?
+              </Typography>
+              <RadioGroup
+                value={extraChoice || ""}
                 onChange={(e) => {
-                  const checked = e.target.checked;
-                  setTripNoMaterialsUsed((prev) => ({
-                    ...prev,
-                    [tripId]: checked,
+                  setAdditionalMaterialChoice(prev => ({
+                    ...prev, [tripId]: e.target.value as "yes" | "none",
                   }));
-
-                  // Do not clear any notes here. An accidental checkbox tap
-                  // must not silently erase the technician's materials text.
-                  // Supplier items are always preserved independently.
                 }}
-              />
-            }
-            label="No materials used on this trip"
-          />
-
-          {noMaterialsUsed ? (
-            <Alert severity="success" variant="outlined">
-              This trip is marked as no materials used.
-            </Alert>
+              >
+                <FormControlLabel value="yes" control={<Radio />} label="Yes — I used additional materials" />
+                <FormControlLabel value="none" control={<Radio />} label="No — No additional materials used" />
+              </RadioGroup>
+              {extraChoice === "yes" ? (
+                <TextField
+                  label="Additional Materials / Parts Used"
+                  multiline
+                  minRows={4}
+                  value={materialsText}
+                  onChange={(e) => setTripMaterialsText(prev => ({
+                    ...prev, [tripId]: e.target.value,
+                  }))}
+                  placeholder={"Example: 2 angle stops from truck stock\n1 supply line"}
+                  helperText="List only materials not already accounted for on the imported PO."
+                  error={!materialsText.trim()}
+                />
+              ) : null}
+              {extraChoice === "none" && materialsText.trim() ? (
+                <Alert severity="warning" variant="outlined">
+                  Additional materials are already listed. Select Yes to retain them,
+                  or clear the list before confirming none were used.
+                  <TextField
+                    fullWidth multiline minRows={2} sx={{ mt: 1 }}
+                    label="Existing additional materials"
+                    value={materialsText}
+                    onChange={(e) => setTripMaterialsText(prev => ({
+                      ...prev, [tripId]: e.target.value,
+                    }))}
+                  />
+                </Alert>
+              ) : null}
+              {!extraChoice ? (
+                <Alert severity="info" variant="outlined">
+                  Select Yes or No above before closing this trip.
+                </Alert>
+              ) : null}
+            </>
           ) : (
-            <TextField
-              label="Technician Materials / Parts Used"
-              multiline
-              minRows={5}
-              value={materialsText}
-              onChange={(e) =>
-                setTripMaterialsText((prev) => ({
-                  ...prev,
-                  [tripId]: e.target.value,
-                }))
-              }
-              placeholder={`Example:
-Angle stop
-Wax ring
-PVC fittings for drain reset
-Supply line`}
-              helperText="Technician notes only. PO materials remain in the separate list above and are not overwritten."
-            />
+            <>
+              <Typography variant="subtitle2" fontWeight={700}>
+                Materials Used
+              </Typography>
+              <FormControlLabel
+                control={<Checkbox checked={noMaterialsUsed}
+                  onChange={(e) => setTripNoMaterialsUsed(prev => ({
+                    ...prev, [tripId]: e.target.checked,
+                  }))} />}
+                label="No materials used on this trip"
+              />
+              {noMaterialsUsed ? (
+                <>
+                  <Alert severity={materialsText.trim() ? "warning" : "success"} variant="outlined">
+                    {materialsText.trim()
+                      ? "Materials were already entered. Uncheck No materials used, or clear the list below."
+                      : "You confirmed no materials were used on this trip."}
+                  </Alert>
+                  {materialsText.trim() ? (
+                    <TextField
+                      label="Existing materials (clear to confirm none)"
+                      multiline minRows={2}
+                      value={materialsText}
+                      onChange={(e) => setTripMaterialsText(prev => ({
+                        ...prev, [tripId]: e.target.value,
+                      }))}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <TextField
+                  label="Materials / Parts Used"
+                  multiline minRows={5}
+                  value={materialsText}
+                  onChange={(e) => setTripMaterialsText(prev => ({
+                    ...prev, [tripId]: e.target.value,
+                  }))}
+                  placeholder={"Example:\nAngle stop\nWax ring\nPVC fittings"}
+                  helperText="Enter materials used, or explicitly check No materials used."
+                />
+              )}
+            </>
           )}
         </Stack>
       </Paper>
@@ -6552,6 +6757,11 @@ async function handleStartTrip(trip: TripDoc) {
       const now = nowIso();
       const followNotes = String(tripFollowUpNotes[trip.id] || "").trim();
       const resolutionNotes = String(tripResolutionNotes[trip.id] || "").trim();
+      const workPerformed = String(tripWorkNotes[trip.id] || "").trim();
+
+      if (mode === "follow_up" && !workPerformed) {
+        throw new Error("Describe the work performed on this visit before completing as Follow Up.");
+      }
 
       if (mode === "follow_up" && !followNotes) {
         throw new Error("Follow Up requires follow-up notes.");
@@ -6574,8 +6784,17 @@ async function handleStartTrip(trip: TripDoc) {
         );
       }
 
+      const materialsError = getMaterialsCloseoutError(trip);
+      if (materialsError) throw new Error(materialsError);
       const materialsText = String(tripMaterialsText[trip.id] || "").trim();
-      const noMaterialsUsed = Boolean(tripNoMaterialsUsed[trip.id]);
+      const hasImportedMaterials = getImportedMaterialChips(trip.materials || tripMaterials[trip.id]).length > 0;
+      const extraChoice = additionalMaterialChoice[trip.id];
+      const importedUsageChanges = tripImportedQtyUsed[trip.id] || {};
+      const importedUsage = getUsageMap(tripMaterials[trip.id] || trip.materials || [],
+        importedUsageChanges, trip.importedMaterialUsage || {});
+      const noMaterialsUsed = hasImportedMaterials
+        ? extraChoice === "none" && Object.values(importedUsage).every(qty => qty === 0)
+        : Boolean(tripNoMaterialsUsed[trip.id]);
       if (noMaterialsUsed && materialsText) {
         throw new Error(
           'There are technician material notes entered. Uncheck "No materials used" or clear the notes intentionally before completing the trip.',
@@ -6584,7 +6803,7 @@ async function handleStartTrip(trip: TripDoc) {
       // This initial check is only for immediate UI validation; the final
       // materials are re-evaluated from the live trip INSIDE the transaction.
       const materialCheck = validateTripMaterialsCapture({
-        materials: parseMaterialsText(materialsText, tripMaterials[trip.id]),
+        materials: tagMaterialUsage(parseMaterialsText(materialsText, tripMaterials[trip.id]), importedUsage),
         noMaterialsUsed,
       });
 
@@ -6727,12 +6946,15 @@ async function handleStartTrip(trip: TripDoc) {
         closeoutHours, timerElapsedMinutes, submittedHoursAuthoritative: true,
         hoursSource: "submitted_closeout", hoursAdjusted,
         crewHoursByUid: payrollHoursByUid,
-        workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+        workNotes: workPerformed,
         resolutionNotes: mode === "resolved" ? resolutionNotes : null,
         followUpNotes: mode === "follow_up" ? followNotes : null,
         readyToBillAt: mode === "resolved" ? now : null,
         materials: materialCheck.cleaned, manualMaterialsNotes: materialsText,
-        noMaterialsUsed, crewConfirmed: finalCrew,
+        noMaterialsUsed, importedMaterialUsage: importedUsage,
+        poMaterialsReviewedAtCloseout: hasImportedMaterials,
+        additionalMaterialsDeclaration: hasImportedMaterials ? extraChoice : null,
+        crewConfirmed: finalCrew,
         updatedAt: now,
       } : t);
       let committedStatus = deriveNextTicketStatus(committedTrips, mode);
@@ -6783,9 +7005,24 @@ async function handleStartTrip(trip: TripDoc) {
 
         // OCR could finish at any time while this closeout is open. Merge its
         // latest imported rows INSIDE the same transaction as the closeout.
+        const liveImported = getImportedMaterialChips(liveTrip.materials || []);
+        if (liveImported.length !== (hasImportedMaterials ? getImportedMaterialChips(trip.materials || tripMaterials[trip.id]).length : 0)) {
+          throw new Error("Supplier materials changed while closing. Review the updated PO quantities and try again.");
+        }
+        if (liveImported.length > 0) {
+          const liveSignature = supplierReviewSignature(liveImported, importedUsageChanges, liveTrip.importedMaterialUsage || {});
+          if (poReviewConfirmation[trip.id] !== liveSignature) {
+            throw new Error("Supplier PO items changed. Reconfirm the quantities actually used.");
+          }
+        }
+        const liveUsage = getUsageMap(liveTrip.materials || [],
+          importedUsageChanges, liveTrip.importedMaterialUsage || {});
+        const liveNoMaterialsUsed = liveImported.length > 0
+          ? extraChoice === "none" && Object.values(liveUsage).every(qty => qty === 0)
+          : noMaterialsUsed;
         const liveCheck = validateTripMaterialsCapture({
-          materials: parseMaterialsText(materialsText, liveTrip.materials),
-          noMaterialsUsed,
+          materials: tagMaterialUsage(parseMaterialsText(materialsText, liveTrip.materials), liveUsage),
+          noMaterialsUsed: liveNoMaterialsUsed,
         });
         if (!liveCheck.ok) throw new Error(liveCheck.message);
         const completedLiveTrip: TripDoc = {
@@ -6798,11 +7035,14 @@ async function handleStartTrip(trip: TripDoc) {
           readyToBillAt: mode === "resolved" ? now : null,
           materials: liveCheck.cleaned,
           manualMaterialsNotes: materialsText,
-          noMaterialsUsed,
+          noMaterialsUsed: liveNoMaterialsUsed,
+          importedMaterialUsage: liveUsage,
+          poMaterialsReviewedAtCloseout: liveImported.length > 0,
+          additionalMaterialsDeclaration: liveImported.length > 0 ? extraChoice : null,
           billableHours: hoursToUse,
           actualMinutes,
           closeoutHours,
-          workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+          workNotes: workPerformed,
           resolutionNotes: mode === "resolved" ? resolutionNotes : null,
           followUpNotes: mode === "follow_up" ? followNotes : null,
           updatedAt: now,
@@ -6820,6 +7060,10 @@ async function handleStartTrip(trip: TripDoc) {
               liveTicketSnap?.exists()
                 ? normalizeBillingPacket(liveTicketSnap.data().billing)
                 : null,
+              new Set((completedLiveTrip.materials || [])
+                .filter(m => (m.imported || m.source === "supplier_invoice") &&
+                  Number(m.qtyUsed ?? m.qty) === 0 && m.supplierLineKey)
+                .map(m => String(m.supplierLineKey))),
             )
           : null;
 
@@ -6838,14 +7082,17 @@ async function handleStartTrip(trip: TripDoc) {
           hoursSource: "submitted_closeout",
           hoursAdjusted,
           crewHoursByUid: payrollHoursByUid,
-          workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+          workNotes: workPerformed,
           resolutionNotes: mode === "resolved" ? resolutionNotes : null,
           followUpNotes: mode === "follow_up" ? followNotes : null,
           outcome: mode,
           readyToBillAt: mode === "resolved" ? now : null,
           materials: liveCheck.cleaned,
           manualMaterialsNotes: materialsText,
-          noMaterialsUsed,
+          noMaterialsUsed: liveNoMaterialsUsed,
+          importedMaterialUsage: liveUsage,
+          poMaterialsReviewedAtCloseout: liveImported.length > 0,
+          additionalMaterialsDeclaration: liveImported.length > 0 ? extraChoice : null,
           crewConfirmed: finalCrew,
           updatedAt: now,
           updatedByUid: myUid,
@@ -6928,7 +7175,7 @@ async function handleStartTrip(trip: TripDoc) {
               hoursSource: "submitted_closeout",
               hoursAdjusted,
               crewHoursByUid: payrollHoursByUid,
-              workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+              workNotes: workPerformed,
               resolutionNotes: mode === "resolved" ? resolutionNotes : null,
               followUpNotes: mode === "follow_up" ? followNotes : null,
               outcome: mode,
@@ -6936,6 +7183,9 @@ async function handleStartTrip(trip: TripDoc) {
               materials: savedMaterials,
               manualMaterialsNotes: materialsText,
               noMaterialsUsed,
+              importedMaterialUsage: importedUsage,
+              poMaterialsReviewedAtCloseout: hasImportedMaterials,
+              additionalMaterialsDeclaration: hasImportedMaterials ? extraChoice : null,
               crewConfirmed: finalCrew,
             }
           : t,
@@ -8757,6 +9007,27 @@ async function handleStartTrip(trip: TripDoc) {
                     />
 
                     {mobileFinishMode === "follow_up" ? (
+                      <TextField
+                        label="Work Performed (Required)"
+                        multiline
+                        minRows={4}
+                        value={tripWorkNotes[mobileFinishTrip.id] ?? ""}
+                        onChange={(e) =>
+                          setTripWorkNotes((prev) => ({
+                            ...prev,
+                            [mobileFinishTrip.id]: e.target.value,
+                          }))
+                        }
+                        error={mobileWorkPerformedMissing}
+                        helperText={
+                          mobileWorkPerformedMissing
+                            ? "Document what was accomplished on this visit."
+                            : "Keep completed work separate from what still needs follow-up."
+                        }
+                      />
+                    ) : null}
+
+                    {mobileFinishMode === "follow_up" ? (
                       <>
                         <TextField
                           label="Follow-Up Notes"
@@ -9906,6 +10177,10 @@ async function handleStartTrip(trip: TripDoc) {
                         timerState !== "running" &&
                         normalizeTripStatus(trip.status) !== "complete" &&
                         normalizeTripStatus(trip.status) !== "cancelled";
+                      const workPerformedMissing =
+                        finishMode === "follow_up" &&
+                        !String(tripWorkNotes[trip.id] || "").trim();
+                      const materialsCloseoutMissing = Boolean(getMaterialsCloseoutError(trip));
                       const followUpNoteMissing =
                         finishMode === "follow_up" &&
                         !String(tripFollowUpNotes[trip.id] || "").trim();
@@ -9922,7 +10197,7 @@ async function handleStartTrip(trip: TripDoc) {
                       ).trim();
                       const completedMaterialsNotes = trip.noMaterialsUsed
                         ? "No materials used"
-                        : materialLinesToText(trip.materials);
+                        : materialLinesToText(getUsedMaterialsForBilling(trip));
                       const helperPayrollSummary =
                         getHelperPayrollSummary(trip);
 
@@ -10511,10 +10786,16 @@ async function handleStartTrip(trip: TripDoc) {
 
                             <TextField
                               id={`trip-work-notes-${trip.id}`}
-                              label="Field Notes"
+                              label={showFinishPanel && finishMode === "follow_up" ? "Work Performed (Required)" : "Field Notes (Optional)"}
                               multiline
                               minRows={3}
                               value={tripWorkNotes[trip.id] ?? ""}
+                              error={showFinishPanel && workPerformedMissing}
+                              helperText={
+                                showFinishPanel && finishMode === "follow_up"
+                                  ? "Describe what was completed before the return visit."
+                                  : "For resolved trips, document completed work in Resolution Notes."
+                              }
                               onChange={(e) =>
                                 setTripWorkNotes((prev) => ({
                                   ...prev,
@@ -10644,7 +10925,9 @@ async function handleStartTrip(trip: TripDoc) {
                                           !canAct ||
                                           savingThis ||
                                           isInvoicedTicket ||
-                                          followUpNoteMissing
+                                          followUpNoteMissing ||
+                                          workPerformedMissing ||
+                                          materialsCloseoutMissing
                                         }
                                       >
                                         Complete as Follow-Up
@@ -10688,7 +10971,8 @@ async function handleStartTrip(trip: TripDoc) {
                                           !canAct ||
                                           savingThis ||
                                           isInvoicedTicket ||
-                                          resolutionNoteMissing
+                                          resolutionNoteMissing ||
+                                          materialsCloseoutMissing
                                         }
                                       >
                                         Complete as Resolved — Ready to Bill

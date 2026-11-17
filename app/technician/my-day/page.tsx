@@ -110,6 +110,11 @@ type Trip = {
   endTime?: string;
   crew?: TripCrew;
   link?: TripLink;
+  // Instructions from dispatch belong to the individual trip, not the ticket.
+  notes?: string | null;
+  dispatchNotesUpdatedAt?: string | null;
+  dispatchNotesUpdatedByName?: string | null;
+  dispatchNotesRevision?: number | null;
   cancelReason?: string | null;
   confirmedBy?: Record<string, TripConfirmedEntry> | null;
   completedAt?: string | null;
@@ -137,6 +142,11 @@ type MyDayItem = {
   secondaryTechText?: string;
   secondaryHelperText?: string;
   issueDetailsText?: string;
+  // Trip-level dispatch instructions, independent of issue and follow-up notes.
+  dispatchNotesText?: string;
+  dispatchNotesUpdatedAt?: string | null;
+  dispatchNotesUpdatedByName?: string | null;
+  dispatchNotesRevision?: number;
   followUpText?: string;
   status: string;
   sortKey: string;
@@ -875,6 +885,10 @@ function buildPtoGuardedTripFromSnapshot(tripId: string, data: any): Trip {
     endTime: data.endTime ?? undefined,
     crew: data.crew ?? undefined,
     link: data.link ?? undefined,
+    notes: data.notes ?? null,
+    dispatchNotesUpdatedAt: data.dispatchNotesUpdatedAt ?? null,
+    dispatchNotesUpdatedByName: data.dispatchNotesUpdatedByName ?? null,
+    dispatchNotesRevision: typeof data.dispatchNotesRevision === "number" ? data.dispatchNotesRevision : 0,
     cancelReason: data.cancelReason ?? null,
     confirmedBy: (data.confirmedBy ?? null) as any,
     completedAt: data.completedAt ?? null,
@@ -1292,6 +1306,11 @@ export default function TechnicianMyDayPage() {
               endTime: d.endTime ?? undefined,
               crew: d.crew ?? undefined,
               link: d.link ?? undefined,
+              notes: d.notes ?? null,
+              dispatchNotesUpdatedAt: d.dispatchNotesUpdatedAt ?? null,
+              dispatchNotesUpdatedByName: d.dispatchNotesUpdatedByName ?? null,
+              dispatchNotesRevision:
+                typeof d.dispatchNotesRevision === "number" ? d.dispatchNotesRevision : 0,
               cancelReason: d.cancelReason ?? null,
               confirmedBy: (d.confirmedBy ?? null) as any,
               completedAt: d.completedAt ?? null,
@@ -1631,6 +1650,13 @@ return {
             ? safeStr(st?.issueDetails).trim() || safeStr(st?.issueSummary).trim() || ""
             : "";
 
+        // Dispatch notes are stored on this specific trip, so they never
+        // accidentally inherit instructions from another trip on the ticket.
+        const dispatchNotesText =
+          (trip.type || "").toLowerCase() === "service"
+            ? safeStr(trip.notes).trim()
+            : "";
+
         const followUpText =
           (trip.type || "").toLowerCase() === "service" && serviceTicketId
             ? safeStr(followUpByTicketId[serviceTicketId]).trim() || ""
@@ -1650,6 +1676,10 @@ return {
           secondaryTechText: crew.secondaryTech,
           secondaryHelperText: crew.secondaryHelper,
           issueDetailsText,
+          dispatchNotesText,
+          dispatchNotesUpdatedAt: trip.dispatchNotesUpdatedAt ?? null,
+          dispatchNotesUpdatedByName: trip.dispatchNotesUpdatedByName ?? null,
+          dispatchNotesRevision: Number(trip.dispatchNotesRevision || 0),
           followUpText,
           status,
           sortKey,
@@ -2837,33 +2867,87 @@ PTO coverage is active right now.
                               </Stack>
                             }
                             detailBlock={
-                              item.issueDetailsText ? (
-                                <Box
-                                  sx={{
-                                    pl: 1.25,
-                                    borderLeft: `3px solid ${alpha(theme.palette.primary.main, 0.34)}`,
-                                  }}
-                                >
-                                  <Stack direction="row" spacing={1} alignItems="flex-start">
-                                    <NotesRoundedIcon
-                                      sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }}
-                                    />
-                                    <Box sx={{ minWidth: 0 }}>
-                                      <Typography
-                                        variant="caption"
-                                        sx={{ fontWeight: 700, color: "primary.light" }}
-                                      >
-                                        Issue
-                                      </Typography>
-                                      <Typography
-                                        variant="body2"
-                                        sx={{ mt: 0.25, whiteSpace: "pre-wrap" }}
-                                      >
-                                        {item.issueDetailsText}
-                                      </Typography>
+                              item.issueDetailsText || item.dispatchNotesText ? (
+                                <Stack spacing={1.5}>
+                                  {item.issueDetailsText ? (
+                                    <Box
+                                      sx={{
+                                        pl: 1.25,
+                                        borderLeft: `3px solid ${alpha(theme.palette.primary.main, 0.34)}`,
+                                      }}
+                                    >
+                                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                                        <NotesRoundedIcon
+                                          sx={{ fontSize: 18, color: "primary.light", mt: 0.1 }}
+                                        />
+                                        <Box sx={{ minWidth: 0 }}>
+                                          <Typography
+                                            variant="caption"
+                                            sx={{ fontWeight: 700, color: "primary.light" }}
+                                          >
+                                            Issue
+                                          </Typography>
+                                          <Typography
+                                            variant="body2"
+                                            sx={{ mt: 0.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                                          >
+                                            {item.issueDetailsText}
+                                          </Typography>
+                                        </Box>
+                                      </Stack>
                                     </Box>
-                                  </Stack>
-                                </Box>
+                                  ) : null}
+
+                                  {isService && item.dispatchNotesText ? (
+                                    <Box
+                                      sx={{
+                                        p: 1.5,
+                                        borderRadius: 2,
+                                        bgcolor: alpha(theme.palette.info.main, 0.07),
+                                        border: `1px solid ${alpha(theme.palette.info.main, 0.42)}`,
+                                      }}
+                                    >
+                                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                                        <CampaignRoundedIcon
+                                          sx={{ fontSize: 19, color: "info.main", mt: 0.1 }}
+                                        />
+                                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                                          <Typography
+                                            variant="subtitle2"
+                                            sx={{ fontWeight: 800, color: "info.light" }}
+                                          >
+                                            Dispatch Notes — This Visit
+                                          </Typography>
+                                          <Typography
+                                            variant="body2"
+                                            sx={{ mt: 0.55, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                                          >
+                                            {item.dispatchNotesText}
+                                          </Typography>
+                                          {Number(item.dispatchNotesRevision || 0) > 0 &&
+                                          item.dispatchNotesUpdatedAt ? (
+                                            <Typography
+                                              variant="caption"
+                                              color="text.secondary"
+                                              sx={{ display: "block", mt: 1 }}
+                                            >
+                                              Updated by {item.dispatchNotesUpdatedByName || "Dispatch"}
+                                              {` · ${formatCrewTimestamp(item.dispatchNotesUpdatedAt)}`}
+                                            </Typography>
+                                          ) : (
+                                            <Typography
+                                              variant="caption"
+                                              color="text.secondary"
+                                              sx={{ display: "block", mt: 0.75 }}
+                                            >
+                                              Instructions for this scheduled visit only
+                                            </Typography>
+                                          )}
+                                        </Box>
+                                      </Stack>
+                                    </Box>
+                                  ) : null}
+                                </Stack>
                               ) : undefined
                             }
                             followUpBlock={
