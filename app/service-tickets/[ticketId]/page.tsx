@@ -4313,6 +4313,12 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     [trips],
   );
 
+  const mobileWorkPerformedMissing =
+    Boolean(mobileFinishTrip) &&
+    !String(
+      mobileFinishTrip ? tripWorkNotes[mobileFinishTrip.id] || "" : "",
+    ).trim();
+
   const mobileResolutionNoteMissing =
     Boolean(mobileFinishTrip) &&
     mobileFinishMode === "resolved" &&
@@ -4340,6 +4346,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const mobileCompleteDisabled =
     !mobileFinishTrip ||
     mobileFinishMode === "none" ||
+    mobileWorkPerformedMissing ||
     mobileResolutionNoteMissing ||
     mobileFollowUpNoteMissing ||
     mobileSeparateRequestDescriptionMissing ||
@@ -6552,6 +6559,11 @@ async function handleStartTrip(trip: TripDoc) {
       const now = nowIso();
       const followNotes = String(tripFollowUpNotes[trip.id] || "").trim();
       const resolutionNotes = String(tripResolutionNotes[trip.id] || "").trim();
+      const workPerformed = String(tripWorkNotes[trip.id] || "").trim();
+
+      if (!workPerformed) {
+        throw new Error("Describe the work performed on this visit before completing the trip.");
+      }
 
       if (mode === "follow_up" && !followNotes) {
         throw new Error("Follow Up requires follow-up notes.");
@@ -6727,7 +6739,7 @@ async function handleStartTrip(trip: TripDoc) {
         closeoutHours, timerElapsedMinutes, submittedHoursAuthoritative: true,
         hoursSource: "submitted_closeout", hoursAdjusted,
         crewHoursByUid: payrollHoursByUid,
-        workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+        workNotes: workPerformed,
         resolutionNotes: mode === "resolved" ? resolutionNotes : null,
         followUpNotes: mode === "follow_up" ? followNotes : null,
         readyToBillAt: mode === "resolved" ? now : null,
@@ -6802,7 +6814,7 @@ async function handleStartTrip(trip: TripDoc) {
           billableHours: hoursToUse,
           actualMinutes,
           closeoutHours,
-          workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+          workNotes: workPerformed,
           resolutionNotes: mode === "resolved" ? resolutionNotes : null,
           followUpNotes: mode === "follow_up" ? followNotes : null,
           updatedAt: now,
@@ -6838,7 +6850,7 @@ async function handleStartTrip(trip: TripDoc) {
           hoursSource: "submitted_closeout",
           hoursAdjusted,
           crewHoursByUid: payrollHoursByUid,
-          workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+          workNotes: workPerformed,
           resolutionNotes: mode === "resolved" ? resolutionNotes : null,
           followUpNotes: mode === "follow_up" ? followNotes : null,
           outcome: mode,
@@ -6928,7 +6940,7 @@ async function handleStartTrip(trip: TripDoc) {
               hoursSource: "submitted_closeout",
               hoursAdjusted,
               crewHoursByUid: payrollHoursByUid,
-              workNotes: String(tripWorkNotes[trip.id] || "").trim() || null,
+              workNotes: workPerformed,
               resolutionNotes: mode === "resolved" ? resolutionNotes : null,
               followUpNotes: mode === "follow_up" ? followNotes : null,
               outcome: mode,
@@ -8756,6 +8768,25 @@ async function handleStartTrip(trip: TripDoc) {
                       label="Include helper in payroll"
                     />
 
+                    <TextField
+                      label="Work Performed (Required)"
+                      multiline
+                      minRows={4}
+                      value={tripWorkNotes[mobileFinishTrip.id] ?? ""}
+                      onChange={(e) =>
+                        setTripWorkNotes((prev) => ({
+                          ...prev,
+                          [mobileFinishTrip.id]: e.target.value,
+                        }))
+                      }
+                      error={mobileWorkPerformedMissing}
+                      helperText={
+                        mobileWorkPerformedMissing
+                          ? "Describe what was done during this visit, even when follow-up is needed."
+                          : "This visit's completed work is saved separately from follow-up instructions."
+                      }
+                    />
+
                     {mobileFinishMode === "follow_up" ? (
                       <>
                         <TextField
@@ -9906,6 +9937,9 @@ async function handleStartTrip(trip: TripDoc) {
                         timerState !== "running" &&
                         normalizeTripStatus(trip.status) !== "complete" &&
                         normalizeTripStatus(trip.status) !== "cancelled";
+                      const workPerformedMissing =
+                        finishMode !== "none" &&
+                        !String(tripWorkNotes[trip.id] || "").trim();
                       const followUpNoteMissing =
                         finishMode === "follow_up" &&
                         !String(tripFollowUpNotes[trip.id] || "").trim();
@@ -10511,10 +10545,16 @@ async function handleStartTrip(trip: TripDoc) {
 
                             <TextField
                               id={`trip-work-notes-${trip.id}`}
-                              label="Field Notes"
+                              label={showFinishPanel ? "Work Performed (Required)" : "Field Notes"}
                               multiline
                               minRows={3}
                               value={tripWorkNotes[trip.id] ?? ""}
+                              error={showFinishPanel && workPerformedMissing}
+                              helperText={
+                                showFinishPanel
+                                  ? "Describe the work completed on this visit before closing, even for a follow-up."
+                                  : undefined
+                              }
                               onChange={(e) =>
                                 setTripWorkNotes((prev) => ({
                                   ...prev,
@@ -10644,7 +10684,8 @@ async function handleStartTrip(trip: TripDoc) {
                                           !canAct ||
                                           savingThis ||
                                           isInvoicedTicket ||
-                                          followUpNoteMissing
+                                          followUpNoteMissing ||
+                                          workPerformedMissing
                                         }
                                       >
                                         Complete as Follow-Up
@@ -10688,7 +10729,8 @@ async function handleStartTrip(trip: TripDoc) {
                                           !canAct ||
                                           savingThis ||
                                           isInvoicedTicket ||
-                                          resolutionNoteMissing
+                                          resolutionNoteMissing ||
+                                          workPerformedMissing
                                         }
                                       >
                                         Complete as Resolved — Ready to Bill
