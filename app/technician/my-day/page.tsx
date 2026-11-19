@@ -1126,6 +1126,12 @@ export default function TechnicianMyDayPage() {
     tripId: "",
   });
   const [poSnackbar, setPoSnackbar] = useState("");
+  const [notesDialogTripId, setNotesDialogTripId] = useState("");
+  const [notesDraft, setNotesDraft] = useState("");
+  const [notesOriginal, setNotesOriginal] = useState("");
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [notesError, setNotesError] = useState("");
+  const [notesSuccess, setNotesSuccess] = useState("");
 
   const todayIso = useMemo(() => isoTodayLocal(), []);
   const myUid = appUser?.uid || "";
@@ -1652,10 +1658,7 @@ return {
 
         // Dispatch notes are stored on this specific trip, so they never
         // accidentally inherit instructions from another trip on the ticket.
-        const dispatchNotesText =
-          (trip.type || "").toLowerCase() === "service"
-            ? safeStr(trip.notes).trim()
-            : "";
+        const dispatchNotesText = safeStr(trip.notes).trim();
 
         const followUpText =
           (trip.type || "").toLowerCase() === "service" && serviceTicketId
@@ -1838,6 +1841,68 @@ async function handleGeneratePo(item: MyDayItem) {
     setPoBusyTripId("");
   }
 }
+
+  const notesDialogItem = useMemo(
+    () => items.find((item) => item.id === notesDialogTripId) || null,
+    [items, notesDialogTripId],
+  );
+
+  function openNotesDialog(item: MyDayItem) {
+    setNotesDialogTripId(item.id);
+    setNotesDraft(item.dispatchNotesText || "");
+    setNotesOriginal(item.dispatchNotesText || "");
+    setNotesError("");
+    setNotesSuccess("");
+  }
+
+  function closeNotesDialog() {
+    if (notesSaving) return;
+    setNotesDialogTripId("");
+    setNotesDraft("");
+    setNotesOriginal("");
+    setNotesError("");
+    setNotesSuccess("");
+  }
+
+  async function saveTripNotes() {
+    if (!notesDialogItem || !myUid || notesSaving) return;
+    const tripId = notesDialogItem.id;
+    const nextNotes = notesDraft.trim();
+    const priorNotes = notesOriginal.trim();
+    if (nextNotes === priorNotes) {
+      closeNotesDialog();
+      return;
+    }
+
+    setNotesSaving(true);
+    setNotesError("");
+    setNotesSuccess("");
+    try {
+      await runTransaction(db, async (transaction) => {
+        const tripRef = doc(db, "trips", tripId);
+        const snapshot = await transaction.get(tripRef);
+        if (!snapshot.exists()) throw new Error("This trip no longer exists.");
+        const current = snapshot.data() as Trip;
+        const allowed = canViewOtherEmployees || isUidInCrew(myUid, current.crew);
+        if (!allowed) throw new Error("You are not assigned to this trip.");
+        if (safeStr(current.notes).trim() !== priorNotes) {
+          throw new Error("These notes were updated by someone else. Close and reopen the editor to see the latest version.");
+        }
+        transaction.update(tripRef, {
+          notes: nextNotes,
+          dispatchNotesUpdatedAt: nowIso(),
+          dispatchNotesUpdatedByName: myName,
+          dispatchNotesRevision: Number(current.dispatchNotesRevision || 0) + 1,
+        });
+      });
+      setNotesOriginal(nextNotes);
+      setNotesSuccess("Trip notes saved.");
+    } catch (error) {
+      setNotesError(error instanceof Error ? error.message : "Unable to save trip notes.");
+    } finally {
+      setNotesSaving(false);
+    }
+  }
 
   const crewDialogItem = useMemo(
     () => items.find((item) => item.id === crewDialogTripId) || null,
@@ -2185,6 +2250,34 @@ async function handleGeneratePo(item: MyDayItem) {
       ]}
     >
       <AppShell appUser={appUser}>
+        <Dialog open={Boolean(notesDialogTripId)} onClose={closeNotesDialog} fullWidth maxWidth="sm">
+          <DialogTitle>Trip Notes — This Visit</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2} sx={{ pt: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                {notesDialogItem?.headerText || "Trip"}. Notes are saved to this visit, not the overall project or service ticket.
+              </Typography>
+              <TextField
+                label="Trip Notes"
+                multiline
+                minRows={4}
+                fullWidth
+                value={notesDraft}
+                onChange={(event) => setNotesDraft(event.target.value)}
+                disabled={notesSaving}
+                placeholder="Instructions or notes for this visit..."
+              />
+              {notesError ? <Alert severity="error">{notesError}</Alert> : null}
+              {notesSuccess ? <Alert severity="success">{notesSuccess}</Alert> : null}
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button onClick={closeNotesDialog} disabled={notesSaving}>Done</Button>
+            <Button variant="contained" onClick={saveTripNotes} disabled={notesSaving || notesDraft.trim() === notesOriginal.trim()}>
+              {notesSaving ? "Saving..." : "Save Notes"}
+            </Button>
+          </DialogActions>
+        </Dialog>
         <Dialog
           open={Boolean(crewDialogTripId)}
           onClose={closeCrewDialog}
@@ -2898,7 +2991,7 @@ PTO coverage is active right now.
                                     </Box>
                                   ) : null}
 
-                                  {isService && item.dispatchNotesText ? (
+                                  {item.dispatchNotesText ? (
                                     <Box
                                       sx={{
                                         p: 1.5,
@@ -2916,7 +3009,7 @@ PTO coverage is active right now.
                                             variant="subtitle2"
                                             sx={{ fontWeight: 800, color: "info.light" }}
                                           >
-                                            Dispatch Notes — This Visit
+                                            Trip Notes — This Visit
                                           </Typography>
                                           <Typography
                                             variant="body2"
@@ -2994,6 +3087,22 @@ PTO coverage is active right now.
                             }
                             footer={
                               <Stack spacing={1.25}>
+                                {(isProject || isService) && (canViewOtherEmployees || whoUid === myUid) ? (
+                                  <Button
+                                    type="button"
+                                    variant="outlined"
+                                    fullWidth
+                                    startIcon={<NotesRoundedIcon />}
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      openNotesDialog(item);
+                                    }}
+                                    sx={{ borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+                                  >
+                                    {item.dispatchNotesText ? "Edit Trip Notes" : "Add Trip Notes"}
+                                  </Button>
+                                ) : null}
                                 {isProject
                                   ? renderProjectFooter(item, isCompleted, canStartProject)
                                   : isService
