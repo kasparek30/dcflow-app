@@ -5150,50 +5150,22 @@ useEffect(() => {
 
   const visibleWeekDays = useMemo(() => {
     if (view !== "week") return daysForWeekOrDay;
-    if (showPastWeekDays || !hideCompleted) return daysForWeekOrDay;
-    if (daysForWeekOrDay.length === 0) return daysForWeekOrDay;
+    if (showPastWeekDays || daysForWeekOrDay.length === 0) return daysForWeekOrDay;
 
     const viewedWeekStartIso = toIsoDate(daysForWeekOrDay[0]);
     const currentWeekStartIso = toIsoDate(startOfWorkWeek(fromIsoDate(todayIso)));
 
-    // Only auto-collapse days in the current work week. Past/future weeks should
-    // always remain complete Monday-Friday when dispatch intentionally navigates there.
+    // Only collapse weekdays in the current work week. When reviewing a past
+    // week or planning a future week, always show Monday through Friday.
     if (viewedWeekStartIso !== currentWeekStartIso) return daysForWeekOrDay;
 
-    const remaining = daysForWeekOrDay.filter((day) => {
-      const iso = toIsoDate(day);
+    // A past weekday is hidden even if an old trip has an unfinished status.
+    // This changes only the visible columns; no trip data is modified.
+    const remaining = daysForWeekOrDay.filter((day) => toIsoDate(day) >= todayIso);
 
-      // Today and future days always remain visible.
-      if (iso >= todayIso) return true;
-
-      // A past day stays visible when it still contains unfinished operational work.
-      // Completed/cancelled trips do not keep the column open by themselves.
-      const hasUnfinishedTrip = trips.some((trip) => {
-        if (trip.active === false) return false;
-        if (String(trip.date || "").trim() !== iso) return false;
-
-        const status = normalizeStatus(trip.status);
-        return ![
-          "complete",
-          "completed",
-          "cancelled",
-          "canceled",
-        ].includes(status);
-      });
-
-      return hasUnfinishedTrip;
-    });
-
-    // Weekend safety: never render a zero-column board.
+    // Keep a column available if viewed on a weekend.
     return remaining.length ? remaining : [daysForWeekOrDay[daysForWeekOrDay.length - 1]];
-  }, [
-    view,
-    daysForWeekOrDay,
-    showPastWeekDays,
-    hideCompleted,
-    todayIso,
-    trips,
-  ]);
+  }, [view, daysForWeekOrDay, showPastWeekDays, todayIso]);
 
   useEffect(() => {
     if (view !== "week" || !isMobile || visibleWeekDays.length === 0) return;
@@ -8349,9 +8321,9 @@ function renderStaffCoverageCards(dateIso: string) {
                       />
                     </Stack>
 
-                    {view === "week" && !showPastWeekDays && hideCompleted ? (
+                    {view === "week" && !showPastWeekDays ? (
                       <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 650 }}>
-                        Past days in the current week collapse automatically once no unfinished trips remain. Use “Show past days” to restore the full Monday-Friday board.
+                        Past days in the current week are hidden by default. Use “Show past days” to restore the full Monday-Friday board.
                       </Typography>
                     ) : null}
                   </Stack>
