@@ -7,6 +7,7 @@ import {
   collection,
   doc,
   getDoc,
+  setDoc,
   limit,
   onSnapshot,
   query,
@@ -56,6 +57,10 @@ import PlumbingRoundedIcon from "@mui/icons-material/PlumbingRounded";
 import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
+import DragIndicatorRoundedIcon from "@mui/icons-material/DragIndicatorRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
+import RestartAltRoundedIcon from "@mui/icons-material/RestartAltRounded";
+import TuneRoundedIcon from "@mui/icons-material/TuneRounded";
 
 import AppShell from "../../components/AppShell";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -2943,6 +2948,55 @@ function MyStaffHoursSection({
   );
 }
 
+
+type DashboardSectionId = "staff" | "review" | "material" | "follow" | "field" | "glance" | "projects";
+type DashboardZone = "left" | "right" | "wide";
+type DashboardLayout = Record<DashboardZone, DashboardSectionId[]>;
+
+const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
+  left: ["staff", "review", "material", "follow"],
+  right: ["field", "glance"],
+  wide: ["projects"],
+};
+const ALL_DASHBOARD_SECTIONS: DashboardSectionId[] = ["staff", "review", "material", "follow", "field", "glance", "projects"];
+const SECTION_NAMES: Record<DashboardSectionId, string> = {
+  staff: "My Staff Hours", review: "Needs Review", material: "Pending Material Orders",
+  follow: "Follow-Up Needed", field: "Live Field Work", glance: "Today at a Glance",
+  projects: "Projects Attention Center",
+};
+
+function normalizeDashboardLayout(value: unknown): DashboardLayout {
+  const input = value && typeof value === "object" ? value as Partial<Record<DashboardZone, unknown>> : {};
+  const seen = new Set<DashboardSectionId>();
+  const layout: DashboardLayout = { left: [], right: [], wide: [] };
+  for (const zone of ["left", "right", "wide"] as const) {
+    if (!Array.isArray(input[zone])) continue;
+    for (const id of input[zone]) {
+      if (ALL_DASHBOARD_SECTIONS.includes(id) && !seen.has(id)) {
+        layout[zone].push(id);
+        seen.add(id);
+      }
+    }
+  }
+  for (const zone of ["left", "right", "wide"] as const) {
+    for (const id of DEFAULT_DASHBOARD_LAYOUT[zone]) {
+      if (!seen.has(id)) { layout[zone].push(id); seen.add(id); }
+    }
+  }
+  return layout;
+}
+
+function relocateDashboardSection(layout: DashboardLayout, id: DashboardSectionId, zone: DashboardZone, beforeId?: DashboardSectionId): DashboardLayout {
+  const next: DashboardLayout = {
+    left: layout.left.filter((x) => x !== id),
+    right: layout.right.filter((x) => x !== id),
+    wide: layout.wide.filter((x) => x !== id),
+  };
+  const index = beforeId ? next[zone].indexOf(beforeId) : -1;
+  next[zone].splice(index < 0 ? next[zone].length : index, 0, id);
+  return next;
+}
+
 export default function DashboardPage() {
   const theme = useTheme();
   const { appUser } = useAuthContext();
@@ -2980,6 +3034,87 @@ export default function DashboardPage() {
   >([]);
   const [staffEditNote, setStaffEditNote] = useState("");
   const [savingStaffEdit, setSavingStaffEdit] = useState(false);
+
+
+  const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout>(DEFAULT_DASHBOARD_LAYOUT);
+  const [layoutDraft, setLayoutDraft] = useState<DashboardLayout>(DEFAULT_DASHBOARD_LAYOUT);
+  const [customizing, setCustomizing] = useState(false);
+  const [savingLayout, setSavingLayout] = useState(false);
+  const [layoutNotice, setLayoutNotice] = useState("");
+  const [draggingSection, setDraggingSection] = useState<DashboardSectionId | null>(null);
+  const [layoutLoaded, setLayoutLoaded] = useState(false);
+
+  useEffect(() => {
+    const uid = appUser?.uid;
+    if (!uid) { setLayoutLoaded(false); return; }
+    let cancelled = false;
+    const storageKey = `dcflow.dashboard.layout.v1.${uid}`;
+    let localLayout: DashboardLayout = DEFAULT_DASHBOARD_LAYOUT;
+    try {
+      const saved = window.localStorage.getItem(storageKey);
+      if (saved) localLayout = normalizeDashboardLayout(JSON.parse(saved));
+    } catch { /* Storage may be disabled. */ }
+    setDashboardLayout(localLayout);
+    setLayoutDraft(localLayout);
+    setLayoutLoaded(true);
+    getDoc(doc(db, "dashboardLayouts", uid)).then((snapshot) => {
+      if (cancelled || !snapshot.exists()) return;
+      const cloudLayout = normalizeDashboardLayout(snapshot.data().sections);
+      setDashboardLayout(cloudLayout);
+      setLayoutDraft(cloudLayout);
+      try { window.localStorage.setItem(storageKey, JSON.stringify(cloudLayout)); } catch {}
+    }).catch(() => { /* Local saved layout continues working without cloud access. */ });
+    return () => { cancelled = true; };
+  }, [appUser?.uid]);
+
+  function beginCustomizeDashboard() {
+    setLayoutDraft(normalizeDashboardLayout(dashboardLayout));
+    setLayoutNotice("");
+    setCustomizing(true);
+  }
+
+  async function saveDashboardLayout() {
+    const uid = appUser?.uid;
+    if (!uid) return;
+    const normalized = normalizeDashboardLayout(layoutDraft);
+    setSavingLayout(true);
+    setLayoutNotice("");
+    // Immediately save locally so a Firestore permissions issue never loses the layout.
+    let savedLocally = false;
+    try {
+      window.localStorage.setItem(`dcflow.dashboard.layout.v1.${uid}`, JSON.stringify(normalized));
+      savedLocally = true;
+    } catch {}
+    try {
+      await setDoc(doc(db, "dashboardLayouts", uid), {
+        sections: normalized, updatedAt: new Date().toISOString(), updatedByUid: uid,
+      }, { merge: true });
+      setLayoutNotice("Layout saved to your DCFlow account.");
+    } catch (error) {
+      console.warn("Could not sync dashboard layout to Firestore", error);
+      setLayoutNotice(savedLocally
+        ? "Layout saved in this browser. Cloud sync is unavailable until Firestore permissions allow dashboardLayouts."
+        : "Layout could not be saved. Check browser storage and Firestore permissions.");
+    } finally {
+      setDashboardLayout(normalized);
+      setLayoutDraft(normalized);
+      setCustomizing(false);
+      setSavingLayout(false);
+    }
+  }
+
+  function moveDashboardCard(id: DashboardSectionId, zone: DashboardZone, beforeId?: DashboardSectionId) {
+    setLayoutDraft((current) => relocateDashboardSection(current, id, zone, beforeId));
+  }
+
+  function handleDashboardDrop(event: React.DragEvent, zone: DashboardZone, beforeId?: DashboardSectionId) {
+    event.preventDefault();
+    const id = event.dataTransfer.getData("text/dcflow-section") || draggingSection;
+    if (ALL_DASHBOARD_SECTIONS.includes(id as DashboardSectionId)) {
+      moveDashboardCard(id as DashboardSectionId, zone, beforeId);
+    }
+    setDraggingSection(null);
+  }
 
   useEffect(() => {
     setDashboardLoading(true);
@@ -3889,199 +4024,21 @@ export default function DashboardPage() {
     pendingMaterialOrders.length,
   ]);
 
-  return (
-    <ProtectedPage
-      fallbackTitle="Dashboard"
-      allowedRoles={[
-        "admin",
-        "dispatcher",
-        "manager",
-        "billing",
-        "office_display",
-      ]}
-    >
-      <AppShell appUser={appUser}>
-        <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
-          <Stack spacing={3}>
-            <Card
-              elevation={0}
-              sx={{
-                borderRadius: 1.2,
-                border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-                backgroundColor: "background.paper",
-              }}
-            >
-              <CardContent
-                sx={{
-                  p: { xs: 2.25, md: 3 },
-                  "&:last-child": { pb: { xs: 2.25, md: 3 } },
-                }}
-              >
-                <Stack
-                  direction={{ xs: "column", md: "row" }}
-                  spacing={2}
-                  alignItems={{ xs: "flex-start", md: "center" }}
-                  justifyContent="space-between"
-                >
-                  <Stack spacing={1.25}>
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      flexWrap="wrap"
-                      useFlexGap
-                    >
-                      <Chip
-                        icon={<DashboardRoundedIcon sx={{ fontSize: 16 }} />}
-                        label="Dashboard"
-                        size="small"
-                        sx={{
-                          borderRadius: 999,
-                          fontWeight: 700,
-                          backgroundColor: alpha(
-                            theme.palette.primary.main,
-                            0.14,
-                          ),
-                          border: `1px solid ${alpha(theme.palette.primary.main, 0.24)}`,
-                          color: theme.palette.primary.main,
-                        }}
-                      />
 
-                      <Chip
-                        label={`${attentionCount} need attention`}
-                        size="small"
-                        color={attentionCount > 0 ? "warning" : "default"}
-                        variant={attentionCount > 0 ? "filled" : "outlined"}
-                        sx={{ borderRadius: 999, fontWeight: 800 }}
-                      />
+  const sectionVisible: Record<DashboardSectionId, boolean> = {
+    staff: myStaffCoverage.length > 0 || staffCoverageLoading || Boolean(staffCoverageLoadError) || appUser?.role === "dispatcher" || appUser?.role === "billing",
+    review: reviewTickets.length > 0,
+    material: pendingMaterialOrders.length > 0,
+    follow: followUpTickets.length > 0,
+    field: true,
+    glance: true,
+    projects: projectFollowUps.length > 0 || readyInvoiceProjects.length > 0,
+  };
 
-                      <Chip
-                        label={`${activeItems.length} active in field`}
-                        size="small"
-                        color={activeItems.length > 0 ? "success" : "default"}
-                        variant={activeItems.length > 0 ? "filled" : "outlined"}
-                        sx={{ borderRadius: 999, fontWeight: 800 }}
-                      />
-
-                      <Chip
-                        label={`${projectAttentionCount} project queue${projectAttentionCount === 1 ? "" : "s"}`}
-                        size="small"
-                        color={projectAttentionCount > 0 ? "info" : "default"}
-                        variant={
-                          projectAttentionCount > 0 ? "filled" : "outlined"
-                        }
-                        sx={{ borderRadius: 999, fontWeight: 800 }}
-                      />
-
-                      <Chip
-                        label={`${pendingMaterialOrders.length} material order${pendingMaterialOrders.length === 1 ? "" : "s"}`}
-                        size="small"
-                        color={
-                          pendingMaterialOrders.length > 0
-                            ? "success"
-                            : "default"
-                        }
-                        variant={
-                          pendingMaterialOrders.length > 0
-                            ? "filled"
-                            : "outlined"
-                        }
-                        sx={{ borderRadius: 999, fontWeight: 800 }}
-                      />
-                    </Stack>
-
-                    <Box>
-                      <Typography
-                        variant="h4"
-                        sx={{
-                          fontSize: { xs: "1.8rem", md: "2.35rem" },
-                          lineHeight: 1.05,
-                          fontWeight: 800,
-                          letterSpacing: "-0.035em",
-                        }}
-                      >
-                        Office attention center
-                      </Typography>
-
-                      <Typography
-                        variant="body1"
-                        color="text.secondary"
-                        sx={{ mt: 1, maxWidth: 940 }}
-                      >
-                        This dashboard keeps office action items front and
-                        center while also giving dispatch a compact view of live
-                        field work, project follow-ups, billing-ready projects,
-                        pending material orders, current assignments, and active
-                        trip status across service and project work.
-                      </Typography>
-                    </Box>
-                  </Stack>
-
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                    <Button
-                      component={Link}
-                      href="/service-tickets"
-                      variant="outlined"
-                      endIcon={<ArrowForwardRoundedIcon />}
-                      sx={{ borderRadius: 999 }}
-                    >
-                      Open Service Tickets
-                    </Button>
-                    <Button
-                      component={Link}
-                      href="/material-orders"
-                      variant="outlined"
-                      endIcon={<ArrowForwardRoundedIcon />}
-                      sx={{ borderRadius: 999 }}
-                    >
-                      Open Material Orders
-                    </Button>
-                  </Stack>
-                </Stack>
-              </CardContent>
-            </Card>
-
-            {dashboardLoading ? (
-              <Alert
-                severity="info"
-                variant="outlined"
-                sx={{ borderRadius: 3 }}
-                icon={<CircularProgress size={18} />}
-              >
-                Loading dashboard queues...
-              </Alert>
-            ) : null}
-
-            {attentionCount === 0 &&
-            activeItems.length === 0 &&
-            !dashboardLoading ? (
-              <Alert
-                severity="success"
-                variant="outlined"
-                sx={{ borderRadius: 3 }}
-              >
-                Nice — there are no current office attention items or active
-                field jobs showing right now.
-              </Alert>
-            ) : null}
-
-            <Box sx={{ display: { xs: "block", xl: "none" } }}>
-              <LiveFieldWorkSection activeItems={activeItems} />
-            </Box>
-
-            <Box
-              sx={{
-                display: "grid",
-                gap: 2,
-                gridTemplateColumns: {
-                  xs: "1fr",
-                  xl: "minmax(0, 1.35fr) minmax(360px, 0.95fr)",
-                },
-                alignItems: "start",
-              }}
-            >
-              <Stack spacing={2}>
-                {myStaffCoverage.length > 0 || staffCoverageLoading || staffCoverageLoadError || (appUser?.role === "dispatcher" || appUser?.role === "billing") ? (
+  function renderDashboardSection(id: DashboardSectionId): React.ReactNode {
+    switch (id) {
+      case "staff": return (<>
+{myStaffCoverage.length > 0 || staffCoverageLoading || staffCoverageLoadError || (appUser?.role === "dispatcher" || appUser?.role === "billing") ? (
                   <MyStaffHoursSection
                     items={myStaffCoverage}
                     confirmingId={confirmingStaffCoverageId}
@@ -4091,8 +4048,9 @@ export default function DashboardPage() {
                     onEditActual={handleOpenStaffActualEdit}
                   />
                 ) : null}
-
-                {reviewTickets.length > 0 ? (
+</>);
+      case "review": return (<>
+{reviewTickets.length > 0 ? (
                   <SectionCard
                     title="Needs Review"
                     subtitle="Completed service work that is ready for office review and billing follow-through."
@@ -4114,8 +4072,9 @@ export default function DashboardPage() {
                     </Stack>
                   </SectionCard>
                 ) : null}
-
-                {pendingMaterialOrders.length > 0 ? (
+</>);
+      case "material": return (<>
+{pendingMaterialOrders.length > 0 ? (
                   <SectionCard
                     title="Pending Material Orders"
                     subtitle="Materials-only orders still waiting on delivery, pickup, billing, or invoicing."
@@ -4137,8 +4096,9 @@ export default function DashboardPage() {
                     </Stack>
                   </SectionCard>
                 ) : null}
-
-                {followUpTickets.length > 0 ? (
+</>);
+      case "follow": return (<>
+{followUpTickets.length > 0 ? (
                   <SectionCard
                     title="Follow-Up Needed"
                     subtitle="Service tickets that still need a return trip, scheduling, or next-step action."
@@ -4160,63 +4120,10 @@ export default function DashboardPage() {
                     </Stack>
                   </SectionCard>
                 ) : null}
-
-                {reviewTickets.length === 0 &&
-                followUpTickets.length === 0 &&
-                pendingMaterialOrders.length === 0 ? (
-                  <Card
-                    elevation={0}
-                    sx={{
-                      borderRadius: 1.2,
-                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-                      backgroundColor: "background.paper",
-                    }}
-                  >
-                    <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
-                      <Stack spacing={1.25}>
-                        <Typography variant="h6" fontWeight={800}>
-                          Billing and service workflow is clear
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          There are no current service tickets or pending
-                          material orders in the office review queues.
-                        </Typography>
-
-                        <Stack
-                          direction={{ xs: "column", sm: "row" }}
-                          spacing={1}
-                        >
-                          <Button
-                            component={Link}
-                            href="/service-tickets"
-                            variant="contained"
-                            startIcon={<ReceiptLongRoundedIcon />}
-                            sx={{ borderRadius: 999, alignSelf: "flex-start" }}
-                          >
-                            Manage Service Workflow
-                          </Button>
-                          <Button
-                            component={Link}
-                            href="/material-orders"
-                            variant="outlined"
-                            startIcon={<Inventory2RoundedIcon />}
-                            sx={{ borderRadius: 999, alignSelf: "flex-start" }}
-                          >
-                            Manage Material Orders
-                          </Button>
-                        </Stack>
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                ) : null}
-              </Stack>
-
-              <Stack spacing={2}>
-                <Box sx={{ display: { xs: "none", xl: "block" } }}>
-                  <LiveFieldWorkSection activeItems={activeItems} />
-                </Box>
-
-                <SectionCard
+</>);
+      case "field": return <LiveFieldWorkSection activeItems={activeItems} />;
+      case "glance": return (<>
+<SectionCard
                   title="Today at a Glance"
                   subtitle="Quick counts from what is currently surfaced on this dashboard."
                   icon={<DashboardRoundedIcon />}
@@ -4282,8 +4189,444 @@ export default function DashboardPage() {
                     ))}
                   </Box>
                 </SectionCard>
-              </Stack>
+</>);
+      case "projects": return (<>
+{projectFollowUps.length > 0 || readyInvoiceProjects.length > 0 ? (
+              <SectionCard
+                title="Projects Attention Center"
+                subtitle="Project follow-ups from field closeouts and billing-ready projects that need office action."
+                icon={<ConstructionRoundedIcon />}
+                count={projectAttentionCount}
+                accent="warning"
+              >
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                    gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" },
+                  }}
+                >
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 1.2,
+                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                      backgroundColor: alpha(theme.palette.common.white, 0.02),
+                    }}
+                  >
+                    <CardContent sx={{ p: 2 }}>
+                      <Stack spacing={1.5}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            alignItems="center"
+                          >
+                            <AutorenewRoundedIcon color="warning" />
+                            <Box>
+                              <Typography variant="subtitle1" fontWeight={800}>
+                                Project Follow-Ups
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                “Needs another day” signals from completed
+                                project trip closeouts.
+                              </Typography>
+                            </Box>
+                          </Stack>
+                          <Chip
+                            size="small"
+                            label={projectFollowUps.length}
+                            color={
+                              projectFollowUps.length > 0
+                                ? "warning"
+                                : "default"
+                            }
+                            variant={
+                              projectFollowUps.length > 0
+                                ? "filled"
+                                : "outlined"
+                            }
+                            sx={{ fontWeight: 800 }}
+                          />
+                        </Stack>
+
+                        {projectFollowUps.length === 0 ? (
+                          <Alert
+                            severity="success"
+                            variant="outlined"
+                            sx={{ borderRadius: 3 }}
+                          >
+                            No project follow-ups need attention right now.
+                          </Alert>
+                        ) : (
+                          <Stack
+                            divider={
+                              <Divider
+                                flexItem
+                                sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                              />
+                            }
+                          >
+                            {projectFollowUps.map((item) => (
+                              <ProjectFollowUpRow
+                                key={item.projectId}
+                                item={item}
+                              />
+                            ))}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 1.2,
+                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                      backgroundColor: alpha(theme.palette.common.white, 0.02),
+                    }}
+                  >
+                    <CardContent sx={{ p: 2 }}>
+                      <Stack spacing={1.5}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            alignItems="center"
+                          >
+                            <ReceiptLongRoundedIcon color="success" />
+                            <Box>
+                              <Typography variant="subtitle1" fontWeight={800}>
+                                Ready to Invoice Projects
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                Current project billing work that is ready for
+                                office invoicing.
+                              </Typography>
+                            </Box>
+                          </Stack>
+                          <Chip
+                            size="small"
+                            label={readyInvoiceProjects.length}
+                            color={
+                              readyInvoiceProjects.length > 0
+                                ? "success"
+                                : "default"
+                            }
+                            variant={
+                              readyInvoiceProjects.length > 0
+                                ? "filled"
+                                : "outlined"
+                            }
+                            sx={{ fontWeight: 800 }}
+                          />
+                        </Stack>
+
+                        {readyInvoiceProjects.length === 0 ? (
+                          <Alert
+                            severity="success"
+                            variant="outlined"
+                            sx={{ borderRadius: 3 }}
+                          >
+                            No projects are waiting to be invoiced right now.
+                          </Alert>
+                        ) : (
+                          <Stack
+                            divider={
+                              <Divider
+                                flexItem
+                                sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
+                              />
+                            }
+                          >
+                            {readyInvoiceProjects.map((item) => (
+                              <ReadyInvoiceProjectRow
+                                key={item.projectId}
+                                item={item}
+                              />
+                            ))}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Box>
+              </SectionCard>
+            ) : null}
+</>);
+      default: return null;
+    }
+  }
+
+  function renderDashboardZone(zone: DashboardZone) {
+    const layout = customizing ? layoutDraft : dashboardLayout;
+    return (
+      <Stack
+        spacing={2}
+        sx={{ minWidth: 0, minHeight: customizing ? 100 : undefined,
+          outline: customizing ? `1px dashed ${alpha(theme.palette.primary.main, 0.4)}` : "none",
+          outlineOffset: customizing ? 6 : 0, borderRadius: 1.2 }}
+        onDragOver={customizing ? (event) => event.preventDefault() : undefined}
+        onDrop={customizing ? (event) => handleDashboardDrop(event, zone) : undefined}
+      >
+        {customizing ? <Typography variant="caption" color="primary.main" sx={{ fontWeight: 800, px: 0.5 }}>
+          {zone === "left" ? "LEFT COLUMN" : zone === "right" ? "RIGHT COLUMN" : "FULL WIDTH"} — drop a section here
+        </Typography> : null}
+        {layout[zone].map((id) => {
+          if (!customizing && !sectionVisible[id]) return null;
+          const index = layout[zone].indexOf(id);
+          return (
+            <Box key={id} sx={{ minWidth: 0, opacity: draggingSection === id ? 0.55 : 1 }}
+              onDragOver={customizing ? (event) => event.preventDefault() : undefined}
+              onDrop={customizing ? (event) => { event.stopPropagation(); handleDashboardDrop(event, zone, id); } : undefined}>
+              {customizing ? (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.75,
+                  px: 1, py: 0.5, borderRadius: 1.2, bgcolor: alpha(theme.palette.primary.main, 0.1),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.25)}` }}>
+                  <Box draggable
+                    onDragStart={(event: React.DragEvent) => {
+                      event.dataTransfer.setData("text/dcflow-section", id);
+                      event.dataTransfer.effectAllowed = "move";
+                      setDraggingSection(id);
+                    }}
+                    onDragEnd={() => setDraggingSection(null)}
+                    sx={{ cursor: "grab", display: "flex", alignItems: "center", gap: 0.5, touchAction: "none", flexGrow: 1, minWidth: 0 }}>
+                    <DragIndicatorRoundedIcon fontSize="small" />
+                    <Typography variant="body2" fontWeight={800} noWrap>{SECTION_NAMES[id]}</Typography>
+                  </Box>
+                  <Tooltip title="Move up"><span><IconButton size="small" disabled={index === 0}
+                    onClick={() => moveDashboardCard(id, zone, layout[zone][index - 1])}>↑</IconButton></span></Tooltip>
+                  <Tooltip title="Move down"><span><IconButton size="small" disabled={index === layout[zone].length - 1}
+                    onClick={() => { const next = [...layout[zone]]; [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                      setLayoutDraft((current) => ({ ...current, [zone]: next })); }}>↓</IconButton></span></Tooltip>
+                  <Tooltip title="Move to left column"><span><IconButton size="small" disabled={zone === "left"}
+                    onClick={() => moveDashboardCard(id, "left")}>←</IconButton></span></Tooltip>
+                  <Tooltip title="Move to right column"><span><IconButton size="small" disabled={zone === "right"}
+                    onClick={() => moveDashboardCard(id, "right")}>→</IconButton></span></Tooltip>
+                  <Tooltip title="Make full width"><span><IconButton size="small" disabled={zone === "wide"}
+                    onClick={() => moveDashboardCard(id, "wide")}><OpenInFullRoundedIcon sx={{ fontSize: 17 }} /></IconButton></span></Tooltip>
+                </Box>
+              ) : null}
+              {sectionVisible[id] ? renderDashboardSection(id) : customizing ? (
+                <Box sx={{ p: 2, border: `1px dashed ${alpha(theme.palette.common.white, 0.2)}`, borderRadius: 1.2 }}>
+                  <Typography variant="body2" color="text.secondary">No current items in {SECTION_NAMES[id]}.</Typography>
+                </Box>
+              ) : null}
             </Box>
+          );
+        })}
+      </Stack>
+    );
+  }
+
+  return (
+    <ProtectedPage
+      fallbackTitle="Dashboard"
+      allowedRoles={[
+        "admin",
+        "dispatcher",
+        "manager",
+        "billing",
+        "office_display",
+      ]}
+    >
+      <AppShell appUser={appUser}>
+        <Box sx={{ width: "100%", maxWidth: 1480, mx: "auto" }}>
+          <Stack spacing={3}>
+            <Card
+              elevation={0}
+              sx={{
+                borderRadius: 1.2,
+                border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                backgroundColor: "background.paper",
+              }}
+            >
+              <CardContent
+                sx={{
+                  px: { xs: 2, md: 2.5 },
+                  py: { xs: 1.75, md: 2 },
+                  "&:last-child": { pb: { xs: 1.75, md: 2 } },
+                }}
+              >
+                <Stack spacing={1.5}>
+                  <Stack
+                    direction="row"
+                    alignItems="center"
+                    justifyContent="space-between"
+                    spacing={2}
+                    flexWrap="wrap"
+                    useFlexGap
+                  >
+                    <Typography
+                      variant="h4"
+                      sx={{
+                        fontSize: { xs: "1.6rem", md: "1.85rem" },
+                        lineHeight: 1.15,
+                        fontWeight: 800,
+                        letterSpacing: "-0.035em",
+                      }}
+                    >
+                      Dashboard
+                    </Typography>
+                    {!customizing && (
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<TuneRoundedIcon />}
+                        onClick={beginCustomizeDashboard}
+                        sx={{ borderRadius: 999 }}
+                      >
+                        Customize Dashboard
+                      </Button>
+                    )}
+                  </Stack>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    {attentionCount > 0 && (
+                      <Chip
+                        size="small"
+                        label={`${attentionCount} Need Attention`}
+                        color="warning"
+                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                      />
+                    )}
+                    {activeItems.length > 0 && (
+                      <Chip
+                        size="small"
+                        label={`${activeItems.length} Active in Field`}
+                        color="success"
+                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                      />
+                    )}
+                    {projectAttentionCount > 0 && (
+                      <Chip
+                        size="small"
+                        label={`${projectAttentionCount} Project Queue${projectAttentionCount === 1 ? "" : "s"}`}
+                        color="info"
+                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                      />
+                    )}
+                    {pendingMaterialOrders.length > 0 && (
+                      <Chip
+                        size="small"
+                        label={`${pendingMaterialOrders.length} Material Order${pendingMaterialOrders.length === 1 ? "" : "s"}`}
+                        color="success"
+                        sx={{ borderRadius: 999, fontWeight: 800 }}
+                      />
+                    )}
+                  </Stack>
+                </Stack>
+              </CardContent>
+            </Card>
+
+            {dashboardLoading ? (
+              <Alert
+                severity="info"
+                variant="outlined"
+                sx={{ borderRadius: 3 }}
+                icon={<CircularProgress size={18} />}
+              >
+                Loading dashboard queues...
+              </Alert>
+            ) : null}
+
+            {attentionCount === 0 &&
+            activeItems.length === 0 &&
+            !dashboardLoading ? (
+              <Alert
+                severity="success"
+                variant="outlined"
+                sx={{ borderRadius: 3 }}
+              >
+                Nice — there are no current office attention items or active
+                field jobs showing right now.
+              </Alert>
+            ) : null}
+
+            {customizing && (
+              <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap", gap: 1 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mr: "auto" }}>
+                  Drag the grip handles between columns, or use the arrow buttons. Full width is available for any section.
+                </Typography>
+                <Button variant="outlined" startIcon={<RestartAltRoundedIcon />} disabled={savingLayout}
+                  onClick={() => setLayoutDraft(normalizeDashboardLayout(DEFAULT_DASHBOARD_LAYOUT))}>Reset to Default</Button>
+                <Button variant="outlined" disabled={savingLayout}
+                  onClick={() => { setLayoutDraft(dashboardLayout); setCustomizing(false); }}>Cancel</Button>
+                <Button variant="contained" startIcon={<SaveRoundedIcon />} disabled={savingLayout || !layoutLoaded}
+                  onClick={() => void saveDashboardLayout()}>{savingLayout ? "Saving…" : "Save Layout"}</Button>
+              </Box>
+            )}
+            {layoutNotice ? <Alert severity={layoutNotice.includes("could not") || layoutNotice.includes("unavailable") ? "warning" : "success"} onClose={() => setLayoutNotice("")}>{layoutNotice}</Alert> : null}
+            <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: {
+              xs: "minmax(0, 1fr)", xl: "minmax(0, 1.35fr) minmax(360px, 0.95fr)" }, alignItems: "start" }}>
+              {renderDashboardZone("left")}
+              {renderDashboardZone("right")}
+            </Box>
+            {(customizing || (customizing ? layoutDraft.wide : dashboardLayout.wide).some((id) => sectionVisible[id])) ? renderDashboardZone("wide") : null}
+            {reviewTickets.length === 0 && followUpTickets.length === 0 && pendingMaterialOrders.length === 0 && !customizing ? (
+
+                  <Card
+                    elevation={0}
+                    sx={{
+                      borderRadius: 1.2,
+                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
+                      backgroundColor: "background.paper",
+                    }}
+                  >
+                    <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <Stack spacing={1.25}>
+                        <Typography variant="h6" fontWeight={800}>
+                          Billing and service workflow is clear
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          There are no current service tickets or pending
+                          material orders in the office review queues.
+                        </Typography>
+
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1}
+                        >
+                          <Button
+                            component={Link}
+                            href="/service-tickets"
+                            variant="contained"
+                            startIcon={<ReceiptLongRoundedIcon />}
+                            sx={{ borderRadius: 999, alignSelf: "flex-start" }}
+                          >
+                            Manage Service Workflow
+                          </Button>
+                          <Button
+                            component={Link}
+                            href="/material-orders"
+                            variant="outlined"
+                            startIcon={<Inventory2RoundedIcon />}
+                            sx={{ borderRadius: 999, alignSelf: "flex-start" }}
+                          >
+                            Manage Material Orders
+                          </Button>
+                        </Stack>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                
+            ) : null}
 
             <Dialog
               open={Boolean(staffEditItem)}
@@ -4626,185 +4969,6 @@ export default function DashboardPage() {
               </DialogActions>
             </Dialog>
 
-            {projectFollowUps.length > 0 || readyInvoiceProjects.length > 0 ? (
-              <SectionCard
-                title="Projects Attention Center"
-                subtitle="Project follow-ups from field closeouts and billing-ready projects that need office action."
-                icon={<ConstructionRoundedIcon />}
-                count={projectAttentionCount}
-                accent="warning"
-              >
-                <Box
-                  sx={{
-                    display: "grid",
-                    gap: 2,
-                    gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" },
-                  }}
-                >
-                  <Card
-                    elevation={0}
-                    sx={{
-                      borderRadius: 1.2,
-                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-                      backgroundColor: alpha(theme.palette.common.white, 0.02),
-                    }}
-                  >
-                    <CardContent sx={{ p: 2 }}>
-                      <Stack spacing={1.5}>
-                        <Stack
-                          direction="row"
-                          spacing={1}
-                          alignItems="center"
-                          justifyContent="space-between"
-                        >
-                          <Stack
-                            direction="row"
-                            spacing={1}
-                            alignItems="center"
-                          >
-                            <AutorenewRoundedIcon color="warning" />
-                            <Box>
-                              <Typography variant="subtitle1" fontWeight={800}>
-                                Project Follow-Ups
-                              </Typography>
-                              <Typography
-                                variant="body2"
-                                color="text.secondary"
-                              >
-                                “Needs another day” signals from completed
-                                project trip closeouts.
-                              </Typography>
-                            </Box>
-                          </Stack>
-                          <Chip
-                            size="small"
-                            label={projectFollowUps.length}
-                            color={
-                              projectFollowUps.length > 0
-                                ? "warning"
-                                : "default"
-                            }
-                            variant={
-                              projectFollowUps.length > 0
-                                ? "filled"
-                                : "outlined"
-                            }
-                            sx={{ fontWeight: 800 }}
-                          />
-                        </Stack>
-
-                        {projectFollowUps.length === 0 ? (
-                          <Alert
-                            severity="success"
-                            variant="outlined"
-                            sx={{ borderRadius: 3 }}
-                          >
-                            No project follow-ups need attention right now.
-                          </Alert>
-                        ) : (
-                          <Stack
-                            divider={
-                              <Divider
-                                flexItem
-                                sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
-                              />
-                            }
-                          >
-                            {projectFollowUps.map((item) => (
-                              <ProjectFollowUpRow
-                                key={item.projectId}
-                                item={item}
-                              />
-                            ))}
-                          </Stack>
-                        )}
-                      </Stack>
-                    </CardContent>
-                  </Card>
-
-                  <Card
-                    elevation={0}
-                    sx={{
-                      borderRadius: 1.2,
-                      border: `1px solid ${alpha(theme.palette.common.white, 0.08)}`,
-                      backgroundColor: alpha(theme.palette.common.white, 0.02),
-                    }}
-                  >
-                    <CardContent sx={{ p: 2 }}>
-                      <Stack spacing={1.5}>
-                        <Stack
-                          direction="row"
-                          spacing={1}
-                          alignItems="center"
-                          justifyContent="space-between"
-                        >
-                          <Stack
-                            direction="row"
-                            spacing={1}
-                            alignItems="center"
-                          >
-                            <ReceiptLongRoundedIcon color="success" />
-                            <Box>
-                              <Typography variant="subtitle1" fontWeight={800}>
-                                Ready to Invoice Projects
-                              </Typography>
-                              <Typography
-                                variant="body2"
-                                color="text.secondary"
-                              >
-                                Current project billing work that is ready for
-                                office invoicing.
-                              </Typography>
-                            </Box>
-                          </Stack>
-                          <Chip
-                            size="small"
-                            label={readyInvoiceProjects.length}
-                            color={
-                              readyInvoiceProjects.length > 0
-                                ? "success"
-                                : "default"
-                            }
-                            variant={
-                              readyInvoiceProjects.length > 0
-                                ? "filled"
-                                : "outlined"
-                            }
-                            sx={{ fontWeight: 800 }}
-                          />
-                        </Stack>
-
-                        {readyInvoiceProjects.length === 0 ? (
-                          <Alert
-                            severity="success"
-                            variant="outlined"
-                            sx={{ borderRadius: 3 }}
-                          >
-                            No projects are waiting to be invoiced right now.
-                          </Alert>
-                        ) : (
-                          <Stack
-                            divider={
-                              <Divider
-                                flexItem
-                                sx={{ borderColor: alpha("#FFFFFF", 0.08) }}
-                              />
-                            }
-                          >
-                            {readyInvoiceProjects.map((item) => (
-                              <ReadyInvoiceProjectRow
-                                key={item.projectId}
-                                item={item}
-                              />
-                            ))}
-                          </Stack>
-                        )}
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                </Box>
-              </SectionCard>
-            ) : null}
           </Stack>
         </Box>
       </AppShell>

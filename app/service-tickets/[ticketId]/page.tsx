@@ -71,6 +71,7 @@ import ImageRoundedIcon from "@mui/icons-material/ImageRounded";
 import MovieRoundedIcon from "@mui/icons-material/MovieRounded";
 import GroupAddRoundedIcon from "@mui/icons-material/GroupAddRounded";
 import PersonRemoveRoundedIcon from "@mui/icons-material/PersonRemoveRounded";
+import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import AppShell from "../../../components/AppShell";
 import ProtectedPage from "../../../components/ProtectedPage";
 import AddressAutocompleteField from "../../../components/AddressAutocompleteField";
@@ -2484,7 +2485,7 @@ function Section(props: {
 }
 
 export default function ServiceTicketDetailPage({ params }: Props) {
-  const { appUser } = useAuthContext();
+  const { appUser, loading: authLoading } = useAuthContext();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const pathname = usePathname();
@@ -2616,6 +2617,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
 
   const [loading, setLoading] = useState(true);
+  const [reloadAttempt, setReloadAttempt] = useState(0);
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState<TicketWithBilling | null>(null);
   const [error, setError] = useState("");
@@ -2900,13 +2902,41 @@ export default function ServiceTicketDetailPage({ params }: Props) {
   }, [ticket?.billing]);
 
   useEffect(() => {
+    // Wait for Firebase Auth before attempting any protected Firestore reads.
+    if (authLoading || !appUser) return;
+
+    let active = true;
+    let requestedTicketId = "";
+
+    setLoading(true);
+    setError("");
+    setTicket(null);
+    setTicketId("");
+    setTrips([]);
+
+    // Firestore reads can hang during intermittent mobile connectivity.
+    // This timeout controls the UI; stale requests cannot update state afterward.
+    const timeoutId = window.setTimeout(() => {
+      if (!active) return;
+      active = false;
+      console.error("[DCFlow] Service ticket load timed out", {
+        ticketId: requestedTicketId,
+        attempt: reloadAttempt + 1,
+      });
+      setError("This service ticket is taking too long to load. Please try again.");
+      setLoading(false);
+    }, 20_000);
+
     async function loadAll() {
       try {
         const resolved = await params;
+        if (!active) return;
         const id = resolved.ticketId;
+        requestedTicketId = id;
         setTicketId(id);
 
         const ticketSnap = await getDoc(doc(db, "serviceTickets", id));
+        if (!active) return;
         if (!ticketSnap.exists()) {
           setError("Service ticket not found.");
           setLoading(false);
@@ -3007,6 +3037,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             ),
           ),
         ]);
+        if (!active) return;
 
         const loadedUserNameByUid = new Map(
           usersSnap.docs.map((ds) => {
@@ -3262,6 +3293,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
             updatedByRole: appUser?.role || null,
             lifecycleReconciledAt: reconciledAt,
           });
+          if (!active) return;
 
           nextTicket.status = reconciledTicketStatus;
           nextTicket.updatedAt = reconciledAt;
@@ -3324,6 +3356,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
         const customerId = String(nextTicket.customerId || "").trim();
         if (customerId) {
           const customerSnap = await getDoc(doc(db, "customers", customerId));
+          if (!active) return;
           if (customerSnap.exists()) {
             const customer = customerSnap.data() as any;
 
@@ -3383,16 +3416,29 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           setAvailabilityTripsByDate((prev) => ({ ...prev, ...byDate }));
         }
       } catch (err: unknown) {
+        if (!active) return;
+        console.error("[DCFlow] Failed to load service ticket", {
+          ticketId: requestedTicketId,
+          attempt: reloadAttempt + 1,
+          error: err,
+        });
         setError(
           err instanceof Error ? err.message : "Failed to load service ticket.",
         );
       } finally {
-        setLoading(false);
+        if (active) {
+          window.clearTimeout(timeoutId);
+          setLoading(false);
+        }
       }
     }
 
-    loadAll();
-  }, [params]);
+    void loadAll();
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [params, reloadAttempt, authLoading, appUser]);
 
   useEffect(() => {
     if (!ticketId) return;
@@ -8859,7 +8905,26 @@ async function handleStartTrip(trip: TripDoc) {
         {loading ? (
           <Alert severity="info">Loading service ticket…</Alert>
         ) : null}
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {!loading && error ? (
+          <Alert severity="error" sx={{ "& .MuiAlert-message": { width: "100%" } }}>
+            <Stack spacing={1.5}>
+              <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                {error}
+              </Typography>
+              <Box>
+                <Button
+                  variant="outlined"
+                  color="inherit"
+                  size="small"
+                  startIcon={<RefreshRoundedIcon />}
+                  onClick={() => setReloadAttempt((previous) => previous + 1)}
+                >
+                  Try Again
+                </Button>
+              </Box>
+            </Stack>
+          </Alert>
+        ) : null}
 
         {!loading && !error && ticket ? (
           <Stack
