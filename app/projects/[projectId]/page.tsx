@@ -100,10 +100,14 @@ import {
   upsertProjectTripTimeEntriesForCrew,
 } from "../../../src/lib/project-trip-time-entries";
 import {
+  addWorkerToActiveTrip,
   completeAllWorkerTimers,
   getTripActiveMinutesAt,
+  getWorkerTimerMinutesAt,
   pauseAllWorkersOnTrip,
+  removeWorkerFromActiveTrip,
   switchWorkerToTrip,
+  type CrewChangeHistoryEntry,
   type WorkerTimersByUid,
 } from "../../../src/lib/worker-trip-timers";
 import type { AppUser } from "../../../src/types/app-user";
@@ -185,6 +189,7 @@ type ProjectActivityType =
   | "trip_resumed"
   | "trip_closeout_saved"
   | "trip_labor_resynced"
+  | "trip_crew_updated"
   | "trip_reopened"
   | "trip_notes_saved"
   | "attachment_added"
@@ -304,6 +309,7 @@ type TripDoc = {
   pauseBlocks?: PauseBlock[] | null;
   workerTimers?: WorkerTimersByUid | null;
   crewConfirmed?: TripCrew | null;
+  crewChangeHistory?: CrewChangeHistoryEntry[] | null;
   closeout?: any;
   closeoutHours?: number | null;
   materialsUsedToday?: string | null;
@@ -1264,6 +1270,8 @@ function activityTypeColor(
     case "trip_closeout_saved":
     case "trip_labor_resynced":
       return "success";
+    case "trip_crew_updated":
+      return "primary";
     case "attachment_removed":
     case "trip_paused":
     case "trip_cancelled":
@@ -1310,6 +1318,8 @@ function activityTypeLabel(type: ProjectActivityType) {
       return "Closeout Saved";
     case "trip_labor_resynced":
       return "Labor Resynced";
+    case "trip_crew_updated":
+      return "Crew Updated";
     case "trip_reopened":
       return "Trip Reopened";
     case "trip_notes_saved":
@@ -1691,6 +1701,14 @@ export default function ProjectDetailPage() {
   const [stageBillingDialog, setStageBillingDialog] = useState<StageBillingDialogState>(emptyStageBillingDialog());
   const [activeTmBillingTab, setActiveTmBillingTab] = useState<string>("current");
   const [tripActionBusyId, setTripActionBusyId] = useState<string | null>(null);
+  // In-progress project trips use the same transactional crew editing as service trips.
+  const [crewManagerTripId, setCrewManagerTripId] = useState<string | null>(null);
+  const [crewManagerWorkerUid, setCrewManagerWorkerUid] = useState("");
+  const [crewManagerRole, setCrewManagerRole] = useState<"technician" | "helper">("helper");
+  const [crewManagerJoinLocal, setCrewManagerJoinLocal] = useState("");
+  const [crewManagerBusy, setCrewManagerBusy] = useState(false);
+  const [crewManagerError, setCrewManagerError] = useState("");
+  const [crewManagerSuccess, setCrewManagerSuccess] = useState("");
   const [tripNoteDrafts, setTripNoteDrafts] = useState<Record<string, string>>({});
 
   const [editingBasics, setEditingBasics] = useState(false);
@@ -2087,6 +2105,38 @@ const canMarkTmReadyToBill =
     if (!closeoutModal.tripId) return null;
     return projectTrips.find((trip) => trip.id === closeoutModal.tripId) || null;
   }, [closeoutModal.tripId, projectTrips]);
+
+  const crewManagerTrip = useMemo(() => {
+    if (!crewManagerTripId) return null;
+    return projectTrips.find((trip) => trip.id === crewManagerTripId) || null;
+  }, [crewManagerTripId, projectTrips]);
+
+  const crewManagerCurrentMembers = useMemo(() => {
+    if (!crewManagerTrip) return [] as Array<{
+      uid: string; name: string; role: "technician" | "helper"; primary: boolean;
+    }>;
+    const crew = crewManagerTrip.crew || {};
+    const candidates = [
+      { uid: safeTrim(crew.primaryTechUid), name: safeTrim(crew.primaryTechName), role: "technician" as const, primary: true },
+      { uid: safeTrim(crew.helperUid), name: safeTrim(crew.helperName), role: "helper" as const, primary: false },
+      { uid: safeTrim(crew.secondaryTechUid), name: safeTrim(crew.secondaryTechName), role: "technician" as const, primary: false },
+      { uid: safeTrim(crew.secondaryHelperUid), name: safeTrim(crew.secondaryHelperName), role: "helper" as const, primary: false },
+    ];
+    return candidates.filter((member) => Boolean(member.uid));
+  }, [crewManagerTrip]);
+
+  const crewManagerPreviousMembers = useMemo(() => {
+    if (!crewManagerTrip) return [];
+    const current = new Set(crewManagerCurrentMembers.map((member) => member.uid));
+    return Object.entries(crewManagerTrip.workerTimers || {})
+      .filter(([uid, timer]) => Boolean(uid) && Boolean(timer) && !current.has(uid))
+      .map(([uid, timer]) => ({
+        uid,
+        name: safeTrim(timer.workerName) || technicians.find((worker) => worker.uid === uid)?.displayName || uid,
+        role: timer.participationRole === "helper" ? "Helper" : "Technician",
+        leftAt: timer.leftAt || timer.endedAt || null,
+      }));
+  }, [crewManagerTrip, crewManagerCurrentMembers, technicians]);
 
   const previewStageAmounts = useMemo(() => {
     return buildStageBilledAmounts(
@@ -2710,6 +2760,7 @@ const canMarkTmReadyToBill =
             pauseBlocks: Array.isArray(d.pauseBlocks) ? d.pauseBlocks : null,
             workerTimers: d.workerTimers ?? null,
             crewConfirmed: d.crewConfirmed ?? null,
+            crewChangeHistory: Array.isArray(d.crewChangeHistory) ? d.crewChangeHistory : [],
             closeout: d.closeout ?? null,
             closeoutHours: typeof d.closeoutHours === "number" ? d.closeoutHours : null,
             materialsUsedToday: d.materialsUsedToday ?? d.materialsSummary ?? null,
@@ -4003,6 +4054,150 @@ const canMarkTmReadyToBill =
     });
   }
 
+  function openCrewManager(t: TripDoc) {
+    if (!canEditProject || !canCurrentUserEditTrip(t)) return;
+    if (safeTrim(t.status).toLowerCase() !== "in_progress") return;
+    setCrewManagerTripId(t.id);
+    setCrewManagerWorkerUid("");
+    setCrewManagerRole("helper");
+    setCrewManagerJoinLocal("");
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+  }
+
+  function closeCrewManager() {
+    if (crewManagerBusy) return;
+    setCrewManagerTripId(null);
+    setCrewManagerWorkerUid("");
+    setCrewManagerJoinLocal("");
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+  }
+
+  async function refreshCrewManagerTrip(tripId: string) {
+    // Read back the committed transaction, including crewConfirmed and the
+    // historical worker timers. Removed employees MUST remain in those timers.
+    const snap = await getDoc(doc(db, "trips", tripId));
+    if (!snap.exists()) throw new Error("Project trip was not found after the crew update.");
+    const data = snap.data() as any;
+    setProjectTrips((prev) => prev.map((trip) => trip.id === tripId ? {
+      ...trip,
+      crew: data.crew ?? null,
+      crewConfirmed: data.crewConfirmed ?? null,
+      workerTimers: data.workerTimers ?? null,
+      crewChangeHistory: Array.isArray(data.crewChangeHistory) ? data.crewChangeHistory : [],
+      timerState: data.timerState ?? trip.timerState,
+      status: data.status ?? trip.status,
+      updatedAt: data.updatedAt ?? trip.updatedAt,
+      updatedByUid: data.updatedByUid ?? trip.updatedByUid,
+    } : trip));
+  }
+
+  async function addProjectCrewMember() {
+    const trip = crewManagerTrip;
+    if (!trip || !canEditProject || !canCurrentUserEditTrip(trip)) return;
+    const uid = safeTrim(crewManagerWorkerUid);
+    const worker = technicians.find((candidate) => candidate.uid === uid && candidate.active);
+    if (!worker) {
+      setCrewManagerError("Select an active employee to add.");
+      return;
+    }
+
+    let effectiveStartAt: string | null = null;
+    if (crewManagerJoinLocal) {
+      const localMs = new Date(crewManagerJoinLocal).getTime();
+      if (!Number.isFinite(localMs)) {
+        setCrewManagerError("Enter a valid actual join date and time, or leave it blank for now.");
+        return;
+      }
+      effectiveStartAt = new Date(localMs).toISOString();
+    }
+
+    setCrewManagerBusy(true);
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+    try {
+      await addWorkerToActiveTrip({
+        db,
+        tripId: trip.id,
+        workerUid: uid,
+        workerName: worker.displayName,
+        participationRole: crewManagerRole,
+        effectiveStartAt,
+        actorUid: myUid || null,
+        actorName: actorDisplayName,
+        actorRole: appUser?.role || null,
+      });
+      // If reading back fails, inform the user the server save succeeded.
+      try {
+        await refreshCrewManagerTrip(trip.id);
+      } catch (refreshError) {
+        console.error("Crew added; trip refresh failed", refreshError);
+        setCrewManagerSuccess("Crew added successfully. Refresh the project page to see the latest crew.");
+      }
+      setCrewManagerWorkerUid("");
+      setCrewManagerJoinLocal("");
+      setCrewManagerSuccess((previous) => previous || `${worker.displayName} joined this project trip as a ${crewManagerRole}.`);
+      void recordProjectActivity({
+        type: "trip_crew_updated",
+        title: "Project trip crew member added",
+        description: formatTripScheduleLine(trip),
+        details: [
+          `Employee: ${worker.displayName}`,
+          `Role for this trip: ${crewManagerRole}`,
+          `Effective join: ${effectiveStartAt ? formatDateTime(effectiveStartAt) : "Now"}`,
+        ],
+      });
+    } catch (err: any) {
+      setCrewManagerError(err?.message || "Failed to add employee to project trip.");
+    } finally {
+      setCrewManagerBusy(false);
+    }
+  }
+
+  async function removeProjectCrewMember(uid: string) {
+    const trip = crewManagerTrip;
+    if (!trip || !canEditProject || !canCurrentUserEditTrip(trip)) return;
+    const member = crewManagerCurrentMembers.find((item) => item.uid === uid);
+    if (!member || member.primary) return;
+    if (!window.confirm(`End ${member.name || member.uid}'s participation on this project trip now?\n\nPreviously worked time will remain recorded.`)) return;
+
+    setCrewManagerBusy(true);
+    setCrewManagerError("");
+    setCrewManagerSuccess("");
+    try {
+      await removeWorkerFromActiveTrip({
+        db,
+        tripId: trip.id,
+        workerUid: uid,
+        actorUid: myUid || null,
+        actorName: actorDisplayName,
+        actorRole: appUser?.role || null,
+      });
+      try {
+        await refreshCrewManagerTrip(trip.id);
+      } catch (refreshError) {
+        console.error("Crew removed; trip refresh failed", refreshError);
+        setCrewManagerSuccess("Employee removed successfully. Refresh the project page to see the latest crew.");
+      }
+      setCrewManagerSuccess((previous) => previous || `${member.name || member.uid} left this trip. Their recorded time is preserved.`);
+      void recordProjectActivity({
+        type: "trip_crew_updated",
+        title: "Project trip crew member removed",
+        description: formatTripScheduleLine(trip),
+        details: [
+          `Employee: ${member.name || member.uid}`,
+          `Role for this trip: ${member.role}`,
+          "Earlier worked time preserved in the employee's timer history",
+        ],
+      });
+    } catch (err: any) {
+      setCrewManagerError(err?.message || "Failed to remove employee from project trip.");
+    } finally {
+      setCrewManagerBusy(false);
+    }
+  }
+
   function openCreateTrip(stageKey: StageKey | null) {
     if (!project) return;
     if (projectFieldWorkLocked) {
@@ -4059,6 +4254,14 @@ const canMarkTmReadyToBill =
   }
 
   function openEditTrip(t: TripDoc) {
+    if (
+      safeTrim(t.status).toLowerCase() === "in_progress" ||
+      safeTrim(t.timerState).toLowerCase() === "running" ||
+      safeTrim(t.timerState).toLowerCase() === "paused"
+    ) {
+      if (canEditProject) openCrewManager(t);
+      return;
+    }
     setTripModalErr("");
     setTripModalOk("");
 
@@ -4229,6 +4432,19 @@ const canMarkTmReadyToBill =
 
       const tripId = safeTrim(tripModal.tripId);
       if (!tripId) throw new Error("Missing trip id.");
+      // Once a trip has started, its active crew MUST only change through the
+      // transactional Add/Remove Crew feature (never via a full crew overwrite).
+      const liveTripSnap = await getDoc(doc(db, "trips", tripId));
+      if (!liveTripSnap.exists()) throw new Error("This trip no longer exists. Refresh before editing.");
+      const liveTrip = liveTripSnap.data() as any;
+      if (
+        (safeTrim(liveTrip.status).toLowerCase() !== "planned" &&
+         safeTrim(liveTrip.status).toLowerCase() !== "scheduled") ||
+        Boolean(liveTrip.startedAt || liveTrip.actualStartAt) ||
+        (liveTrip.workerTimers && Object.keys(liveTrip.workerTimers).length > 0)
+      ) {
+        throw new Error("This trip has already started. Use Manage Crew to add/remove employees; use the trip notes area to edit notes.");
+      }
 
       await updateDoc(doc(db, "trips", tripId), {
         date,
@@ -4583,9 +4799,12 @@ const canMarkTmReadyToBill =
           String(existingTripSnap.data().status || "").toLowerCase() === "complete") {
         throw new Error("This trip has already been completed or is unavailable. Refresh before retrying.");
       }
-      const completedWorkerTimers = completeAllWorkerTimers(t, now, myUid || null);
+      // Use the authoritative live crew/timers instead of the page's possibly
+      // stale snapshot. Another device may have added or removed someone.
+      const liveTrip = { ...t, ...(existingTripSnap.data() as any), id: t.id } as TripDoc;
+      const completedWorkerTimers = completeAllWorkerTimers(liveTrip, now, myUid || null);
       const completedTimerTrip = {
-        ...t, workerTimers: completedWorkerTimers,
+        ...liveTrip, workerTimers: completedWorkerTimers,
         actualEndAt: now, completedAt: now, timerState: "complete",
       };
       const timerReview = getCloseoutTimerReview(completedTimerTrip);
@@ -4674,7 +4893,7 @@ const canMarkTmReadyToBill =
 
       const synced = await queueProjectTripTimeEntryWrites(batch, {
         trip: {
-          ...t,
+          ...liveTrip,
           ...tripPatch,
         },
         projectId: project.id,
@@ -6188,15 +6407,17 @@ if (nextStatus === "active_work") {
           </Button>
         </Stack>
 
-        <Button
-          variant="outlined"
-          startIcon={<OpenInNewRoundedIcon />}
-          onClick={() => openEditTrip(t)}
-          disabled={!canCurrentUserEditTrip(t) || busy}
-          sx={{ borderRadius: 99, alignSelf: "flex-start" }}
-        >
-          Open Trip
-        </Button>
+        {status !== "in_progress" ? (
+          <Button
+            variant="outlined"
+            startIcon={<OpenInNewRoundedIcon />}
+            onClick={() => openEditTrip(t)}
+            disabled={!canCurrentUserEditTrip(t) || busy}
+            sx={{ borderRadius: 99, alignSelf: "flex-start" }}
+          >
+            Open Trip
+          </Button>
+        ) : null}
       </Stack>
     );
   }
@@ -6450,7 +6671,10 @@ if (nextStatus === "active_work") {
 
             <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1} flexWrap="wrap">
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                {canEditThis && <Button size="small" variant="contained" startIcon={<EditRoundedIcon />} onClick={() => openEditTrip(t)} sx={{ borderRadius: 2 }}>Edit Trip</Button>}
+                {canEditThis && !isActiveTrip && <Button size="small" variant="contained" startIcon={<EditRoundedIcon />} onClick={() => openEditTrip(t)} sx={{ borderRadius: 2 }}>Edit Trip</Button>}
+                {canEditProject && isActiveTrip && (
+                  <Button size="small" variant="contained" startIcon={<GroupRoundedIcon />} onClick={() => openCrewManager(t)} disabled={busy || crewManagerBusy} sx={{ borderRadius: 2 }}>Manage Crew</Button>
+                )}
                 {String(t.status).toLowerCase() === "complete" && canCurrentUserViewTrip(t) && (
                   <Button size="small" variant="outlined" onClick={() => openCloseoutDetails(t)}>View Closeout</Button>
                 )}
@@ -6634,6 +6858,133 @@ if (nextStatus === "active_work") {
   return (
     <ProtectedPage fallbackTitle="Project Detail">
       <AppShell appUser={appUser}>
+        <Dialog
+          open={Boolean(crewManagerTripId)}
+          onClose={crewManagerBusy ? undefined : closeCrewManager}
+          fullWidth
+          maxWidth="sm"
+          PaperProps={{ sx: { borderRadius: 2 } }}
+        >
+          <DialogTitle sx={{ fontWeight: 800 }}>Manage Project Trip Crew</DialogTitle>
+          <DialogContent dividers>
+            {!crewManagerTrip ? (
+              <Alert severity="warning">Trip not found. Close this window and refresh the project.</Alert>
+            ) : (
+              <Stack spacing={2}>
+                <Typography variant="body2" color="text.secondary">
+                  {formatTripScheduleLine(crewManagerTrip)}
+                  {crewManagerTrip.link?.projectStageKey
+                    ? ` • ${stageLabel(crewManagerTrip.link.projectStageKey as StageKey)}`
+                    : " • Time & Materials / Project Trip"}
+                </Typography>
+                <Alert severity="info" variant="outlined">
+                  Joining starts the employee's individual work timer. Removing a crew member ends only that employee's time; previously recorded minutes remain available for closeout and payroll. Helpers are nonbillable.
+                </Alert>
+
+                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>Currently Assigned</Typography>
+                {crewManagerCurrentMembers.length === 0 ? (
+                  <Typography variant="body2">No current crew members.</Typography>
+                ) : (
+                  <Stack spacing={1}>
+                    {crewManagerCurrentMembers.map((member) => {
+                      const workerTimer = crewManagerTrip.workerTimers?.[member.uid];
+                      const minutes = workerTimer
+                        ? getWorkerTimerMinutesAt(crewManagerTrip, member.uid, Date.now())
+                        : null;
+                      return (
+                        <Paper key={member.uid} variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                          <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>{member.name || member.uid}</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {member.primary ? "Lead Technician" : member.role === "helper" ? "Helper • Nonbillable" : "Additional Technician"}
+                                {workerTimer?.joinedAt ? ` • Joined ${formatDateTime(workerTimer.joinedAt)}` : ""}
+                                {minutes != null ? ` • ${formatElapsedMinutes(minutes)} recorded` : ""}
+                              </Typography>
+                            </Box>
+                            {member.primary ? (
+                              <Chip label="Lead" size="small" variant="outlined" />
+                            ) : (
+                              <Button size="small" color="error" variant="outlined"
+                                disabled={crewManagerBusy || !canEditProject || safeTrim(crewManagerTrip.status) !== "in_progress"}
+                                onClick={() => void removeProjectCrewMember(member.uid)}>
+                                Remove
+                              </Button>
+                            )}
+                          </Stack>
+                        </Paper>
+                      );
+                    })}
+                  </Stack>
+                )}
+
+                {crewManagerPreviousMembers.length > 0 && (
+                  <>
+                    <Divider />
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Previously on This Trip</Typography>
+                    {crewManagerPreviousMembers.map((member) => (
+                      <Typography key={member.uid} variant="body2" color="text.secondary">
+                        {member.name} • {member.role} • Left {formatDateTime(member.leftAt || undefined)}
+                      </Typography>
+                    ))}
+                  </>
+                )}
+
+                <Divider />
+                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>Add Employee</Typography>
+                <FormControl fullWidth>
+                  <InputLabel>Employee</InputLabel>
+                  <Select
+                    label="Employee"
+                    value={crewManagerWorkerUid}
+                    onChange={(event) => setCrewManagerWorkerUid(event.target.value)}
+                    disabled={crewManagerBusy}
+                    {...selectMenuProps()}
+                  >
+                    <MenuItem value="">Select employee...</MenuItem>
+                    {technicians
+                      .filter((worker) => worker.active && !crewManagerCurrentMembers.some((member) => member.uid === worker.uid))
+                      .map((worker) => (
+                        <MenuItem key={worker.uid} value={worker.uid}>
+                          {worker.displayName} ({normalizeRole(worker.role) || "field worker"})
+                        </MenuItem>
+                      ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth>
+                  <InputLabel>Role on This Trip</InputLabel>
+                  <Select label="Role on This Trip" value={crewManagerRole}
+                    onChange={(event) => setCrewManagerRole(event.target.value as "technician" | "helper")}
+                    disabled={crewManagerBusy} {...selectMenuProps()}>
+                    <MenuItem value="helper">Helper — nonbillable</MenuItem>
+                    <MenuItem value="technician">Technician — billable</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField
+                  label="Actual Join Time (optional — blank means now)"
+                  type="datetime-local"
+                  value={crewManagerJoinLocal}
+                  onChange={(event) => setCrewManagerJoinLocal(event.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  disabled={crewManagerBusy}
+                  fullWidth
+                  helperText="Use this only when the employee began working earlier. The time must not precede the trip start."
+                />
+                <Button variant="contained" startIcon={<GroupRoundedIcon />}
+                  disabled={crewManagerBusy || !crewManagerWorkerUid || !canEditProject || safeTrim(crewManagerTrip.status) !== "in_progress"}
+                  onClick={() => void addProjectCrewMember()}>
+                  {crewManagerBusy ? "Saving..." : "Add Employee to Active Trip"}
+                </Button>
+                {crewManagerError ? <Alert severity="error">{crewManagerError}</Alert> : null}
+                {crewManagerSuccess ? <Alert severity="success">{crewManagerSuccess}</Alert> : null}
+              </Stack>
+            )}
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button onClick={closeCrewManager} disabled={crewManagerBusy}>Close</Button>
+          </DialogActions>
+        </Dialog>
+
         <Dialog
           open={tripModal.open}
           onClose={tripModalBusy ? undefined : closeTripModal}
