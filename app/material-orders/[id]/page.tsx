@@ -10,6 +10,7 @@ import {
   getDoc,
   getDocs,
   updateDoc,
+  writeBatch,
 } from "firebase/firestore";
 import {
   Alert,
@@ -39,6 +40,7 @@ import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import Inventory2RoundedIcon from "@mui/icons-material/Inventory2Rounded";
 import LocalShippingRoundedIcon from "@mui/icons-material/LocalShippingRounded";
 import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
 import PaidRoundedIcon from "@mui/icons-material/PaidRounded";
 import PlaceRoundedIcon from "@mui/icons-material/PlaceRounded";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
@@ -71,6 +73,8 @@ type SavingAction =
   | "cancelled";
 
 type MaterialOrderDoc = MaterialOrder & {
+  serviceTicketId?: string | null;
+  orderPurpose?: "service_ticket" | "standalone" | null;
   createdAt?: unknown;
   updatedAt?: unknown;
 };
@@ -387,6 +391,8 @@ function mapMaterialOrder(id: string, data: any): MaterialOrderDoc {
   return {
     id,
 
+    serviceTicketId: data.serviceTicketId ?? null,
+    orderPurpose: data.orderPurpose ?? null,
     customerId: data.customerId ?? "",
     customerDisplayName: data.customerDisplayName ?? "",
 
@@ -1027,12 +1033,38 @@ export default function MaterialOrderDetailPage() {
     setSavingAction(action);
 
     try {
+      if (order.serviceTicketId && (action === "ready_to_bill" || action === "invoiced")) {
+        throw new Error("This material order belongs to a service ticket. Invoice the service ticket instead.");
+      }
+      if (order.serviceTicketId && action === "received") {
+        const ticketRef = doc(db, "serviceTickets", order.serviceTicketId);
+        const ticketSnap = await getDoc(ticketRef);
+        if (!ticketSnap.exists()) throw new Error("Linked service ticket not found; receipt was not saved.");
+        const ticketData = ticketSnap.data();
+        if (["cancelled", "invoiced"].includes(String(ticketData.status || "").toLowerCase())) {
+          throw new Error("Linked service ticket is cancelled or invoiced; receipt was not saved.");
+        }
+        const batch = writeBatch(db);
+        batch.update(doc(db, "materialOrders", order.id), {
+          ...payload,
+          updatedAt: nowIso(),
+          updatedByUid: appUser?.uid || null,
+          updatedByName: getUserName(),
+        });
+        batch.update(ticketRef, {
+          materialOrderReadiness: "ready_to_schedule",
+          materialsLastReceivedAt: nowIso(),
+          updatedAt: nowIso(),
+        });
+        await batch.commit();
+      } else {
       await updateDoc(doc(db, "materialOrders", order.id), {
         ...payload,
         updatedAt: nowIso(),
         updatedByUid: appUser?.uid || null,
         updatedByName: getUserName(),
       });
+      }
 
       await loadOrder();
       setActionOk("Material order updated.");
@@ -1843,7 +1875,7 @@ export default function MaterialOrderDetailPage() {
 
                           <Chip
                             icon={<PaidRoundedIcon />}
-                            label={getBillingStatusLabel(order.billing?.status)}
+                            label={order.serviceTicketId ? "Billed on Service Ticket" : getBillingStatusLabel(order.billing?.status)}
                             variant="outlined"
                             sx={{ borderRadius: 99, fontWeight: 800 }}
                           />
@@ -1926,6 +1958,46 @@ export default function MaterialOrderDetailPage() {
                     </Stack>
                   </Box>
                 </SectionSurface>
+
+                {order.serviceTicketId ? (
+                  <SectionSurface>
+                    <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+                      <Stack spacing={1.75}>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          justifyContent="space-between"
+                          alignItems={{ xs: "flex-start", sm: "center" }}
+                          spacing={1.5}
+                        >
+                          <Stack direction="row" spacing={1.25} alignItems="center">
+                            <ReceiptLongRoundedIcon color="primary" />
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="h6" sx={{ fontWeight: 850 }}>
+                                Linked Service Ticket
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                                Ticket ID: {order.serviceTicketId}
+                              </Typography>
+                            </Box>
+                          </Stack>
+                          <Button
+                            component={Link}
+                            href={`/service-tickets/${encodeURIComponent(order.serviceTicketId)}`}
+                            variant="contained"
+                            startIcon={<OpenInNewRoundedIcon />}
+                            sx={{ borderRadius: 2, minHeight: 42, flexShrink: 0 }}
+                          >
+                            View Service Ticket
+                          </Button>
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary">
+                          This material order belongs to the linked service ticket. Receiving materials marks
+                          that ticket ready to schedule; invoice the service ticket rather than this order.
+                        </Typography>
+                      </Stack>
+                    </Box>
+                  </SectionSurface>
+                ) : null}
 
                 {actionError ? (
                   <Alert severity="error" variant="outlined" icon={<ErrorOutlineRoundedIcon />}>
@@ -2402,6 +2474,7 @@ export default function MaterialOrderDetailPage() {
                             onClick={handleMarkInvoiced}
                             disabled={
                               savingAction !== "" ||
+                              Boolean(order.serviceTicketId) ||
                               normalize(order.status) === "cancelled" ||
                               normalize(order.status) === "invoiced" ||
                               normalize(order.billing?.status) === "invoiced"
@@ -2490,6 +2563,7 @@ export default function MaterialOrderDetailPage() {
                             onClick={handleMarkReadyForPickup}
                             disabled={
                               savingAction !== "" ||
+                              Boolean(order.serviceTicketId) ||
                               normalize(order.status) === "ready_for_pickup" ||
                               normalize(order.status) === "cancelled" ||
                               normalize(order.status) === "invoiced"
@@ -2532,6 +2606,7 @@ export default function MaterialOrderDetailPage() {
                             onClick={handleMarkPickedUp}
                             disabled={
                               savingAction !== "" ||
+                              Boolean(order.serviceTicketId) ||
                               normalize(order.pickup?.status) === "picked_up" ||
                               normalize(order.status) === "picked_up" ||
                               normalize(order.status) === "cancelled"
@@ -2555,6 +2630,7 @@ export default function MaterialOrderDetailPage() {
                             onClick={handleSendToReadyToBill}
                             disabled={
                               savingAction !== "" ||
+                              Boolean(order.serviceTicketId) ||
                               normalize(order.billing?.status) === "ready_to_bill" ||
                               normalize(order.billing?.status) === "invoiced" ||
                               normalize(order.status) === "cancelled" ||

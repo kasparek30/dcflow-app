@@ -323,6 +323,9 @@ type ReadyInvoiceProjectItem = {
 type DashboardMaterialOrderDoc = {
   id: string;
   materialOrderCode?: string | null;
+  serviceTicketId?: string | null;
+  orderPurpose?: string | null;
+  receivedAt?: string | null;
   customerDisplayName?: string | null;
   contactName?: string | null;
   contactPhone?: string | null;
@@ -1483,6 +1486,7 @@ function buildPendingMaterialOrderItems(
   materialOrders: DashboardMaterialOrderDoc[],
 ) {
   return materialOrders
+    .filter((order) => !safeTrim(order.serviceTicketId)) // Linked orders belong to the service-parts queue.
     .map((order) => {
       const statusMeta = getPendingMaterialOrderStatus(order);
       if (!statusMeta) return null;
@@ -1512,6 +1516,168 @@ function buildPendingMaterialOrderItems(
       const bMs = parseFlexibleDateMs(right.updatedAt) || 0;
       return bMs - aMs;
     }) as PendingMaterialOrderItem[];
+}
+
+
+// One row per service ticket even if several parts orders are linked.
+// Never trust a ticket-level ready flag on its own: receiving one of multiple
+// orders must not announce that the whole ticket is ready for scheduling.
+type ServicePartsQueueItem = {
+  ticketId: string;
+  customerName: string;
+  summary: string;
+  orders: DashboardMaterialOrderDoc[];
+  waiting: boolean;
+  isScheduled: boolean;
+  firstOrderedAt?: string;
+  followUpClosedAt?: string;
+  ticketHref: string;
+};
+
+function isMaterialReceivedForService(order: DashboardMaterialOrderDoc) {
+  return ["received", "ready_for_pickup", "picked_up", "ready_to_bill", "invoiced"].includes(normalizeStatus(order.status));
+}
+
+function buildServicePartsQueue(
+  tickets: DashboardTicketItem[],
+  orders: DashboardMaterialOrderDoc[],
+  scheduledTicketIds: Set<string>,
+  followUpClosedAtByTicket: Map<string, string>,
+): ServicePartsQueueItem[] {
+  const ordersByTicket = new Map<string, DashboardMaterialOrderDoc[]>();
+  orders.forEach((order) => {
+    const ticketId = safeTrim(order.serviceTicketId);
+    if (!ticketId || ["cancelled", "closed"].includes(normalizeStatus(order.status))) return;
+    const prior = ordersByTicket.get(ticketId) || [];
+    prior.push(order);
+    ordersByTicket.set(ticketId, prior);
+  });
+  return tickets.flatMap((ticket) => {
+    // Only actual follow-up tickets remain in the active parts workflow.
+    if (normalizeStatus(ticket.status) !== "follow_up") return [];
+    const linked = ordersByTicket.get(ticket.id) || [];
+    if (!linked.length) return [];
+    const isScheduled = scheduledTicketIds.has(ticket.id);
+    const waiting = linked.some((order) => !isMaterialReceivedForService(order));
+    return [{
+      ticketId: ticket.id,
+      customerName: ticket.customerDisplayName,
+      summary: ticket.issueSummary,
+      orders: linked.sort((a,b) => safeTrim(a.createdAt).localeCompare(safeTrim(b.createdAt))),
+      waiting,
+      isScheduled,
+      firstOrderedAt: linked.map((o) => safeTrim(o.createdAt)).filter(Boolean).sort()[0],
+      followUpClosedAt: followUpClosedAtByTicket.get(ticket.id),
+      ticketHref: `/service-tickets/${ticket.id}`,
+    }];
+  }).sort((a, b) => safeTrim(a.firstOrderedAt).localeCompare(safeTrim(b.firstOrderedAt)));
+}
+
+// Calendar days since the original service visit was closed as Follow Up,
+// not 24-hour windows since the office happened to create a material order.
+function getServicePartsWaitingDays(dateValue?: string | null): number | null {
+  const timestamp = parseFlexibleDateMs(dateValue);
+  if (!Number.isFinite(timestamp)) return null;
+  const start = new Date(timestamp);
+  start.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // UTC calendar-date subtraction avoids daylight-saving 23/25-hour days.
+  const startDay = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const todayDay = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.max(0, Math.round((todayDay - startDay) / 86400000));
+}
+
+function ServicePartsFollowUpsSection({ items }: { items: ServicePartsQueueItem[] }) {
+  const [tab, setTab] = useState<"waiting" | "ready">("waiting");
+  const waitingItems = items.filter((item) => item.waiting && !item.isScheduled);
+  const readyItems = items.filter((item) => !item.waiting && !item.isScheduled);
+  const scheduledCount = items.filter((item) => item.isScheduled).length;
+  const selected = tab === "waiting" ? waitingItems : readyItems;
+  return (
+    <SectionCard
+      title="Service Parts Follow-Ups"
+      subtitle="Service tickets waiting for special-order parts or a return visit."
+      icon={<Inventory2RoundedIcon />}
+      count={waitingItems.length + readyItems.length}
+      accent={waitingItems.length > 0 ? "warning" : "success"}
+    >
+      <Stack spacing={1.5}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <Button size="small" variant={tab === "waiting" ? "contained" : "outlined"}
+            color="warning" onClick={() => setTab("waiting")}
+            sx={{ borderRadius: 999, fontWeight: 800, flex: 1 }}>
+            Waiting on Parts ({waitingItems.length})
+          </Button>
+          <Button size="small" variant={tab === "ready" ? "contained" : "outlined"}
+            color="success" onClick={() => setTab("ready")}
+            sx={{ borderRadius: 999, fontWeight: 800, flex: 1 }}>
+            Ready to Schedule ({readyItems.length})
+          </Button>
+        </Stack>
+        {scheduledCount > 0 && (
+          <Typography variant="caption" color="text.secondary">
+            {scheduledCount} linked service ticket{scheduledCount === 1 ? " has" : "s have"} a return trip already scheduled or in progress and {scheduledCount === 1 ? "is" : "are"} excluded from these action queues.
+          </Typography>
+        )}
+        {selected.length === 0 ? (
+          <Alert severity="success" variant="outlined">
+            {tab === "waiting" ? "No linked service tickets are currently waiting on parts." : "No received-parts tickets are awaiting return-trip scheduling."}
+          </Alert>
+        ) : (
+          <Stack divider={<Divider flexItem />}>
+            {selected.map((item) => {
+              const pending = item.orders.filter((order) => !isMaterialReceivedForService(order));
+              const hasTripDate = Boolean(item.followUpClosedAt);
+              const days = getServicePartsWaitingDays(item.followUpClosedAt || item.firstOrderedAt);
+              const ageTone = days === null ? "default" : days >= 7 ? "error" : days >= 4 ? "warning" : "default";
+              return (
+                <Box key={item.ticketId} sx={{ py: 1.25 }}>
+                  <Stack spacing={0.85}>
+                    <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
+                      <Typography variant="subtitle2" fontWeight={850}>{item.customerName}</Typography>
+                      <Chip size="small" color={item.waiting ? "warning" : "success"}
+                        label={item.waiting ? `${pending.length} order${pending.length === 1 ? "" : "s"} outstanding` : "All parts received"}
+                        sx={{ fontWeight: 800 }} />
+                    </Stack>
+                    <Typography variant="body2" sx={{ fontWeight: 650 }}>{item.summary}</Typography>
+                    <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap>
+                      <Typography variant="caption" color="text.secondary">
+                        {item.orders.length} linked material order{item.orders.length === 1 ? "" : "s"}
+                      </Typography>
+                      {days !== null ? (
+                        <Tooltip title={hasTripDate ? "Calendar days since the first completed Follow Up service trip" : "Follow Up trip completion time unavailable; measured since the first material order was created"}>
+                          <Chip size="small" color={ageTone} variant={ageTone === "default" ? "outlined" : "filled"}
+                            icon={<AccessTimeRoundedIcon sx={{ fontSize: 14 }} />}
+                            label={`${days} day${days === 1 ? "" : "s"} waiting${hasTripDate ? "" : " (from order)"}`}
+                            sx={{ fontWeight: 800 }} />
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">Waiting start date unavailable</Typography>
+                      )}
+                    </Stack>
+                    {item.orders.map((order) => (
+                      <Stack key={order.id} direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                        <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere", flex: 1 }}>
+                          {order.requestSummary || order.materialOrderCode || "Material Order"} · {isMaterialReceivedForService(order) ? "Received" : getPendingMaterialOrderStatus(order)?.label || order.status || "Pending"}
+                        </Typography>
+                        <Button component={Link} href={`/material-orders/${order.id}`} size="small" variant="text" sx={{ flexShrink: 0 }}>Open Order</Button>
+                      </Stack>
+                    ))}
+                    <Button component={Link} href={item.ticketHref} size="small"
+                      variant={item.waiting ? "outlined" : "contained"} color={item.waiting ? "warning" : "success"}
+                      endIcon={<ArrowForwardRoundedIcon />} sx={{ borderRadius: 999, alignSelf: "flex-start" }}>
+                      {item.waiting ? "Open Service Ticket" : "Schedule Return Trip"}
+                    </Button>
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Stack>
+        )}
+      </Stack>
+    </SectionCard>
+  );
 }
 
 function getFieldStatusMeta(
@@ -2949,19 +3115,19 @@ function MyStaffHoursSection({
 }
 
 
-type DashboardSectionId = "staff" | "review" | "material" | "follow" | "field" | "glance" | "projects";
+type DashboardSectionId = "staff" | "review" | "material" | "follow" | "service_parts" | "field" | "glance" | "projects";
 type DashboardZone = "left" | "right" | "wide";
 type DashboardLayout = Record<DashboardZone, DashboardSectionId[]>;
 
 const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
-  left: ["staff", "review", "material", "follow"],
+  left: ["staff", "review", "material", "follow", "service_parts"],
   right: ["field", "glance"],
   wide: ["projects"],
 };
-const ALL_DASHBOARD_SECTIONS: DashboardSectionId[] = ["staff", "review", "material", "follow", "field", "glance", "projects"];
+const ALL_DASHBOARD_SECTIONS: DashboardSectionId[] = ["staff", "review", "material", "follow", "service_parts", "field", "glance", "projects"];
 const SECTION_NAMES: Record<DashboardSectionId, string> = {
   staff: "My Staff Hours", review: "Needs Review", material: "Pending Material Orders",
-  follow: "Follow-Up Needed", field: "Live Field Work", glance: "Today at a Glance",
+  follow: "Follow-Up Needed", service_parts: "Service Parts Follow-Ups", field: "Live Field Work", glance: "Today at a Glance",
   projects: "Projects Attention Center",
 };
 
@@ -3015,6 +3181,8 @@ export default function DashboardPage() {
   const [dashboardMaterialOrders, setDashboardMaterialOrders] = useState<
     DashboardMaterialOrderDoc[]
   >([]);
+  const [scheduledServiceTicketIds, setScheduledServiceTicketIds] = useState<Set<string>>(() => new Set());
+  const [followUpClosedAtByTicket, setFollowUpClosedAtByTicket] = useState<Map<string, string>>(() => new Map());
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [myStaffCoverage, setMyStaffCoverage] = useState<
     DashboardStaffCoverageItem[]
@@ -3123,7 +3291,6 @@ export default function DashboardPage() {
       query(
         collection(db, "serviceTickets"),
         where("status", "==", "follow_up"),
-        limit(50),
       ),
       (snap) => {
         const items = snap.docs
@@ -3187,7 +3354,7 @@ export default function DashboardPage() {
     );
 
     const unsubMaterialOrders = onSnapshot(
-      query(collection(db, "materialOrders"), limit(200)),
+      query(collection(db, "materialOrders")),
       (snap) => {
         const items = snap.docs.map((docSnap) => {
           const data = docSnap.data() as any;
@@ -3195,6 +3362,9 @@ export default function DashboardPage() {
           return {
             id: docSnap.id,
             materialOrderCode: safeTrim(data.materialOrderCode) || undefined,
+            serviceTicketId: safeTrim(data.serviceTicketId) || undefined,
+            orderPurpose: safeTrim(data.orderPurpose) || undefined,
+            receivedAt: safeTrim(data.receivedAt) || undefined,
             customerDisplayName:
               safeTrim(data.customerDisplayName) || "Customer",
             contactName: safeTrim(data.contactName) || undefined,
@@ -3227,6 +3397,45 @@ export default function DashboardPage() {
         setDashboardMaterialOrders(items);
       },
       () => setDashboardMaterialOrders([]),
+    );
+
+    // One-field query avoids loading historical trips and needs no composite index.
+    // Read completion timestamps from actual service trips. The ticket's
+    // updatedAt changes for many reasons, so it is not a reliable waiting age.
+    // Outcome is a single-field query and needs no composite index.
+    const unsubServiceFollowUpTrips = onSnapshot(
+      query(collection(db, "trips"), where("outcome", "==", "follow_up")),
+      (snap) => {
+        const firstCloseoutByTicket = new Map<string, string>();
+        snap.docs.forEach((ds) => {
+          const trip = ds.data() as any;
+          if (safeTrim(trip.type) !== "service" || normalizeStatus(trip.status) !== "complete") return;
+          const ticketId = safeTrim(trip.link?.serviceTicketId || trip.serviceTicketId);
+          const closedAt = safeTrim(trip.actualEndAt || trip.completedAt || trip.updatedAt);
+          if (!ticketId || !Number.isFinite(parseFlexibleDateMs(closedAt))) return;
+          const existing = firstCloseoutByTicket.get(ticketId);
+          if (!existing || parseFlexibleDateMs(closedAt) < parseFlexibleDateMs(existing)) {
+            firstCloseoutByTicket.set(ticketId, closedAt);
+          }
+        });
+        setFollowUpClosedAtByTicket(firstCloseoutByTicket);
+      },
+      (err) => console.error("Service parts follow-up age feed failed", err),
+    );
+
+    const unsubServiceOpenTrips = onSnapshot(
+      query(collection(db, "trips"), where("status", "in", ["planned", "in_progress"])),
+      (snap) => {
+        const ids = new Set<string>();
+        snap.docs.forEach((ds) => {
+          const data = ds.data() as any;
+          if (data.active === false || safeTrim(data.type) !== "service") return;
+          const id = safeTrim(data.link?.serviceTicketId || data.serviceTicketId);
+          if (id) ids.add(id);
+        });
+        setScheduledServiceTicketIds(ids);
+      },
+      (err) => console.error("Service parts scheduling feed failed", err),
     );
 
     const unsubProjects = onSnapshot(
@@ -3452,6 +3661,8 @@ export default function DashboardPage() {
       unsubFollowUp();
       unsubReview();
       unsubMaterialOrders();
+      unsubServiceFollowUpTrips();
+      unsubServiceOpenTrips();
       unsubProjects();
       unsubProjectTrips();
       unsubActiveTrips();
@@ -3987,41 +4198,64 @@ export default function DashboardPage() {
     [dashboardMaterialOrders],
   );
 
+  const servicePartsQueue = useMemo(
+    () => buildServicePartsQueue(followUpTickets, dashboardMaterialOrders, scheduledServiceTicketIds, followUpClosedAtByTicket),
+    [followUpTickets, dashboardMaterialOrders, scheduledServiceTicketIds, followUpClosedAtByTicket],
+  );
+  // A service ticket belongs to one primary follow-up dashboard section.
+  // Keep serviceTickets.status unchanged: this is presentation-only filtering.
+  const servicePartsTicketIds = useMemo(
+    () => new Set(servicePartsQueue.map((item) => item.ticketId)),
+    [servicePartsQueue],
+  );
+  const generalFollowUpTickets = useMemo(
+    () => followUpTickets.filter((ticket) => !servicePartsTicketIds.has(ticket.id)),
+    [followUpTickets, servicePartsTicketIds],
+  );
+  const servicePartsWaiting = servicePartsQueue.filter((item) => item.waiting && !item.isScheduled).length;
+  const servicePartsReady = servicePartsQueue.filter((item) => !item.waiting && !item.isScheduled).length;
+
   const projectAttentionCount =
     projectFollowUps.length + readyInvoiceProjects.length;
 
   const attentionCount = useMemo(() => {
     return new Set([
-      ...followUpTickets.map((x) => `ticket_fu_${x.id}`),
+      ...generalFollowUpTickets.map((x) => `ticket_fu_${x.id}`),
       ...reviewTickets.map((x) => `ticket_rev_${x.id}`),
       ...projectFollowUps.map((x) => `project_fu_${x.projectId}`),
       ...readyInvoiceProjects.map((x) => `project_bill_${x.projectId}`),
       ...pendingMaterialOrders.map((x) => `material_pending_${x.id}`),
+      ...servicePartsQueue.filter((x) => !x.isScheduled).map((x) => `ticket_fu_${x.ticketId}`),
     ]).size;
   }, [
-    followUpTickets,
+    generalFollowUpTickets,
     reviewTickets,
     projectFollowUps,
     readyInvoiceProjects,
     pendingMaterialOrders,
+    servicePartsQueue,
   ]);
 
   const visibleCardCount = useMemo(() => {
     return (
       reviewTickets.length +
-      followUpTickets.length +
+      generalFollowUpTickets.length +
       activeItems.length +
       projectFollowUps.length +
       readyInvoiceProjects.length +
-      pendingMaterialOrders.length
+      pendingMaterialOrders.length +
+      servicePartsWaiting +
+      servicePartsReady
     );
   }, [
     reviewTickets.length,
-    followUpTickets.length,
+    generalFollowUpTickets.length,
     activeItems.length,
     projectFollowUps.length,
     readyInvoiceProjects.length,
     pendingMaterialOrders.length,
+    servicePartsWaiting,
+    servicePartsReady,
   ]);
 
 
@@ -4029,7 +4263,8 @@ export default function DashboardPage() {
     staff: myStaffCoverage.length > 0 || staffCoverageLoading || Boolean(staffCoverageLoadError) || appUser?.role === "dispatcher" || appUser?.role === "billing",
     review: reviewTickets.length > 0,
     material: pendingMaterialOrders.length > 0,
-    follow: followUpTickets.length > 0,
+    follow: generalFollowUpTickets.length > 0,
+    service_parts: servicePartsQueue.length > 0,
     field: true,
     glance: true,
     projects: projectFollowUps.length > 0 || readyInvoiceProjects.length > 0,
@@ -4098,12 +4333,12 @@ export default function DashboardPage() {
                 ) : null}
 </>);
       case "follow": return (<>
-{followUpTickets.length > 0 ? (
+{generalFollowUpTickets.length > 0 ? (
                   <SectionCard
                     title="Follow-Up Needed"
                     subtitle="Service tickets that still need a return trip, scheduling, or next-step action."
                     icon={<AutorenewRoundedIcon />}
-                    count={followUpTickets.length}
+                    count={generalFollowUpTickets.length}
                     accent="warning"
                   >
                     <Stack
@@ -4114,13 +4349,14 @@ export default function DashboardPage() {
                         />
                       }
                     >
-                      {followUpTickets.map((item) => (
+                      {generalFollowUpTickets.map((item) => (
                         <TicketRow key={item.id} item={item} mode="follow_up" />
                       ))}
                     </Stack>
                   </SectionCard>
                 ) : null}
 </>);
+      case "service_parts": return <ServicePartsFollowUpsSection items={servicePartsQueue} />;
       case "field": return <LiveFieldWorkSection activeItems={activeItems} />;
       case "glance": return (<>
 <SectionCard
@@ -4140,7 +4376,7 @@ export default function DashboardPage() {
                     {[
                       { label: "Active Now", value: activeItems.length },
                       { label: "Needs Review", value: reviewTickets.length },
-                      { label: "Follow-Up", value: followUpTickets.length },
+                      { label: "Follow-Up", value: generalFollowUpTickets.length },
                       {
                         label: "Project Follow-Ups",
                         value: projectFollowUps.length,
@@ -4153,6 +4389,8 @@ export default function DashboardPage() {
                         label: "Pending Materials",
                         value: pendingMaterialOrders.length,
                       },
+                      { label: "Waiting on Parts", value: servicePartsWaiting },
+                      { label: "Ready to Schedule", value: servicePartsReady },
                       { label: "Attention Total", value: attentionCount },
                     ].map((item) => (
                       <Box
@@ -4522,6 +4760,9 @@ export default function DashboardPage() {
                         sx={{ borderRadius: 999, fontWeight: 800 }}
                       />
                     )}
+                    {(servicePartsWaiting > 0 || servicePartsReady > 0) && (
+                      <Chip size="small" label={`${servicePartsWaiting} Waiting on Parts · ${servicePartsReady} Ready to Schedule`} color="warning" sx={{ borderRadius: 999, fontWeight: 800 }} />
+                    )}
                     {pendingMaterialOrders.length > 0 && (
                       <Chip
                         size="small"
@@ -4579,7 +4820,7 @@ export default function DashboardPage() {
               {renderDashboardZone("right")}
             </Box>
             {(customizing || (customizing ? layoutDraft.wide : dashboardLayout.wide).some((id) => sectionVisible[id])) ? renderDashboardZone("wide") : null}
-            {reviewTickets.length === 0 && followUpTickets.length === 0 && pendingMaterialOrders.length === 0 && !customizing ? (
+            {reviewTickets.length === 0 && generalFollowUpTickets.length === 0 && pendingMaterialOrders.length === 0 && servicePartsQueue.length === 0 && !customizing ? (
 
                   <Card
                     elevation={0}

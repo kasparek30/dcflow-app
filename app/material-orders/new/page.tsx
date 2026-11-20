@@ -1,9 +1,10 @@
 // app/material-orders/new/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { collection, doc, getDocs, setDoc } from "firebase/firestore";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { collection, doc, getDoc, getDocs, setDoc } from "firebase/firestore";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   Alert,
   Box,
@@ -145,8 +146,19 @@ function getPickupLocationTypeLabel(value: MaterialOrderPickupLocationType) {
   return "Other";
 }
 
-export default function NewMaterialOrderPage() {
+function NewMaterialOrderContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const linkedTicketId = String(searchParams.get("serviceTicketId") || "").trim();
+  const [linkedTicket, setLinkedTicket] = useState<{
+    id: string; customerId: string; customerDisplayName: string;
+    serviceAddressId: string | null; serviceAddressLabel: string | null;
+    serviceAddressLine1: string; serviceAddressLine2: string | null;
+    serviceCity: string; serviceState: string; servicePostalCode: string;
+    issueSummary: string; followUpNotes: string;
+  } | null>(null);
+  const [ticketLoading, setTicketLoading] = useState(Boolean(linkedTicketId));
+  const [ticketError, setTicketError] = useState("");
   const theme = useTheme();
   const { appUser } = useAuthContext();
 
@@ -289,6 +301,57 @@ export default function NewMaterialOrderPage() {
     }
   }, [appUser?.uid, orderedByUid]);
 
+  useEffect(() => {
+    if (!linkedTicketId || customersLoading) return;
+    let active = true;
+    async function loadLinkedTicket() {
+      setTicketLoading(true);
+      try {
+        const ticketSnap = await getDoc(doc(db, "serviceTickets", linkedTicketId));
+        if (!ticketSnap.exists()) throw new Error("Linked service ticket not found.");
+        const data = ticketSnap.data();
+        if (["cancelled", "invoiced"].includes(String(data.status || "").toLowerCase())) {
+          throw new Error("Materials cannot be ordered for a cancelled or invoiced ticket.");
+        }
+        const matchedCustomer = customers.find((customer) => customer.id === data.customerId);
+        if (!matchedCustomer) throw new Error("The linked ticket's customer could not be found.");
+        const next = {
+          id: ticketSnap.id, customerId: String(data.customerId || ""),
+          customerDisplayName: String(data.customerDisplayName || matchedCustomer.displayName),
+          serviceAddressId: data.serviceAddressId || null,
+          serviceAddressLabel: data.serviceAddressLabel || null,
+          serviceAddressLine1: String(data.serviceAddressLine1 || ""),
+          serviceAddressLine2: data.serviceAddressLine2 || null,
+          serviceCity: String(data.serviceCity || ""),
+          serviceState: String(data.serviceState || ""),
+          servicePostalCode: String(data.servicePostalCode || ""),
+          issueSummary: String(data.issueSummary || ""),
+          followUpNotes: String(data.issueDetails || ""),
+        };
+        if (!active) return;
+        setLinkedTicket(next);
+        setSelectedCustomerId(next.customerId);
+        setCustomerSearch(matchedCustomer.displayName);
+        setContactName(matchedCustomer.displayName);
+        setContactPhone(matchedCustomer.phonePrimary || "");
+        setContactEmail(matchedCustomer.email || "");
+        setRequestSummary(`Parts for service ticket — ${next.issueSummary || "Follow-up repair"}`);
+        setRequestDetails(next.followUpNotes);
+        setPickupLocationType("customer_site");
+        setPickupLocationNotes("Parts for installation by our service technician on a return visit.");
+        const matchingAddress = matchedCustomer.serviceAddresses.find((a) => a.id === next.serviceAddressId);
+        setSelectedServiceAddressId(matchingAddress?.id || "");
+        setTicketError("");
+      } catch (err) {
+        if (active) setTicketError(err instanceof Error ? err.message : "Unable to load linked service ticket.");
+      } finally {
+        if (active) setTicketLoading(false);
+      }
+    }
+    void loadLinkedTicket();
+    return () => { active = false; };
+  }, [linkedTicketId, customersLoading, customers]);
+
   const searchReady = customerSearch.trim().length >= 2;
 
   const filteredCustomers = useMemo(() => {
@@ -416,6 +479,10 @@ export default function NewMaterialOrderPage() {
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
+    if (linkedTicketId && (!linkedTicket || linkedTicket.customerId !== selectedCustomerId)) {
+      setError("The service ticket could not be validated. Do not create an unlinked order.");
+      return;
+    }
     if (!selectedCustomer) {
       setError("Please search for and select a billing party / customer account.");
       return;
@@ -455,6 +522,10 @@ export default function NewMaterialOrderPage() {
       const orderRef = doc(collection(db, "materialOrders"));
 
       await setDoc(orderRef, {
+        // Linked service ticket orders are not billed independently.
+        serviceTicketId: linkedTicket?.id || null,
+        orderPurpose: linkedTicket ? "service_ticket" : "standalone",
+
         // Billing party / customer account
         customerId: selectedCustomer.id,
         customerDisplayName: selectedCustomer.displayName,
@@ -466,15 +537,16 @@ export default function NewMaterialOrderPage() {
 
         // Optional address context
         serviceAddressId:
+          linkedTicket ? linkedTicket.serviceAddressId :
           selectedServiceAddress && !selectedServiceAddress.isBillingFallback
             ? selectedServiceAddress.id
             : null,
-        serviceAddressLabel: selectedServiceAddress?.label ?? null,
-        serviceAddressLine1: selectedServiceAddress?.addressLine1 ?? null,
-        serviceAddressLine2: selectedServiceAddress?.addressLine2 ?? null,
-        serviceCity: selectedServiceAddress?.city ?? null,
-        serviceState: selectedServiceAddress?.state ?? null,
-        servicePostalCode: selectedServiceAddress?.postalCode ?? null,
+        serviceAddressLabel: linkedTicket ? linkedTicket.serviceAddressLabel : selectedServiceAddress?.label ?? null,
+        serviceAddressLine1: linkedTicket ? linkedTicket.serviceAddressLine1 : selectedServiceAddress?.addressLine1 ?? null,
+        serviceAddressLine2: linkedTicket ? linkedTicket.serviceAddressLine2 : selectedServiceAddress?.addressLine2 ?? null,
+        serviceCity: linkedTicket ? linkedTicket.serviceCity : selectedServiceAddress?.city ?? null,
+        serviceState: linkedTicket ? linkedTicket.serviceState : selectedServiceAddress?.state ?? null,
+        servicePostalCode: linkedTicket ? linkedTicket.servicePostalCode : selectedServiceAddress?.postalCode ?? null,
 
         // Pickup / delivery context
         pickupLocationType,
@@ -546,7 +618,7 @@ export default function NewMaterialOrderPage() {
         cancelReason: null,
       });
 
-      router.push("/material-orders");
+      router.push(linkedTicket ? `/service-tickets/${linkedTicket.id}` : "/material-orders");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create material order.");
     } finally {
@@ -570,13 +642,13 @@ export default function NewMaterialOrderPage() {
                 />
                 <Chip
                   icon={<ShoppingCartRoundedIcon />}
-                  label="No trip / no schedule"
+                  label={linkedTicketId ? "Linked to service ticket" : "No trip / no schedule"}
                   variant="outlined"
                   sx={{ borderRadius: 99, fontWeight: 700 }}
                 />
                 <Chip
                   icon={<StorefrontRoundedIcon />}
-                  label="Office pickup by default"
+                  label={linkedTicketId ? "For technician installation" : "Office pickup by default"}
                   variant="outlined"
                   sx={{ borderRadius: 99, fontWeight: 700 }}
                 />
@@ -586,13 +658,15 @@ export default function NewMaterialOrderPage() {
                 New Material Order
               </Typography>
               <Typography variant="body1" sx={{ color: "text.secondary", mt: 1 }}>
-                Create a lightweight customer material order for parts-only requests.
-                The customer account is the billing party. Address context is optional because
-                many customers pick up materials from the office.
+                {linkedTicketId
+                  ? "Order parts for the existing service ticket. The office will schedule a return trip when the parts arrive. Billing stays on the service ticket."
+                  : "Create a lightweight customer material order for parts-only requests. The customer account is the billing party. Address context is optional because many customers pick up materials from the office."}
               </Typography>
             </Box>
 
-            {customersLoading || usersLoading ? (
+            {linkedTicket && <Alert severity="info">Linked service ticket: <Link href={`/service-tickets/${linkedTicket.id}`}>{linkedTicket.issueSummary || linkedTicket.id}</Link>. This order is not billed separately.</Alert>}
+            {ticketError && <Alert severity="error">{ticketError}</Alert>}
+            {customersLoading || usersLoading || ticketLoading ? (
               <Card variant="outlined" sx={{ borderRadius: 4 }}>
                 <CardContent sx={{ py: 5 }}>
                   <Stack direction="row" spacing={2} alignItems="center" justifyContent="center">
@@ -608,7 +682,7 @@ export default function NewMaterialOrderPage() {
             {customersError ? <Alert severity="error">{customersError}</Alert> : null}
             {usersError ? <Alert severity="error">{usersError}</Alert> : null}
 
-            {!customersLoading && !usersLoading && !customersError && !usersError ? (
+            {!customersLoading && !usersLoading && !ticketLoading && !ticketError && (!linkedTicketId || linkedTicket) && !customersError && !usersError ? (
               <Box component="form" onSubmit={handleSubmit}>
                 <Card variant="outlined" sx={{ borderRadius: 4, overflow: "hidden" }}>
                   <CardContent sx={{ p: 0 }}>
@@ -1180,5 +1254,13 @@ export default function NewMaterialOrderPage() {
         </Box>
       </AppShell>
     </ProtectedPage>
+  );
+}
+// Next.js requires useSearchParams inside a Suspense boundary during production builds.
+export default function NewMaterialOrderPage() {
+  return (
+    <Suspense fallback={<Box sx={{ p: 3 }}><CircularProgress size={24} /></Box>}>
+      <NewMaterialOrderContent />
+    </Suspense>
   );
 }

@@ -205,6 +205,17 @@ type CompanyHoliday = {
   active: boolean;
 };
 
+type EmployeeAbsence = {
+  id: string;
+  uid: string;
+  startDate: string;
+  endDate: string;
+  allDay: boolean;
+  startTime: string;
+  endTime: string;
+  type: string;
+};
+
 type PtoDay = {
   uid: string;
   employeeName: string;
@@ -1103,6 +1114,60 @@ function ptoBlocksWindow(day: PtoDay | null | undefined, window: string, startTi
   return selectedSlotsForWindow(window, startTime, endTime).some(slot => ptoBlocksSlot(day, slot));
 }
 
+// The Unavailability page writes employeeUnavailability (not ptoRequests).
+// Read its canonical date range and full/partial-day fields independently of PTO.
+function parseEmployeeAbsences(snapshot: Awaited<ReturnType<typeof getDocs>>): EmployeeAbsence[] {
+  return snapshot.docs.flatMap((ds) => {
+    const d = ds.data() as any;
+    if (d.active === false) return [];
+    const uid = String(d.uid ?? d.employeeId ?? d.userUid ?? "").trim();
+    const startDate = String(d.startDate ?? d.date ?? "").trim();
+    const endDate = String(d.endDate ?? d.startDate ?? d.date ?? "").trim();
+    if (!uid || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate) return [];
+    const dayType = String(d.requestDayType || "").toLowerCase();
+    const window = String(d.timeWindow || "").toLowerCase();
+    const partial = String(d.partialDayType || "").toLowerCase();
+    const allDay = dayType === "partial_day" ? false
+      : dayType === "full_day" || window === "all_day" ? true
+      : ["am", "pm", "custom"].includes(window) || ["am", "pm", "custom"].includes(partial) ? false
+      : typeof d.allDay === "boolean" ? d.allDay
+      : !(d.startTime && d.endTime);
+    const startTime = partial === "am" ? "08:00" : partial === "pm" ? "13:00" : String(d.startTime || "");
+    const endTime = partial === "am" ? "12:00" : partial === "pm" ? "17:00" : String(d.endTime || "");
+    return [{ id: ds.id, uid, startDate, endDate, allDay, startTime, endTime, type: String(d.type || "unavailable") }];
+  });
+}
+
+function absenceBlocksWindow(absence: EmployeeAbsence, dateIso: string, window: string, startTime?: string | null, endTime?: string | null) {
+  if (dateIso < absence.startDate || dateIso > absence.endDate) return false;
+  if (absence.allDay) return true;
+  const aStart = minutesFromHHMM(absence.startTime);
+  const aEnd = minutesFromHHMM(absence.endTime);
+  // Unknown times must NOT silently make an absent employee schedulable.
+  if (aStart == null || aEnd == null || aEnd <= aStart) return true;
+  const tripStart = minutesFromHHMM(String(startTime || ""));
+  const tripEnd = minutesFromHHMM(String(endTime || ""));
+  if (window === "custom" && tripStart != null && tripEnd != null && tripEnd > tripStart) {
+    return tripStart < aEnd && tripEnd > aStart;
+  }
+  const slots = selectedSlotsForWindow(window, startTime, endTime);
+  return slots.some((slot) => {
+    const slotStart = slot === "am" ? SLOT_AM_START : SLOT_PM_START;
+    const slotEnd = slot === "am" ? SLOT_AM_END : SLOT_PM_END;
+    return slotStart < aEnd && slotEnd > aStart;
+  });
+}
+
+function employeeAbsenceForWindow(absences: EmployeeAbsence[], uid: string, dateIso: string, window: string, startTime?: string | null, endTime?: string | null) {
+  return absences.find((absence) => absence.uid === uid && absenceBlocksWindow(absence, dateIso, window, startTime, endTime)) || null;
+}
+
+async function loadLiveEmployeeAbsences(): Promise<EmployeeAbsence[]> {
+  // An immediate fresh read is used before writes, not just stale browser state.
+  return parseEmployeeAbsences(await getDocs(collection(db, "employeeUnavailability")));
+}
+
 function getPtoSummaryForDate(
   dateIso: string,
   ptoByUidByDate: Record<string, Record<string, PtoDay>>
@@ -1559,6 +1624,7 @@ function computeAddSlotConflict(args: {
   trips: TripDoc[];
   holidayByDate: Record<string, CompanyHoliday>;
   ptoByUidByDate: Record<string, Record<string, PtoDay>>;
+  absences: EmployeeAbsence[];
   eventsByDate: Record<string, CompanyEvent[]>;
 }) {
   const hard = new Set<string>();
@@ -1576,6 +1642,7 @@ function computeAddSlotConflict(args: {
     trips,
     holidayByDate,
     ptoByUidByDate,
+    absences,
     eventsByDate,
   } = args;
 
@@ -1591,6 +1658,8 @@ function computeAddSlotConflict(args: {
     const employeeName = employeeNamesByUid[uid] || uid;
     const employeeRole = employeeRolesByUid[uid] || "employee";
 
+    const absence = employeeAbsenceForWindow(absences, uid, dateIso, slot);
+    if (absence) hard.add(`${employeeName} is unavailable (${absence.type}) during ${formatSlotForMessage(slot)} on ${dateIso}.`);
     const pto = ptoByUidByDate[uid]?.[dateIso];
     if (pto && halfDaySlots.some((halfDaySlot) => ptoBlocksSlot(pto, halfDaySlot))) {
       hard.add(`${employeeName} is on approved PTO during ${formatSlotForMessage(slot)} on ${dateIso}.`);
@@ -1973,6 +2042,9 @@ export default function SchedulePage() {
   const [ptoError, setPtoError] = useState("");
   const [ptoByUidByDate, setPtoByUidByDate] = useState<Record<string, Record<string, PtoDay>>>({});
   const [ptoNamesByDate, setPtoNamesByDate] = useState<Record<string, string[]>>({});
+  const [absences, setAbsences] = useState<EmployeeAbsence[]>([]);
+  const [absencesLoading, setAbsencesLoading] = useState(true);
+  const [absencesError, setAbsencesError] = useState("");
 
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
@@ -2178,9 +2250,10 @@ const unavailableDefaultHelpersForAddTrip = useMemo(() => {
   if (!dateIso) return [] as HelperOption[];
 
   return defaultHelpersForAddTech.filter((helper) =>
-    ptoBlocksWindow(ptoByUidByDate[helper.uid]?.[dateIso], addSlot)
+    ptoBlocksWindow(ptoByUidByDate[helper.uid]?.[dateIso], addSlot) ||
+    Boolean(employeeAbsenceForWindow(absences, helper.uid, dateIso, addSlot))
   );
-}, [addDateIso, addSlot, defaultHelpersForAddTech, ptoByUidByDate]);
+}, [addDateIso, addSlot, defaultHelpersForAddTech, ptoByUidByDate, absences]);
 
 const availableDefaultHelpersForAddTrip = useMemo(() => {
   const unavailable = new Set(unavailableDefaultHelpersForAddTrip.map((helper) => helper.uid));
@@ -2340,6 +2413,7 @@ const addSlotConflicts = useMemo(() => {
     trips,
     holidayByDate,
     ptoByUidByDate,
+    absences,
     eventsByDate,
   });
 }, [
@@ -2354,6 +2428,7 @@ const addSlotConflicts = useMemo(() => {
   trips,
   holidayByDate,
   ptoByUidByDate,
+  absences,
   eventsByDate,
 ]);
 
@@ -2690,6 +2765,7 @@ function slotDefaults(slot: SlotKey) {
 
     const techUid = String(addTechUid || "").trim();
     const dateIso = String(addDateIso || "").trim();
+    if (absencesLoading || absencesError) return setAddErr("Employee unavailability has not loaded. Retry after it loads.");
 
     if (!techUid) return setAddErr("Missing technician.");
     if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return setAddErr("Missing/invalid date.");
@@ -2755,6 +2831,16 @@ if (addTripType === "project") {
   }
 }
 
+let liveAbsences: EmployeeAbsence[];
+try {
+  liveAbsences = await loadLiveEmployeeAbsences();
+} catch (e: any) {
+  return setAddErr(e?.message || "Could not verify employee unavailability. Scheduling blocked.");
+}
+if (employeeAbsenceForWindow(liveAbsences, techUid, dateIso, addSlot)) {
+  return setAddErr("Lead technician is unavailable for this date/time.");
+}
+
 const liveDefaultHelpers = helpers
   .filter(
     (helper) =>
@@ -2763,7 +2849,8 @@ const liveDefaultHelpers = helpers
   .slice(0, 2);
 
 const liveAvailableDefaultHelpers = liveDefaultHelpers.filter(
-  (helper) => !ptoBlocksWindow(ptoByUidByDate[helper.uid]?.[dateIso], addSlot)
+  (helper) => !ptoBlocksWindow(ptoByUidByDate[helper.uid]?.[dateIso], addSlot) &&
+    !employeeAbsenceForWindow(liveAbsences, helper.uid, dateIso, addSlot)
 );
 
 const liveHelperUid = liveAvailableDefaultHelpers[0]?.uid || "";
@@ -2779,6 +2866,7 @@ const liveConflicts = computeAddSlotConflict({
   trips,
   holidayByDate,
   ptoByUidByDate,
+  absences: liveAbsences,
   eventsByDate,
 });
 
@@ -3064,6 +3152,11 @@ closeAddModal(true);
         liveTrip.crew?.primaryTechUid, liveTrip.crew?.secondaryTechUid,
         liveTrip.crew?.helperUid, liveTrip.crew?.secondaryHelperUid,
       ]);
+       const rescheduleAbsences = await loadLiveEmployeeAbsences();
+       for (const uid of crewUids) {
+         const absence = employeeAbsenceForWindow(rescheduleAbsences, uid, dateIso, effectiveWindow, startTime, endTime);
+         if (absence) throw new Error(`${employeeNamesByUid[uid] || uid} is unavailable during the requested trip window.`);
+       }
       // AM/PM/All Day reschedules automatically use the free uninterrupted
       // portion of the window if the crew has a short company event.
       if (rescheduleWindow !== "custom") {
@@ -3359,6 +3452,8 @@ closeAddModal(true);
       hard.add(`That date is a company holiday (${holiday.name}).`);
     }
 
+    const absence = employeeAbsenceForWindow(absences, uid, dateIso, String(trip.timeWindow || "custom"), trip.startTime, trip.endTime);
+    if (absence) hard.add(`${employeeName} is unavailable (${absence.type}) on ${dateIso}.`);
     const pto = ptoByUidByDate[uid]?.[dateIso];
     if (ptoBlocksWindow(pto, String(trip.timeWindow || "custom"), trip.startTime, trip.endTime)) {
       hard.add(`${employeeName} is on approved PTO during this trip on ${dateIso}.`);
@@ -3430,6 +3525,7 @@ closeAddModal(true);
     if (helperIsAlreadyOnTrip(trip, helper.uid)) {
       return "Already on this trip";
     }
+    if (absencesLoading || absencesError) return "Checking employee availability";
 
     const conflicts = helperConflictMessagesForTrip(trip, helper.uid);
     return conflicts.hardMessages[0] || conflicts.softMessages[0] || "";
@@ -3491,6 +3587,13 @@ closeAddModal(true);
       return;
     }
 
+    let freshAbsences: EmployeeAbsence[];
+    try { freshAbsences = await loadLiveEmployeeAbsences(); }
+    catch (e: any) { setHelperEditErr(e?.message || "Could not verify unavailability. Assignment blocked."); return; }
+    if (employeeAbsenceForWindow(freshAbsences, helper.uid, String(helperEditTrip.date || ""), String(helperEditTrip.timeWindow || "custom"), helperEditTrip.startTime, helperEditTrip.endTime)) {
+      setHelperEditErr(`${helper.name} is unavailable during this trip.`);
+      return;
+    }
     const conflicts = helperConflictMessagesForTrip(helperEditTrip, helper.uid);
     if (conflicts.hardMessages.length > 0) {
       setHelperEditErr(conflicts.hardMessages[0]);
@@ -4674,6 +4777,27 @@ useEffect(() => {
   }, [range.startIso, range.endIso, techs.map((tech) => tech.uid).join("|")]);
 
   useEffect(() => {
+    let cancelled = false;
+    async function loadAbsences() {
+      setAbsencesLoading(true);
+      setAbsencesError("");
+      try {
+        const result = await loadLiveEmployeeAbsences();
+        if (!cancelled) setAbsences(result);
+      } catch (err: any) {
+        if (!cancelled) {
+          setAbsences([]);
+          setAbsencesError(err?.message || "Unable to load employee unavailability. Crew assignment is blocked until this loads.");
+        }
+      } finally {
+        if (!cancelled) setAbsencesLoading(false);
+      }
+    }
+    loadAbsences();
+    return () => { cancelled = true; };
+  }, [range.startIso, range.endIso]);
+
+  useEffect(() => {
     async function loadEvents() {
       setEventsLoading(true);
       setEventsError("");
@@ -4795,6 +4919,7 @@ useEffect(() => {
       techsLoading ||
       holidaysLoading ||
       ptoLoading ||
+      absencesLoading ||
       eventsLoading ||
       staffCoverageLoading
   );
@@ -4803,6 +4928,7 @@ useEffect(() => {
   techsLoading,
   holidaysLoading,
   ptoLoading,
+  absencesLoading,
   eventsLoading,
   staffCoverageLoading,
 ]);
@@ -8335,6 +8461,7 @@ function renderStaffCoverageCards(dateIso: string) {
   tripsError ||
   holidaysError ||
   ptoError ||
+  absencesError ||
   eventsError ||
   staffCoverageError) && (
               <Stack spacing={1}>
@@ -8342,6 +8469,7 @@ function renderStaffCoverageCards(dateIso: string) {
                 {tripsError ? <Alert severity="error">{tripsError}</Alert> : null}
                 {holidaysError ? <Alert severity="error">{holidaysError}</Alert> : null}
                 {ptoError ? <Alert severity="error">{ptoError}</Alert> : null}
+                {absencesError ? <Alert severity="error">{absencesError}</Alert> : null}
                 {eventsError ? <Alert severity="error">{eventsError}</Alert> : null}
                 {staffCoverageError ? <Alert severity="error">{staffCoverageError}</Alert> : null}
               </Stack>

@@ -62,6 +62,7 @@ import NoteAltOutlinedIcon from "@mui/icons-material/NoteAltOutlined";
 import PauseRoundedIcon from "@mui/icons-material/PauseRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import ReceiptLongRoundedIcon from "@mui/icons-material/ReceiptLongRounded";
+import ShoppingCartRoundedIcon from "@mui/icons-material/ShoppingCartRounded";
 import ScheduleRoundedIcon from "@mui/icons-material/ScheduleRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
@@ -2678,6 +2679,14 @@ export default function ServiceTicketDetailPage({ params }: Props) {
 
   const [trips, setTrips] = useState<TripDoc[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderLite[]>([]);
+  const [linkedMaterialOrders, setLinkedMaterialOrders] = useState<Array<{
+    id: string;
+    status: string;
+    requestSummary: string;
+    receivedAt?: string | null;
+    materialOrderCode?: string | null;
+  }>>([]);
+
   const [poGenerating, setPoGenerating] = useState(false);
   const [poError, setPoError] = useState("");
   const [poOk, setPoOk] = useState("");
@@ -2913,6 +2922,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
     setTicket(null);
     setTicketId("");
     setTrips([]);
+    setLinkedMaterialOrders([]);
 
     // Firestore reads can hang during intermittent mobile connectivity.
     // This timeout controls the UI; stale requests cannot update state afterward.
@@ -3002,6 +3012,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
           ptoSnap,
           holidaySnap,
           purchaseOrderSnap,
+          linkedMaterialOrdersSnap,
           attachmentSnap,
           activitySnap,
         ] = await Promise.all([
@@ -3024,6 +3035,7 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               orderBy("createdAt", "asc"),
             ),
           ),
+          getDocs(query(collection(db, "materialOrders"), where("serviceTicketId", "==", id))),
           getDocs(
             query(
               collection(db, "serviceTickets", id, "attachments"),
@@ -3141,6 +3153,17 @@ export default function ServiceTicketDetailPage({ params }: Props) {
               Boolean(holiday),
             ),
         );
+
+        setLinkedMaterialOrders(linkedMaterialOrdersSnap.docs.map((ds) => {
+          const data = ds.data();
+          return {
+            id: ds.id,
+            status: String(data.status || "draft"),
+            requestSummary: String(data.requestSummary || "Material order"),
+            receivedAt: data.receivedAt || null,
+            materialOrderCode: data.materialOrderCode || null,
+          };
+        }));
 
         setPurchaseOrders(
           purchaseOrderSnap.docs
@@ -11070,6 +11093,34 @@ async function handleStartTrip(trip: TripDoc) {
                   icon={<ReceiptLongRoundedIcon color="primary" />}
                 >
                   <Stack spacing={2}>
+                    {canDispatch && ticket?.id && !["cancelled", "invoiced"].includes(String(ticket.status)) && (
+                      <Button
+                        type="button"
+                        color="primary"
+                        variant="contained"
+                        startIcon={<ShoppingCartRoundedIcon />}
+                        onClick={() => router.push(`/material-orders/new?serviceTicketId=${encodeURIComponent(ticket.id)}`)}
+                        sx={{ alignSelf: "flex-start", borderRadius: 2, minHeight: 44, fontWeight: 800 }}
+                      >
+                        Order Materials for This Ticket
+                      </Button>
+                    )}
+                    {linkedMaterialOrders.length > 0 && (
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle2" fontWeight={800}>Linked Material Orders</Typography>
+                          {linkedMaterialOrders.map((materialOrder) => (
+                            <Stack key={materialOrder.id} direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between">
+                              <Box>
+                                <Typography variant="body2" fontWeight={700}>{materialOrder.requestSummary}</Typography>
+                                <Chip size="small" color={materialOrder.status === "received" || materialOrder.status === "picked_up" ? "success" : materialOrder.status === "cancelled" ? "error" : "warning"} label={materialOrder.status === "received" || materialOrder.status === "picked_up" ? "Materials Received — Ready to Schedule" : materialOrder.status.replaceAll("_", " ")} />
+                              </Box>
+                              <Button component={Link} href={`/material-orders/${materialOrder.id}`} variant="outlined" size="small">View Material Order</Button>
+                            </Stack>
+                          ))}
+                        </Stack>
+                      </Paper>
+                    )}
                     <Stack
                       direction={{ xs: "column", sm: "row" }}
                       spacing={1.25}
