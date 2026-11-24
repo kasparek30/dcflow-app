@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Alert, Box, Button, Chip, CircularProgress, Divider, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, CircularProgress, Divider, Stack, Typography, TextField, MenuItem, FormControlLabel, Checkbox } from "@mui/material";
 
 export type TicketPin = {
   id: string;
@@ -17,6 +17,7 @@ export type TicketPin = {
   preferredCustomer: boolean;
   estimatedDurationMinutes: number;
   assignedTechnicianName: string;
+  ageDays?: number | null;
   scheduledTrip?: {
     id: string;
     date: string;
@@ -131,6 +132,32 @@ function isScheduled(ticket: TicketPin) {
   return Boolean(ticket.scheduledTrip) && (ticket.status === "scheduled" || ticket.status === "follow_up" || ticket.status === "in_progress");
 }
 
+const MAP_STATUSES = ["new", "in_progress", "follow_up", "scheduled"] as const;
+type MapStatus = typeof MAP_STATUSES[number];
+type MapFilters = { statuses: MapStatus[]; range: string; technician: string; aging: string; preferred: boolean; search: string };
+const DEFAULT_FILTERS: MapFilters = { statuses: [...MAP_STATUSES], range: "7", technician: "", aging: "all", preferred: false, search: "" };
+const STORAGE_KEY = "dcflow.serviceTicketMap.filters.v1";
+function localDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+}
+function crewFor(ticket: TicketPin) {
+  return Array.from(new Set([ticket.assignedTechnicianName, ...(ticket.scheduledTrip?.crewNames || [])].map(name => name.trim()).filter(Boolean)));
+}
+function readFilters(): MapFilters {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    if (!raw || typeof raw !== "object") return DEFAULT_FILTERS;
+    return {
+      statuses: Array.isArray(raw.statuses) ? MAP_STATUSES.filter(s => raw.statuses.includes(s)) : DEFAULT_FILTERS.statuses,
+      range: ["0","7","30","all"].includes(raw.range) ? raw.range : "7",
+      technician: typeof raw.technician === "string" ? raw.technician : "",
+      aging: ["all","7","14"].includes(raw.aging) ? raw.aging : "all",
+      preferred: raw.preferred === true,
+      search: "",
+    };
+  } catch { return DEFAULT_FILTERS; }
+}
+
 export default function ServiceTicketMap({ tickets }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<any>(null);
@@ -144,11 +171,43 @@ export default function ServiceTicketMap({ tickets }: Props) {
   const [locatedGroups, setLocatedGroups] = useState<LocatedGroup[]>([]);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [radius, setRadius] = useState(10);
+  const [filters, setFilters] = useState<MapFilters>(DEFAULT_FILTERS);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => { setFilters(readFilters()); setPreferencesLoaded(true); }, []);
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...filters, search: "" })); } catch { /* optional */ }
+  }, [filters, preferencesLoaded]);
+  const technicians = useMemo(() => Array.from(new Set(tickets.flatMap(crewFor))).sort((a,b) => a.localeCompare(b)), [tickets]);
+  const visibleTickets = useMemo(() => {
+    const today = new Date();
+    const end = new Date(today);
+    end.setDate(end.getDate() + (filters.range === "0" ? 0 : Number(filters.range) - 1));
+    const search = filters.search.trim().toLowerCase();
+    return tickets.filter(ticket => {
+      if (!filters.statuses.includes(ticket.status as MapStatus)) return false;
+      if (filters.preferred && !ticket.preferredCustomer) return false;
+      if (filters.aging !== "all" && (ticket.ageDays == null || ticket.ageDays < Number(filters.aging))) return false;
+      if (filters.technician === "__unassigned" && crewFor(ticket).length) return false;
+      if (filters.technician && filters.technician !== "__unassigned" && !crewFor(ticket).includes(filters.technician)) return false;
+      // Keep overdue scheduled calls and calls with unknown dates visible for review.
+      if (ticket.status === "scheduled" && filters.range !== "all") {
+        const date = ticket.scheduledTrip?.date;
+        if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && date > localDate(end)) return false;
+      }
+      if (search && ![ticket.customerDisplayName, ticket.issueSummary, addressFor(ticket), ...crewFor(ticket)].join(" ").toLowerCase().includes(search)) return false;
+      return true;
+    });
+  }, [tickets, filters]);
+  function preset(statuses: MapStatus[], range = "7") {
+    setFilters({ ...DEFAULT_FILTERS, statuses, range });
+  }
 
   const addressGroups = useMemo(() => {
     const byAddress = new Map<string, { address: string; tickets: TicketPin[] }>();
     const noAddress: string[] = [];
-    for (const ticket of tickets) {
+    for (const ticket of visibleTickets) {
       const address = addressFor(ticket);
       if (!ticket.serviceAddressLine1.trim() || !ticket.serviceCity.trim() || !ticket.serviceState.trim()) {
         noAddress.push(`${ticket.customerDisplayName || ticket.id} — incomplete service address`);
@@ -160,7 +219,11 @@ export default function ServiceTicketMap({ tickets }: Props) {
       else byAddress.set(key, { address, tickets: [ticket] });
     }
     return { groups: Array.from(byAddress.values()), noAddress };
-  }, [tickets]);
+  }, [visibleTickets]);
+
+  useEffect(() => {
+    if (selectedTicketId && !visibleTickets.some(t => t.id === selectedTicketId)) setSelectedTicketId(null);
+  }, [visibleTickets, selectedTicketId]);
 
   const selected = useMemo(() => {
     if (!selectedTicketId) return null;
@@ -183,11 +246,13 @@ export default function ServiceTicketMap({ tickets }: Props) {
   useEffect(() => {
     let cancelled = false;
     async function draw() {
+      if (!preferencesLoaded) return;
       setError("");
       setBusy(true);
       setMappedCount(0);
       setUnmapped(addressGroups.noAddress);
       setLocatedGroups([]);
+      infoRef.current?.close();
       markersRef.current.forEach((marker) => marker.setMap(null));
       markersRef.current = [];
       if (!GOOGLE_KEY) {
@@ -251,7 +316,7 @@ export default function ServiceTicketMap({ tickets }: Props) {
             icon: {
               path: maps.SymbolPath.CIRCLE, scale: group.tickets.length > 1 ? 15 : 11,
               fillColor: statusColor(sorted[0]?.status || "new"), fillOpacity: 1,
-              strokeColor: "#ffffff", strokeWeight: 2.5,
+              strokeColor: group.tickets.some(t => (t.ageDays ?? 0) >= 14) ? "#ef4444" : group.tickets.some(t => (t.ageDays ?? 0) >= 7) ? "#f59e0b" : "#ffffff", strokeWeight: 3,
             },
           });
           marker.addListener("click", () => {
@@ -262,7 +327,7 @@ export default function ServiceTicketMap({ tickets }: Props) {
               return `<div style="border-top:1px solid #e5e7eb;padding:9px 0;line-height:1.5">
                 <div><strong>${escapeHtml(ticket.issueSummary || "Service Ticket")}</strong>${ticket.preferredCustomer ? ' <span title="Preferred customer">★</span>' : ""}</div>
                 <div style="font-size:13px">${escapeHtml(ticket.customerDisplayName)}</div>
-                <div style="font-size:12px;color:#475569">${escapeHtml(statusLabel(ticket.status))} · ${ticket.estimatedDurationMinutes ? `${escapeHtml((ticket.estimatedDurationMinutes / 60).toFixed(1))} hrs` : "Duration not set"}</div>
+                <div style="font-size:12px;color:#475569">${escapeHtml(statusLabel(ticket.status))}${ticket.ageDays != null ? ` · Open ${escapeHtml(ticket.ageDays)} day(s)` : ""} · ${ticket.estimatedDurationMinutes ? `${escapeHtml((ticket.estimatedDurationMinutes / 60).toFixed(1))} hrs` : "Duration not set"}</div>
                 ${trip ? `<div style="font-size:12px;margin-top:5px"><b>Trip:</b> ${escapeHtml(formatDate(trip.date))}<br />${escapeHtml(tripTimeLabel(trip))}<br /><b>Crew:</b> ${escapeHtml(trip.crewNames.join(", ") || ticket.assignedTechnicianName || "Not assigned")}</div>` : ticket.status === "scheduled" ? '<div style="font-size:12px;color:#b45309">Active trip details unavailable</div>' : ""}
                 <div style="display:flex;gap:12px;align-items:center;margin-top:5px">
                   <a style="font-size:13px;font-weight:700;color:#2563eb" href="/service-tickets/${encodeURIComponent(ticket.id)}">Open ticket</a>
@@ -302,25 +367,57 @@ export default function ServiceTicketMap({ tickets }: Props) {
     void draw();
     return () => {
       cancelled = true;
+      infoRef.current?.close();
       markersRef.current.forEach((marker) => marker.setMap(null));
       markersRef.current = [];
     };
-  }, [addressGroups]);
+  }, [addressGroups, retry, preferencesLoaded]);
 
   return (
     <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden", bgcolor: "background.paper" }}>
       <Stack direction="row" flexWrap="wrap" useFlexGap spacing={1} sx={{ p: 1.5 }} alignItems="center">
         <Chip size="small" label={`${mappedCount} mapped tickets`} />
         <Chip size="small" label={`${unmapped.length} unmapped locations`} color={unmapped.length ? "warning" : "default"} variant="outlined" />
-        {(["new", "follow_up", "scheduled", "in_progress"] as const).map((status) => (
-          <Stack key={status} direction="row" spacing={0.5} alignItems="center">
-            <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: statusColor(status) }} />
-            <Typography variant="caption">{statusLabel(status)}</Typography>
-          </Stack>
-        ))}
+        <Chip size="small" variant="outlined" label={`${visibleTickets.length} of ${tickets.length} matching tickets`} />
+        <Chip size="small" variant="outlined" label={`${(visibleTickets.reduce((sum,t) => sum + (Number(t.estimatedDurationMinutes) || 0), 0)/60).toFixed(1)} estimated hrs`} />
       </Stack>
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {tickets.length === 0 ? <Alert severity="info">No open service tickets match the selected filters.</Alert> : null}
+      <Stack spacing={1.5} sx={{ px: 1.5, pb: 1.5 }}>
+        <Stack direction="row" flexWrap="wrap" useFlexGap spacing={1} alignItems="center">
+          {MAP_STATUSES.map(status => {
+            const enabled = filters.statuses.includes(status);
+            return <Chip key={status} clickable aria-pressed={enabled}
+              icon={<Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: statusColor(status) }} />}
+              label={`${statusLabel(status)} (${tickets.filter(t => t.status === status).length})`}
+              variant={enabled ? "filled" : "outlined"}
+              sx={{ opacity: enabled ? 1 : 0.55, border: `1px solid ${enabled ? statusColor(status) : "transparent"}`, fontWeight: enabled ? 700 : 400 }}
+              onClick={() => setFilters(old => ({ ...old, statuses: enabled ? old.statuses.filter(s => s !== status) : [...old.statuses, status] }))} />;
+          })}
+        </Stack>
+        <Stack direction="row" flexWrap="wrap" useFlexGap spacing={1}>
+          <Button size="small" variant="outlined" onClick={() => preset(["new","in_progress"])}>Active Work</Button>
+          <Button size="small" variant="outlined" onClick={() => preset(["new","follow_up"])}>Needs Attention</Button>
+          <Button size="small" variant="outlined" onClick={() => preset([...MAP_STATUSES], "all")}>Show All</Button>
+          <Button size="small" onClick={() => preset([...MAP_STATUSES])}>Reset Filters</Button>
+        </Stack>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+          <TextField size="small" fullWidth label="Search map" value={filters.search} onChange={e => setFilters(old => ({...old, search: e.target.value}))} />
+          <TextField select size="small" fullWidth label="Scheduled through" value={filters.range} onChange={e => setFilters(old => ({...old, range: e.target.value}))}>
+            <MenuItem value="0">Today + overdue</MenuItem><MenuItem value="7">Next 7 days + overdue</MenuItem><MenuItem value="30">Next 30 days + overdue</MenuItem><MenuItem value="all">Any date</MenuItem>
+          </TextField>
+          <TextField select size="small" fullWidth label="Technician / crew" value={filters.technician} onChange={e => setFilters(old => ({...old, technician: e.target.value}))}>
+            <MenuItem value="">All crew</MenuItem><MenuItem value="__unassigned">Unassigned</MenuItem>
+            {filters.technician && filters.technician !== "__unassigned" && !technicians.includes(filters.technician) ? <MenuItem value={filters.technician}>{filters.technician} (no open tickets)</MenuItem> : null}
+            {technicians.map(name => <MenuItem key={name} value={name}>{name}</MenuItem>)}
+          </TextField>
+          <TextField select size="small" fullWidth label="Ticket age" value={filters.aging} onChange={e => setFilters(old => ({...old, aging: e.target.value}))}>
+            <MenuItem value="all">Any age</MenuItem><MenuItem value="7">Open 7+ days</MenuItem><MenuItem value="14">Open 14+ days</MenuItem>
+          </TextField>
+        </Stack>
+        <FormControlLabel control={<Checkbox size="small" checked={filters.preferred} onChange={e => setFilters(old => ({...old, preferred: e.target.checked}))} />} label="Preferred customers only" />
+        <Typography variant="caption" color="text.secondary">Date limits apply to Scheduled status only. Overdue and unknown dates remain visible. Status counts are before filtering.</Typography>
+      </Stack>
+      {error ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => setRetry(n => n+1)}>Try Again</Button>}>{error}</Alert> : null}
+      {visibleTickets.length === 0 ? <Alert severity="info">No open service tickets match the selected map filters.</Alert> : null}
       <Box sx={{ display: "grid", gridTemplateColumns: selected && isScheduled(selected.ticket) ? { xs: "1fr", lg: "minmax(0, 1fr) 330px" } : "1fr" }}>
         <Box sx={{ position: "relative", minWidth: 0 }}>
           <Box ref={containerRef} sx={{ width: "100%", height: { xs: 460, md: 620 }, bgcolor: "grey.900" }} />
@@ -354,8 +451,8 @@ export default function ServiceTicketMap({ tickets }: Props) {
                   <Chip key={miles} size="small" label={`${miles} mi`} clickable onClick={() => setRadius(miles)} color={radius === miles ? "primary" : "default"} variant={radius === miles ? "filled" : "outlined"} />
                 ))}
               </Stack>
-              <Typography variant="caption" color="text.secondary">{nearby.length} pending ticket{nearby.length === 1 ? "" : "s"} · Straight-line distance</Typography>
-              {nearby.length === 0 ? <Alert severity="info" variant="outlined">No pending tickets within {radius} miles. Try a larger radius.</Alert> : null}
+              <Typography variant="caption" color="text.secondary">{nearby.length} visible pending ticket{nearby.length === 1 ? "" : "s"} · Straight-line distance</Typography>
+              {nearby.length === 0 ? <Alert severity="info" variant="outlined">No visible pending tickets within {radius} miles. Try a larger radius or adjust map filters.</Alert> : null}
               {nearby.map(({ ticket, miles, address }) => (
                 <Box key={ticket.id} sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 1.5 }}>
                   <Stack spacing={0.5}>
